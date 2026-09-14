@@ -19,11 +19,16 @@
  * answers 503 naming the VARIABLE, never a value.
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+// The `.js` extension is load-bearing: Vercel runs this file as native Node
+// ESM, whose loader resolves relative specifiers verbatim — extensionless,
+// it threw ERR_MODULE_NOT_FOUND before the handler ran and every /fn call
+// answered FUNCTION_INVOCATION_FAILED. TypeScript maps the `.js` specifier
+// back onto the `.ts` source at typecheck, so both sides resolve.
 import {
   FORWARDED_REQUEST_HEADERS,
   FORWARDED_RESPONSE_HEADERS,
   resolveProxiedFunction,
-} from '../_shared/fnProxyPolicy.pure';
+} from '../_shared/fnProxyPolicy.pure.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Same-origin traffic sends no preflight, so OPTIONS here is a stray.
