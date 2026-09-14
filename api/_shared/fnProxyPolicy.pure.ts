@@ -46,6 +46,7 @@ export const PROXIED_FUNCTIONS = [
   'builder-portal-collaboration',
   'builder-portal-workspace',
   'builder-portal-stock',
+  'builder-network-connections',
 ] as const;
 
 export type ProxiedFunction = (typeof PROXIED_FUNCTIONS)[number];

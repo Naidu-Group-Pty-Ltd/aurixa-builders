@@ -115,6 +115,24 @@
       "owner": "builder-portal-program",
       "reviewed": true
     },
+    "builder-network-connections": {
+      "verify_jwt": false,
+      "exposure_class": "portal-session",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-network-inbound": {
+      "verify_jwt": false,
+      "exposure_class": "machine-hmac",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-network-outbox-worker": {
+      "verify_jwt": false,
+      "exposure_class": "internal-worker",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
     "builder-stock-image-settler": {
       "verify_jwt": false,
       "exposure_class": "cron-worker",

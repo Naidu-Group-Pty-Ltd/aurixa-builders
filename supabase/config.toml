@@ -61,7 +61,20 @@ verify_jwt = false
 [functions.builder-portal-stock]
 verify_jwt = false
 
+# The connection graph's builder-side surface: portal cookie session,
+# org-owner gate for mutations, CSRF like every portal mutation.
+[functions.builder-network-connections]
+verify_jwt = false
+
+# The clone -> network delivery door: authorised by the per-connection
+# symmetric HMAC over the raw body, never by a JWT — the caller is another
+# machine holding the connection secret.
+[functions.builder-network-inbound]
+verify_jwt = false
+
 # Workers: invoked by schedule or internal signature, never by a user JWT.
+[functions.builder-network-outbox-worker]
+verify_jwt = false
 [functions.builder-document-processor]
 verify_jwt = false
 [functions.builder-stock-image-settler]

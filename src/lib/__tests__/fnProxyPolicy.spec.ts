@@ -21,8 +21,9 @@ const REPO_ROOT = join(__dirname, '..', '..', '..');
 const read = (p: string) => readFileSync(join(REPO_ROOT, p), 'utf8');
 
 describe('the allowlist', () => {
-  it('is exactly the seventeen browser-invocable portal functions', () => {
+  it('is exactly the eighteen browser-invocable portal functions', () => {
     expect([...PROXIED_FUNCTIONS].sort()).toEqual([
+      'builder-network-connections',
       'builder-portal-accept-invite',
       'builder-portal-change-password',
       'builder-portal-collaboration',
@@ -52,6 +53,9 @@ describe('the allowlist', () => {
       'builder-document-processor',
       'builder-stock-image-settler',
       'builder-stock-link-callback',
+      // Machine doors: HMAC and the internal signature, never a browser.
+      'builder-network-inbound',
+      'builder-network-outbox-worker',
     ]) {
       expect(PROXIED_FUNCTIONS as readonly string[]).not.toContain(name);
     }

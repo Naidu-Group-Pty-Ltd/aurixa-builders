@@ -76,9 +76,27 @@ export function validateBuilderPortalRequest(req: Request): boolean {
  * that could be mistaken for authority. Builder resolution only ever reads
  * BUILDER_SESSION_COOKIE, so this is a defence-in-depth assertion used by the
  * cross-portal isolation tests.
+ *
+ * NETWORK EDITION — the axis that matters changed (extraction plan §5). The
+ * network is a SIBLING SUBDOMAIN of every host on aurixasystems.com.au, and
+ * a sibling can plant `builder_session_token=X; Domain=aurixasystems.com.au`
+ * — a fixation cookie that arrives here wearing the right name in the wrong
+ * spelling. What makes the real cookie immune is the `__Host-` prefix: a
+ * browser refuses to store it with a Domain attribute at all, so possession
+ * of the exact `__Host-` name IS proof it was set first-party on this host.
+ * The resolver above therefore reads only the `__Host-` spelling, and this
+ * assertion flags the BARE spelling as foreign alongside the other portals'
+ * names — its presence means a sibling host is trying something.
  */
 export function carriesForeignPortalSession(headers: Headers): boolean {
   const cookieHeader = headers.get('cookie') || '';
-  return cookieHeader.includes('__Host-solicitor_session_token')
-    || cookieHeader.includes('__Host-finance_session_token');
+  const names = cookieHeader
+    .split(';')
+    .map((cookie) => cookie.trim().split('=')[0])
+    .filter(Boolean);
+  return names.includes('__Host-solicitor_session_token')
+    || names.includes('__Host-finance_session_token')
+    // The un-prefixed spelling of our own name: a Domain-scoped plant from a
+    // sibling host, never a cookie this product set.
+    || names.includes('builder_session_token');
 }

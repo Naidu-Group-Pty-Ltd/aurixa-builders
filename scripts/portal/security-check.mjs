@@ -70,6 +70,9 @@ const EXPECTED_FUNCTIONS = [
     // builder-stock-marketplace is the CLONE's marketplace reader and stays
     // there. A dir appearing here without a plan entry fails this gate.
     'builder-document-processor',
+    'builder-network-connections',
+    'builder-network-inbound',
+    'builder-network-outbox-worker',
     'builder-portal-accept-invite',
     'builder-portal-change-password',
     'builder-portal-collaboration',
@@ -157,6 +160,7 @@ check(client.includes("'X-Portal-Request': 'builder-portal'"),
 // 3. CSRF on every mutating surface
 // ---------------------------------------------------------------------------
 for (const name of [
+  'builder-network-connections',
   'builder-portal-logout',
   'builder-portal-verify',
   'builder-portal-verify-email',
