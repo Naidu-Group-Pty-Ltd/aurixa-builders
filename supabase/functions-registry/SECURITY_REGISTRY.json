@@ -1,0 +1,157 @@
+{
+  "//": "security registry",
+  "functions": {
+    "builder-portal-login": {
+      "verify_jwt": false,
+      "exposure_class": "public-auth",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-logout": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-verify": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-accept-invite": {
+      "verify_jwt": false,
+      "exposure_class": "public-auth",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-forgot-password": {
+      "verify_jwt": false,
+      "exposure_class": "public-auth",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-register": {
+      "verify_jwt": false,
+      "exposure_class": "public-auth",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-verify-email": {
+      "verify_jwt": false,
+      "exposure_class": "public-auth",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-reset-password": {
+      "verify_jwt": false,
+      "exposure_class": "public-auth",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-change-password": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-invite": {
+      "verify_jwt": true,
+      "exposure_class": "portal-session",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-projects": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-inventory": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-transactions": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-construction": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-delivery": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-collaboration": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-workspace": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-stock": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-document-processor": {
+      "verify_jwt": false,
+      "exposure_class": "cron-worker",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-network-admin": {
+      "verify_jwt": false,
+      "exposure_class": "machine-federation",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-network-connections": {
+      "verify_jwt": false,
+      "exposure_class": "portal-session",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-network-inbound": {
+      "verify_jwt": false,
+      "exposure_class": "machine-hmac",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-network-outbox-worker": {
+      "verify_jwt": false,
+      "exposure_class": "internal-worker",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-stock-image-settler": {
+      "verify_jwt": false,
+      "exposure_class": "cron-worker",
+      "owner": "builder-portal-program",
+      "reviewed": true,
+      "notes": "Cron sweep that brings already-imported builder stock up to the current image rules. Signed internal callers only (verifyInternal) with enforceRawBodyLimit ahead of it; holds a service-role client and crosses organisations, so it must not be reachable by a portal session. Writes builder_stock_item_images, the primary_image_id those rows earn, and the settlement marker; creates and deletes no stock item and touches no price, availability, status, selection or project linkage. Resumable and bounded per tick, and the migration's cron job unschedules itself once no upload is below the current version."
+    },
+    "builder-stock-link-callback": {
+      "verify_jwt": false,
+      "exposure_class": "webhook-secret",
+      "owner": "builder-stock",
+      "reviewed": true,
+      "notes": "Google Sheets hyperlink recovery callback. Authenticated by a per-request one-time capability token presented as `Authorization: Bearer`: each request mints 256 bits of randomness, sends it to Make and stores only its SHA-256, so there is no long-lived shared secret in two systems and a token seen in a third party's log authorises one answer to one question already asked. The token is compared by constant-time hash equality, the request is single-use via an atomic claim, expires in 30 minutes, and is bound to the exact spreadsheet and tab. Body is capped and the organisation is rate limited. Carries no Supabase identity because the caller is an external automation. Organisation, upload and property authority are read from the stored request row and are never accepted from the payload."
+    }
+  }
+}

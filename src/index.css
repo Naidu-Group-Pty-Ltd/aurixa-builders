@@ -1,0 +1,21 @@
+/*
+  Aurixa Builders Network — stylesheet entry.
+
+  Import order is significant: tokens first (they carry the @tailwind
+  directives and every CSS custom property the rest resolve against), then
+  base element rules, then the layered primitives/utilities/components, then
+  the surface systems (glass, the builder drawing-set language, the passport
+  tokens the compliance booklet reads).
+
+  This is the prime's `src/index.css` cut to the sheets the Builder Portal
+  actually mounts — the finance-portal, workflow, report-qa and ci-assessment
+  sheets style surfaces that do not exist on the network and stayed behind.
+*/
+@import "./styles/tokens.css";
+@import "./styles/base.css";
+@import "./styles/primitives.css";
+@import "./styles/utilities.css";
+@import "./styles/components.css";
+@import "./styles/glass.css";
+@import "./styles/builder-drafting.css";
+@import "./styles/passport-tokens.css";

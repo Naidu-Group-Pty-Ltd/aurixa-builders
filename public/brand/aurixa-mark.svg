@@ -1,0 +1,136 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Aurixa Systems">
+  <title>Aurixa Systems</title>
+  <!--
+    The Aurixa Systems delta, built for the sizes it is actually drawn at.
+
+    Geometry is derived, not eyeballed: the inner triangle is the outer one
+    offset by a uniform 52px about the incenter (256, 314.4 / inradius 127.6),
+    so every blade carries the same weight — including the base bar, which a
+    naive "shrink the triangle" inner path renders at roughly half thickness.
+
+    Each blade is two faces meeting on its centreline, lit from the upper left:
+    outer-left and inner-right catch the light, outer-right and the underside
+    fall away. That chisel is what still reads as metal at the 48px a
+    notification renders; a single flat gradient reads as a sticker.
+
+    See `aurixa-mark-compact.svg` for the 16/32px variant — the orbital rings
+    and the specular detail here turn to noise below ~48px.
+  -->
+  <defs>
+    <radialGradient id="ax-field" cx="50%" cy="40%" r="78%">
+      <stop offset="0%" stop-color="#14315B"/>
+      <stop offset="42%" stop-color="#0B1F3C"/>
+      <stop offset="100%" stop-color="#050D1B"/>
+    </radialGradient>
+
+    <radialGradient id="ax-field-glow" cx="50%" cy="54%" r="52%">
+      <stop offset="0%" stop-color="#2C6FC4" stop-opacity="0.40"/>
+      <stop offset="55%" stop-color="#1B4C93" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#0B1F3C" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Lit face: polished gold turning to white at the crown. -->
+    <linearGradient id="ax-gold-lit" x1="0.1" y1="0" x2="0.75" y2="1">
+      <stop offset="0%" stop-color="#FFF8E2"/>
+      <stop offset="22%" stop-color="#F7DFA6"/>
+      <stop offset="55%" stop-color="#E5BE71"/>
+      <stop offset="100%" stop-color="#C79B45"/>
+    </linearGradient>
+
+    <!-- Shaded face: the same metal turned away from the light. -->
+    <linearGradient id="ax-gold-shade" x1="0.2" y1="0" x2="0.9" y2="1">
+      <stop offset="0%" stop-color="#B7873A"/>
+      <stop offset="45%" stop-color="#9A6C28"/>
+      <stop offset="100%" stop-color="#7A5220"/>
+    </linearGradient>
+
+    <!-- Deepest face: the underside of the base arms. -->
+    <linearGradient id="ax-gold-deep" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#8A5F23"/>
+      <stop offset="100%" stop-color="#5E3F16"/>
+    </linearGradient>
+
+    <radialGradient id="ax-orb" cx="36%" cy="30%" r="78%">
+      <stop offset="0%" stop-color="#F4FDFF"/>
+      <stop offset="13%" stop-color="#B6F0FF"/>
+      <stop offset="34%" stop-color="#5CC6FF"/>
+      <stop offset="60%" stop-color="#2079DE"/>
+      <stop offset="85%" stop-color="#0B3F86"/>
+      <stop offset="100%" stop-color="#061F44"/>
+    </radialGradient>
+
+    <radialGradient id="ax-orb-glow" cx="50%" cy="50%" r="50%">
+      <stop offset="26%" stop-color="#6FD2FF" stop-opacity="0.70"/>
+      <stop offset="58%" stop-color="#2E86E8" stop-opacity="0.26"/>
+      <stop offset="100%" stop-color="#2E86E8" stop-opacity="0"/>
+    </radialGradient>
+
+    <radialGradient id="ax-bloom" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FFE3A0" stop-opacity="0.85"/>
+      <stop offset="45%" stop-color="#F0B94E" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#F0B94E" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Rings dim as they sweep away from the light. -->
+    <linearGradient id="ax-ring" x1="0.15" y1="1" x2="0.9" y2="0">
+      <stop offset="0%" stop-color="#C9973F" stop-opacity="0.10"/>
+      <stop offset="38%" stop-color="#EFC672" stop-opacity="0.42"/>
+      <stop offset="72%" stop-color="#FFEDBE" stop-opacity="0.80"/>
+      <stop offset="100%" stop-color="#FFF6DC" stop-opacity="0.30"/>
+    </linearGradient>
+
+    <!--
+      Outer triangle, less the uniform inner triangle, less the wedge that
+      splits the base into two inward-angled arms beneath the core.
+    -->
+    <mask id="ax-delta">
+      <rect width="512" height="512" fill="#000000"/>
+      <path d="M256 54 L474 442 L38 442 Z" fill="#FFFFFF"/>
+      <path d="M256 160 L385 390 L127 390 Z" fill="#000000"/>
+      <path d="M256 296 L326 442 L186 442 Z" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <rect width="512" height="512" fill="url(#ax-field)"/>
+  <rect width="512" height="512" fill="url(#ax-field-glow)"/>
+
+  <!-- Orbital rings, struck behind the mark and running off the frame. -->
+  <g fill="none" stroke="url(#ax-ring)">
+    <circle cx="256" cy="288" r="238" stroke-width="2" opacity="0.55"/>
+    <circle cx="256" cy="288" r="212" stroke-width="3.5"/>
+    <circle cx="256" cy="288" r="196" stroke-width="1.5" opacity="0.6"/>
+    <circle cx="256" cy="288" r="150" stroke-width="2.5" opacity="0.8"/>
+  </g>
+
+  <!-- Warm bloom where the metal catches: apex and the two base tips. -->
+  <circle cx="256" cy="66" r="72" fill="url(#ax-bloom)"/>
+  <circle cx="196" cy="424" r="58" fill="url(#ax-bloom)" opacity="0.75"/>
+  <circle cx="316" cy="424" r="58" fill="url(#ax-bloom)" opacity="0.6"/>
+
+  <!-- The delta: six faces, two per blade, meeting on the centrelines. -->
+  <g mask="url(#ax-delta)">
+    <!-- left blade, outer face — the crown of the light -->
+    <path d="M256 54 L256 107 L82 416 L38 442 Z" fill="url(#ax-gold-lit)"/>
+    <!-- left blade, inner face — turned away -->
+    <path d="M256 107 L256 160 L127 390 L82 416 Z" fill="url(#ax-gold-shade)"/>
+    <!-- right blade, outer face — turned away -->
+    <path d="M256 54 L474 442 L430 416 L256 107 Z" fill="url(#ax-gold-shade)"/>
+    <!-- right blade, inner face — catches the light again -->
+    <path d="M256 107 L430 416 L385 390 L256 160 Z" fill="url(#ax-gold-lit)"/>
+    <!-- base arms, upper face -->
+    <path d="M82 416 L430 416 L385 390 L127 390 Z" fill="url(#ax-gold-lit)"/>
+    <!-- base arms, underside -->
+    <path d="M38 442 L474 442 L430 416 L82 416 Z" fill="url(#ax-gold-deep)"/>
+    <!-- specular run down the lit outer edge -->
+    <path d="M256 54 L256 78 L60 426 L38 442 Z" fill="#FFFCF0" opacity="0.55"/>
+    <!-- hairline catch along the right blade's inner edge -->
+    <path d="M256 160 L385 390 L371 382 L256 178 Z" fill="#FFF4D4" opacity="0.5"/>
+  </g>
+
+  <!-- The core. -->
+  <circle cx="256" cy="290" r="124" fill="url(#ax-orb-glow)"/>
+  <circle cx="256" cy="290" r="64" fill="url(#ax-orb)"/>
+  <circle cx="256" cy="290" r="64" fill="none" stroke="#CFF3FF" stroke-opacity="0.6" stroke-width="2"/>
+  <ellipse cx="233" cy="265" rx="23" ry="15" fill="#FFFFFF" opacity="0.75" transform="rotate(-32 233 265)"/>
+  <ellipse cx="278" cy="324" rx="17" ry="8" fill="#8FE8FF" opacity="0.32" transform="rotate(-32 278 324)"/>
+</svg>

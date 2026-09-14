@@ -1,0 +1,3200 @@
+
+@layer components {
+  .dashboard-sidebar-content {
+    scrollbar-gutter: stable;
+    overscroll-behavior: contain;
+  }
+
+  .dashboard-sidebar-content::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .dashboard-sidebar-content::-webkit-scrollbar-thumb {
+    border-radius: 9999px;
+    background-color: hsl(var(--sidebar-foreground) / 0.16);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+
+  .dashboard-sidebar-nav {
+    @apply flex min-h-0 flex-1 flex-col gap-2 pb-4;
+  }
+
+  .dashboard-sidebar-group {
+    @apply px-1.5 py-1;
+  }
+
+  .dashboard-sidebar-group-collapsed {
+    @apply px-0.5 py-1.5;
+  }
+
+  .dashboard-sidebar-group-trigger {
+    @apply flex w-full items-center justify-between gap-2 rounded-xl px-2.5 py-2 text-left text-[11px] font-semibold uppercase tracking-[0.16em] transition-all duration-200;
+    color: hsl(var(--sidebar-foreground) / 0.62);
+  }
+
+  .dashboard-sidebar-group-trigger:hover {
+    background-color: hsl(var(--dashboard-primary-soft) / 0.42);
+    color: hsl(var(--sidebar-foreground));
+  }
+
+  .dashboard-sidebar-group-trigger-active {
+    color: hsl(var(--primary));
+  }
+
+  .dashboard-sidebar-menu-button {
+    @apply min-w-0;
+  }
+
+  .dashboard-sidebar-menu-button:hover {
+    background-color: hsl(var(--dashboard-primary-soft) / 0.62);
+  }
+
+  .dashboard-sidebar-menu-button-active {
+    position: relative;
+    border-color: hsl(var(--sidebar-primary) / 0.34);
+    background: linear-gradient(90deg, hsl(var(--sidebar-primary)), hsl(var(--dashboard-primary-strong) / 0.86));
+    color: hsl(var(--primary-foreground));
+    box-shadow: 0 16px 32px -22px hsl(var(--sidebar-primary) / 0.95);
+  }
+
+  .dashboard-sidebar-menu-button-active::before {
+    content: "";
+    @apply absolute left-1 top-1/2 h-5 w-1 -translate-y-1/2 rounded-full;
+    background-color: hsl(var(--primary-foreground) / 0.92);
+  }
+
+  .dashboard-sidebar-menu-button-active svg {
+    color: hsl(var(--primary-foreground));
+  }
+
+  .dashboard-sidebar-admin-divider {
+    @apply mt-2 pt-3;
+    border-top: 1px solid hsl(var(--sidebar-border) / 0.9);
+  }
+
+  .dashboard-sidebar-admin-group {
+    @apply rounded-2xl border px-1.5 py-2;
+    border-color: hsl(var(--warning, var(--primary)) / 0.2);
+    background: linear-gradient(180deg, hsl(var(--warning-light, var(--dashboard-primary-soft)) / 0.36), transparent 72%);
+  }
+
+  .dashboard-sidebar-admin-group-collapsed {
+    @apply rounded-2xl border px-0.5 py-2;
+    border-color: hsl(var(--warning, var(--primary)) / 0.18);
+    background-color: hsl(var(--warning-light, var(--dashboard-primary-soft)) / 0.24);
+  }
+
+  .dashboard-sidebar-admin-trigger {
+    color: hsl(var(--warning, var(--primary)) / 0.96);
+  }
+
+  .dashboard-sidebar-menu-button-admin:hover {
+    background-color: hsl(var(--warning-light, var(--dashboard-primary-soft)) / 0.58);
+  }
+
+  .dashboard-sidebar-menu-button-admin.dashboard-sidebar-menu-button-active {
+    background: linear-gradient(90deg, hsl(var(--warning, var(--primary)) / 0.95), hsl(var(--primary) / 0.82));
+  }
+}
+
+@layer components {
+  .reports-page-premium {
+    background-image:
+      radial-gradient(circle at 8% 0%, hsl(var(--primary) / 0.12), transparent 28rem),
+      radial-gradient(circle at 92% 12%, hsl(165 70% 38% / 0.08), transparent 24rem);
+  }
+
+  .reports-page-premium [data-radix-tabs-content] {
+    animation: reports-fade-in 180ms ease-out;
+  }
+
+  .reports-page-premium .recharts-cartesian-grid line {
+    stroke: hsl(var(--border) / 0.7);
+  }
+
+  .reports-page-premium .recharts-bar-rectangle path,
+  .reports-page-premium .recharts-sector {
+    filter: drop-shadow(0 8px 14px hsl(0 0% 0% / 0.18));
+    transition: opacity 160ms ease, filter 160ms ease;
+  }
+
+  .reports-page-premium .recharts-bar-rectangle:hover path,
+  .reports-page-premium .recharts-sector:hover {
+    opacity: 0.9;
+    filter: drop-shadow(0 0 14px hsl(var(--primary) / 0.35));
+  }
+
+  .reports-kpi-grid > * {
+    transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+  }
+
+  .reports-kpi-grid > *:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 18px 40px hsl(var(--primary) / 0.10);
+  }
+
+  .reports-investment-generator [role='tabpanel'] {
+    animation: reports-fade-in 180ms ease-out;
+  }
+
+  @keyframes reports-fade-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+}
+
+@layer components {
+  .reports-top-command {
+    box-shadow: 0 22px 70px hsl(0 0% 0% / 0.18), 0 0 0 1px hsl(var(--primary) / 0.08);
+  }
+
+  .reports-header-icon {
+    box-shadow: inset 0 1px 0 hsl(var(--primary) / 0.35), 0 14px 34px hsl(var(--primary) / 0.16);
+  }
+
+  .reports-primary-tab {
+    @apply min-h-12 rounded-2xl text-sm font-semibold text-muted-foreground transition-all duration-200 hover:bg-primary/10 hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-lg data-[state=active]:shadow-primary/25;
+  }
+}
+
+@layer components {
+  .reports-quant-header {
+    position: relative;
+  }
+
+  .reports-quant-header::before {
+    content: '';
+    @apply pointer-events-none absolute bottom-0 left-6 right-6 h-px bg-gradient-to-r from-transparent via-primary/45 to-transparent;
+  }
+
+  .reports-kpi-grid .reports-kpi-tile {
+    @apply relative overflow-hidden rounded-3xl border border-border/70 bg-gradient-to-br from-card via-card/95 to-background/70 shadow-lg shadow-black/5 transition-all duration-200 hover:-translate-y-1 hover:border-primary/45 hover:shadow-xl hover:shadow-primary/10;
+  }
+
+  .reports-kpi-grid .reports-kpi-tile::before {
+    content: '';
+    @apply absolute inset-y-4 left-0 w-1 rounded-r-full bg-primary/55 opacity-70 transition-all duration-200;
+  }
+
+  .reports-kpi-grid .reports-kpi-tile:hover::before {
+    @apply inset-y-3 bg-primary opacity-100;
+    box-shadow: 0 0 18px hsl(var(--primary) / 0.55);
+  }
+
+  .reports-kpi-grid .dashboard-kpi-title {
+    @apply text-[0.7rem] font-bold uppercase tracking-[0.18em] text-muted-foreground;
+  }
+
+  .reports-kpi-grid .dashboard-kpi-value {
+    @apply text-3xl font-bold tracking-tight text-foreground md:text-4xl;
+  }
+
+  .reports-kpi-grid .dashboard-kpi-card p {
+    @apply mt-2 text-xs font-medium leading-5 text-muted-foreground/90;
+  }
+
+  .reports-kpi-grid .dashboard-kpi-icon {
+    @apply rounded-2xl border border-primary/25 bg-primary/10 p-2 text-primary shadow-inner shadow-primary/10;
+  }
+
+  .reports-kpi-tile-value::before { background-color: hsl(var(--success) / 0.7); }
+  .reports-kpi-tile-activity::before { background-color: hsl(var(--warning) / 0.82); }
+  .reports-kpi-tile-coverage::before { background-color: hsl(var(--info) / 0.72); }
+
+  .reports-secondary-metric-grid {
+    @apply rounded-3xl border border-border/60 bg-background/35 p-1.5;
+  }
+
+  .reports-secondary-metric {
+    @apply relative overflow-hidden rounded-3xl border border-border/70 bg-gradient-to-br from-card via-card/95 to-background/70 shadow-md shadow-black/5 transition-all duration-200 hover:-translate-y-1 hover:border-primary/40 hover:shadow-xl hover:shadow-primary/10;
+  }
+
+  .reports-secondary-metric::before {
+    content: '';
+    @apply absolute inset-x-5 top-0 h-px bg-gradient-to-r from-transparent via-primary/45 to-transparent;
+  }
+
+  .reports-secondary-metric .text-2xl {
+    @apply text-3xl font-bold tracking-tight text-foreground;
+  }
+
+  .reports-secondary-metric .text-xs[class~='text-muted-foreground'] {
+    line-height: 1.25rem;
+    color: hsl(var(--muted-foreground) / 0.9);
+  }
+
+  .reports-secondary-metric-icon {
+    @apply flex h-9 w-9 items-center justify-center rounded-2xl border border-border/70 bg-background/70 shadow-inner;
+  }
+
+  .reports-secondary-metric-success { border-color: hsl(var(--success) / 0.25); }
+  .reports-secondary-metric-success::before { --tw-gradient-stops: var(--tw-gradient-from), hsl(var(--success) / 0.6) var(--tw-gradient-via-position), var(--tw-gradient-to); }
+  .reports-secondary-metric-warning { border-color: hsl(var(--warning) / 0.35); background-image: linear-gradient(to bottom right, hsl(var(--card)), hsl(var(--card) / 0.95), hsl(var(--warning-light) / 0.5)); }
+  .reports-secondary-metric-warning::before { --tw-gradient-stops: var(--tw-gradient-from), hsl(var(--warning) / 0.7) var(--tw-gradient-via-position), var(--tw-gradient-to); }
+  .reports-secondary-metric-destructive { border-color: hsl(var(--destructive) / 0.32); background-image: linear-gradient(to bottom right, hsl(var(--card)), hsl(var(--card) / 0.95), hsl(var(--destructive-light) / 0.5)); }
+  .reports-secondary-metric-destructive::before { --tw-gradient-stops: var(--tw-gradient-from), hsl(var(--destructive) / 0.64) var(--tw-gradient-via-position), var(--tw-gradient-to); }
+}
+
+@layer components {
+  .reports-insight-card {
+    @apply overflow-hidden rounded-3xl border border-border/70 bg-gradient-to-br from-card via-card/95 to-background/70 shadow-lg shadow-black/5;
+  }
+
+  .reports-insight-card-header {
+    @apply border-b border-border/60 bg-background/35 pb-4;
+  }
+
+  .reports-insight-card-header [data-slot='card-title'],
+  .reports-insight-card-header .text-2xl {
+    @apply text-lg font-bold tracking-tight text-foreground;
+  }
+
+  .reports-insight-card-header [data-slot='card-description'] {
+    @apply mt-1 text-sm leading-6 text-muted-foreground;
+  }
+
+  .reports-executive-summary-card {
+    @apply border-primary/20 shadow-primary/10;
+  }
+
+  .reports-insight-alert {
+    @apply relative overflow-hidden rounded-2xl border border-border/70 bg-background/55 p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/35 hover:bg-card/90 hover:shadow-md hover:shadow-primary/10;
+  }
+
+  .reports-insight-alert-warning {
+    @apply border-warning/30 bg-warning-light/70 text-foreground;
+  }
+
+  .reports-insight-alert-positive {
+    @apply border-success/25 bg-success-light/70 text-foreground;
+  }
+
+  .reports-insight-alert-negative {
+    @apply border-destructive/30 bg-destructive-light/70 text-foreground;
+  }
+
+  .reports-insight-alert-neutral {
+    @apply border-border/70 bg-background/55 text-foreground;
+  }
+
+  .reports-insight-row {
+    @apply relative flex items-start gap-3 rounded-2xl border border-border/70 bg-background/55 p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/35 hover:bg-card/90 hover:shadow-md hover:shadow-primary/10;
+  }
+
+  .reports-insight-row::before {
+    content: '';
+    @apply absolute inset-y-4 left-0 w-1 rounded-r-full bg-primary/45;
+  }
+
+  .reports-severity-medium::before {
+    background-color: hsl(var(--warning) / 0.82);
+  }
+
+  .reports-severity-high::before {
+    background-color: hsl(var(--destructive) / 0.76);
+  }
+
+  .reports-insight-icon-wrap {
+    @apply mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border border-border/70 bg-card/80 shadow-inner;
+  }
+
+  .reports-insight-row-title {
+    @apply text-sm font-semibold leading-5 text-foreground;
+  }
+
+  .reports-insight-row-description {
+    @apply mt-1 text-xs leading-5 text-muted-foreground/90;
+  }
+
+  .reports-severity-badge {
+    @apply rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em];
+  }
+
+  .reports-severity-badge.reports-severity-high {
+    @apply border-destructive/30 bg-destructive-light/70 text-destructive;
+  }
+
+  .reports-severity-badge.reports-severity-medium {
+    @apply border-warning/30 bg-warning-light/70 text-warning;
+  }
+
+  .reports-severity-badge.reports-severity-low {
+    @apply border-success/25 bg-success-light/70 text-success;
+  }
+
+  .reports-empty-insight-state {
+    @apply rounded-2xl border border-dashed border-border/70 bg-background/45 px-4 py-6 text-center text-sm leading-6 text-muted-foreground;
+  }
+}
+
+@layer components {
+  .reports-analytics-tabs-panel {
+    @apply border-primary/20 shadow-lg shadow-primary/10;
+  }
+
+  .reports-analytics-tabs-shell {
+    @apply rounded-3xl border border-border/70 bg-background/45 p-1.5 shadow-inner shadow-black/10 backdrop-blur;
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--primary) / 0.45) transparent;
+  }
+
+  .reports-analytics-tabs-shell::-webkit-scrollbar {
+    height: 6px;
+  }
+
+  .reports-analytics-tabs-shell::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .reports-analytics-tabs-shell::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-primary/35;
+  }
+
+  .reports-analytics-tabs-list {
+    @apply gap-1 bg-transparent p-0;
+  }
+
+  .reports-analytics-tab {
+    @apply min-h-11 min-w-28 rounded-2xl px-3.5 py-2.5 text-xs font-semibold text-muted-foreground transition-all duration-200 hover:-translate-y-0.5 hover:bg-primary/10 hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-lg data-[state=active]:shadow-primary/25 md:min-w-0;
+  }
+
+  .reports-analytics-tab svg {
+    @apply shrink-0 transition-transform duration-200;
+  }
+
+  .reports-analytics-tab:hover svg,
+  .reports-analytics-tab[data-state='active'] svg {
+    @apply scale-110;
+  }
+}
+
+@layer components {
+  .reports-trends-suite {
+    @apply rounded-3xl border border-border/60 bg-background/25 p-1.5;
+  }
+
+  .reports-trend-card {
+    @apply overflow-hidden rounded-3xl border border-border/70 bg-gradient-to-br from-card via-card/95 to-background/70 shadow-lg shadow-black/5 transition-all duration-200 hover:border-primary/30 hover:shadow-xl hover:shadow-primary/10;
+  }
+
+  .reports-trend-card-primary {
+    @apply border-primary/25;
+  }
+
+  .reports-trend-card-header {
+    @apply border-b border-border/60 bg-background/35 pb-4;
+  }
+
+  .reports-trend-card-header [data-slot='card-title'],
+  .reports-trend-card-header .text-2xl {
+    @apply text-base font-bold tracking-tight text-foreground md:text-lg;
+  }
+
+  .reports-trend-card-header [data-slot='card-description'] {
+    @apply mt-1 text-sm leading-6 text-muted-foreground;
+  }
+
+  .reports-trend-card-content {
+    @apply p-4 md:p-5;
+  }
+
+  .reports-trends-chart {
+    @apply w-full rounded-2xl bg-background/35 p-2;
+  }
+
+  .reports-trends-chart .recharts-cartesian-grid line {
+    stroke: hsl(var(--border) / 0.45);
+  }
+
+  .reports-trends-chart .recharts-line-curve {
+    filter: drop-shadow(0 7px 12px hsl(0 0% 0% / 0.16));
+  }
+
+  .reports-trends-chart .recharts-dot {
+    transition: r 160ms ease, filter 160ms ease;
+  }
+
+  .reports-trend-tooltip {
+    @apply rounded-2xl border-primary/25 bg-popover/95 px-3 py-2 shadow-xl shadow-black/20 backdrop-blur;
+  }
+
+  .reports-trend-empty-state {
+    @apply flex min-h-[250px] items-center justify-center rounded-2xl border border-dashed border-border/70 bg-background/35 px-6 text-center text-sm leading-6 text-muted-foreground;
+  }
+}
+
+@layer components {
+  .reports-geographic-suite {
+    @apply rounded-3xl border border-border/60 bg-background/25 p-1.5;
+  }
+
+  .reports-geographic-card {
+    @apply overflow-hidden rounded-3xl border border-border/70 bg-gradient-to-br from-card via-card/95 to-background/70 shadow-lg shadow-black/5 transition-all duration-200 hover:border-primary/30 hover:shadow-xl hover:shadow-primary/10;
+  }
+
+  .reports-location-matrix-card {
+    @apply border-primary/20;
+  }
+
+  .reports-geographic-card-header {
+    @apply border-b border-border/60 bg-background/35 pb-4;
+  }
+
+  .reports-geographic-card-header [data-slot='card-title'],
+  .reports-geographic-card-header .text-2xl {
+    @apply text-base font-bold tracking-tight text-foreground md:text-lg;
+  }
+
+  .reports-geographic-card-header [data-slot='card-description'] {
+    @apply mt-1 text-sm leading-6 text-muted-foreground;
+  }
+
+  .reports-geographic-card-content {
+    @apply p-4 md:p-5;
+  }
+
+  .reports-location-row {
+    @apply flex flex-col gap-3 rounded-2xl border border-border/70 bg-background/55 p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/35 hover:bg-card/90 hover:shadow-md hover:shadow-primary/10 sm:flex-row sm:items-center sm:justify-between;
+  }
+
+  .reports-location-label {
+    @apply truncate text-sm font-semibold text-foreground;
+  }
+
+  .reports-location-meta {
+    @apply mt-1 text-xs leading-5 text-muted-foreground/90;
+  }
+
+  .reports-location-badges {
+    @apply flex shrink-0 flex-wrap items-center gap-2;
+  }
+
+  .reports-location-badge {
+    @apply rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em];
+  }
+
+  .reports-activity-high {
+    @apply border-success/25 bg-success-light/70 text-success;
+  }
+
+  .reports-activity-medium {
+    @apply border-warning/30 bg-warning-light/70 text-warning;
+  }
+
+  .reports-activity-low {
+    @apply border-border/70 bg-background/70 text-muted-foreground;
+  }
+
+  .reports-geographic-chart {
+    @apply w-full rounded-2xl bg-background/35 p-2;
+  }
+
+  .reports-geographic-chart .recharts-cartesian-grid line {
+    stroke: hsl(var(--border) / 0.45);
+  }
+
+  .reports-geographic-chart .recharts-bar-rectangle path,
+  .reports-geographic-chart .recharts-scatter-symbol {
+    filter: drop-shadow(0 7px 12px hsl(0 0% 0% / 0.14));
+  }
+
+  .reports-geographic-tooltip {
+    @apply rounded-2xl border-primary/25 bg-popover/95 px-3 py-2 shadow-xl shadow-black/20 backdrop-blur;
+  }
+
+  .reports-geographic-empty-state {
+    @apply flex min-h-[220px] items-center justify-center rounded-2xl border border-dashed border-border/70 bg-background/35 px-6 text-center text-sm leading-6 text-muted-foreground;
+  }
+}
+
+@layer components {
+  .reports-agent-suite {
+    @apply rounded-3xl border border-border/60 bg-background/25 p-1.5;
+  }
+
+  .reports-agent-card {
+    @apply overflow-hidden rounded-3xl border border-border/70 bg-gradient-to-br from-card via-card/95 to-background/70 shadow-lg shadow-black/5 transition-all duration-200 hover:border-primary/30 hover:shadow-xl hover:shadow-primary/10;
+  }
+
+  .reports-agent-ranking-card {
+    @apply border-primary/20;
+  }
+
+  .reports-agent-card-header {
+    @apply border-b border-border/60 bg-background/35 pb-4;
+  }
+
+  .reports-agent-card-header [data-slot='card-title'],
+  .reports-agent-card-header .text-2xl {
+    @apply text-base font-bold tracking-tight text-foreground md:text-lg;
+  }
+
+  .reports-agent-card-header [data-slot='card-description'] {
+    @apply mt-1 text-sm leading-6 text-muted-foreground;
+  }
+
+  .reports-agent-card-content {
+    @apply p-4 md:p-5;
+  }
+
+  .reports-agent-list {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--primary) / 0.35) transparent;
+  }
+
+  .reports-agent-row,
+  .reports-agency-row {
+    @apply flex flex-col gap-3 rounded-2xl border border-border/70 bg-background/55 p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/35 hover:bg-card/90 hover:shadow-md hover:shadow-primary/10 sm:flex-row sm:items-center;
+  }
+
+  .reports-agent-rank {
+    @apply flex h-8 min-w-8 items-center justify-center rounded-full border border-primary/25 bg-primary/10 text-xs font-bold text-primary;
+  }
+
+  .reports-agent-name {
+    @apply truncate text-sm font-semibold text-foreground;
+  }
+
+  .reports-agent-agency {
+    @apply truncate text-xs leading-5 text-muted-foreground/90;
+  }
+
+  .reports-agent-metric {
+    @apply shrink-0 text-left sm:text-right;
+  }
+
+  .reports-agent-count {
+    @apply text-sm font-semibold text-foreground;
+  }
+
+  .reports-agent-submetric {
+    @apply text-xs text-muted-foreground/90;
+  }
+
+  .reports-agent-badge {
+    @apply w-fit rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em];
+  }
+
+  .reports-performance-high {
+    @apply border-success/25 bg-success-light/70 text-success;
+  }
+
+  .reports-performance-medium {
+    @apply border-warning/30 bg-warning-light/70 text-warning;
+  }
+
+  .reports-performance-standard {
+    @apply border-border/70 bg-background/70 text-muted-foreground;
+  }
+
+  .reports-agent-toggle {
+    @apply rounded-full border border-border/70 bg-background/50 font-semibold hover:border-primary/35 hover:bg-primary/10 hover:text-primary;
+  }
+
+  .reports-agent-chart {
+    @apply w-full rounded-2xl bg-background/35 p-2;
+  }
+
+  .reports-agent-chart .recharts-cartesian-grid line {
+    stroke: hsl(var(--border) / 0.45);
+  }
+
+  .reports-agent-chart .recharts-bar-rectangle path {
+    filter: drop-shadow(0 7px 12px hsl(0 0% 0% / 0.14));
+  }
+
+  .reports-agent-tooltip {
+    @apply rounded-2xl border-primary/25 bg-popover/95 px-3 py-2 shadow-xl shadow-black/20 backdrop-blur;
+  }
+
+  .reports-agent-empty-state {
+    @apply flex min-h-32 items-center justify-center rounded-2xl border border-dashed border-border/70 bg-background/35 px-6 text-center text-sm leading-6 text-muted-foreground;
+  }
+}
+
+@layer components {
+  .reports-quality-suite {
+    @apply rounded-3xl border border-border/60 bg-background/25 p-1.5;
+  }
+
+  .reports-quality-score-card,
+  .reports-quality-card {
+    @apply overflow-hidden rounded-3xl border border-border/70 bg-gradient-to-br from-card via-card/95 to-background/70 shadow-lg shadow-black/5 transition-all duration-200 hover:border-primary/30 hover:shadow-xl hover:shadow-primary/10;
+  }
+
+  .reports-quality-score-card {
+    @apply shadow-primary/10;
+  }
+
+  .reports-quality-score-value {
+    @apply tabular-nums tracking-tight;
+  }
+
+  .reports-quality-status-badge,
+  .reports-quality-count-badge {
+    @apply rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em];
+  }
+
+  .reports-quality-card-header {
+    @apply border-b border-border/60 bg-background/35 pb-4;
+  }
+
+  .reports-quality-card-header [data-slot='card-title'],
+  .reports-quality-card-header .text-2xl {
+    @apply text-base font-bold tracking-tight text-foreground md:text-lg;
+  }
+
+  .reports-quality-card-header [data-slot='card-description'] {
+    @apply mt-1 text-sm leading-6 text-muted-foreground;
+  }
+
+  .reports-quality-card-content {
+    @apply p-4 md:p-5;
+  }
+
+  .reports-completeness-tile {
+    @apply rounded-2xl border border-border/70 bg-background/55 p-4 shadow-sm;
+  }
+
+  .reports-quality-progress {
+    @apply overflow-hidden rounded-full bg-background/70;
+  }
+
+  .reports-quality-progress > div {
+    @apply bg-primary;
+  }
+
+  .reports-quality-issue-row {
+    @apply flex items-center justify-between gap-3 rounded-2xl border border-border/70 bg-background/55 p-3 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/35 hover:bg-card/90 hover:shadow-md hover:shadow-primary/10;
+  }
+
+  .reports-quality-issue-label {
+    @apply truncate text-sm font-semibold text-foreground;
+  }
+
+  .reports-quality-severity-warning {
+    @apply border-warning/30 bg-warning-light/70 text-warning;
+  }
+
+  .reports-quality-severity-critical {
+    @apply border-destructive/30 bg-destructive-light/70 text-destructive;
+  }
+
+  .reports-quality-severity-info {
+    @apply border-border/70 bg-background/70 text-muted-foreground;
+  }
+
+  .reports-quality-detail-panel {
+    @apply rounded-2xl border border-border/70 bg-background/55 p-4 shadow-inner;
+  }
+
+  .reports-confidence-stack {
+    @apply border border-border/70 shadow-inner;
+  }
+
+  .reports-confidence-legend-item {
+    @apply rounded-2xl border border-border/70 bg-background/55 p-2.5 shadow-sm;
+  }
+
+  .reports-quality-actions-card {
+    border-color: hsl(var(--warning) / 0.25); background-image: linear-gradient(to bottom right, hsl(var(--card)), hsl(var(--card) / 0.95), hsl(var(--warning-light) / 0.5));
+  }
+
+  .reports-quality-action-row {
+    @apply flex items-start gap-2 rounded-2xl border border-border/70 bg-background/55 p-3 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/35 hover:bg-card/90 hover:shadow-md hover:shadow-primary/10;
+  }
+}
+
+@layer components {
+  .reports-suburbs-suite {
+    @apply rounded-3xl border border-border/60 bg-background/25 p-1.5;
+  }
+
+  .reports-suburb-card {
+    @apply overflow-hidden rounded-3xl border border-primary/20 bg-gradient-to-br from-card via-card/95 to-background/70 shadow-lg shadow-primary/10 transition-all duration-200 hover:border-primary/35 hover:shadow-xl hover:shadow-primary/10;
+  }
+
+  .reports-suburb-card-header {
+    @apply border-b border-border/60 bg-background/35 pb-4;
+  }
+
+  .reports-suburb-card-header [data-slot='card-title'],
+  .reports-suburb-card-header .text-2xl {
+    @apply text-base font-bold tracking-tight text-foreground md:text-lg;
+  }
+
+  .reports-suburb-card-header [data-slot='card-description'] {
+    @apply mt-1 text-sm leading-6 text-muted-foreground;
+  }
+
+  .reports-suburb-card-content {
+    @apply p-4 md:p-5;
+  }
+
+  .reports-suburb-chart {
+    @apply w-full rounded-2xl bg-background/35 p-2;
+  }
+
+  .reports-suburb-chart .recharts-cartesian-grid line {
+    stroke: hsl(var(--border) / 0.45);
+  }
+
+  .reports-suburb-chart .recharts-bar-rectangle path {
+    filter: drop-shadow(0 7px 12px hsl(0 0% 0% / 0.14));
+  }
+
+  .reports-suburb-tooltip {
+    @apply rounded-2xl border border-primary/25 bg-popover/95 p-3 shadow-xl shadow-black/20 backdrop-blur;
+  }
+
+  .reports-suburb-insight {
+    @apply shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md hover:shadow-primary/10;
+  }
+
+  .reports-suburb-stat-grid {
+    @apply border-border/60;
+  }
+
+  .reports-suburb-stat {
+    @apply rounded-2xl border border-border/70 bg-background/55 p-3 shadow-sm;
+  }
+
+  .reports-suburb-empty-state {
+    @apply flex min-h-[280px] items-center justify-center rounded-2xl border border-dashed border-border/70 bg-background/35 px-6 text-center text-sm leading-6 text-muted-foreground;
+  }
+}
+
+@layer components {
+  .reports-types-suite {
+    @apply rounded-3xl border border-border/60 bg-background/25 p-1.5;
+  }
+
+  .reports-types-card {
+    @apply overflow-hidden rounded-3xl border border-primary/20 bg-gradient-to-br from-card via-card/95 to-background/70 shadow-lg shadow-primary/10 transition-all duration-200 hover:border-primary/35 hover:shadow-xl hover:shadow-primary/10;
+  }
+
+  .reports-types-card-header {
+    @apply border-b border-border/60 bg-background/35 pb-4;
+  }
+
+  .reports-types-card-header [data-slot='card-title'],
+  .reports-types-card-header .text-2xl {
+    @apply text-base font-bold tracking-tight text-foreground md:text-lg;
+  }
+
+  .reports-types-card-header [data-slot='card-description'] {
+    @apply mt-1 text-sm leading-6 text-muted-foreground;
+  }
+
+  .reports-types-card-content {
+    @apply p-4 md:p-5;
+  }
+
+  .reports-types-chart {
+    @apply w-full rounded-2xl bg-background/35 p-2;
+  }
+
+  .reports-types-chart .recharts-sector {
+    filter: drop-shadow(0 7px 12px hsl(0 0% 0% / 0.14));
+    transition: opacity 160ms ease, filter 160ms ease;
+  }
+
+  .reports-types-chart .recharts-sector:hover {
+    opacity: 0.92;
+    filter: drop-shadow(0 0 16px hsl(var(--primary) / 0.28));
+  }
+
+  .reports-types-tooltip {
+    @apply rounded-2xl border border-primary/25 bg-popover/95 p-3 shadow-xl shadow-black/20 backdrop-blur;
+  }
+
+  .reports-types-insight {
+    @apply shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md hover:shadow-primary/10;
+  }
+
+  .reports-types-badge {
+    @apply rounded-full border-warning/30 bg-warning-light/70 px-2.5 py-0.5 font-bold uppercase tracking-[0.12em] text-warning;
+  }
+
+  .reports-types-legend {
+    @apply border-border/60;
+  }
+
+  .reports-types-legend-item {
+    @apply rounded-2xl border border-border/70 bg-background/55 p-2.5 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:bg-card/90;
+  }
+
+  .reports-types-empty-state {
+    @apply flex min-h-[280px] items-center justify-center rounded-2xl border border-dashed border-border/70 bg-background/35 px-6 text-center text-sm leading-6 text-muted-foreground;
+  }
+}
+
+@layer components {
+  .reports-pricing-suite {
+    @apply rounded-3xl border border-border/60 bg-background/25 p-1.5;
+  }
+
+  .reports-pricing-card {
+    @apply overflow-hidden rounded-3xl border border-primary/20 bg-gradient-to-br from-card via-card/95 to-background/70 shadow-lg shadow-primary/10 transition-all duration-200 hover:border-primary/35 hover:shadow-xl hover:shadow-primary/10;
+  }
+
+  .reports-pricing-card-header {
+    @apply border-b border-border/60 bg-background/35 pb-4;
+  }
+
+  .reports-pricing-card-header [data-slot='card-title'],
+  .reports-pricing-card-header .text-2xl {
+    @apply text-base font-bold tracking-tight text-foreground md:text-lg;
+  }
+
+  .reports-pricing-card-header [data-slot='card-description'] {
+    @apply mt-1 text-sm leading-6 text-muted-foreground;
+  }
+
+  .reports-pricing-card-content {
+    @apply p-4 md:p-5;
+  }
+
+  .reports-pricing-chart {
+    @apply w-full rounded-2xl bg-background/35 p-2;
+  }
+
+  .reports-pricing-chart .recharts-cartesian-grid line {
+    stroke: hsl(var(--border) / 0.45);
+  }
+
+  .reports-pricing-chart .recharts-bar-rectangle path {
+    filter: drop-shadow(0 7px 12px hsl(0 0% 0% / 0.14));
+  }
+
+  .reports-pricing-tooltip {
+    @apply rounded-2xl border border-primary/25 bg-popover/95 p-3 shadow-xl shadow-black/20 backdrop-blur;
+  }
+
+  .reports-pricing-stat-grid {
+    @apply border-border/60;
+  }
+
+  .reports-pricing-stat {
+    @apply rounded-2xl border border-border/70 bg-background/55 p-3 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:bg-card/90;
+  }
+
+  .reports-pricing-empty-state {
+    @apply flex min-h-[280px] items-center justify-center rounded-2xl border border-dashed border-primary/25 bg-primary/10 px-6 text-center text-sm leading-6 text-primary;
+  }
+}
+
+@layer components {
+  .reports-investment-hero {
+    @apply border-primary/20 shadow-lg shadow-primary/10;
+  }
+
+  .reports-investment-layout {
+    @apply items-start;
+  }
+
+  .reports-investment-panel,
+  .reports-recent-panel {
+    @apply overflow-hidden rounded-3xl border border-primary/20 bg-gradient-to-br from-card via-card/95 to-background/70 shadow-lg shadow-primary/10;
+  }
+
+  .reports-investment-panel-header {
+    @apply bg-background/35 pb-4;
+  }
+
+  .reports-investment-panel-header [data-slot='card-title'],
+  .reports-investment-panel-header .text-2xl {
+    @apply text-base font-bold tracking-tight text-foreground md:text-lg;
+  }
+
+  .reports-investment-panel-header [data-slot='card-description'] {
+    @apply mt-1 text-sm leading-6 text-muted-foreground;
+  }
+
+  .reports-investment-panel-content,
+  .reports-recent-panel-content {
+    @apply p-4 md:p-5;
+  }
+
+  .reports-investment-mode-shell {
+    @apply rounded-3xl border border-border/70 bg-background/45 p-1.5 shadow-inner shadow-black/10;
+  }
+
+  .reports-investment-mode-list {
+    @apply gap-1 bg-transparent p-0;
+  }
+
+  .reports-investment-mode-tab {
+    @apply min-h-11 rounded-2xl px-4 py-2.5 text-xs font-semibold text-muted-foreground transition-all duration-200 hover:bg-primary/10 hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-lg data-[state=active]:shadow-primary/25 sm:text-sm;
+  }
+
+  .reports-investment-flow > .space-y-3,
+  .reports-investment-flow > .space-y-4,
+  .reports-investment-flow > div:not([data-radix-popper-content-wrapper]) {
+    @apply rounded-2xl border border-border/70 bg-background/45 p-4 shadow-sm;
+  }
+
+  .reports-investment-flow [role='separator'] {
+    @apply bg-border/60;
+  }
+
+  .reports-investment-section-label {
+    @apply text-sm font-bold uppercase tracking-[0.08em] text-foreground;
+  }
+
+  .reports-investment-generator label,
+  .reports-investment-generator [data-slot='label'] {
+    @apply text-[13px] font-semibold leading-snug text-foreground/90;
+  }
+
+  .reports-investment-generator p[class~='text-muted-foreground'],
+  .reports-investment-generator [class~='text-muted-foreground']:not(label):not([data-slot='label']) {
+    color: hsl(var(--foreground) / 0.65);
+  }
+
+  .reports-investment-generator [class~="text-muted-foreground"] {
+    line-height: 1.5rem;
+  }
+
+  .reports-recent-panel {
+    @apply lg:sticky lg:top-4;
+  }
+
+  .reports-recent-empty {
+    @apply rounded-2xl border border-dashed border-border/70 bg-background/35 px-4;
+  }
+
+  .reports-recent-item {
+    @apply bg-background/55 hover:bg-primary/10;
+  }
+
+  .reports-recent-item p:first-child {
+    @apply text-foreground;
+  }
+
+  .reports-recent-all-button {
+    @apply rounded-full border-primary/25 bg-background/60 font-semibold hover:border-primary/45 hover:bg-primary/10 hover:text-primary;
+  }
+}
+
+@layer components {
+  .reports-investment-mode-shell {
+    @apply flex items-center justify-center bg-gradient-to-br from-background/70 via-background/45 to-primary/5;
+  }
+
+  .reports-investment-mode-list {
+    @apply inline-grid w-max min-w-max grid-cols-3;
+  }
+
+  .reports-investment-mode-single {
+    @apply grid-cols-1;
+  }
+
+  .reports-investment-mode-tab {
+    @apply justify-center gap-2 border border-transparent text-center shadow-sm hover:-translate-y-0.5 hover:border-primary/25 data-[state=active]:border-primary/45 data-[state=active]:ring-1 data-[state=active]:ring-primary/25;
+  }
+
+  .reports-investment-mode-label {
+    @apply whitespace-nowrap text-[15px] font-bold leading-snug tracking-tight antialiased sm:text-base;
+  }
+
+  .reports-investment-mode-tab svg {
+    @apply shrink-0 transition-transform duration-200;
+  }
+
+  .reports-investment-mode-tab:hover svg,
+  .reports-investment-mode-tab[data-state='active'] svg {
+    @apply scale-110;
+  }
+}
+
+@layer components {
+  .reports-build-type-control {
+    @apply rounded-2xl border border-border/70 bg-background/45 p-4 shadow-sm;
+  }
+
+  .reports-select-trigger {
+    @apply min-h-11 rounded-2xl border-border/70 bg-background/70 shadow-sm transition-all hover:border-primary/35 focus:ring-2 focus:ring-primary/30 focus:ring-offset-2 focus:ring-offset-background;
+  }
+
+  .reports-select-content {
+    @apply rounded-2xl border-border/70 bg-popover/95 shadow-xl shadow-black/20 backdrop-blur;
+  }
+
+  .reports-engine-helper {
+    @apply rounded-2xl border border-primary/20 bg-primary/5 px-3 py-2 text-[13px] font-medium leading-6 text-foreground/70;
+  }
+}
+
+@layer components {
+  .reports-property-details-panel {
+    @apply rounded-3xl border border-border/70 bg-gradient-to-br from-background/70 via-background/45 to-primary/5 p-4 shadow-sm sm:p-5;
+  }
+
+  .reports-property-details-header {
+    @apply flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between;
+  }
+
+  .reports-required-scoring-badge {
+    @apply w-fit rounded-full border border-primary/30 bg-primary/15 px-3 py-1 font-semibold text-primary shadow-sm shadow-primary/10;
+  }
+
+  .reports-property-details-helper {
+    @apply max-w-3xl text-[13px] font-medium leading-6 text-foreground/70;
+  }
+
+  .reports-property-details-grid {
+    @apply items-start rounded-2xl border border-border/50 bg-black/10 p-3 sm:p-4;
+  }
+
+  .reports-property-field {
+    @apply rounded-2xl border border-transparent p-2 transition-all duration-200 hover:border-primary/15 hover:bg-primary/5 focus-within:border-primary/35 focus-within:bg-primary/10 focus-within:shadow-sm focus-within:shadow-primary/10;
+  }
+
+  .reports-property-field-label {
+    @apply text-[12px] font-semibold uppercase leading-snug tracking-[0.08em] text-foreground/75 transition-colors group-focus-within:text-primary;
+  }
+
+  .reports-property-input,
+  .reports-property-select-trigger {
+    @apply min-h-11 rounded-2xl border-border/70 bg-background/70 text-sm font-medium text-foreground shadow-sm transition-all placeholder:text-foreground/45 hover:border-primary/30 focus-visible:border-primary/50 focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .reports-property-select-content {
+    @apply rounded-2xl border-border/70 bg-popover/95 shadow-xl shadow-black/20 backdrop-blur;
+  }
+}
+
+@layer components {
+  .reports-overrides-panel {
+    @apply flex min-h-0 flex-col overflow-hidden rounded-3xl border-border/70 bg-gradient-to-br from-background/90 via-background/70 to-primary/5 shadow-xl shadow-black/10;
+  }
+
+  .reports-overrides-header {
+    @apply border-b border-border/60 bg-gradient-to-r from-primary/10 via-background/60 to-transparent;
+  }
+
+  .reports-overrides-title {
+    @apply text-[15px] font-bold tracking-tight text-foreground md:text-base;
+  }
+
+  .reports-overrides-description {
+    @apply max-w-2xl text-[13px] font-medium leading-6 text-foreground/70;
+  }
+
+  .reports-overrides-content {
+    @apply min-h-0 flex-1 pt-4;
+  }
+
+  .reports-overrides-tabs {
+    @apply flex min-h-0 flex-col;
+  }
+
+  .reports-overrides-tabs-wrap,
+  .reports-overrides-tabs-scroll {
+    @apply rounded-2xl border border-border/60 bg-black/10 p-1;
+  }
+
+  .reports-overrides-tabs-list {
+    @apply h-auto gap-1 rounded-xl bg-transparent p-0;
+  }
+
+  .reports-overrides-tab {
+    @apply min-h-10 justify-center rounded-xl border border-transparent px-3 text-[13px] font-semibold text-foreground/65 transition-all duration-200 hover:border-primary/25 hover:bg-primary/10 hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary/40 data-[state=active]:border-primary/45 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-lg data-[state=active]:shadow-primary/20;
+  }
+
+  .reports-overrides-tab svg {
+    @apply shrink-0 transition-transform duration-200;
+  }
+
+  .reports-overrides-tab[data-state='active'] svg,
+  .reports-overrides-tab:hover svg {
+    @apply scale-110;
+  }
+
+  .reports-overrides-scroll {
+    @apply min-h-0 rounded-2xl border border-border/50 bg-background/30 p-3;
+    overflow-x: hidden;
+  }
+
+  .reports-overrides-scroll-desktop {
+    height: clamp(620px, 74dvh, 1040px);
+  }
+
+  .reports-overrides-scroll-mobile {
+    height: clamp(480px, 70dvh, 760px);
+  }
+
+  .reports-overrides-tab-content {
+    @apply outline-none;
+  }
+
+  .reports-overrides-build-shell,
+  .reports-overrides-section-card {
+    @apply rounded-3xl border-border/70 bg-gradient-to-br from-card/95 via-background/70 to-primary/5 shadow-sm;
+  }
+
+  .reports-overrides-build-content,
+  .reports-overrides-section-content {
+    @apply p-4 sm:p-5;
+  }
+
+  .reports-overrides-build-grid {
+    @apply gap-3 max-sm:grid-cols-1;
+  }
+
+  .reports-overrides-build-card {
+    @apply min-h-28 rounded-2xl bg-background/55 text-center shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md focus-within:ring-2 focus-within:ring-primary/45 focus-within:ring-offset-2 focus-within:ring-offset-background;
+  }
+
+  .reports-overrides-build-card-active {
+    @apply border-primary/60 bg-primary/15 shadow-lg shadow-primary/20 ring-1 ring-primary/25;
+  }
+
+  .reports-overrides-build-card-inactive {
+    @apply border-border/70 text-muted-foreground hover:border-primary/35 hover:bg-primary/10;
+  }
+
+  .reports-overrides-section-title {
+    @apply border-b border-border/50 pb-3 text-[15px] font-bold leading-snug text-foreground;
+  }
+
+  .reports-overrides-field-grid {
+    @apply items-start max-sm:grid-cols-1;
+  }
+
+  .reports-overrides-field {
+    @apply rounded-2xl border border-transparent p-2 transition-all duration-200 hover:border-primary/15 hover:bg-primary/5 focus-within:border-primary/35 focus-within:bg-primary/10;
+  }
+
+  .reports-overrides-label {
+    @apply text-[12px] font-semibold uppercase leading-snug tracking-[0.08em] text-foreground/75;
+  }
+
+  .reports-overrides-input,
+  .reports-overrides-select-trigger {
+    @apply min-h-11 rounded-2xl border-border/70 bg-background/75 text-sm font-medium text-foreground shadow-sm transition-all placeholder:text-foreground/45 hover:border-primary/30 focus-visible:border-primary/50 focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .reports-overrides-scroll label,
+  .reports-overrides-scroll [data-slot='label'] {
+    @apply text-[12px] font-semibold uppercase leading-snug tracking-[0.08em] text-foreground/75;
+  }
+
+  .reports-overrides-scroll input,
+  .reports-overrides-scroll [role='combobox'] {
+    @apply text-sm font-medium text-foreground placeholder:text-foreground/45;
+  }
+
+  .reports-overrides-scroll [class~='text-muted-foreground'] {
+    color: hsl(var(--foreground) / 0.65);
+  }
+
+  .reports-overrides-select-content {
+    @apply rounded-2xl border-border/70 bg-popover/95 shadow-xl shadow-black/20 backdrop-blur;
+  }
+}
+
+@layer components {
+  .reports-page-premium button,
+  .reports-investment-generator button {
+    @apply min-h-10 rounded-xl font-semibold transition-all duration-200 ease-out focus-visible:ring-2 focus-visible:ring-primary/55 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:translate-y-0 disabled:shadow-none;
+  }
+
+  .reports-page-premium button:not(:disabled):hover,
+  .reports-investment-generator button:not(:disabled):hover {
+    @apply -translate-y-0.5 shadow-md shadow-primary/10;
+  }
+
+  .reports-page-premium button:not(:disabled):active,
+  .reports-investment-generator button:not(:disabled):active {
+    @apply translate-y-0 scale-[0.99] shadow-sm;
+  }
+
+  .reports-page-premium button:disabled,
+  .reports-investment-generator button:disabled {
+    @apply border-border/70 bg-muted/70 text-muted-foreground opacity-80;
+  }
+
+  .reports-page-premium button svg,
+  .reports-investment-generator button svg,
+  .reports-page-premium [role='tab'] svg,
+  .reports-investment-generator [role='tab'] svg {
+    @apply shrink-0 transition-transform duration-200;
+  }
+
+  .reports-page-premium button:not(:disabled):hover svg,
+  .reports-investment-generator button:not(:disabled):hover svg,
+  .reports-page-premium [role='tab']:hover svg,
+  .reports-investment-generator [role='tab']:hover svg,
+  .reports-page-premium [role='tab'][data-state='active'] svg,
+  .reports-investment-generator [role='tab'][data-state='active'] svg {
+    @apply scale-110;
+  }
+
+  .reports-page-premium .reports-primary-tab,
+  .reports-page-premium .reports-analytics-tab,
+  .reports-investment-generator .reports-investment-mode-tab {
+    @apply will-change-transform;
+  }
+
+  .reports-page-premium .reports-primary-tab[data-state='active'],
+  .reports-page-premium .reports-analytics-tab[data-state='active'],
+  .reports-investment-generator .reports-investment-mode-tab[data-state='active'] {
+    @apply ring-1 ring-primary/25;
+    box-shadow: 0 12px 30px hsl(var(--primary) / 0.22), inset 0 1px 0 hsl(var(--primary-foreground) / 0.24);
+  }
+
+  .reports-page-premium input,
+  .reports-page-premium textarea,
+  .reports-investment-generator input,
+  .reports-investment-generator textarea,
+  .reports-investment-generator [role='combobox'] {
+    @apply min-h-11 rounded-xl border-border/70 bg-background/75 shadow-sm transition-all duration-200 placeholder:text-muted-foreground/55 hover:border-primary/35 focus-visible:border-primary/55 focus-visible:ring-2 focus-visible:ring-primary/25 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:bg-muted/60 disabled:text-muted-foreground;
+  }
+
+  .reports-investment-generator .reports-recent-item,
+  .reports-page-premium .reports-kpi-tile,
+  .reports-page-premium .reports-secondary-metric,
+  .reports-page-premium .reports-insight-row,
+  .reports-page-premium .reports-insight-alert {
+    @apply will-change-transform;
+  }
+
+  .reports-investment-generator .reports-recent-item:hover {
+    box-shadow: 0 18px 42px hsl(var(--primary) / 0.14), inset 0 1px 0 hsl(var(--primary) / 0.16);
+  }
+
+  .reports-investment-generator .reports-recent-all-button,
+  .reports-page-premium .reports-primary-tab[data-state='active'],
+  .reports-page-premium .reports-analytics-tab[data-state='active'],
+  .reports-investment-generator .reports-investment-mode-tab[data-state='active'] {
+    @apply border-primary/40;
+  }
+
+  .reports-page-premium .recharts-wrapper,
+  .reports-page-premium .recharts-surface,
+  .reports-investment-generator .recharts-wrapper,
+  .reports-investment-generator .recharts-surface {
+    @apply overflow-visible;
+  }
+
+  .reports-page-premium .recharts-bar-rectangle path,
+  .reports-page-premium .recharts-sector,
+  .reports-page-premium .recharts-line-curve,
+  .reports-investment-generator .recharts-bar-rectangle path,
+  .reports-investment-generator .recharts-sector,
+  .reports-investment-generator .recharts-line-curve {
+    @apply transition-all duration-200 ease-out;
+  }
+
+  .reports-page-premium .recharts-bar-rectangle:hover path,
+  .reports-page-premium .recharts-sector:hover,
+  .reports-investment-generator .recharts-bar-rectangle:hover path,
+  .reports-investment-generator .recharts-sector:hover {
+    filter: drop-shadow(0 8px 14px hsl(var(--primary) / 0.25));
+    opacity: 0.92;
+  }
+
+  .reports-page-premium .recharts-tooltip-wrapper,
+  .reports-investment-generator .recharts-tooltip-wrapper {
+    @apply transition-transform duration-150 ease-out;
+  }
+}
+
+@layer components {
+  .reports-loading-card {
+    @apply relative overflow-hidden border-primary/20 bg-gradient-to-br from-card via-card/95 to-primary/5 shadow-xl shadow-primary/10;
+  }
+
+  .reports-loading-card::before {
+    content: '';
+    @apply pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent;
+  }
+
+  .reports-state-card {
+    @apply rounded-3xl border shadow-lg shadow-black/5;
+  }
+
+  .reports-state-card-warning {
+    border-color: hsl(var(--warning) / 0.3); background-image: linear-gradient(to bottom right, hsl(var(--card)), hsl(var(--card) / 0.95), hsl(var(--warning-light) / 0.5));
+  }
+
+  .reports-suburb-empty-state,
+  .reports-types-empty-state,
+  .reports-pricing-empty-state {
+    @apply flex-col gap-3 border-dashed bg-gradient-to-br from-background/70 via-background/45 to-primary/5 font-medium;
+  }
+
+  .reports-suburb-empty-state svg,
+  .reports-types-empty-state svg,
+  .reports-pricing-empty-state svg {
+    @apply rounded-full border border-primary/20 bg-primary/10 p-2 text-primary shadow-sm box-content;
+  }
+
+  .reports-processing-state {
+    @apply rounded-2xl border border-primary/15 bg-primary/5 p-4 shadow-sm;
+  }
+
+  .reports-validation-state {
+    @apply rounded-2xl border p-4 shadow-sm;
+  }
+
+  .reports-validation-state-error {
+    @apply border-destructive/25 bg-destructive/10;
+  }
+}
+
+@layer components {
+  .reports-page-premium,
+  .reports-investment-generator {
+    @apply min-w-0;
+  }
+
+  .reports-page-premium [role='tab'],
+  .reports-investment-generator [role='tab'],
+  .reports-page-premium button,
+  .reports-investment-generator button,
+  .reports-page-premium input,
+  .reports-investment-generator input,
+  .reports-page-premium textarea,
+  .reports-investment-generator textarea,
+  .reports-investment-generator [role='combobox'] {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+  }
+
+  .reports-page-premium [role='tab'],
+  .reports-investment-generator [role='tab'] {
+    @apply min-h-11 whitespace-nowrap;
+  }
+
+  .reports-page-premium .reports-analytics-tabs-shell,
+  .reports-investment-generator .reports-investment-mode-shell {
+    @apply max-w-full overflow-x-auto overscroll-x-contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .reports-page-premium .reports-suburb-chart,
+  .reports-page-premium .reports-types-chart,
+  .reports-page-premium .reports-pricing-chart {
+    @apply min-w-0 overflow-x-auto;
+  }
+
+  .reports-page-premium .reports-suburb-chart .recharts-wrapper,
+  .reports-page-premium .reports-types-chart .recharts-wrapper,
+  .reports-page-premium .reports-pricing-chart .recharts-wrapper {
+    @apply min-w-[34rem];
+  }
+
+
+  @media (min-width: 768px) {
+    .reports-page-premium .reports-suburb-chart .recharts-wrapper,
+    .reports-page-premium .reports-types-chart .recharts-wrapper,
+    .reports-page-premium .reports-pricing-chart .recharts-wrapper {
+      @apply min-w-0;
+    }
+  }
+
+  .reports-investment-generator .reports-investment-layout,
+  .reports-investment-generator .reports-property-details-grid {
+    @apply min-w-0;
+  }
+
+  .reports-investment-generator .reports-recent-panel {
+    @apply w-full;
+  }
+
+  @media (max-width: 1024px) {
+    .reports-investment-generator .reports-investment-layout {
+      @apply grid-cols-1;
+    }
+
+    .reports-investment-generator .reports-recent-panel {
+      @apply static;
+    }
+  }
+
+  @media (max-width: 768px) {
+    .reports-page-premium .reports-kpi-grid {
+      @apply grid-cols-1;
+    }
+
+    .reports-page-premium .reports-secondary-metric-grid,
+    .reports-page-premium .reports-pricing-stat-grid,
+    .reports-page-premium .reports-suburb-stat-grid {
+      @apply grid-cols-1;
+    }
+
+    .reports-page-premium .reports-primary-tab,
+    .reports-page-premium .reports-analytics-tab,
+    .reports-investment-generator .reports-investment-mode-tab {
+      @apply min-h-12 px-3 text-xs;
+    }
+
+    .reports-investment-generator .reports-property-details-grid,
+    .reports-investment-generator .grid.sm\:grid-cols-2,
+    .reports-investment-generator .grid.sm\:grid-cols-3,
+    .reports-investment-generator .grid.md\:grid-cols-3 {
+      @apply grid-cols-1;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .reports-page-premium,
+    .reports-investment-generator {
+      @apply space-y-4;
+    }
+
+    .reports-page-premium .reports-analytics-tabs-shell,
+    .reports-investment-generator .reports-investment-mode-shell {
+      @apply -mx-1 px-1;
+    }
+
+    .reports-investment-generator .reports-recent-panel-content,
+    .reports-investment-generator .reports-investment-panel-content {
+      @apply p-3;
+    }
+  }
+}
+
+@layer components {
+  /* Phase 23 final premium polish for Reports only. */
+  .reports-page-premium .ci-card,
+  .reports-page-premium .ci-card-premium,
+  .reports-investment-generator .ci-card,
+  .reports-investment-generator .ci-card-premium {
+    @apply relative border-primary/15 bg-gradient-to-br from-card via-card/95 to-background/75 shadow-xl shadow-black/5;
+  }
+
+  .reports-page-premium .ci-card-premium::after,
+  .reports-investment-generator .ci-card-premium::after {
+    content: '';
+    @apply pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-primary/35 to-transparent opacity-80;
+  }
+
+  .reports-top-command,
+  .reports-quant-header,
+  .reports-investment-hero {
+    @apply relative overflow-hidden;
+  }
+
+  .reports-top-command::before,
+  .reports-investment-hero::before {
+    content: '';
+    @apply pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-primary/10 blur-3xl;
+  }
+
+  .reports-primary-tab,
+  .reports-analytics-tab,
+  .reports-investment-mode-tab {
+    @apply border border-transparent bg-background/35 text-muted-foreground/95;
+  }
+
+  .reports-primary-tab[data-state='active'],
+  .reports-analytics-tab[data-state='active'],
+  .reports-investment-mode-tab[data-state='active'] {
+    @apply bg-gradient-to-br from-primary via-primary to-primary-hover text-primary-foreground shadow-xl shadow-primary/25;
+  }
+
+  .reports-page-premium [data-radix-tabs-content],
+  .reports-investment-generator [data-radix-tabs-content] {
+    @apply outline-none;
+  }
+
+  .reports-page-premium [data-slot='card-description'],
+  .reports-investment-generator [data-slot='card-description'],
+  .reports-page-premium [class~='text-muted-foreground'],
+  .reports-investment-generator [class~='text-muted-foreground'] {
+    color: hsl(var(--muted-foreground) / 0.9);
+  }
+
+  .reports-suburb-card,
+  .reports-types-card,
+  .reports-pricing-card,
+  .reports-trend-card,
+  .reports-insight-card {
+    @apply overflow-hidden rounded-3xl border-primary/15 bg-gradient-to-br from-card via-card/95 to-background/70 shadow-lg shadow-black/5;
+  }
+
+  .reports-suburb-card-header,
+  .reports-types-card-header,
+  .reports-pricing-card-header {
+    @apply border-b border-border/60 bg-gradient-to-r from-primary/10 via-background/45 to-transparent pb-4;
+  }
+
+  .reports-suburb-card-content,
+  .reports-types-card-content,
+  .reports-pricing-card-content {
+    @apply p-4 md:p-5;
+  }
+
+  .reports-suburb-chart,
+  .reports-types-chart,
+  .reports-pricing-chart,
+  .reports-trends-chart {
+    @apply rounded-3xl border border-border/60 bg-background/35 p-3 shadow-inner shadow-black/10;
+  }
+
+  .reports-suburb-empty-state,
+  .reports-types-empty-state,
+  .reports-pricing-empty-state {
+    @apply min-h-[280px] rounded-3xl border-primary/25 text-primary/90;
+  }
+
+  .reports-suburb-insight {
+    @apply border-primary/25 bg-primary/10 text-foreground shadow-sm;
+  }
+
+  .reports-severity-high::before,
+  .reports-insight-alert-negative {
+    @apply border-destructive/30 bg-destructive-light/70;
+  }
+
+  .reports-severity-badge.reports-severity-high {
+    @apply border-destructive/30 bg-destructive-light/70 text-destructive;
+  }
+
+  .reports-investment-panel-header,
+  .reports-recent-panel .reports-investment-panel-header {
+    @apply border-b border-border/60 bg-gradient-to-r from-primary/10 via-background/50 to-transparent;
+  }
+
+  .reports-investment-flow > .space-y-3,
+  .reports-investment-flow > .space-y-4,
+  .reports-build-type-control,
+  .reports-supported-sites-panel,
+  .reports-investment-flow > div:not([data-radix-popper-content-wrapper]) {
+    @apply rounded-3xl border border-border/60 bg-background/40 p-4 shadow-sm;
+  }
+
+  .reports-engine-helper,
+  .reports-success-state {
+    @apply rounded-2xl border border-primary/20 bg-primary/10 px-4 py-3 shadow-sm;
+  }
+
+  .reports-success-state {
+    @apply border-success/25 bg-success-light/70;
+  }
+
+  .reports-upload-zone {
+    @apply cursor-pointer rounded-3xl border-2 border-dashed p-8 text-center shadow-inner transition-all duration-200;
+  }
+
+  .reports-upload-zone-idle {
+    @apply border-border/70 bg-background/35 hover:border-primary/45 hover:bg-primary/5;
+  }
+
+  .reports-upload-zone-active,
+  .reports-upload-zone-filled {
+    @apply border-primary/55 bg-primary/10 shadow-primary/10;
+  }
+
+  .reports-recent-item {
+    @apply rounded-2xl border border-border/60 bg-gradient-to-br from-background/75 to-primary/5 p-3 shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/35;
+  }
+
+  .reports-page-premium button:disabled,
+  .reports-investment-generator button:disabled {
+    @apply border border-border/70 bg-background/45 text-muted-foreground/80 opacity-90 ring-1 ring-inset ring-border/40;
+  }
+
+  .reports-validation-state-error {
+    @apply border-warning/30 bg-warning-light/70 text-warning;
+  }
+
+  .reports-validation-state-error [class~='text-destructive'],
+  .reports-validation-state-error [class~='text-destructive\/80'] {
+    color: hsl(var(--warning));
+  }
+}
+
+@layer components {
+  /* ────────────────────────────────────────────────────────────────
+     AURIXA INTELLIGENCE HUB — workspace surface
+
+     This file used to give the hub a look of its own: brand-tinted
+     radial washes on every pane, glow shadows, pill buttons and a
+     stack of `!important` overrides that painted straight over the
+     glass system. On a white-labelled deployment it read as a
+     different product to the dashboard around it.
+
+     What is left here is LAYOUT, DENSITY and STATE. The material —
+     fill, edge, sheen, shadow — comes from the glass scale in
+     src/styles/tokens.css via the `dashboard-theme-*` classes the
+     page already uses, so the hub re-themes with the brand like
+     every other surface. Rules that only restate the platform
+     default have been removed rather than re-expressed.
+
+     If you add something here, keep it to structure or state. A new
+     gradient or glow belongs in glass.css, applied to every pane,
+     or nowhere.
+     ──────────────────────────────────────────────────────────────── */
+
+  /* The page shell paints nothing: the ambient field on <body> is what
+     the panes above it refract. */
+  .report-qa-premium {
+    background: transparent;
+  }
+
+  .report-qa-hero {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .report-qa-eyebrow {
+    border: 1px solid hsl(var(--primary) / 0.22);
+    background: hsl(var(--primary) / 0.1);
+    color: hsl(var(--dashboard-primary-strong, var(--primary)));
+  }
+
+  .report-qa-subtitle {
+    color: hsl(var(--muted-foreground));
+  }
+
+  .report-qa-header-actions {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Header buttons are plain shadcn buttons. The gradient, the glow and
+     the pill radius they used to carry are gone; `New Chat` is the
+     primary variant and the rest are outlines, as everywhere else. */
+  .report-qa-history-badge {
+    border: 1px solid hsl(var(--primary) / 0.28);
+    background: hsl(var(--primary) / 0.14);
+    color: hsl(var(--dashboard-primary-strong, var(--primary)));
+  }
+
+  .report-qa-workspace-grid {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  /* Panels are `dashboard-theme-section` panes. Nothing to add but the
+     stacking context their absolutely-positioned children need. */
+  .report-qa-panel {
+    position: relative;
+  }
+
+  .report-qa-chat-panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .report-qa-chat-panel > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .report-qa-chat-header,
+  .report-qa-reports-header {
+    border-bottom: 1px solid var(--glass-stroke);
+  }
+
+  /* Icon tiles — one tint, one weight, used for every icon that sits
+     next to a heading on this page. */
+  .report-qa-chat-title-icon,
+  .report-qa-reports-icon,
+  .report-qa-upload-icon {
+    border: 1px solid hsl(var(--primary) / 0.22);
+    background: hsl(var(--primary) / 0.1);
+    color: hsl(var(--primary));
+  }
+
+  .report-qa-chat-title {
+    color: hsl(var(--foreground));
+  }
+
+  .report-qa-chat-subtitle {
+    color: hsl(var(--muted-foreground));
+    line-height: 1.45;
+  }
+
+  .report-qa-chat-content {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+    padding-top: 0.75rem;
+  }
+
+  /* The conversation is a well pressed into the panel, not another
+     floating card: recessed fill, hairline edge, no blur (it is inside
+     a pane that is already refracting). */
+  .report-qa-message-area {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid var(--glass-stroke);
+    border-radius: 1rem;
+    padding: clamp(0.75rem, 1.4vw, 1rem) clamp(0.35rem, 0.8vw, 0.65rem) clamp(0.75rem, 1.4vw, 1rem) clamp(0.75rem, 1.4vw, 1rem);
+    background-color: var(--glass-fill-subtle);
+    box-shadow: inset 0 1px 2px 0 hsl(var(--foreground) / 0.05);
+  }
+
+  /* Toolbars use the rail recipe: same bar language as the tab rails and
+     filter bars on the rest of the dashboard. */
+  .report-qa-toolbar {
+    max-width: 100%;
+    gap: 0.35rem;
+    border: 1px solid var(--glass-stroke);
+    border-radius: 0.875rem;
+    padding: 0.35rem;
+    background-color: var(--glass-fill-subtle);
+  }
+
+  .report-qa-toolbar-control {
+    min-height: 2rem;
+    min-width: 2.25rem;
+    border: 1px solid var(--glass-stroke);
+    border-radius: 0.625rem;
+    background-color: var(--glass-fill);
+    color: hsl(var(--muted-foreground));
+    transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease;
+  }
+
+  .report-qa-toolbar-control:hover {
+    border-color: var(--glass-stroke-strong);
+    background-color: var(--glass-fill-hover);
+    color: hsl(var(--foreground));
+  }
+
+  .report-qa-toolbar-control[data-active="true"],
+  .report-qa-toolbar-control[aria-pressed="true"] {
+    border-color: var(--glass-stroke-accent);
+    background-color: var(--glass-fill-accent);
+    color: hsl(var(--dashboard-primary-strong, var(--primary)));
+  }
+
+  .report-qa-toolbar-control:disabled {
+    cursor: not-allowed;
+    color: hsl(var(--muted-foreground) / 0.5);
+    opacity: 1;
+    box-shadow: none;
+  }
+
+  .report-qa-panel-section {
+    border: 1px solid var(--glass-stroke);
+    border-radius: 0.875rem;
+    padding: 0.75rem;
+    background-color: var(--glass-fill-subtle);
+  }
+
+  /* The dropzone is the one surface that has to advertise itself, so it
+     keeps a dashed edge and a tint — but it is a recessed well, not a
+     glowing slab, and its states are the semantic colours the rest of
+     the app uses for the same meanings. */
+  .report-qa-dropzone {
+    position: relative;
+    min-height: clamp(9rem, 15vh, 11.5rem);
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-style: dashed;
+    border-color: hsl(var(--primary) / 0.35);
+    border-radius: 1rem;
+    background-color: var(--glass-fill-subtle);
+    box-shadow: inset 0 1px 2px 0 hsl(var(--foreground) / 0.05);
+  }
+
+  .report-qa-dropzone > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .report-qa-dropzone:hover,
+  .report-qa-dropzone:focus-visible {
+    border-color: hsl(var(--primary) / 0.6);
+    background-color: var(--glass-fill-hover);
+  }
+
+  .report-qa-dropzone:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  .report-qa-dropzone.is-drag-over {
+    border-color: hsl(var(--primary));
+    background-color: var(--glass-fill-accent);
+  }
+
+  .report-qa-dropzone.is-processing {
+    border-color: hsl(var(--warning) / 0.55);
+  }
+
+  .report-qa-dropzone.is-ready {
+    border-color: hsl(var(--success) / 0.5);
+  }
+
+  .report-qa-dropzone.is-error {
+    border-color: hsl(var(--destructive) / 0.6);
+  }
+
+  .report-qa-dropzone .report-qa-upload-icon {
+    width: 3rem;
+    height: 3rem;
+    border-radius: 0.875rem;
+  }
+
+  .report-qa-empty-docs {
+    border-color: var(--glass-stroke);
+    background-color: var(--glass-fill-subtle);
+  }
+
+  .report-qa-report-list {
+    border-radius: 0.875rem;
+  }
+
+  .report-qa-report-item {
+    background-color: var(--glass-fill-subtle);
+  }
+
+  .report-qa-report-item:hover {
+    background-color: var(--glass-fill-hover);
+  }
+
+  .report-qa-suggestions {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid var(--glass-stroke);
+    background-color: var(--glass-fill-subtle);
+  }
+
+  .report-qa-suggestions-trigger,
+  .report-qa-suggestions [data-radix-collapsible-content],
+  .report-qa-suggestions > div {
+    position: relative;
+    z-index: 1;
+  }
+
+  .report-qa-suggestion-chip {
+    min-height: 2rem;
+    border-radius: 0.625rem;
+    padding: 0.45rem 0.7rem;
+    border-color: var(--glass-stroke);
+    background-color: var(--glass-fill);
+    color: hsl(var(--foreground));
+  }
+
+  .report-qa-suggestion-chip:hover {
+    border-color: var(--glass-stroke-accent);
+    background-color: var(--glass-fill-accent);
+  }
+
+  /* ── Empty state ─────────────────────────────────────────────────
+     Was a 36rem card with a double border, a glow ring and a haloed
+     icon. It is now the same empty state the rest of the dashboard
+     shows: one tile, a line, a helper, an optional cue. */
+  .report-qa-empty-state {
+    min-height: 100%;
+  }
+
+  .report-qa-empty-card {
+    position: relative;
+    width: min(100%, 30rem);
+    max-width: 30rem;
+    border-radius: 1rem;
+    padding: clamp(1.25rem, 3vw, 2rem);
+  }
+
+  .report-qa-empty-icon-wrap {
+    position: relative;
+    display: grid;
+    width: 3.5rem;
+    height: 3.5rem;
+    margin: 0 auto;
+    place-items: center;
+    border: 1px solid hsl(var(--primary) / 0.22);
+    border-radius: 0.875rem;
+    background: hsl(var(--primary) / 0.1);
+  }
+
+  .report-qa-empty-icon {
+    width: 1.6rem;
+    height: 1.6rem;
+    color: hsl(var(--primary));
+  }
+
+  .report-qa-empty-title {
+    color: hsl(var(--foreground));
+    font-size: 1rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .report-qa-empty-helper {
+    max-width: 25rem;
+    margin: 0 auto;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.8125rem;
+    line-height: 1.6;
+  }
+
+  .report-qa-empty-upload-cue {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    border: 1px solid var(--glass-stroke);
+    border-radius: 999px;
+    padding: 0.35rem 0.75rem;
+    color: hsl(var(--muted-foreground));
+    background-color: var(--glass-fill-subtle);
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  /* ── Message content ─────────────────────────────────────────────
+     Widths, wrapping and prose rhythm — unchanged behaviour, minus the
+     gradients the bubbles used to carry. */
+  .report-qa-chat-panel .qa-chat-bubble-assistant {
+    width: min(96%, 70rem);
+    max-width: min(96%, 70rem) !important;
+    border: 1px solid var(--glass-stroke);
+    background-color: var(--glass-fill-subtle);
+  }
+
+  .report-qa-chat-panel .report-qa-message-frame:has(.qa-chat-bubble-assistant) {
+    justify-content: flex-start;
+  }
+
+  .report-qa-chat-panel .report-qa-assistant-content {
+    width: 100%;
+    max-width: 68rem;
+    margin-inline: auto;
+    line-height: 1.6;
+  }
+
+  .report-qa-chat-panel .report-qa-assistant-content :where(p, li, blockquote, td, th) {
+    overflow-wrap: anywhere;
+    word-break: normal;
+  }
+
+  .report-qa-chat-panel .report-qa-assistant-content :where(table, pre, img) {
+    max-width: 100%;
+  }
+
+  .report-qa-chat-panel .report-qa-assistant-content table {
+    display: block;
+    overflow-x: auto;
+  }
+
+  /* The one place the brand still fills a shape: the user's own turn,
+     flat in the primary colour rather than a gradient with a halo. */
+  .report-qa-chat-panel .qa-chat-bubble-user {
+    max-width: 80%;
+    border: 1px solid hsl(var(--primary) / 0.45);
+    background-color: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+  }
+
+  /* ── Composer ────────────────────────────────────────────────────── */
+  .report-qa-composer {
+    position: relative;
+    max-height: min(12.5rem, 32dvh);
+    margin-inline: -0.1rem;
+    border-top: 1px solid var(--glass-stroke);
+    border-radius: 0;
+    padding: 0.75rem 0.65rem 0.15rem;
+  }
+
+  .report-qa-composer textarea,
+  .report-qa-composer-input {
+    max-height: 7rem;
+    color: hsl(var(--foreground));
+    border: 1px solid var(--glass-stroke);
+    background-color: var(--glass-fill-subtle);
+    box-shadow: inset 0 1px 2px 0 hsl(var(--foreground) / 0.05);
+    transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+  }
+
+  .report-qa-composer textarea::placeholder,
+  .report-qa-composer-input::placeholder {
+    color: hsl(var(--muted-foreground) / 0.8);
+  }
+
+  .report-qa-composer textarea:focus-visible,
+  .report-qa-composer-input:focus-visible {
+    outline: none;
+    border-color: var(--glass-stroke-accent);
+    box-shadow: 0 0 0 3px hsl(var(--ring) / 0.22),
+      inset 0 1px 2px 0 hsl(var(--foreground) / 0.05);
+  }
+
+  .report-qa-composer textarea:disabled,
+  .report-qa-composer-input:disabled {
+    cursor: not-allowed;
+    opacity: 0.72;
+  }
+
+  .report-qa-composer-control {
+    border: 1px solid var(--glass-stroke);
+    border-radius: 0.75rem;
+    background-color: var(--glass-fill);
+    transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease;
+  }
+
+  .report-qa-composer-control:not(:disabled):hover {
+    border-color: var(--glass-stroke-strong);
+    background-color: var(--glass-fill-hover);
+  }
+
+  .report-qa-mic-button,
+  .report-qa-composer-control-secondary {
+    color: hsl(var(--muted-foreground));
+  }
+
+  .report-qa-mic-button:not(:disabled):hover,
+  .report-qa-composer-control-secondary:not(:disabled):hover {
+    color: hsl(var(--foreground));
+  }
+
+  .report-qa-send-button {
+    color: hsl(var(--primary-foreground));
+    border-color: hsl(var(--primary) / 0.45);
+    background-color: hsl(var(--primary));
+  }
+
+  .report-qa-send-button:not(:disabled):hover {
+    border-color: hsl(var(--primary));
+    background-color: hsl(var(--primary-hover, var(--primary)));
+  }
+
+  .report-qa-send-button:disabled,
+  .report-qa-composer-control:disabled {
+    color: hsl(var(--muted-foreground) / 0.5);
+    border-color: var(--glass-stroke);
+    background-color: var(--glass-fill-subtle);
+    box-shadow: none;
+    opacity: 0.62;
+  }
+
+  .report-qa-citations {
+    border-color: var(--glass-stroke);
+    border-radius: 0.875rem;
+    padding: 0.75rem;
+    background-color: var(--glass-fill-subtle);
+  }
+
+  .report-qa-citations button,
+  .report-qa-citations a {
+    border-radius: 999px;
+  }
+
+  .report-qa-message-actions {
+    border-color: var(--glass-stroke) !important;
+  }
+
+  .report-qa-streaming-state {
+    margin-top: 0.25rem;
+  }
+
+  .report-qa-streaming-state > div:last-child {
+    max-width: min(80%, 58rem);
+    border: 1px solid var(--glass-stroke);
+    border-radius: 0.875rem;
+    background-color: var(--glass-fill-subtle);
+  }
+
+  .report-qa-streaming-state p {
+    max-height: min(44vh, 32rem);
+    overflow: auto;
+    line-height: 1.7;
+    color: hsl(var(--foreground) / 0.92);
+  }
+
+  @media (max-width: 1023px) {
+    .report-qa-premium {
+      overscroll-behavior: contain;
+    }
+
+    .report-qa-header-actions > button,
+    .report-qa-header-actions [role='button'] {
+      min-height: 2.75rem;
+      min-width: 2.75rem;
+    }
+
+    .report-qa-reports-panel {
+      flex-shrink: 0;
+    }
+
+    .report-qa-chat-panel {
+      min-height: min(52rem, 82dvh);
+    }
+
+    .report-qa-message-area {
+      max-height: 100%;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .report-qa-chat-panel .qa-chat-bubble-assistant {
+      width: min(97%, 100%);
+      max-width: 97% !important;
+    }
+
+    .report-qa-toolbar {
+      width: 100%;
+      justify-content: flex-start;
+      overflow-wrap: anywhere;
+    }
+
+    .report-qa-suggestions [class*='report-qa-suggestion'],
+    .report-qa-suggestion-chip {
+      white-space: normal;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .report-qa-message-area {
+      padding: 0.65rem 0.15rem 0.65rem 0.65rem;
+      border-radius: 0.875rem;
+    }
+
+    .report-qa-message-stack {
+      padding-right: 0.15rem;
+    }
+
+    .report-qa-message-bubble {
+      max-width: 96% !important;
+    }
+
+    .report-qa-chat-panel .qa-chat-bubble-user,
+    .report-qa-chat-panel .qa-chat-bubble-assistant {
+      width: auto;
+      max-width: 96% !important;
+    }
+
+    .report-qa-dropzone {
+      min-height: 8rem;
+    }
+
+    .report-qa-composer {
+      margin-inline: -0.15rem;
+      padding-inline: 0.25rem;
+      padding-bottom: max(0.25rem, env(safe-area-inset-bottom));
+    }
+
+    .report-qa-composer-control {
+      min-width: 2.75rem;
+      min-height: 2.75rem;
+    }
+  }
+
+  /* ── Chat message presentation ───────────────────────────────────── */
+  .report-qa-message-stack {
+    padding-right: 0.45rem;
+  }
+
+  .report-qa-message-row {
+    contain: inline-size;
+  }
+
+  .report-qa-message-frame {
+    align-items: flex-start;
+  }
+
+  .report-qa-message-avatar {
+    border: 1px solid var(--glass-stroke);
+  }
+
+  .report-qa-message-avatar-user {
+    background-color: hsl(var(--primary) / 0.14) !important;
+    color: hsl(var(--dashboard-primary-strong, var(--primary)));
+  }
+
+  .report-qa-message-bubble {
+    position: relative;
+    overflow: hidden;
+    line-height: 1.65;
+    letter-spacing: -0.003em;
+  }
+
+  .report-qa-message-meta {
+    line-height: 1.2;
+    letter-spacing: 0.01em;
+  }
+
+  .report-qa-assistant-content {
+    color: hsl(var(--foreground) / 0.92);
+    font-size: 0.92rem;
+    line-height: 1.72;
+  }
+
+  .report-qa-assistant-content :where(p, ul, ol, blockquote, table, pre) {
+    margin-block: 0.72rem;
+  }
+
+  .report-qa-assistant-content :where(p:first-child, ul:first-child, ol:first-child, blockquote:first-child, table:first-child, pre:first-child) {
+    margin-top: 0;
+  }
+
+  .report-qa-assistant-content :where(p:last-child, ul:last-child, ol:last-child, blockquote:last-child, table:last-child, pre:last-child) {
+    margin-bottom: 0;
+  }
+
+  /* Tailwind's preflight strips list markers, so a model's bulleted answer
+     used to render as unmarked indented lines. */
+  .report-qa-assistant-content :where(ul, ol) {
+    padding-left: 1.25rem;
+    list-style-position: outside;
+  }
+
+  .report-qa-assistant-content :where(ul) {
+    list-style-type: disc;
+  }
+
+  .report-qa-assistant-content :where(ol) {
+    list-style-type: decimal;
+  }
+
+  .report-qa-assistant-content :where(li) {
+    margin-block: 0.28rem;
+    padding-left: 0.08rem;
+  }
+
+  .report-qa-assistant-content :where(h1, h2, h3, h4) {
+    margin-top: 1rem;
+    margin-bottom: 0.45rem;
+    color: hsl(var(--foreground));
+    line-height: 1.25;
+    letter-spacing: -0.02em;
+  }
+
+  .report-qa-assistant-content :where(blockquote) {
+    border-left: 3px solid hsl(var(--primary) / 0.45);
+    border-radius: 0.5rem;
+    padding: 0.55rem 0.8rem;
+    background: hsl(var(--primary) / 0.06);
+    color: hsl(var(--foreground) / 0.82);
+  }
+
+  .report-qa-assistant-content :where(code) {
+    border: 1px solid var(--glass-stroke);
+    border-radius: 0.375rem;
+    padding: 0.08rem 0.32rem;
+    background-color: var(--glass-fill-subtle);
+    font-size: 0.88em;
+  }
+
+  .report-qa-assistant-content :where(pre) {
+    max-width: 100%;
+    overflow-x: auto;
+    border: 1px solid var(--glass-stroke);
+    border-radius: 0.75rem;
+    padding: 0.85rem;
+    background-color: var(--glass-fill-subtle);
+  }
+
+  .report-qa-assistant-content :where(pre code) {
+    border: 0;
+    padding: 0;
+    background: transparent;
+  }
+
+  .report-qa-assistant-content :where(table) {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .report-qa-user-content {
+    line-height: 1.6;
+    font-weight: 500;
+  }
+}
+
+@layer components {
+  /* Interaction — one focus ring, one press response, no lift.
+     Panels are containers and do not move; only the things you can
+     actually click respond to being clicked. */
+  .report-qa-premium :where(button, [role='button'], a, input, textarea) {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .report-qa-premium :where(button, [role='button'], a, input, textarea, [tabindex]):focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  .report-qa-toolbar-control:focus-visible,
+  .report-qa-suggestion-chip:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  .report-qa-report-item,
+  .report-qa-library-row,
+  .report-qa-history-row,
+  .report-qa-suggestion-chip,
+  .report-qa-dropzone {
+    transition: border-color 170ms ease, background-color 170ms ease, color 170ms ease;
+  }
+
+  .report-qa-library-row:not(:disabled):hover,
+  .report-qa-history-row:hover {
+    background-color: var(--glass-fill-hover);
+  }
+
+  .report-qa-toolbar-control:active,
+  .report-qa-composer-control:not(:disabled):active,
+  .report-qa-suggestion-chip:active,
+  .report-qa-report-item:active,
+  .report-qa-library-row:not(:disabled):active,
+  .report-qa-history-row:active {
+    transform: scale(0.99);
+  }
+
+  .report-qa-suggestions [data-radix-collapsible-content] {
+    overflow: hidden;
+    animation: reportQaCollapseIn 180ms ease-out;
+  }
+
+  .report-qa-message-row {
+    animation: reportQaMessageIn 200ms ease-out both;
+  }
+
+  @keyframes reportQaMessageIn {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes reportQaCollapseIn {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .report-qa-premium *,
+    .report-qa-premium *::before,
+    .report-qa-premium *::after {
+      animation-duration: 1ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+      transition-duration: 1ms !important;
+    }
+
+    .report-qa-toolbar-control:active,
+    .report-qa-composer-control:not(:disabled):active,
+    .report-qa-suggestion-chip:active,
+    .report-qa-report-item:active,
+    .report-qa-library-row:not(:disabled):active,
+    .report-qa-history-row:active {
+      transform: none !important;
+    }
+  }
+}
+
+
+@layer utilities {
+  /* Scoped to the Generated Reports comparison workspace. The shared Radix
+     dialog primitive remains unchanged for every other modal. */
+  .comparison-analysis-dialog-overlay {
+    z-index: 70 !important;
+    background: hsl(0 0% 5% / 0.48) !important;
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    transition-duration: 180ms;
+  }
+
+  .dark .comparison-analysis-dialog-overlay {
+    background: hsl(0 0% 0% / 0.74) !important;
+  }
+
+  .comparison-analysis-dialog {
+    z-index: 70 !important;
+    border-color: hsl(var(--primary) / 0.4) !important;
+    background-color: hsl(var(--background)) !important;
+    box-shadow:
+      0 28px 72px hsl(0 0% 0% / 0.34),
+      0 0 0 1px hsl(var(--primary) / 0.12),
+      0 0 32px hsl(var(--primary) / 0.08),
+      inset 0 1px 0 hsl(var(--primary-foreground) / 0.18);
+    transition-duration: 200ms;
+  }
+
+  .dark .comparison-analysis-dialog {
+    background-color: hsl(var(--background)) !important;
+    box-shadow:
+      0 28px 90px hsl(0 0% 0% / 0.64),
+      0 0 0 1px hsl(var(--primary) / 0.14),
+      0 0 36px hsl(var(--primary) / 0.1),
+      inset 0 1px 0 hsl(var(--primary-foreground) / 0.06);
+  }
+
+  .comparison-analysis-dialog-header,
+  .comparison-analysis-dialog-footer {
+    position: relative;
+    z-index: 10;
+    background-color: hsl(var(--background)) !important;
+  }
+
+  .comparison-analysis-dialog-header {
+    border-bottom-color: hsl(var(--border-strong) / 0.78) !important;
+    box-shadow: inset 0 -1px 0 hsl(var(--primary) / 0.08);
+  }
+
+  .comparison-analysis-dialog-footer {
+    border-top-color: hsl(var(--border-strong) / 0.78) !important;
+    box-shadow: 0 -10px 24px hsl(0 0% 0% / 0.06);
+  }
+
+  .comparison-analysis-dialog-body {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--primary) / 0.48) hsl(var(--muted) / 0.54);
+  }
+
+  .comparison-analysis-dialog-body::-webkit-scrollbar {
+    width: 10px;
+  }
+
+  .comparison-analysis-dialog-body::-webkit-scrollbar-track {
+    background: hsl(var(--muted) / 0.54);
+  }
+
+  .comparison-analysis-dialog-body::-webkit-scrollbar-thumb {
+    border: 2px solid hsl(var(--muted) / 0.54);
+    border-radius: 999px;
+    background: hsl(var(--primary) / 0.48);
+  }
+
+  .comparison-analysis-dialog-body::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--primary) / 0.66);
+  }
+
+  .dark .comparison-analysis-dialog-body {
+    scrollbar-color: hsl(var(--primary) / 0.52) hsl(0 0% 9%);
+  }
+
+  .dark .comparison-analysis-dialog-body::-webkit-scrollbar-track {
+    background: hsl(0 0% 9%);
+  }
+
+  .dark .comparison-analysis-dialog-body::-webkit-scrollbar-thumb {
+    border-color: hsl(0 0% 9%);
+    background: hsl(var(--primary) / 0.52);
+  }
+
+  /* Radix Select portals its menu to document.body. Keep menus opened from
+     this active workspace above its elevated backdrop and content layer. */
+  body.comparison-analysis-dialog-open .luxury-select-content {
+    z-index: 80 !important;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .comparison-analysis-dialog-overlay,
+    .comparison-analysis-dialog {
+      transition-duration: 1ms;
+    }
+  }
+
+  .client-tracker-kanban-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--primary) / 0.42) hsl(var(--background) / 0.36);
+  }
+
+  .client-tracker-kanban-scroll::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  .client-tracker-kanban-scroll::-webkit-scrollbar-track {
+    border-radius: 999px;
+    background: hsl(var(--background) / 0.36);
+  }
+
+  .client-tracker-kanban-scroll::-webkit-scrollbar-thumb {
+    border: 2px solid hsl(var(--background) / 0.36);
+    border-radius: 999px;
+    background: linear-gradient(180deg, hsl(var(--primary) / 0.62), hsl(var(--primary) / 0.28));
+  }
+
+  .client-tracker-kanban-scroll::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, hsl(var(--primary) / 0.82), hsl(var(--primary) / 0.42));
+  }
+
+  .client-tracker-gold-interaction {
+    transition-property: transform, border-color, background-color, box-shadow, color, opacity;
+    transition-duration: 220ms;
+    transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .client-tracker-gold-interaction:hover {
+    box-shadow:
+      0 18px 42px hsl(var(--primary) / 0.10),
+      inset 3px 0 0 hsl(var(--primary) / 0.72);
+  }
+
+  .client-tracker-gold-interaction:focus-visible {
+    outline: 2px solid hsl(var(--primary) / 0.48);
+    outline-offset: 3px;
+    box-shadow:
+      0 0 0 4px hsl(var(--primary) / 0.14),
+      0 18px 42px hsl(var(--primary) / 0.12);
+  }
+
+  .client-tracker-drop-glow {
+    box-shadow:
+      0 24px 60px hsl(var(--primary) / 0.20),
+      0 0 0 1px hsl(var(--primary) / 0.18),
+      inset 0 0 0 1px hsl(var(--primary) / 0.20);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .client-tracker-gold-interaction {
+      transition-duration: 1ms;
+    }
+  }
+}
+
+@layer components {
+  .deal-pipeline-polish {
+    --deal-gold: 43 92% 58%;
+    --deal-gold-soft: 43 92% 58% / 0.18;
+  }
+
+  .deal-pipeline-polish :is(button, [role="button"], a, input, textarea, [data-radix-select-trigger], [tabindex="0"]) {
+    transition-property: transform, border-color, background-color, box-shadow, color, opacity, filter;
+    transition-duration: 180ms;
+    transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .deal-pipeline-polish :is(button, [role="button"], a, input, textarea, [data-radix-select-trigger], [tabindex="0"]):focus-visible {
+    outline: 2px solid hsl(var(--deal-gold) / 0.72);
+    outline-offset: 3px;
+    box-shadow:
+      0 0 0 4px hsl(var(--deal-gold) / 0.15),
+      0 0 24px hsl(var(--deal-gold) / 0.16) !important;
+  }
+
+  .deal-pipeline-polish :is(button, [role="button"], a, input, textarea, [data-radix-select-trigger]) {
+    min-height: 2.75rem;
+  }
+
+  .deal-pipeline-polish :is([role="region"][tabindex="0"]) {
+    border-radius: 1rem;
+    scroll-padding: 1rem;
+  }
+
+  .deal-pipeline-polish :is(table) {
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+
+  .deal-pipeline-polish :is(input, textarea):focus-visible {
+    border-color: hsl(var(--deal-gold) / 0.62) !important;
+    background: linear-gradient(135deg, hsl(var(--background) / 0.96), hsl(var(--brand) / 0.22)) !important;
+  }
+
+  .deal-pipeline-polish :is(button, [role="button"]):hover:not(:disabled),
+  .deal-pipeline-polish a:hover {
+    border-color: hsl(var(--deal-gold) / 0.42) !important;
+    box-shadow:
+      0 12px 30px hsl(0 0% 0% / 0.22),
+      0 0 22px hsl(var(--deal-gold) / 0.13),
+      inset 0 1px 0 hsl(0 0% 100% / 0.08);
+  }
+
+  .deal-pipeline-polish :is(.recharts-wrapper, .recharts-surface, .recharts-bar-rectangle, .recharts-line-curve, .recharts-sector, .recharts-dot) {
+    transition: filter 180ms ease, opacity 180ms ease, stroke-width 180ms ease;
+  }
+
+  .deal-pipeline-polish :is(.recharts-bar-rectangle, .recharts-sector, .recharts-dot):hover {
+    filter: drop-shadow(0 0 10px hsl(var(--deal-gold) / 0.38)) brightness(1.08);
+  }
+
+  .deal-pipeline-polish :is(.recharts-wrapper, .recharts-surface):hover {
+    filter: drop-shadow(0 0 18px hsl(var(--deal-gold) / 0.08));
+  }
+
+  .deal-pipeline-polish :is(.recharts-tooltip-wrapper) {
+    filter: drop-shadow(0 18px 32px hsl(0 0% 0% / 0.32));
+  }
+
+  .deal-pipeline-polish tbody tr {
+    transition: background-color 180ms ease, box-shadow 180ms ease, transform 180ms ease, border-color 180ms ease;
+  }
+
+  .deal-pipeline-polish tbody tr:hover {
+    background: linear-gradient(90deg, hsl(var(--deal-gold) / 0.10), hsl(0 0% 100% / 0.035), transparent) !important;
+    box-shadow: inset 3px 0 0 hsl(var(--deal-gold) / 0.66), 0 10px 26px hsl(0 0% 0% / 0.16);
+  }
+
+  .deal-pipeline-polish [data-state="active"] {
+    scroll-margin: 1rem;
+  }
+
+  .deal-pipeline-polish [data-state="active"]:focus-visible {
+    box-shadow:
+      0 0 0 3px hsl(var(--brand) / 0.24),
+      0 16px 38px hsl(var(--brand) / 0.24) !important;
+  }
+
+  .deal-pipeline-polish .group:hover :is(svg, [class*="lucide"]) {
+    filter: drop-shadow(0 0 8px hsl(var(--deal-gold) / 0.24));
+  }
+
+  @media (max-width: 640px) {
+    .deal-pipeline-polish {
+      border-radius: 1.25rem;
+      max-height: none;
+    }
+
+    .deal-pipeline-polish :is(.recharts-responsive-container, .recharts-wrapper) {
+      min-width: 20rem;
+    }
+
+    .deal-pipeline-polish :is(th, td) {
+      padding-left: 0.75rem;
+      padding-right: 0.75rem;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .deal-pipeline-polish *,
+    .deal-pipeline-polish *::before,
+    .deal-pipeline-polish *::after {
+      transition-duration: 1ms !important;
+      animation-duration: 1ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  .deal-pipeline-polish {
+    color-scheme: dark;
+  }
+
+  .deal-pipeline-polish :is([role="dialog"], [data-radix-popper-content-wrapper] [role="listbox"], [data-radix-select-content]) {
+    border-color: rgb(251 191 36 / 0.24);
+    background: linear-gradient(145deg, rgb(24 24 27 / 0.98), rgb(9 9 11 / 0.96));
+    box-shadow: 0 24px 70px rgb(0 0 0 / 0.42), inset 0 1px 0 rgb(255 255 255 / 0.08);
+  }
+
+  .deal-pipeline-polish :is(table) {
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+
+  .deal-pipeline-polish :is(thead tr) {
+    background: linear-gradient(90deg, rgb(251 191 36 / 0.10), rgb(39 39 42 / 0.72));
+  }
+
+  .deal-pipeline-polish :is(th) {
+    border-color: rgb(251 191 36 / 0.16);
+    color: rgb(254 243 199 / 0.78);
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  .deal-pipeline-polish :is(td) {
+    border-color: rgb(255 255 255 / 0.08);
+  }
+
+  .deal-pipeline-polish :is(tbody tr) {
+    transition: background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+  }
+
+  .deal-pipeline-polish :is(tbody tr:hover) {
+    background-color: rgb(251 191 36 / 0.045);
+    box-shadow: inset 3px 0 0 rgb(251 191 36 / 0.36);
+  }
+
+  .deal-pipeline-polish :is(button, a, input, [role="button"], [role="tab"], [role="combobox"]):focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgb(252 211 77 / 0.42), 0 0 0 5px rgb(9 9 11 / 0.92);
+  }
+
+  .deal-pipeline-polish :is(input, textarea, [role="combobox"]) {
+    border-color: rgb(255 255 255 / 0.11);
+    background-color: rgb(0 0 0 / 0.36);
+  }
+
+  .deal-pipeline-polish :is(input, textarea, [role="combobox"]):hover {
+    border-color: rgb(251 191 36 / 0.28);
+  }
+
+  .deal-pipeline-polish :is(input, textarea, [role="combobox"]):focus-visible {
+    border-color: rgb(252 211 77 / 0.54);
+  }
+
+  .deal-pipeline-polish :is(.recharts-wrapper text) {
+    fill: rgb(212 212 216 / 0.78);
+  }
+
+  .deal-pipeline-polish :is(.recharts-cartesian-grid line) {
+    stroke: rgb(255 255 255 / 0.08);
+  }
+}
+
+@layer components {
+  /* ── Light-mode dashboard refinements ─────────────────────────────
+     Surface painting for these classes now lives in src/styles/glass.css
+     and applies to both themes. What remains here is what glass does not
+     own: navigation state, text colour, and focus affordance — the parts
+     of the light theme that are about legibility rather than material. */
+
+  :root:not(.dark) .dashboard-sidebar-content,
+  :root:not(.dark) .dashboard-sidebar-group {
+    color: hsl(var(--sidebar-foreground));
+  }
+
+  :root:not(.dark) .dashboard-sidebar-group-trigger {
+    color: hsl(var(--sidebar-foreground) / 0.82);
+    letter-spacing: 0.18em;
+  }
+
+  :root:not(.dark) .dashboard-sidebar-group-trigger:hover {
+    background-color: var(--glass-fill-accent);
+    color: hsl(var(--foreground));
+  }
+
+  :root:not(.dark) .dashboard-sidebar-group-trigger-active,
+  :root:not(.dark) .dashboard-sidebar-admin-trigger {
+    color: hsl(var(--primary));
+  }
+
+  :root:not(.dark) .dashboard-sidebar-menu-button {
+    color: hsl(var(--sidebar-foreground) / 0.86);
+  }
+
+  :root:not(.dark) .dashboard-sidebar-menu-button svg {
+    color: hsl(var(--sidebar-foreground) / 0.72);
+  }
+
+  :root:not(.dark) .dashboard-sidebar-menu-button:hover,
+  :root:not(.dark) .dashboard-sidebar-menu-button-admin:hover {
+    background-color: var(--glass-fill-accent);
+    color: hsl(var(--foreground));
+  }
+
+  :root:not(.dark) .dashboard-sidebar-menu-button:hover svg,
+  :root:not(.dark) .dashboard-sidebar-menu-button-admin:hover svg {
+    color: hsl(var(--primary));
+  }
+
+  /* The selected nav item stays a solid brand pill. It is the one
+     unambiguous "you are here" marker in the shell, so it opts out of
+     the glass and keeps its contrast guarantee. */
+  :root:not(.dark) .dashboard-sidebar-menu-button-active,
+  :root:not(.dark) .dashboard-sidebar-menu-button-admin.dashboard-sidebar-menu-button-active {
+    border-color: hsl(var(--sidebar-primary) / 0.34);
+    background: linear-gradient(90deg, hsl(var(--sidebar-primary)), hsl(var(--dashboard-primary-strong) / 0.92));
+    color: hsl(var(--sidebar-primary-foreground));
+    box-shadow: 0 16px 30px hsl(var(--sidebar-primary) / 0.24);
+  }
+
+  :root:not(.dark) .dashboard-sidebar-menu-button-active svg,
+  :root:not(.dark) .dashboard-sidebar-menu-button-admin.dashboard-sidebar-menu-button-active svg {
+    color: hsl(var(--sidebar-primary-foreground));
+  }
+
+  :root:not(.dark) .dashboard-sidebar-admin-divider {
+    border-top-color: var(--glass-stroke);
+  }
+
+  :root:not(.dark) .dashboard-sidebar-admin-group,
+  :root:not(.dark) .dashboard-sidebar-admin-group-collapsed {
+    border-color: var(--glass-stroke);
+    background-color: var(--glass-fill-subtle);
+  }
+
+  :root:not(.dark) .dashboard-topbar-inner,
+  :root:not(.dark) .recharts-wrapper,
+  :root:not(.dark) .recharts-responsive-container,
+  :root:not(.dark) .dashboard-chart-container {
+    color: hsl(var(--foreground));
+  }
+
+  :root:not(.dark) .dashboard-topbar-surface .dashboard-icon-button svg,
+  :root:not(.dark) .dashboard-topbar-surface .dashboard-input-control svg {
+    color: hsl(var(--foreground) / 0.72);
+  }
+
+  :root:not(.dark) .dashboard-topbar-surface .dashboard-icon-button:hover svg {
+    color: hsl(var(--primary));
+  }
+
+  :root:not(.dark) .dashboard-topbar-surface .dashboard-input-control [data-radix-avatar-fallback] {
+    background-color: var(--glass-fill-accent);
+    color: hsl(var(--primary));
+  }
+
+  :root:not(.dark):not([data-palette='dark']) .luxury-input::file-selector-button {
+    color: hsl(var(--primary));
+  }
+
+  /* Raw controls inside the shell that predate the primitives. */
+  :root:not(.dark) .dashboard-shell input,
+  :root:not(.dark) .dashboard-shell textarea,
+  :root:not(.dark) .dashboard-shell button[role="combobox"] {
+    border-color: var(--glass-stroke);
+    background-color: var(--glass-fill-subtle);
+  }
+
+  :root:not(.dark) .dashboard-shell input:focus,
+  :root:not(.dark) .dashboard-shell textarea:focus,
+  :root:not(.dark) .dashboard-shell button[role="combobox"]:focus {
+    border-color: var(--glass-stroke-accent);
+    box-shadow: 0 0 0 3px hsl(var(--ring) / 0.22);
+  }
+}
+
+@layer components {
+  /* ── Overview "obsidian" variant (dark) ───────────────────────────
+     The Overview page runs a deeper, more cinematic field than the rest
+     of the dashboard. Surface material for .overview-* is owned by
+     src/styles/glass.css; what stays here is the field tint and the
+     handful of accents that are specific to this page. */
+
+  .dark .dashboard-shell:has(.overview-obsidian-shell)::before {
+    background-image:
+      radial-gradient(circle at top left, hsl(var(--primary) / 0.16), transparent 34%),
+      radial-gradient(circle at top right, hsl(var(--brand) / 0.07), transparent 30%);
+    opacity: 1;
+  }
+
+  .dark .overview-command-badge {
+    border: 1px solid hsl(var(--brand) / 0.30);
+    background-color: hsl(var(--brand) / 0.10);
+    color: hsl(var(--brand));
+  }
+
+  /* A brand bloom in the top-right corner of each KPI tile, sitting
+     above the pane fill but under its content. */
+  .dark .overview-kpi-card::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-image: radial-gradient(circle at top right, hsl(var(--primary) / 0.10), transparent 34%);
+  }
+
+  .dark .overview-kpi-card:hover {
+    transform: translateY(-0.125rem);
+  }
+
+  .dark .overview-chart-header {
+    border-color: var(--glass-stroke);
+    background-image: linear-gradient(90deg, var(--glass-specular), transparent);
+  }
+
+  .dark .overview-activity-row > div:first-child {
+    background-color: hsl(var(--primary) / 0.34);
+  }
+
+  /* The portfolio zone renders third-party children that set their own
+     inline surface, so these have to out-rank them. */
+  .dark .overview-portfolio-zone > div,
+  .dark .overview-portfolio-zone .rounded-md {
+    border: 1px solid var(--glass-stroke) !important;
+    background-color: var(--glass-fill) !important;
+    background-image: var(--glass-sheen) !important;
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) !important;
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) !important;
+    box-shadow: var(--glass-shadow), var(--glass-inner) !important;
+  }
+}
+
+@layer components {
+  /* Report Q&A chat containment — scoped to the Q&A page only.
+
+     Sizing and containment for the chat column. The material used to be
+     re-declared here on top of the block above; it now comes from the
+     glass system, so what is left is geometry. */
+  .report-qa-workspace-grid {
+    align-items: stretch;
+  }
+
+  .report-qa-chat-panel {
+    min-height: 0;
+    overflow: hidden;
+    border-radius: 1.25rem;
+  }
+
+  @media (min-width: 1024px) {
+    .report-qa-chat-panel {
+      margin-inline: 0.35rem 0.65rem;
+    }
+  }
+
+  .report-qa-chat-content {
+    padding-top: 0.65rem;
+  }
+
+  .report-qa-message-area {
+    border-radius: 0.875rem;
+    padding: 0.65rem 0.2rem 0.65rem 0.65rem;
+  }
+
+  .report-qa-message-area-empty {
+    flex: 0 1 auto;
+    min-height: clamp(18rem, 38vh, 24rem);
+    overflow: visible;
+  }
+
+  /* The empty state deliberately lets its viewport overflow (glow bleed), so
+     the Radix scrollbar it would draw can never scroll anything — hide it. */
+  .report-qa-message-area-empty [data-radix-scroll-area-scrollbar] {
+    display: none;
+  }
+
+  .report-qa-toolbar {
+    max-width: 100%;
+    gap: 0.3rem;
+    padding: 0.28rem;
+    border-radius: 0.875rem;
+  }
+
+  .report-qa-toolbar-control {
+    min-width: 2rem;
+    min-height: 2rem;
+    border-radius: 0.5rem;
+  }
+
+  .report-qa-composer {
+    max-height: min(11rem, 28dvh);
+    margin-inline: 0;
+    border-radius: 0;
+    padding-inline: 0.45rem;
+  }
+}
+
+@layer components {
+  /* Report Q&A density shell: scoped compact sizing only, no browser zoom/transform scaling. */
+  .report-qa-density-shell {
+    --report-qa-radius: 1rem;
+    --report-qa-panel-pad: 0.75rem;
+  }
+
+  .report-qa-density-shell .report-qa-hero {
+    border-radius: 1rem;
+  }
+
+  .report-qa-density-shell .report-qa-eyebrow {
+    padding: 0.2rem 0.55rem;
+    font-size: 0.58rem;
+    letter-spacing: 0.18em;
+  }
+
+  .report-qa-density-shell .report-qa-subtitle {
+    max-width: 42rem;
+    font-size: 0.78rem;
+    line-height: 1.45;
+  }
+
+  .report-qa-density-shell .report-qa-header-actions > button,
+  .report-qa-density-shell .report-qa-header-actions [role='button'] {
+    min-height: 2.25rem;
+  }
+
+  .report-qa-density-shell .report-qa-panel {
+    border-radius: var(--report-qa-radius);
+  }
+
+  .report-qa-density-shell .report-qa-panel-section {
+    border-radius: 0.85rem;
+    padding: 0.58rem;
+  }
+
+  .report-qa-density-shell .report-qa-dropzone {
+    min-height: clamp(8.75rem, 17vh, 11rem);
+  }
+
+  .report-qa-density-shell .report-qa-dropzone .report-qa-upload-icon {
+    width: 2.75rem;
+    height: 2.75rem;
+    border-radius: 0.75rem;
+  }
+
+  .report-qa-density-shell .report-qa-dropzone svg {
+    width: 1.45rem;
+    height: 1.45rem;
+  }
+
+  .report-qa-density-shell .report-qa-chat-title-icon {
+    width: 2rem;
+    height: 2rem;
+    border-radius: 0.625rem;
+  }
+
+  .report-qa-density-shell .report-qa-chat-title {
+    font-size: 1rem;
+  }
+
+  .report-qa-density-shell .report-qa-toolbar {
+    gap: 0.3rem;
+    padding: 0.3rem;
+    border-radius: 0.875rem;
+    max-width: 100%;
+  }
+
+  .report-qa-density-shell .report-qa-toolbar-control {
+    min-width: 2rem;
+    min-height: 2rem;
+    border-radius: 0.5rem;
+  }
+
+  .report-qa-density-shell .report-qa-message-area {
+    border-radius: 0.875rem;
+    padding: 0.58rem 0.2rem 0.58rem 0.58rem;
+  }
+
+  .report-qa-density-shell .report-qa-message-area-empty {
+    flex: 0 1 auto;
+    min-height: 0;
+  }
+
+  .report-qa-density-shell .report-qa-message-area-empty [data-radix-scroll-area-viewport] {
+    overflow: visible !important;
+  }
+
+  .report-qa-density-shell .report-qa-empty-state {
+    min-height: clamp(13rem, 30vh, 18rem);
+  }
+
+  .report-qa-density-shell .report-qa-empty-card {
+    width: min(100%, 28rem);
+    max-width: 28rem;
+    border-radius: 1rem;
+    padding: clamp(1.15rem, 2.4vw, 1.8rem);
+  }
+
+  .report-qa-density-shell .report-qa-empty-icon-wrap {
+    width: 3rem;
+    height: 3rem;
+    border-radius: 0.75rem;
+  }
+
+  .report-qa-density-shell .report-qa-empty-icon {
+    width: 1.4rem;
+    height: 1.4rem;
+  }
+
+  .report-qa-density-shell .report-qa-empty-title {
+    font-size: clamp(0.95rem, 1.8vw, 1.05rem);
+  }
+
+  .report-qa-density-shell .report-qa-empty-helper {
+    max-width: 23rem;
+    font-size: 0.8rem;
+    line-height: 1.5;
+  }
+
+  .report-qa-density-shell .report-qa-empty-upload-cue {
+    padding: 0.35rem 0.7rem;
+    font-size: 0.7rem;
+  }
+
+  .report-qa-density-shell .report-qa-composer-input {
+    min-height: 2.75rem;
+  }
+
+  .report-qa-density-shell .report-qa-composer-control {
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+  }
+
+  @media (min-width: 1024px) {
+    .report-qa-density-shell .report-qa-chat-panel {
+      min-height: 0;
+    }
+  }
+
+  @media (max-width: 1023px) {
+    .report-qa-density-shell .report-qa-chat-panel {
+      min-height: min(42rem, 74dvh);
+    }
+  }
+
+  @media (max-width: 640px) {
+    .report-qa-density-shell .report-qa-dropzone {
+      min-height: 8rem;
+    }
+
+    .report-qa-density-shell .report-qa-header-actions > button,
+    .report-qa-density-shell .report-qa-header-actions [role='button'] {
+      min-height: 2.25rem;
+      min-width: 2.25rem;
+    }
+  }
+}
+
+@layer components {
+  /*
+   * Template Library reader — a document viewport that must look scrollable.
+   *
+   * The reader always scrolled, but on a dark surface the platform's overlay
+   * scrollbar was effectively invisible, so a ten-page report read as a single
+   * static page. Nothing about the content says "there is more below" when the
+   * page you are looking at is a full-bleed cover. A permanently visible track
+   * and thumb is the conventional signal, and the one users look for first.
+   */
+  .template-reader-scroll {
+    /*
+     * Deliberately NOT setting `scrollbar-width` / `scrollbar-color`: current
+     * Chrome ignores every `::-webkit-scrollbar` rule as soon as either
+     * standard property is set, falling back to an overlay bar that reserves no
+     * layout space and is all but invisible on this surface. `scrollbar-gutter`
+     * keeps the reserved lane stable so the document does not shift when the
+     * bar appears.
+     */
+    scrollbar-gutter: stable;
+  }
+
+  .template-reader-scroll::-webkit-scrollbar {
+    width: 14px;
+  }
+  .template-reader-scroll::-webkit-scrollbar-track {
+    @apply bg-muted;
+  }
+  .template-reader-scroll::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-primary;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  .template-reader-scroll::-webkit-scrollbar-thumb:hover {
+    @apply bg-primary/80;
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────
+   Template converter — brand-colour swatches.
+
+   A design system's brand colour is *document* data, not application theme:
+   it is the accent a generated PDF will print in, chosen per system, and the
+   whole point of the swatch is to show the actual value. So it cannot come
+   from a token — but it also must not be an inline `backgroundColor`, which
+   is what the style ratchet counts and rightly so.
+
+   The component sets `--converter-swatch` and these classes read it. The raw
+   value stays data all the way through, and no hardcoded colour enters a
+   component.
+   ──────────────────────────────────────────────────────────────── */
+@layer components {
+  .converter-swatch {
+    background-color: var(--converter-swatch, transparent);
+  }
+  .converter-swatch-ink {
+    color: var(--converter-swatch, currentColor);
+  }
+}

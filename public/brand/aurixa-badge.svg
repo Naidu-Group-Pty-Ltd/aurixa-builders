@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Aurixa Systems">
+  <title>Aurixa Systems</title>
+  <!--
+    Android renders `badge` as a monochrome status-bar glyph: it keeps the alpha
+    channel and throws the colour away. So this is the same delta geometry as
+    `aurixa-mark.svg`, flattened to white on transparent — the chiselled faces
+    and the blue core would come back as one grey smudge.
+  -->
+  <defs>
+    <mask id="ax-badge-delta">
+      <rect width="512" height="512" fill="#000000"/>
+      <path d="M256 54 L474 442 L38 442 Z" fill="#FFFFFF"/>
+      <path d="M256 160 L385 390 L127 390 Z" fill="#000000"/>
+      <path d="M256 296 L326 442 L186 442 Z" fill="#000000"/>
+    </mask>
+  </defs>
+  <g mask="url(#ax-badge-delta)">
+    <rect width="512" height="512" fill="#FFFFFF"/>
+  </g>
+  <circle cx="256" cy="290" r="62" fill="#FFFFFF"/>
+</svg>

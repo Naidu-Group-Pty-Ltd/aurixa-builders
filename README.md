@@ -68,3 +68,20 @@ same-origin proxy, per-deployment Turnstile, and the CI chain the prime
 already runs (verify_jwt declarations, security checks, mounted-usage specs).
 Then a new Supabase project, DNS via Mission Control's hosting rails, and the
 Phase 3 clone-side mirror.
+
+## Live deployment (provisioned 2026-09-14)
+
+| Piece | Where | State |
+|---|---|---|
+| Supabase project | `htfluofznhxeumblwbww` (ap-southeast-2) | Schema live; catalog fingerprint `a9ca8213186ee3de…` verified byte-identical to the committed baseline proof |
+| Migrations | `supabase/migrations/` | Applied by the database itself: fetched at a pinned commit, sha256-asserted before EXECUTE, ledger holds the canonical versions |
+| Edge functions | `.github/workflows/deploy-supabase-functions.yml` | Ships all 25 on push; **deliberately RED until `SUPABASE_ACCESS_TOKEN` is a repo secret** — a green pretence is the failure the prime already paid for |
+| Frontend + `/fn` proxy | Vercel project `aurixa-builders` (git-linked) | Previews per branch; production tracks `main`. Proxy needs `SUPABASE_URL` + `SUPABASE_ANON_KEY` project env vars and refuses by name without them |
+| Operator console | Mission Control `/builders-network` | Federation-asserted calls to `builder-network-admin`; the NULL-clone `builders:operate` key row is the on/off switch |
+
+Secrets this repo's workflows expect (Settings → Secrets → Actions):
+`SUPABASE_ACCESS_TOKEN` (deploys), `NETWORK_SESSION_PEPPER` and
+`NETWORK_INTERNAL_SECRET` (32+ random chars each; shipped to the project as
+`SESSION_TOKEN_PEPPER` / `INTERNAL_EDGE_SECRET` only when present — an empty
+write would blank a secret somebody set by hand). Vendor keys (Resend,
+Turnstile) are set on the Supabase project directly and never live here.

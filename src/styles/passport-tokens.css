@@ -1,0 +1,2111 @@
+/**
+ * Compliance Passport — the scoped design layer.
+ *
+ * This file IS the Passport's visual system, transcribed from the approved
+ * Claude Design (`AML Compliance Passport.dc.html`). It exists as CSS rather
+ * than as utility classes on components for three reasons:
+ *
+ *  1. The Passport is a deliberate exception to the app's surface language. It
+ *     is a *document* — a dark registry shell wrapping a cream paper booklet —
+ *     and it must not drift when the app's tokens move. Every value the design
+ *     specifies lives here and nowhere else.
+ *  2. `audit:style` counts hex literals and inline colour styles in components.
+ *     Putting the palette in one scoped stylesheet keeps the ratchet clean
+ *     while still reproducing a design that is defined in hex.
+ *  3. Nothing here escapes `.passport-scope`. No global token is redefined, so
+ *     no other surface in the product can be affected by editing this file.
+ *
+ * The booklet's paper does NOT flip with the app theme: a passport's paper is
+ * paper in the dark. The shell is dark in both themes for the same reason —
+ * this is one designed artefact, not a themed surface.
+ */
+
+.passport-scope {
+  /* ── shell (dark registry chrome) ─────────────────────────────────────── */
+  --passport-bg: hsl(240 11% 4%);
+  --passport-surface: hsl(240 10% 6%);
+  --passport-surface-raised: hsl(240 9% 7%);
+  --passport-surface-hover: hsl(240 9% 11%);
+  --passport-hairline: hsl(240 6% 13%);
+  --passport-border: hsl(240 9% 15%);
+  --passport-border-raised: hsl(240 6% 16%);
+  --passport-border-strong: hsl(240 5% 24%);
+  --passport-border-gold: hsl(43 14% 20%);
+
+  --passport-text: hsl(40 12% 90%);
+  --passport-text-bright: hsl(40 21% 95%);
+  --passport-text-dim: hsl(40 6% 71%);
+  --passport-text-muted: hsl(43 3% 53%);
+  --passport-text-faint: hsl(40 3% 42%);
+
+  --passport-gold: hsl(44 75% 49%);
+  --passport-gold-soft: hsl(44 74% 67%);
+  --passport-gold-bright: hsl(44 69% 84%);
+  --passport-gold-dim: hsl(41 50% 57%);
+  --passport-gold-faint: hsl(45 29% 47%);
+
+  --passport-ok: hsl(145 58% 61%);
+  --passport-ok-bright: hsl(145 57% 68%);
+  --passport-ok-dim: hsl(137 6% 51%);
+
+  /* Tone triples: wash / edge / ink — the design's `tone()` helper. */
+  --passport-tone-ok-wash: rgba(47, 191, 107, 0.1);
+  --passport-tone-ok-edge: rgba(47, 191, 107, 0.36);
+  --passport-tone-ok-ink: hsl(145 58% 61%);
+  --passport-tone-info-wash: rgba(90, 140, 220, 0.1);
+  --passport-tone-info-edge: rgba(90, 140, 220, 0.34);
+  --passport-tone-info-ink: hsl(216 70% 73%);
+  --passport-tone-warn-wash: rgba(217, 166, 31, 0.1);
+  --passport-tone-warn-edge: rgba(217, 166, 31, 0.36);
+  --passport-tone-warn-ink: hsl(44 74% 67%);
+  --passport-tone-bad-wash: rgba(214, 69, 69, 0.1);
+  --passport-tone-bad-edge: rgba(214, 69, 69, 0.36);
+  --passport-tone-bad-ink: hsl(0 67% 73%);
+  --passport-tone-na-wash: rgba(255, 255, 255, 0.03);
+  --passport-tone-na-edge: hsl(240 5% 18%);
+  --passport-tone-na-ink: hsl(43 3% 53%);
+
+  /* ── seal inks (shared by shell and booklet) ──────────────────────────── */
+  --passport-seal-gold-ink: hsl(43 60% 34%);
+  --passport-seal-gold-ring: rgba(166, 130, 43, 0.8);
+  --passport-seal-gold-wash: rgba(166, 130, 43, 0.07);
+  --passport-seal-gold-dim: hsl(42 38% 47%);
+  --passport-seal-green-ink: hsl(143 40% 30%);
+  --passport-seal-green-ring: rgba(46, 107, 69, 0.72);
+  --passport-seal-green-wash: rgba(46, 107, 69, 0.06);
+  --passport-seal-green-dim: hsl(143 20% 45%);
+  --passport-seal-navy-ink: hsl(220 38% 28%);
+  --passport-seal-navy-ring: rgba(44, 62, 99, 0.7);
+  --passport-seal-navy-wash: rgba(44, 62, 99, 0.05);
+  --passport-seal-navy-dim: hsl(219 20% 46%);
+  --passport-seal-blue-ink: hsl(216 57% 32%);
+  --passport-seal-blue-ring: rgba(35, 71, 126, 0.7);
+  --passport-seal-blue-wash: rgba(35, 71, 126, 0.06);
+  --passport-seal-blue-dim: hsl(216 28% 49%);
+  --passport-seal-red-ink: hsl(0 57% 39%);
+  --passport-seal-red-ring: rgba(158, 43, 43, 0.7);
+  --passport-seal-red-wash: rgba(158, 43, 43, 0.06);
+  --passport-seal-red-dim: hsl(0 31% 55%);
+
+  /* ── booklet (cream paper) ────────────────────────────────────────────── */
+  --passport-paper: hsl(42 62% 96%);
+  --passport-paper-mid: hsl(41 56% 91%);
+  --passport-paper-edge: hsl(41 49% 88%);
+  --passport-foil: hsl(42 59% 41%);
+  --passport-foil-dim: hsl(43 60% 34%);
+  --passport-ink: hsl(221 48% 17%);
+  --passport-ink-soft: hsl(221 35% 23%);
+  --passport-ink-muted: hsl(220 14% 50%);
+  --passport-ink-faint: hsl(218 19% 65%);
+  --passport-ink-note: hsl(219 14% 55%);
+  --passport-cover: hsl(228 40% 12%);
+  --passport-cover-deep: hsl(225 44% 7%);
+
+  /* The design's display face is a serif — the document character depends on
+     it. The repo ships no serif token, so one is named here and resolved from
+     system faces: a webfont would be a network dependency on a compliance
+     surface that must render offline. */
+  --passport-font-display: ui-serif, Georgia, "Times New Roman", serif;
+  --passport-font-mono: var(--font-mono);
+}
+
+/* ══ shell ═══════════════════════════════════════════════════════════════ */
+
+.passport-scope {
+  background: var(--passport-bg);
+  color: var(--passport-text);
+}
+
+.passport-shell__strip {
+  background: linear-gradient(180deg, rgba(217, 166, 31, 0.045), transparent);
+  border-bottom: 1px solid var(--passport-hairline);
+}
+
+.passport-display {
+  font-family: var(--passport-font-display);
+  color: var(--passport-text-bright);
+  letter-spacing: -0.005em;
+}
+
+.passport-mono {
+  font-family: var(--passport-font-mono);
+  letter-spacing: 0.05em;
+}
+
+.passport-kicker {
+  font-size: 0.625rem;
+  letter-spacing: 0.22em;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--passport-gold);
+}
+
+.passport-card {
+  background: var(--passport-surface);
+  border: 1px solid var(--passport-border);
+  border-radius: 12px;
+}
+
+.passport-card--pending {
+  border-color: rgba(217, 166, 31, 0.32);
+}
+
+.passport-panel {
+  background: var(--passport-surface-raised);
+  border: 1px solid var(--passport-border-raised);
+  border-radius: 12px;
+}
+
+.passport-muted { color: var(--passport-text-muted); }
+.passport-faint { color: var(--passport-text-faint); }
+.passport-dim { color: var(--passport-text-dim); }
+.passport-gold-text { color: var(--passport-gold-soft); }
+.passport-rule { border-color: var(--passport-hairline); }
+
+/* ── navigation rail ──────────────────────────────────────────────────── */
+
+.passport-rail {
+  background: var(--passport-surface);
+  border: 1px solid var(--passport-border);
+  border-radius: 12px;
+}
+
+.passport-rail__item {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  width: 100%;
+  padding: 0.5rem 0.625rem;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  text-align: left;
+  color: var(--passport-text-muted);
+  transition: background 140ms ease-out, color 140ms ease-out;
+}
+
+.passport-rail__item:hover {
+  background: var(--passport-surface-hover);
+  color: var(--passport-text);
+}
+
+.passport-rail__item[aria-current="page"] {
+  background: rgba(217, 166, 31, 0.09);
+  border-color: rgba(217, 166, 31, 0.32);
+  color: var(--passport-gold-bright);
+}
+
+.passport-rail__n {
+  font-family: var(--passport-font-mono);
+  font-size: 0.6875rem;
+  color: var(--passport-text-faint);
+  flex: 0 0 auto;
+}
+
+.passport-rail__item[aria-current="page"] .passport-rail__n {
+  color: var(--passport-gold);
+}
+
+/* ── controls ─────────────────────────────────────────────────────────── */
+
+/**
+ * ── Why there is no `width: 100%` here any more ───────────────────────
+ * There was, and it was wrong for EVERY caller. `.passport-action` and
+ * Tailwind's `.w-auto` are both single-class selectors, so specificity ties
+ * and source order decides — and this stylesheet is imported last. Every one
+ * of the nineteen `passport-action w-auto` buttons in the product therefore
+ * rendered full width, with the utility that asked otherwise silently
+ * discarded. There is not a single call site that omits `w-auto`.
+ *
+ * The visible symptom was the booklet's turn bar: "← Previous" and "Next →"
+ * each claiming the whole row, squeezing the page title between them to a
+ * truncated "Identity Ver…" with its page count wrapped onto three lines and
+ * running under the button.
+ *
+ * Dropping the declaration does NOT unstretch the dialog buttons: this is a
+ * flex container, so a button inside a `flex-col` still stretches to the
+ * column under the default `align-items: stretch`. What changes is exactly
+ * the case that was broken — a button in a ROW, which now takes its content
+ * width, which is what `w-auto` asked for all along.
+ */
+.passport-action {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.625rem;
+  border-radius: 8px;
+  border: 1px solid var(--passport-border-raised);
+  background: var(--passport-surface-raised);
+  color: var(--passport-text);
+  font-size: 0.75rem;
+  text-align: left;
+  transition: background 140ms ease-out, border-color 140ms ease-out;
+}
+
+/**
+ * The booklet's page-turn buttons.
+ *
+ * Equal minimum width on both, so the title between them sits on the true
+ * centre line rather than wherever two differently-sized labels happen to
+ * leave it, and centred text because a turn control is a target rather than
+ * a list row.
+ */
+.passport-action--turn {
+  flex: 0 0 auto;
+  justify-content: center;
+  min-width: 7.25rem;
+  padding-inline: 0.875rem;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.passport-action:hover:not(:disabled) {
+  background: var(--passport-surface-hover);
+  border-color: var(--passport-border-strong);
+}
+
+.passport-action:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.passport-action--restricted {
+  border-color: rgba(158, 43, 43, 0.4);
+  color: hsl(0 67% 73%);
+}
+
+.passport-action--restricted:hover:not(:disabled) {
+  background: rgba(158, 43, 43, 0.1);
+  border-color: rgba(158, 43, 43, 0.6);
+}
+
+.passport-action--primary {
+  border-color: rgba(217, 166, 31, 0.45);
+  background: linear-gradient(160deg, rgba(233, 200, 107, 0.16), rgba(192, 143, 28, 0.08));
+  color: var(--passport-gold-bright);
+  font-weight: 600;
+}
+
+.passport-action--primary:hover:not(:disabled) {
+  background: linear-gradient(160deg, rgba(233, 200, 107, 0.24), rgba(192, 143, 28, 0.14));
+}
+
+/* ── tone pills ───────────────────────────────────────────────────────── */
+
+.passport-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.1875rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--passport-tone-na-edge);
+  background: var(--passport-tone-na-wash);
+  color: var(--passport-tone-na-ink);
+  font-size: 0.625rem;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.passport-pill--ok {
+  border-color: var(--passport-tone-ok-edge);
+  background: var(--passport-tone-ok-wash);
+  color: var(--passport-tone-ok-ink);
+}
+.passport-pill--info {
+  border-color: var(--passport-tone-info-edge);
+  background: var(--passport-tone-info-wash);
+  color: var(--passport-tone-info-ink);
+}
+.passport-pill--warn {
+  border-color: var(--passport-tone-warn-edge);
+  background: var(--passport-tone-warn-wash);
+  color: var(--passport-tone-warn-ink);
+}
+.passport-pill--bad {
+  border-color: var(--passport-tone-bad-edge);
+  background: var(--passport-tone-bad-wash);
+  color: var(--passport-tone-bad-ink);
+}
+
+/* ── field grids ──────────────────────────────────────────────────────── */
+
+.passport-field__k {
+  font-size: 0.625rem;
+  letter-spacing: 0.16em;
+  font-weight: 700;
+  color: var(--passport-text-faint);
+  margin-bottom: 0.25rem;
+  text-transform: uppercase;
+}
+
+.passport-field__v {
+  font-size: 0.8125rem;
+  color: var(--passport-text-bright);
+  line-height: 1.45;
+}
+
+.passport-field__v--mono {
+  font-family: var(--passport-font-mono);
+  color: var(--passport-gold-soft);
+}
+
+/* ── seals (shell + booklet share the ink set) ────────────────────────── */
+
+.passport-wax {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  border-radius: 50%;
+  border: 1.5px solid var(--seal-ring);
+  background: radial-gradient(circle at 50% 38%, var(--seal-wash), transparent 72%);
+  box-shadow:
+    inset 0 0 0 3px rgba(255, 255, 255, 0.45),
+    inset 0 0 0 4px var(--seal-ring),
+    0 3px 12px -5px var(--seal-ring);
+  color: var(--seal-ink);
+}
+
+.passport-wax__ring {
+  position: absolute;
+  inset: 9px;
+  border: 1px dashed var(--seal-ring);
+  border-radius: 50%;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.passport-wax__ticks {
+  position: absolute;
+  inset: 5px;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0.55;
+  background: repeating-conic-gradient(from 0deg, var(--seal-ring) 0 1deg, transparent 1deg 6deg);
+  -webkit-mask: radial-gradient(circle, transparent 0 78%, hsl(0 0% 0%) 78% 88%, transparent 88%);
+  mask: radial-gradient(circle, transparent 0 78%, hsl(0 0% 0%) 78% 88%, transparent 88%);
+}
+
+/* The same mark the struck die carries, drawn the same way: the emblem as a
+   mask, the seal's own ink as the fill. A seal on this document that is not
+   marked reads as belonging to something else. */
+.passport-wax__watermark {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 74%;
+  height: 74%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  opacity: var(--seal-watermark-opacity, 0.16);
+  background-color: var(--seal-ink);
+  -webkit-mask: var(--stamp-watermark-src, url("/brand/aurixa-emblem-240.png")) center / contain no-repeat;
+  mask: var(--stamp-watermark-src, url("/brand/aurixa-emblem-240.png")) center / contain no-repeat;
+}
+
+.passport-wax__org {
+  font-size: 0.3125rem;
+  letter-spacing: 0.15em;
+  font-weight: 700;
+  color: var(--seal-dim);
+}
+
+.passport-wax__title {
+  margin: 3px 0;
+  font-family: var(--passport-font-display);
+  font-size: 0.6875rem;
+  line-height: 1.1;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--seal-ink);
+}
+
+.passport-wax__cap {
+  font-size: 0.3125rem;
+  letter-spacing: 0.13em;
+  font-weight: 700;
+  color: var(--seal-dim);
+}
+
+.passport-wax--gold {
+  --seal-ink: var(--passport-seal-gold-ink);
+  --seal-ring: var(--passport-seal-gold-ring);
+  --seal-wash: var(--passport-seal-gold-wash);
+  --seal-dim: var(--passport-seal-gold-dim);
+}
+.passport-wax--green {
+  --seal-ink: var(--passport-seal-green-ink);
+  --seal-ring: var(--passport-seal-green-ring);
+  --seal-wash: var(--passport-seal-green-wash);
+  --seal-dim: var(--passport-seal-green-dim);
+}
+.passport-wax--navy {
+  --seal-ink: var(--passport-seal-navy-ink);
+  --seal-ring: var(--passport-seal-navy-ring);
+  --seal-wash: var(--passport-seal-navy-wash);
+  --seal-dim: var(--passport-seal-navy-dim);
+}
+.passport-wax--blue {
+  --seal-ink: var(--passport-seal-blue-ink);
+  --seal-ring: var(--passport-seal-blue-ring);
+  --seal-wash: var(--passport-seal-blue-wash);
+  --seal-dim: var(--passport-seal-blue-dim);
+}
+.passport-wax--red {
+  --seal-ink: var(--passport-seal-red-ink);
+  --seal-ring: var(--passport-seal-red-ring);
+  --seal-wash: var(--passport-seal-red-wash);
+  --seal-dim: var(--passport-seal-red-dim);
+}
+
+/* An unearned seal is shown as an empty impression, never as a filled one:
+   the register must not imply a certification that no record supports. */
+.passport-wax--unearned {
+  opacity: 0.32;
+  filter: grayscale(1);
+  box-shadow: none;
+  border-style: dashed;
+}
+
+/* ── booklet ─────────────────────────────────────────────────────────── */
+
+.passport-cover {
+  position: relative;
+  color: var(--passport-gold-soft);
+  background:
+    radial-gradient(120% 85% at 50% 8%, rgba(233, 200, 107, 0.1), transparent 58%),
+    linear-gradient(155deg, var(--passport-cover) 0%, var(--passport-cover-deep) 55%, hsl(36 29% 3%) 100%);
+  border: 1px solid rgba(166, 130, 43, 0.35);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.09);
+}
+
+.passport-cover__frame {
+  position: absolute;
+  inset: 10px;
+  border: 1px solid rgba(166, 130, 43, 0.45);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.passport-cover__rule {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(166, 130, 43, 0.8), transparent);
+}
+
+.passport-leaf {
+  position: relative;
+  color: var(--passport-ink);
+  background:
+    repeating-linear-gradient(56deg, rgba(22, 35, 63, 0.022) 0 1px, transparent 1px 7px),
+    repeating-linear-gradient(-56deg, rgba(22, 35, 63, 0.018) 0 1px, transparent 1px 9px),
+    linear-gradient(152deg, var(--passport-paper) 0%, var(--passport-paper-mid) 52%, var(--passport-paper-edge) 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(166, 130, 43, 0.34),
+    0 26px 60px -28px rgba(0, 0, 0, 0.75);
+  border-radius: 11px;
+  overflow: hidden;
+}
+
+/* The guilloche rosette — a security-print motif, not decoration: it is what
+   makes a screenshot of the booklet read as a document rather than a card. */
+.passport-leaf__guilloche {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 58%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0.55;
+  background:
+    repeating-radial-gradient(circle at 50% 50%, rgba(166, 130, 43, 0.16) 0 1px, transparent 1px 7px),
+    repeating-conic-gradient(from 0deg, rgba(166, 130, 43, 0.1) 0 0.6deg, transparent 0.6deg 5deg);
+}
+
+.passport-leaf__frame-outer {
+  position: absolute;
+  inset: 9px;
+  border: 1px solid rgba(166, 130, 43, 0.3);
+  border-radius: 7px;
+  pointer-events: none;
+}
+
+.passport-leaf__frame-inner {
+  position: absolute;
+  inset: 13px;
+  border: 1px solid rgba(166, 130, 43, 0.14);
+  border-radius: 5px;
+  pointer-events: none;
+}
+
+.passport-leaf__kicker {
+  font-size: 0.46875rem;
+  letter-spacing: 0.26em;
+  font-weight: 700;
+  color: var(--passport-foil);
+  text-transform: uppercase;
+}
+
+.passport-leaf__title {
+  font-family: var(--passport-font-display);
+  font-size: 1.125rem;
+  font-weight: 600;
+  letter-spacing: 0.11em;
+  color: var(--passport-ink);
+  text-transform: uppercase;
+  margin: 7px 0 0;
+}
+
+.passport-leaf__sub { color: var(--passport-ink-muted); }
+.passport-leaf__muted { color: var(--passport-ink-muted); }
+.passport-leaf__faint { color: var(--passport-ink-faint); }
+.passport-leaf__note { color: var(--passport-ink-note); }
+.passport-leaf__row { border-bottom: 1px solid rgba(22, 35, 63, 0.09); }
+
+.passport-leaf__divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(166, 130, 43, 0.65), transparent);
+}
+
+/* ── the holder's portrait ─────────────────────────────────────────────
+ * Drawn as a photograph MOUNTED on the leaf rather than as an avatar placed
+ * on top of it: a recessed well, a gold hairline, the paper's own ink for
+ * the legend. The proportion is 35:45 — the ICAO 35×45mm passport-photograph
+ * ratio — so the frame reads as the thing it is even before the image loads.
+ *
+ * The leaf is authored at 470x648 and SCALED by transform, so every value
+ * here is in leaf pixels and must never be a viewport unit: a portrait sized
+ * in `vh` would be the one element on the page that ignored the fit.        */
+
+.passport-portrait__mount {
+  position: relative;
+  flex: 0 0 auto;
+  width: 84px;
+  height: 108px;               /* 35:45 */
+  padding: 3px;
+  /* The photograph is INSIDE its frame. Without this the image paints over
+     the bottom hairline and the mount stops reading as a mount. */
+  overflow: hidden;
+  border: 1px solid rgba(166, 130, 43, 0.55);
+  border-radius: 2px;
+  background: rgba(22, 35, 63, 0.04);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.5),
+    0 1px 2px rgba(22, 35, 63, 0.12);
+}
+
+.passport-portrait__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* The photograph is printed, not pasted: a touch of the paper's warmth
+     over it keeps it inside the document's own colour. */
+  filter: saturate(0.94) contrast(1.02);
+  border-radius: 1px;
+  display: block;
+  /* A document portrait is a head-and-shoulders crop. Where the aspect ratio
+     is not exactly 35:45, losing the bottom of the shoulders is right and
+     losing the top of the head is not. */
+  object-position: center top;
+}
+
+.passport-portrait__empty {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 1px;
+  background:
+    repeating-linear-gradient(
+      45deg,
+      rgba(22, 35, 63, 0.045) 0 4px,
+      transparent 4px 8px
+    );
+}
+
+.passport-portrait__empty-mark {
+  font-size: 14px;
+  color: rgba(166, 130, 43, 0.5);
+}
+
+/* ── The bio panel on the Client Identity leaf ────────────────────────
+   An identity document's own layout: the photograph mounted at the left,
+   the fields that name the holder set beside it. Everything is in LEAF
+   pixels — the leaf is authored at 470x648 and scaled by one transform, so a
+   value in viewport units would be the single element on the page that
+   ignored the fit.
+
+   The mount is wider here than a marginal portrait would be (96x123, the
+   35:45 ICAO ratio) because on this leaf the photograph is the subject of
+   the page rather than an ornament beside it. */
+.passport-bio {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.passport-bio__figure {
+  margin: 0;
+  flex: 0 0 auto;
+  width: 96px;
+}
+
+.passport-bio__mount {
+  width: 96px;
+  height: 123px;               /* 35:45 */
+}
+
+.passport-bio__caption {
+  margin-top: 5px;
+  font-size: 7.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--passport-ink-faint);
+  line-height: 1.35;
+}
+
+.passport-bio__fields {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  /* Optically level with the top of the mount rather than with its border:
+     the frame carries 3px of padding and a hairline, and matching the box
+     leaves the first label sitting a shade high. */
+  padding-top: 1px;
+}
+
+.passport-bio__field {
+  min-width: 0;
+}
+
+.passport-bio__v {
+  margin-top: 1px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--passport-ink);
+  overflow-wrap: anywhere;
+}
+
+/* Why the frame is empty, said on the page rather than left to the reader.
+   Set as a printed remark — the paper's faint ink, not an error colour: a
+   photograph that was never retained says nothing about the holder. */
+.passport-bio__absence {
+  margin: 2px 0 0;
+  font-size: 8.5px;
+  line-height: 1.4;
+  font-style: italic;
+  color: var(--passport-ink-faint);
+}
+
+.passport-leaf__k {
+  font-size: 0.4375rem;
+  letter-spacing: 0.16em;
+  font-weight: 700;
+  color: var(--passport-ink-faint);
+  text-transform: uppercase;
+}
+
+.passport-leaf__statement {
+  font-family: var(--passport-font-display);
+  color: var(--passport-ink-soft);
+}
+
+.passport-leaf__aside {
+  padding: 10px 12px;
+  background: rgba(22, 35, 63, 0.035);
+  border-left: 2px solid rgba(166, 130, 43, 0.65);
+  border-radius: 0 6px 6px 0;
+}
+
+/* Progress in the booklet — colour here, only the width stays inline. */
+.passport-progress { background: rgba(22, 35, 63, 0.12); }
+.passport-progress__bar { background: var(--passport-foil-dim); }
+
+/* ── motion ──────────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: no-preference) {
+  .passport-fade { animation: passportFade 240ms ease-out both; }
+  .passport-wax-hover { transition: transform 180ms ease-out; }
+  button:hover > .passport-wax-hover,
+  button:focus-visible > .passport-wax-hover { transform: scale(1.03); }
+}
+
+@keyframes passportFade {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* The page-turn is the one motion the design treats as meaningful rather than
+   decorative — it is what makes the booklet read as a bound document. It is
+   suppressed entirely under reduced-motion: the page simply changes. */
+@media (prefers-reduced-motion: no-preference) {
+  .passport-turn-fwd { animation: passportTurnFwd 420ms ease-in-out both; }
+  .passport-turn-back { animation: passportTurnBack 420ms ease-in-out both; }
+}
+
+@keyframes passportTurnFwd {
+  from { transform: rotateY(0deg); }
+  to { transform: rotateY(-178deg); }
+}
+
+@keyframes passportTurnBack {
+  from { transform: rotateY(178deg); }
+  to { transform: rotateY(0deg); }
+}
+
+/* ══ legacy stamp seal + client booklet page ═════════════════════════════
+   These classes predate the design rebuild and are still the contract for
+   `StampSeal` and the Client Portal booklet (`PortalPassport`). They are kept
+   verbatim rather than folded into the new `.passport-wax` family: the client
+   surface is a separate, already-shipped audience projection, and restyling it
+   as a side effect of rebuilding the Command page is exactly the kind of
+   unrelated regression this rebuild was asked not to introduce. */
+
+.passport-scope {
+  --passport-seal-gold: 43 59% 34%;
+  --passport-seal-green: 146 40% 30%;
+  --passport-seal-navy: 221 40% 28%;
+  --passport-seal-blue: 215 57% 32%;
+  --passport-seal-red: 0 55% 40%;
+}
+
+.passport-seal {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  border-width: 2px;
+  border-style: solid;
+  border-color: hsl(var(--passport-seal-ink) / 0.55);
+  color: hsl(var(--passport-seal-ink));
+  background: hsl(var(--passport-seal-ink) / 0.06);
+}
+
+.passport-seal--gold { --passport-seal-ink: var(--passport-seal-gold); }
+.passport-seal--green { --passport-seal-ink: var(--passport-seal-green); }
+.passport-seal--navy { --passport-seal-ink: var(--passport-seal-navy); }
+.passport-seal--blue { --passport-seal-ink: var(--passport-seal-blue); }
+.passport-seal--red { --passport-seal-ink: var(--passport-seal-red); }
+
+.passport-seal--circle {
+  border-radius: 9999px;
+  border-style: double;
+  border-width: 3px;
+  transform: rotate(-6deg);
+}
+.passport-seal--rect {
+  border-radius: 3px;
+  transform: rotate(-2deg);
+}
+.passport-seal--seal {
+  clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
+  transform: rotate(3deg);
+}
+
+.passport-seal__ring {
+  position: absolute;
+  inset: 5px;
+  border: 1px dashed hsl(var(--passport-seal-ink) / 0.5);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+/* An UNEARNED certification — the empty impression.
+   It must be unmistakable at a glance, so it differs on every axis a reader
+   uses rather than only in opacity: no ink in the field, a dashed rule where
+   an earned seal is struck solid, no rotation (an unstruck die was never
+   pressed), and neutral type. The page states "not yet earned" in words too —
+   style alone is not a distinction a screen reader can hear.
+
+   It takes the page's OWN neutral scale rather than a dimmed seal ink. The
+   seal inks are authored for the booklet's cream paper, and this face is only
+   ever drawn on the Command shell — a navy ink at 30% on a near-black surface
+   is not a faint impression, it is an invisible one. */
+.passport-seal--pending {
+  border-style: dashed;
+  border-width: 2px;
+  border-color: var(--passport-text-faint);
+  /* The `seal` shape is a clip-path, which cuts the border away on the
+     diagonals — with no fill at all the octagon reads as two stray dashes
+     rather than a shape. The "not applicable" wash restores the silhouette
+     without putting any ink in the field. */
+  background: var(--passport-tone-na-wash);
+  color: var(--passport-text-muted);
+  transform: none;
+}
+.passport-seal--pending.passport-seal--circle,
+.passport-seal--pending.passport-seal--rect,
+.passport-seal--pending.passport-seal--seal {
+  transform: none;
+}
+.passport-seal--pending .passport-seal__ring {
+  border-color: var(--passport-border-strong);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .passport-seal { transition: transform 180ms ease-out; }
+  button:hover > .passport-seal,
+  button:focus-visible > .passport-seal { transform: rotate(0deg) scale(1.02); }
+}
+
+.passport-page {
+  color: hsl(var(--passport-page-ink, 222 42% 17%));
+  background:
+    repeating-linear-gradient(56deg, rgba(22, 35, 63, 0.02) 0 1px, transparent 1px 7px),
+    linear-gradient(152deg, var(--passport-paper) 0%, var(--passport-paper-edge) 100%);
+  border: 1px solid rgba(166, 130, 43, 0.45);
+}
+.passport-page__kicker {
+  color: var(--passport-foil-dim);
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+.passport-page__muted { color: var(--passport-ink-muted); }
+.passport-page__rule { height: 1px; background: rgba(22, 35, 63, 0.12); }
+
+/* Journey markers — state is a class, never an inline colour, so the ratchet
+   in scripts/audit-style-tokens.cjs stays clean. */
+.passport-phase-dot {
+  height: 0.625rem;
+  width: 0.625rem;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid var(--passport-border-strong);
+  background: transparent;
+}
+.passport-phase-dot--complete {
+  border-color: var(--passport-gold);
+  background: var(--passport-gold);
+}
+
+.passport-ordinal {
+  display: flex;
+  height: 30px;
+  width: 30px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--passport-border-strong);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--passport-text-faint);
+}
+.passport-ordinal--recorded {
+  border-color: rgba(217, 166, 31, 0.45);
+  color: var(--passport-gold);
+}
+
+/* ══ booklet: block vocabulary ═══════════════════════════════════════════
+   Drawn in the cream-paper palette. These are the design's page blocks
+   (PassportPage.dc.html) — a page is a kicker, a title and an ordered list of
+   these. Colour lives here so BookletBlocks.tsx names none. */
+
+.passport-leaf__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.125rem 0.375rem;
+  border-radius: 4px;
+  border: 1px solid currentColor;
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.passport-leaf__tone--ok { color: hsl(143 45% 30%); }
+.passport-leaf__tone--info { color: hsl(216 50% 38%); }
+.passport-leaf__tone--warn { color: hsl(35 62% 34%); }
+.passport-leaf__tone--bad { color: hsl(0 52% 40%); }
+.passport-leaf__tone--na { color: var(--passport-ink-faint); }
+
+.passport-leaf__mono { color: var(--passport-foil-dim); }
+
+.passport-leaf__icon {
+  height: 22px;
+  width: 22px;
+  flex: none;
+  border-radius: 5px;
+  border: 1px solid rgba(166, 130, 43, 0.45);
+  background: rgba(166, 130, 43, 0.08);
+}
+
+.passport-leaf__verify {
+  padding: 10px 12px;
+  border: 1px solid rgba(166, 130, 43, 0.35);
+  border-radius: 8px;
+  background: rgba(166, 130, 43, 0.05);
+}
+
+.passport-leaf__signature {
+  font-family: var(--passport-font-display);
+  font-style: italic;
+  font-size: 20px;
+  line-height: 1.1;
+  color: var(--passport-ink);
+}
+.passport-leaf__sigrule { height: 1px; background: rgba(22, 35, 63, 0.28); }
+
+.passport-leaf__banner {
+  padding: 9px 12px;
+  border-radius: 6px;
+  text-align: center;
+  font-size: 0.5625rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--passport-gold-soft);
+  background: linear-gradient(150deg, var(--passport-cover), var(--passport-cover-deep));
+  border: 1px solid rgba(166, 130, 43, 0.4);
+}
+
+/* ── booklet chrome ─────────────────────────────────────────────────────
+   The bound-document board the leaves sit on, and its header bar. */
+
+.passport-board {
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgba(35, 55, 105, 0.35), transparent 62%),
+    linear-gradient(160deg, hsl(228 40% 12%), hsl(225 44% 7%));
+  border: 1px solid rgba(166, 130, 43, 0.28);
+  border-radius: 14px;
+}
+
+/* The spine: what makes two leaves read as one bound document rather than two
+   cards side by side. Hidden when only one leaf is shown. */
+.passport-board__spine {
+  width: 2px;
+  align-self: stretch;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    rgba(0, 0, 0, 0.55) 12%,
+    rgba(0, 0, 0, 0.55) 88%,
+    transparent
+  );
+  box-shadow: 0 0 14px 3px rgba(0, 0, 0, 0.45);
+}
+
+/* ── panning a magnified board ──────────────────────────────────────────
+   The reader can enlarge the document past the space it is drawn in, and
+   what they get then is a document larger than its window. It has to be
+   movable, and — the part that is easy to leave out — it has to LOOK
+   movable.
+
+   The platform default here is either a chunky light scrollbar with stepper
+   arrows bolted onto a navy dialog, or, where the browser uses overlay
+   scrollbars, no visible affordance at all until something has already been
+   scrolled. Neither tells a reader that the page they are looking at can be
+   moved. So the bars are drawn in the document's own gold on its own navy,
+   always present while there is somewhere to go — the same treatment the
+   other scrolling dialogs in this product use. The grab cursor is the
+   component's; this is what is left when a pointer is not over the board.
+
+   `overflow` is applied by the component and never here: whether the board
+   has anywhere to go is a measurement, and a stylesheet cannot make it. */
+.passport-pan {
+  scrollbar-width: thin;
+  scrollbar-color: var(--passport-gold-faint) var(--passport-bg);
+}
+
+.passport-pan::-webkit-scrollbar { width: 11px; height: 11px; }
+.passport-pan::-webkit-scrollbar-track { background: var(--passport-bg); }
+.passport-pan::-webkit-scrollbar-thumb {
+  border: 2px solid var(--passport-bg);
+  border-radius: 999px;
+  background: var(--passport-gold-faint);
+}
+.passport-pan::-webkit-scrollbar-thumb:hover { background: var(--passport-gold-dim); }
+.passport-pan::-webkit-scrollbar-corner { background: var(--passport-bg); }
+
+.passport-bookbar {
+  border-bottom: 1px solid var(--passport-hairline);
+  background: linear-gradient(180deg, rgba(217, 166, 31, 0.06), transparent);
+}
+
+.passport-pagechip {
+  min-width: 26px;
+  height: 26px;
+  padding: 0 0.375rem;
+  border-radius: 6px;
+  border: 1px solid var(--passport-border-raised);
+  background: var(--passport-surface-raised);
+  color: var(--passport-text-muted);
+  font-family: var(--passport-font-mono);
+  font-size: 0.6875rem;
+  transition: background 120ms ease-out, color 120ms ease-out;
+}
+.passport-pagechip:hover {
+  background: var(--passport-surface-hover);
+  color: var(--passport-text);
+}
+.passport-pagechip[aria-current="true"],
+.passport-pagechip[aria-pressed="true"] {
+  border-color: rgba(217, 166, 31, 0.55);
+  background: rgba(217, 166, 31, 0.12);
+  color: var(--passport-gold-bright);
+}
+/* A control at its limit stays legible rather than disappearing: the reader
+   needs to see that 100% IS the fit, not wonder where the button went. */
+.passport-pagechip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.passport-pagechip:disabled:hover {
+  background: var(--passport-surface-raised);
+  color: var(--passport-text-muted);
+}
+
+.passport-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4375rem 0.75rem;
+  border-radius: 9999px;
+  border: 1px solid var(--passport-tone-ok-edge);
+  background: var(--passport-tone-ok-wash);
+  color: var(--passport-tone-ok-ink);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* ══ cover ═══════════════════════════════════════════════════════════════
+   The navy front board, laid out to the approved design: the crest owns the
+   upper third inside an engraved halo, then the wordmark, a diamond rule, the
+   title, and the issue detail subordinate above the clasp. Drawn at the leaf's
+   design size and scaled with it, so cover and paper are always the same size
+   and the whole book scales as one object. */
+
+/* The COMPOSITION is scoped to the front board, never to `.passport-cover`
+   itself. That class is the navy leather material and is shared — the partner
+   compliance strip paints itself with it — so setting the board's own page
+   margins on it put 58px of cover padding on a strip that had asked for 16px,
+   and left-aligned its contents. Material and composition are separate
+   concerns and are now separate selectors. */
+.passport-cover--board {
+  /* Vertical rhythm is set once here rather than with per-element margins, so
+     the composition holds at every scale. */
+  padding: 58px 44px 46px;
+  justify-content: flex-start;
+}
+
+.passport-cover__frame {
+  position: absolute;
+  inset: 14px;
+  border: 1px solid rgba(217, 166, 31, 0.55);
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+.passport-cover__frame-inner {
+  position: absolute;
+  inset: 20px;
+  border: 1px solid rgba(217, 166, 31, 0.2);
+  border-radius: 5px;
+  pointer-events: none;
+}
+
+.passport-cover__crest {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 210px;
+  height: 210px;
+  flex: none;
+}
+
+/* Concentric rings and radial ticks behind the mark — the design's engraved
+   halo. Masked to a ring so it reads as engraving rather than as a disc. */
+.passport-cover__halo {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0.55;
+  background:
+    repeating-radial-gradient(circle at 50% 50%, rgba(217, 166, 31, 0.2) 0 1px, transparent 1px 15px),
+    repeating-conic-gradient(from 0deg, rgba(217, 166, 31, 0.14) 0 0.5deg, transparent 0.5deg 6deg);
+  -webkit-mask: radial-gradient(circle, transparent 0 30%, hsl(0 0% 0%) 42% 76%, transparent 88%);
+  mask: radial-gradient(circle, transparent 0 30%, hsl(0 0% 0%) 42% 76%, transparent 88%);
+}
+
+.passport-cover__emblem {
+  width: 150px;
+  height: 150px;
+  object-fit: contain;
+  filter: drop-shadow(0 6px 18px rgba(0, 0, 0, 0.55));
+}
+
+.passport-cover__wordmark {
+  margin: 14px 0 0;
+  font-family: var(--passport-font-display);
+  font-size: 42px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-indent: 0.22em;
+  text-transform: uppercase;
+  line-height: 1;
+  color: var(--passport-gold-soft);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+.passport-cover__systems {
+  margin-top: 9px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.68em;
+  text-indent: 0.68em;
+  text-transform: uppercase;
+  color: var(--passport-gold-dim);
+}
+
+.passport-cover__diamond {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 190px;
+  margin: 26px 0 0;
+}
+.passport-cover__diamond-rule {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(217, 166, 31, 0.7), transparent);
+}
+.passport-cover__diamond-mark {
+  font-size: 7px;
+  line-height: 1;
+  color: var(--passport-gold-dim);
+}
+
+.passport-cover__title {
+  margin-top: 26px;
+  font-family: var(--passport-font-display);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  line-height: 1.85;
+  text-transform: uppercase;
+  color: var(--passport-gold-soft);
+}
+
+/* Pushed to the foot of the board, clear of the clasp. */
+.passport-cover__issue {
+  margin-top: auto;
+  padding-bottom: 46px;
+  width: 100%;
+}
+
+.passport-cover__holder {
+  font-family: var(--passport-font-display);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--passport-gold-bright);
+}
+
+.passport-cover__credential {
+  font-family: var(--passport-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  color: var(--passport-gold-faint);
+}
+
+.passport-cover__fingerprint {
+  font-size: 8.5px;
+  color: var(--passport-gold-faint);
+  letter-spacing: 0.08em;
+}
+.passport-cover__fingerprint-k {
+  font-size: 6.5px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--passport-gold-dim);
+}
+
+.passport-cover__clasp {
+  position: absolute;
+  bottom: 30px;
+  left: 50%;
+  width: 46px;
+  height: 21px;
+  transform: translateX(-50%);
+  border-radius: 4px;
+  border: 1px solid rgba(166, 130, 43, 0.8);
+  background: linear-gradient(180deg, hsl(44 62% 64%), hsl(43 55% 45%) 45%, hsl(42 50% 32%));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 2px 7px -2px rgba(0, 0, 0, 0.65);
+}
+
+/* ══ the cover as a miniature ════════════════════════════════════════════
+   A record shows the document, not a stand-in for it — so the real front
+   board is drawn at its design size and uniformly scaled into the slot.
+
+   The size is ONE number, `--passport-thumb-w`, unitless so the box and the
+   scale can both be derived from it. That is the whole trick and it is
+   load-bearing: a slot width taken from CSS and a scale factor computed
+   anywhere else will disagree at some point — before a layout effect, in a
+   server render, on a hidden tab — and a board drawn at one size inside a box
+   of another loses its clasp to `overflow: hidden`. Derived together they
+   cannot. A surface resizes the cover by setting the one property. */
+
+.passport-cover-thumb {
+  --passport-thumb-w: 112;
+  position: relative;
+  display: block;
+  width: calc(var(--passport-thumb-w) * 1px);
+  /* The design ratio (470×648), stated once. */
+  aspect-ratio: 470 / 648;
+  overflow: hidden;
+  /* Clipped just inside the board's own corner so the navy meets the rule. */
+  border-radius: 7px;
+  border: 1px solid var(--passport-border-gold);
+  box-shadow: 0 7px 20px -9px hsl(225 44% 7% / 0.75);
+  flex: none;
+}
+
+@media (min-width: 640px) {
+  .passport-cover-thumb {
+    --passport-thumb-w: 138;
+  }
+}
+
+.passport-cover-thumb__art {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  /* The design size. The board is authored against this box and every rule,
+     seal and letter inside it is proportioned to it. */
+  width: 470px;
+  height: 648px;
+  transform-origin: top left;
+  transform: scale(calc(var(--passport-thumb-w) / 470));
+  /* The board is a picture at this size; nothing inside it is a target. */
+  pointer-events: none;
+}
+
+/* The control that opens the booklet OVERLAYS the cover rather than wrapping
+   it. A <button> may only contain phrasing content and the board is a
+   <section> of headings and figures, so nesting the artwork inside the control
+   would be invalid markup. The slot carries the affordance instead, which also
+   keeps the artwork exactly what the booklet's first page is. */
+.passport-cover-thumb__slot {
+  position: relative;
+  display: block;
+  width: max-content;
+  transition: transform 180ms ease;
+}
+.passport-cover-thumb__slot:hover {
+  transform: translateY(-2px);
+}
+.passport-cover-thumb__slot:hover .passport-cover-thumb {
+  box-shadow: 0 14px 28px -10px hsl(225 44% 7% / 0.85);
+}
+
+.passport-cover-thumb__open {
+  position: absolute;
+  inset: 0;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.passport-cover-thumb__open:focus-visible {
+  outline: 2px solid var(--passport-gold-dim);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .passport-cover-thumb__slot,
+  .passport-cover-thumb__slot:hover {
+    transition: none;
+    transform: none;
+  }
+}
+
+/* ══ stamp faces — the approved design's struck impression ═══════════════
+   Transcribed from `stampFace()` in `AML Compliance Passport.dc.html`.
+
+   A stamp is FIVE layers, and the reason the previous face read as a coloured
+   box is that it had one. In order, back to front:
+
+     face        shape, rule, inset shadows, gradient wash, rotation, glow
+     grain       two ±38° hatchings under `mix-blend-mode: overlay` — the
+                 texture of ink pressed into paper
+     tick        conic ticks around a circle, hairline rules on a rect
+     inner       a dashed inner ring
+     watermark   the Aurixa emblem, screened at 26% through the face
+
+   The watermark is the layer the design is built around and the one that was
+   missing entirely: every impression carries the mark of the system that
+   struck it. `mix-blend-mode: screen` is what makes it read as part of the
+   ink rather than a picture sitting on top.
+
+   Ink is decided by `stampInk()`: AUTHORITY first — a stamp that speaks for
+   somebody else is always `partner`, which is a security property — and then
+   by what the certification is ABOUT. Seven inks, because a register where
+   the issuer strikes nearly everything rendered as five gold rectangles and
+   one green circle while the vocabulary had carried a per-code tone all
+   along. Gold's values are the design's own, converted to HSL per this
+   repo's convention; the families added beside it are built to the same
+   recipe — a bright ink, a dimmed one for secondary lines, a line, an edge,
+   a wash and a glow — so every family is legible at the same weight. */
+
+.passport-scope {
+  --stamp-gold-ink: hsl(43 71% 73%);
+  --stamp-gold-dim: hsl(42 46% 62%);
+  --stamp-gold-line: hsl(44 75% 49% / 0.42);
+  --stamp-gold-edge: hsl(44 75% 49% / 0.62);
+  --stamp-gold-wash: hsl(44 75% 49% / 0.055);
+  --stamp-gold-glow: hsl(44 75% 49% / 0.16);
+
+  --stamp-partner-ink: hsl(218 51% 86%);
+  --stamp-partner-dim: hsl(219 34% 72%);
+  --stamp-partner-line: hsl(216 56% 69% / 0.34);
+  --stamp-partner-edge: hsl(216 56% 69% / 0.52);
+  --stamp-partner-wash: hsl(216 56% 69% / 0.045);
+  --stamp-partner-glow: hsl(216 56% 69% / 0.12);
+
+  --stamp-final-ink: hsl(99 36% 83%);
+  --stamp-final-dim: hsl(98 22% 66%);
+  --stamp-final-line: hsl(100 29% 59% / 0.34);
+  --stamp-final-edge: hsl(100 32% 63% / 0.5);
+  --stamp-final-wash: hsl(100 29% 59% / 0.045);
+  --stamp-final-glow: hsl(100 29% 59% / 0.12);
+
+  /* Screening — checked against somebody else's register. A cold, instrument
+     blue, deliberately far from the partner's warmer cornflower so "we
+     screened this" and "they decided this" are never confused. */
+  --stamp-azure-ink: hsl(191 68% 78%);
+  --stamp-azure-dim: hsl(193 34% 52%);
+  --stamp-azure-line: hsl(192 62% 56% / 0.38);
+  --stamp-azure-edge: hsl(192 62% 56% / 0.56);
+  --stamp-azure-wash: hsl(192 62% 56% / 0.05);
+  --stamp-azure-glow: hsl(192 62% 56% / 0.14);
+
+  /* Consent and authority — what the customer gave us. */
+  --stamp-violet-ink: hsl(268 62% 85%);
+  --stamp-violet-dim: hsl(268 28% 60%);
+  --stamp-violet-line: hsl(268 55% 66% / 0.34);
+  --stamp-violet-edge: hsl(268 55% 66% / 0.52);
+  --stamp-violet-wash: hsl(268 55% 66% / 0.05);
+  --stamp-violet-glow: hsl(268 55% 66% / 0.13);
+
+  /* Funding — source of funds, wealth, enhanced due diligence. Teal rather
+     than the terminal green, because a funding review is not an ending. */
+  --stamp-emerald-ink: hsl(163 52% 76%);
+  --stamp-emerald-dim: hsl(165 26% 49%);
+  --stamp-emerald-line: hsl(164 48% 52% / 0.36);
+  --stamp-emerald-edge: hsl(164 48% 52% / 0.54);
+  --stamp-emerald-wash: hsl(164 48% 52% / 0.05);
+  --stamp-emerald-glow: hsl(164 48% 52% / 0.13);
+
+  /* Withdrawn, superseded or outstanding. Amber-red rather than a warning
+     red: the record is real and correctly struck, it simply says something
+     was taken back. */
+  --stamp-alert-ink: hsl(16 74% 80%);
+  --stamp-alert-dim: hsl(15 38% 55%);
+  --stamp-alert-line: hsl(14 66% 58% / 0.38);
+  --stamp-alert-edge: hsl(14 66% 58% / 0.58);
+  --stamp-alert-wash: hsl(14 66% 58% / 0.055);
+  --stamp-alert-glow: hsl(14 66% 58% / 0.15);
+}
+
+.passport-stamp--gold {
+  --stamp-ink: var(--stamp-gold-ink); --stamp-dim: var(--stamp-gold-dim);
+  --stamp-line: var(--stamp-gold-line); --stamp-edge: var(--stamp-gold-edge);
+  --stamp-wash: var(--stamp-gold-wash); --stamp-glow: var(--stamp-gold-glow);
+}
+.passport-stamp--partner {
+  --stamp-ink: var(--stamp-partner-ink); --stamp-dim: var(--stamp-partner-dim);
+  --stamp-line: var(--stamp-partner-line); --stamp-edge: var(--stamp-partner-edge);
+  --stamp-wash: var(--stamp-partner-wash); --stamp-glow: var(--stamp-partner-glow);
+}
+.passport-stamp--final {
+  --stamp-ink: var(--stamp-final-ink); --stamp-dim: var(--stamp-final-dim);
+  --stamp-line: var(--stamp-final-line); --stamp-edge: var(--stamp-final-edge);
+  --stamp-wash: var(--stamp-final-wash); --stamp-glow: var(--stamp-final-glow);
+}
+.passport-stamp--azure {
+  --stamp-ink: var(--stamp-azure-ink); --stamp-dim: var(--stamp-azure-dim);
+  --stamp-line: var(--stamp-azure-line); --stamp-edge: var(--stamp-azure-edge);
+  --stamp-wash: var(--stamp-azure-wash); --stamp-glow: var(--stamp-azure-glow);
+}
+.passport-stamp--violet {
+  --stamp-ink: var(--stamp-violet-ink); --stamp-dim: var(--stamp-violet-dim);
+  --stamp-line: var(--stamp-violet-line); --stamp-edge: var(--stamp-violet-edge);
+  --stamp-wash: var(--stamp-violet-wash); --stamp-glow: var(--stamp-violet-glow);
+}
+.passport-stamp--emerald {
+  --stamp-ink: var(--stamp-emerald-ink); --stamp-dim: var(--stamp-emerald-dim);
+  --stamp-line: var(--stamp-emerald-line); --stamp-edge: var(--stamp-emerald-edge);
+  --stamp-wash: var(--stamp-emerald-wash); --stamp-glow: var(--stamp-emerald-glow);
+}
+.passport-stamp--alert {
+  --stamp-ink: var(--stamp-alert-ink); --stamp-dim: var(--stamp-alert-dim);
+  --stamp-line: var(--stamp-alert-line); --stamp-edge: var(--stamp-alert-edge);
+  --stamp-wash: var(--stamp-alert-wash); --stamp-glow: var(--stamp-alert-glow);
+}
+
+/* ── the face ── */
+.passport-stamp {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: rotate(var(--stamp-rot, 0deg));
+  transition: transform 220ms ease, filter 220ms ease;
+  filter: drop-shadow(0 6px 18px var(--stamp-glow));
+}
+
+/* The three shadow roles are TOKENS with the design's own values as their
+   fallbacks, not literals. The die is struck on two surfaces — the dark
+   register and the booklet's cream leaf — and on paper a black inset reads as
+   grime rather than as relief. Nothing defines these in the dark scope, so the
+   fallback applies and the register renders exactly as before; the leaf sets
+   them once, below, and re-inks the same die. */
+.passport-stamp--circle {
+  width: 164px;
+  height: 164px;
+  border-radius: 50%;
+  border: 2px solid var(--stamp-edge);
+  box-shadow:
+    inset 0 0 0 4px var(--stamp-emboss, hsl(0 0% 0% / 0.35)),
+    inset 0 0 0 5px var(--stamp-line),
+    inset 0 0 26px var(--stamp-depth, hsl(0 0% 0% / 0.55));
+  background: radial-gradient(circle at 50% 38%, var(--stamp-wash), var(--stamp-field, hsl(0 0% 0% / 0.25)) 74%);
+}
+
+.passport-stamp--seal {
+  width: 164px;
+  height: 164px;
+  clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
+  background: linear-gradient(150deg, var(--stamp-wash), var(--stamp-field, hsl(0 0% 0% / 0.42)));
+  box-shadow: 0 0 0 2px var(--stamp-edge);
+}
+
+.passport-stamp--rect {
+  width: 180px;
+  min-height: 112px;
+  padding: 13px 0;
+  border-radius: 2px;
+  border: 1px solid var(--stamp-edge);
+  box-shadow:
+    inset 0 0 0 3px var(--stamp-emboss, hsl(0 0% 0% / 0.3)),
+    inset 0 0 0 4px var(--stamp-line),
+    inset 0 0 22px var(--stamp-depth, hsl(0 0% 0% / 0.5));
+  background: linear-gradient(150deg, var(--stamp-wash), var(--stamp-field, hsl(0 0% 0% / 0.28)));
+}
+
+/* ── grain ── */
+.passport-stamp__grain {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  mix-blend-mode: overlay;
+  background:
+    repeating-linear-gradient(38deg, transparent 0 2px, hsl(0 0% 0% / 0.35) 2px 3px),
+    repeating-linear-gradient(-38deg, transparent 0 3px, hsl(0 0% 0% / 0.22) 3px 4px);
+}
+.passport-stamp--circle .passport-stamp__grain { border-radius: 50%; }
+.passport-stamp--seal .passport-stamp__grain {
+  clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
+}
+
+/* ── ticks and inner rule ── */
+.passport-stamp__tick,
+.passport-stamp__inner {
+  position: absolute;
+  pointer-events: none;
+}
+
+.passport-stamp--circle .passport-stamp__tick {
+  inset: 11px;
+  border-radius: 50%;
+  opacity: 0.7;
+  background: repeating-conic-gradient(from 0deg, var(--stamp-line) 0 1.1deg, transparent 1.1deg 6deg);
+  -webkit-mask: radial-gradient(circle, transparent 0 62%, hsl(0 0% 0%) 62% 70%, transparent 70%);
+  mask: radial-gradient(circle, transparent 0 62%, hsl(0 0% 0%) 62% 70%, transparent 70%);
+}
+.passport-stamp--circle .passport-stamp__inner {
+  inset: 19px;
+  border: 1px dashed var(--stamp-line);
+  border-radius: 50%;
+  opacity: 0.75;
+}
+
+/* The octagon's clip-path removes a border on the diagonals, so the seal
+   carries its rule inset rather than on the edge. */
+.passport-stamp--seal .passport-stamp__tick { display: none; }
+.passport-stamp--seal .passport-stamp__inner {
+  inset: 11px;
+  border: 1px solid var(--stamp-line);
+  border-radius: 5px;
+  opacity: 0.8;
+}
+
+.passport-stamp--rect .passport-stamp__tick,
+.passport-stamp--rect .passport-stamp__inner {
+  left: 14px;
+  right: 14px;
+  height: 2px;
+  opacity: 0.5;
+  background: repeating-linear-gradient(90deg, var(--stamp-line) 0 1px, transparent 1px 4px);
+}
+.passport-stamp--rect .passport-stamp__tick { top: 9px; }
+.passport-stamp--rect .passport-stamp__inner { bottom: 9px; }
+
+/* ── the burnish ──
+   A die pressed into a surface is never evenly inked: it takes more at the
+   shoulder the hand leaned on and less where it lifted. One off-centre
+   highlight and one opposing shade is the whole trick, and it is what stops
+   the impression reading as a flat coloured shape with type on it. Drawn in
+   the impression's own ink so it inherits every tone, and set BELOW the ticks
+   and the inner rule so those stay crisp over it. */
+.passport-stamp__burnish {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: var(--stamp-burnish-opacity, 0.5);
+  background:
+    radial-gradient(60% 52% at 34% 26%, var(--stamp-relief, hsl(0 0% 100% / 0.09)), transparent 70%),
+    radial-gradient(64% 56% at 72% 82%, var(--stamp-depth, hsl(0 0% 0% / 0.4)), transparent 72%);
+}
+.passport-stamp--circle .passport-stamp__burnish { border-radius: 50%; }
+.passport-stamp--seal .passport-stamp__burnish {
+  clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
+}
+.passport-stamp--rect .passport-stamp__burnish { border-radius: 2px; }
+
+/* ── the watermark ──
+   The emblem is the MASK and the impression's ink is the fill, so the mark is
+   the same colour as the lettering it sits behind. It was an image under
+   `mix-blend-mode: screen`, which lightens: on the cream leaf that pushed a
+   near-white surface to white and erased it, and on the dark register it
+   screened dark artwork over a dark field and lifted almost nothing. The
+   layer the whole design is built around was never actually on screen.
+
+   Inking it removes the blend mode from the problem entirely — there is no
+   surface on which "the stamp's own ink" disappears — and it is also the
+   truer drawing: a stamp is one ink, not artwork with a picture behind it. */
+.passport-stamp__watermark {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  opacity: var(--stamp-watermark-opacity, 0.36);
+  background-color: var(--stamp-ink);
+  /* The fallback is not decoration. An unset custom property inside a
+     shorthand makes the whole declaration invalid at computed-value time, so
+     `mask` would resolve to none and the ink would paint as a solid disc over
+     the inscription. Naming the emblem here as well means the worst case is
+     the right mark rather than a blot. */
+  -webkit-mask: var(--stamp-watermark-src, url("/brand/aurixa-emblem-240.png")) center / contain no-repeat;
+  mask: var(--stamp-watermark-src, url("/brand/aurixa-emblem-240.png")) center / contain no-repeat;
+}
+/* It fills the die rather than sitting in the middle of it: a watermark is the
+   GROUND an impression is struck over, and at 63% it read as a small logo
+   somebody had placed there. */
+.passport-stamp--circle .passport-stamp__watermark,
+.passport-stamp--seal .passport-stamp__watermark { width: 122px; height: 122px; }
+.passport-stamp--rect .passport-stamp__watermark { width: 98px; height: 98px; }
+
+/* ── the inscription ── */
+.passport-stamp__body {
+  position: relative;
+  text-align: center;
+  padding: 0 13px;
+}
+.passport-stamp__org {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  /* The die is the boundary. Without this the line simply grew past it — see
+     `LONG_ORG` in StampFace.tsx for what that measured. */
+  max-width: 100%;
+}
+.passport-stamp__org > span:nth-child(odd) {
+  width: 9px;
+  height: 1px;
+  background: var(--stamp-line);
+  flex: none;
+}
+.passport-stamp__orgname {
+  font-size: 6.8px;
+  letter-spacing: 0.2em;
+  font-weight: 800;
+  color: var(--stamp-dim);
+  white-space: nowrap;
+  /* The design's own data is already capitals ("AURIXA SYSTEMS"), so its CSS
+     carries no transform. Ours is a tenant name in whatever case the operator
+     typed, and a stamp is set in capitals. */
+  text-transform: uppercase;
+}
+
+/* A long issuer name: stepped down and allowed to wrap, never truncated. The
+   flanking rules go — at this width they have nothing left to flank. */
+.passport-stamp__org--long > span:nth-child(odd) { display: none; }
+.passport-stamp__orgname--long {
+  font-size: 5.3px;
+  letter-spacing: 0.1em;
+  line-height: 1.35;
+  white-space: normal;
+  text-wrap: balance;
+}
+.passport-stamp__title {
+  margin: 5px 0 0;
+  font-family: var(--passport-font-display);
+  font-size: 13.5px;
+  line-height: 1.12;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--stamp-ink);
+  text-shadow: 0 1px 0 var(--stamp-relief, hsl(0 0% 0% / 0.55));
+}
+/* The design drops a long title a step so it still fits the die. */
+.passport-stamp__title--long { font-size: 11.5px; }
+
+.passport-stamp__rule {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  margin: 4px 10px 5px;
+}
+.passport-stamp__rule > span:first-child,
+.passport-stamp__rule > span:last-child {
+  flex: 1;
+  height: 1px;
+}
+.passport-stamp__rule > span:first-child {
+  background: linear-gradient(90deg, transparent, var(--stamp-line));
+}
+.passport-stamp__rule > span:last-child {
+  background: linear-gradient(270deg, transparent, var(--stamp-line));
+}
+.passport-stamp__diamond { font-size: 5.5px; color: var(--stamp-dim); }
+
+.passport-stamp__date {
+  font-family: var(--passport-font-mono);
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  color: var(--stamp-ink);
+}
+.passport-stamp__sub {
+  font-family: var(--passport-font-mono);
+  font-size: 7px;
+  letter-spacing: 0.04em;
+  color: var(--stamp-dim);
+}
+
+/* ── the control and its caption ── */
+.passport-stamp-button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: transparent;
+  border: 0;
+  padding: 4px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.passport-stamp-caption {
+  margin-top: 11px;
+  font-size: 10.5px;
+  color: var(--passport-text-faint);
+  text-align: center;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .passport-stamp-button:hover .passport-stamp,
+  .passport-stamp-button:focus-visible .passport-stamp {
+    transform: rotate(0deg) scale(1.03);
+    filter: drop-shadow(0 10px 26px var(--stamp-glow));
+  }
+}
+.passport-stamp-button:focus-visible { outline: none; }
+.passport-stamp-button:focus-visible .passport-stamp {
+  outline: 2px solid var(--passport-gold-dim);
+  outline-offset: 6px;
+}
+
+/* ── the register panel the impressions sit on ── */
+.passport-stamp-register {
+  padding: 24px 20px;
+  border: 1px solid var(--passport-border);
+  border-radius: 14px;
+  background:
+    repeating-linear-gradient(0deg, transparent 0 26px, hsl(0 0% 100% / 0.014) 26px 27px),
+    linear-gradient(150deg, hsl(240 5% 7%), hsl(240 6% 5%));
+}
+.passport-stamp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(178px, 1fr));
+  gap: 22px 18px;
+  justify-items: center;
+}
+
+/* ── an UNEARNED impression ──
+   Same die, never struck: no ink in the field, no watermark, a dashed rule
+   and no rotation. It must be unmistakable at a glance, and the page says
+   "not yet earned" in words as well — style is not a distinction a screen
+   reader can hear. */
+.passport-stamp--pending {
+  --stamp-ink: var(--passport-text-muted);
+  --stamp-dim: var(--passport-text-faint);
+  --stamp-line: var(--passport-border-strong);
+  --stamp-edge: var(--passport-border-strong);
+  --stamp-wash: transparent;
+  --stamp-glow: transparent;
+  transform: none;
+  filter: none;
+  border-style: dashed;
+  box-shadow: none;
+  background: hsl(0 0% 100% / 0.015);
+}
+.passport-stamp--pending.passport-stamp--seal { box-shadow: 0 0 0 2px var(--stamp-edge); }
+.passport-stamp--pending .passport-stamp__grain,
+.passport-stamp--pending .passport-stamp__tick { display: none; }
+.passport-stamp--pending .passport-stamp__title { text-shadow: none; }
+
+/* ══ the same impression, struck on cream paper ══════════════════════════
+   The booklet's leaf carries the SAME die as the register: same component,
+   same five layers, same watermark, same wording, same die shape, from the
+   same `PassportStamp` record. Only the INK changes with the surface, and it
+   changes here rather than in a second component — a paper-flavoured copy of
+   the face is precisely what let the booklet and the register disagree about
+   the same certification, which is the defect this section exists to make
+   unrepresentable.
+
+   Two things have to change for paper, and nothing else does:
+
+     ink     the three tones are pale because they are drawn on near-black.
+             On cream they take the leaf's own navy/foil values instead.
+     relief  the die's shadow roles are black. On paper black reads as grime
+             rather than as something pressed into the sheet, so emboss, depth
+             and field become the faintest navy the leaf already uses, and the
+             title's relief becomes a paper highlight rather than a shadow.
+
+   These are the SOURCE tone tokens, so `.passport-stamp--gold|partner|final`
+   keep resolving exactly as they do in the register — the ink rule
+   (`stampFaceTone`) is untouched, it just resolves to paper values here. */
+.passport-leaf {
+  --stamp-gold-ink: hsl(38 58% 27%);
+  --stamp-gold-dim: hsl(38 40% 34%);
+  --stamp-gold-line: hsl(42 59% 41% / 0.5);
+  --stamp-gold-edge: hsl(42 59% 41% / 0.72);
+  --stamp-gold-wash: hsl(42 59% 41% / 0.07);
+  --stamp-gold-glow: hsl(42 59% 41% / 0.13);
+
+  --stamp-partner-ink: hsl(218 46% 30%);
+  --stamp-partner-dim: hsl(219 30% 38%);
+  --stamp-partner-line: hsl(216 45% 42% / 0.42);
+  --stamp-partner-edge: hsl(216 45% 42% / 0.6);
+  --stamp-partner-wash: hsl(216 45% 42% / 0.06);
+  --stamp-partner-glow: hsl(216 45% 42% / 0.11);
+
+  --stamp-final-ink: hsl(99 32% 26%);
+  --stamp-final-dim: hsl(98 24% 32%);
+  --stamp-final-line: hsl(100 30% 34% / 0.42);
+  --stamp-final-edge: hsl(100 30% 34% / 0.58);
+  --stamp-final-wash: hsl(100 30% 34% / 0.06);
+  --stamp-final-glow: hsl(100 30% 34% / 0.11);
+
+  /* The same seven inks, re-mixed for paper. A hue that reads as a bright
+     ink on a near-black field is a wash on cream, so each family drops its
+     lightness and holds its hue — the register and the leaf strike the same
+     die in the same colours, at the two weights the two surfaces need. */
+  --stamp-azure-ink: hsl(193 62% 25%);
+  --stamp-azure-dim: hsl(193 30% 40%);
+  --stamp-azure-line: hsl(192 55% 34% / 0.44);
+  --stamp-azure-edge: hsl(192 55% 34% / 0.62);
+  --stamp-azure-wash: hsl(192 55% 34% / 0.06);
+  --stamp-azure-glow: hsl(192 55% 34% / 0.12);
+
+  --stamp-violet-ink: hsl(268 46% 34%);
+  --stamp-violet-dim: hsl(268 24% 47%);
+  --stamp-violet-line: hsl(268 44% 44% / 0.4);
+  --stamp-violet-edge: hsl(268 44% 44% / 0.58);
+  --stamp-violet-wash: hsl(268 44% 44% / 0.055);
+  --stamp-violet-glow: hsl(268 44% 44% / 0.12);
+
+  --stamp-emerald-ink: hsl(166 52% 23%);
+  --stamp-emerald-dim: hsl(166 26% 38%);
+  --stamp-emerald-line: hsl(165 46% 31% / 0.42);
+  --stamp-emerald-edge: hsl(165 46% 31% / 0.6);
+  --stamp-emerald-wash: hsl(165 46% 31% / 0.06);
+  --stamp-emerald-glow: hsl(165 46% 31% / 0.12);
+
+  --stamp-alert-ink: hsl(13 62% 36%);
+  --stamp-alert-dim: hsl(14 34% 48%);
+  --stamp-alert-line: hsl(13 58% 44% / 0.42);
+  --stamp-alert-edge: hsl(13 58% 44% / 0.62);
+  --stamp-alert-wash: hsl(13 58% 44% / 0.06);
+  --stamp-alert-glow: hsl(13 58% 44% / 0.12);
+
+  --stamp-emboss: hsl(221 48% 17% / 0.07);
+  --stamp-depth: hsl(221 48% 17% / 0.06);
+  --stamp-field: hsl(221 48% 17% / 0.035);
+  --stamp-relief: hsl(42 62% 96% / 0.6);
+}
+
+/* The watermark needs no blend mode on either surface now — it is the die's
+   own ink through a mask — so the leaf sets only how much of it the paper
+   takes. Cream shows a dark ink at a lower opacity than a dark field shows a
+   light one, which is why this is a number rather than nothing.
+
+   The grain still multiplies: it is a texture rather than an ink, and on
+   paper a screened texture is the same erasure the watermark used to suffer. */
+.passport-leaf .passport-stamp__watermark {
+  --stamp-watermark-opacity: 0.26;
+}
+.passport-leaf .passport-stamp__grain {
+  mix-blend-mode: multiply;
+  opacity: 0.14;
+}
+.passport-leaf .passport-stamp__burnish {
+  --stamp-burnish-opacity: 0.7;
+}
+
+/* An unstruck die on paper: the register's greys are drawn for near-black. */
+.passport-leaf .passport-stamp--pending {
+  --stamp-ink: var(--passport-ink-muted);
+  --stamp-dim: var(--passport-ink-faint);
+  --stamp-line: hsl(221 48% 17% / 0.28);
+  --stamp-edge: hsl(221 48% 17% / 0.28);
+  background: hsl(221 48% 17% / 0.014);
+}
+
+/* ── the register as it sits on a leaf ──
+   The die is authored at 164px against the register's full-width panel. A
+   leaf's body is 410px, so three of them side by side do not fit. The die is
+   NOT re-authored smaller: every inset, tick, rule and type size inside it is
+   proportional to that 164px, and a second set of numbers would be a second
+   design to keep in step — which is the same mistake as a second component,
+   one layer down.
+
+   `zoom` rather than `transform: scale()` because zoom scales the LAYOUT box
+   too, so the caption sits under its impression and the grid reserves what it
+   actually draws; a transform would leave every slot claiming 164px of empty
+   room while drawing 95px.
+   The leaf itself is scaled the same way to fit the board (see LEAF_W). */
+.passport-stamp-leaf {
+  --stamp-leaf-zoom: 0.58;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px 4px;
+  justify-items: center;
+  align-items: center;
+  padding: 2px 0;
+}
+.passport-stamp-leaf__slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+}
+.passport-stamp-leaf .passport-stamp,
+.passport-stamp-leaf__hero .passport-stamp {
+  zoom: var(--stamp-leaf-zoom, 0.58);
+}
+.passport-stamp-leaf__cap {
+  margin-top: 5px;
+  font-size: 6.5px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--passport-ink-faint);
+  text-align: center;
+}
+
+/* The one large impression — the completion page's own certification. */
+.passport-stamp-leaf__hero {
+  --stamp-leaf-zoom: 0.72;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+  text-align: center;
+}
+
+/* ── the settlement panel the design closes the page with ── */
+.passport-stamp-settlement {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 17px 19px;
+  background: hsl(0 0% 100% / 0.015);
+  border: 1px dashed var(--passport-border-strong);
+  border-radius: 12px;
+}
+.passport-stamp-settlement__die {
+  flex: 0 0 auto;
+  width: 118px;
+  height: 118px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--passport-border-strong);
+  border-radius: 50%;
+  text-align: center;
+}
+
+/* ── leaf padding ──────────────────────────────────────────────────────
+   The gold frame sits at inset 9px/13px, so content must clear it or the text
+   reads as printed on the border. These are the design's own page margins. */
+.passport-leaf {
+  padding: 30px 30px 22px;
+}
+
+/* ── leaf body ─────────────────────────────────────────────────────────
+   The leaf is a FIXED design-size box, so its body scrolls internally rather
+   than pushing the page taller. Without this a long journey record stretched
+   the leaf and broke the passport's proportions — the defect that made a page
+   wrap one character per line. */
+.passport-leaf__body {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(22, 35, 63, 0.28) transparent;
+}
+.passport-leaf__body::-webkit-scrollbar { width: 5px; }
+.passport-leaf__body::-webkit-scrollbar-thumb {
+  background: rgba(22, 35, 63, 0.28);
+  border-radius: 5px;
+}
+
+/* A leaf never shrinks below its design width: it is scaled, not squeezed. */
+.passport-board__leaf { flex: 0 0 auto; }
+
+.passport-pagechip--cover {
+  border-color: rgba(217, 166, 31, 0.5);
+  color: var(--passport-gold-soft);
+}
+
+/* ── the magnification cluster ─────────────────────────────────────────
+ * Reading controls sat in the same row as the page numbers, drawn in the
+ * same chip, at the same weight — so `▯ − 100% +` read as four more pages
+ * rather than as the control that makes a 6px document legible. On the
+ * surface where it matters most (a partner's own portal, where the booklet
+ * is the whole page) nobody found it.
+ *
+ * So it is given a body of its own: a hairline between it and the page row,
+ * a named label, a gold-tinted well, and chips lifted to gold ink inside it.
+ * It is the same four buttons with the same accessible names — this is
+ * emphasis, not a new control. */
+
+.passport-toolbar__sep {
+  width: 1px;
+  align-self: stretch;
+  min-height: 1.25rem;
+  background: var(--passport-hairline);
+}
+
+.passport-zoombar {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1875rem 0.3125rem;
+  border-radius: 9px;
+  border: 1px solid rgba(217, 166, 31, 0.34);
+  background: linear-gradient(180deg, rgba(217, 166, 31, 0.14), rgba(217, 166, 31, 0.04));
+  box-shadow: inset 0 1px 0 rgba(233, 200, 107, 0.08);
+}
+
+.passport-zoombar__label {
+  padding-inline: 0.25rem 0.0625rem;
+  color: var(--passport-gold-soft);
+  font-family: var(--passport-font-mono);
+  font-size: 0.5625rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.passport-zoombar .passport-pagechip {
+  /* Centred both ways: two of these carry an icon rather than a character,
+     and an inline SVG in a text button sits on the baseline. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-color: rgba(217, 166, 31, 0.42);
+  background: var(--passport-surface);
+  color: var(--passport-gold-soft);
+}
+
+.passport-zoombar .passport-pagechip:hover:not(:disabled) {
+  background: rgba(217, 166, 31, 0.2);
+  color: var(--passport-gold-bright);
+}
+
+.passport-zoombar .passport-pagechip[aria-pressed="true"] {
+  border-color: rgba(217, 166, 31, 0.7);
+  background: rgba(217, 166, 31, 0.24);
+  color: var(--passport-gold-bright);
+}
+
+/* The reading itself, not a button that happens to show a number. It is wide
+   enough for "250%" so the cluster does not resize as the reader zooms —
+   a control that moves under the pointer is a control that gets misclicked. */
+.passport-zoombar__value {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 3.5rem;
+  font-weight: 600;
+  color: var(--passport-gold-bright);
+}
+
+.passport-zoombar__value:disabled {
+  /* At the fit, "100%" is a READING and not a dead control. Dimming it to the
+     shared 0.45 made the one number in the cluster the hardest to see. */
+  opacity: 1;
+  color: var(--passport-gold-soft);
+}
+
+/* The board holds the scaled spread; the spine is drawn between two leaves. */
+.passport-board__spine {
+  position: absolute;
+  left: -14px;
+  top: 4%;
+  bottom: 4%;
+  width: 3px;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    rgba(0, 0, 0, 0.6) 12%,
+    rgba(0, 0, 0, 0.6) 88%,
+    transparent
+  );
+  box-shadow: 0 0 16px 4px rgba(0, 0, 0, 0.5);
+}
+
+.passport-cover__holder {
+  font-family: var(--passport-font-display);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--passport-gold-bright);
+}
+
+.passport-cover__fingerprint {
+  font-size: 9px;
+  color: var(--passport-gold-faint);
+  letter-spacing: 0.08em;
+}
+.passport-cover__fingerprint-k {
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--passport-gold-dim);
+}

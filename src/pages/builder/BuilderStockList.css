@@ -1,0 +1,572 @@
+/* Stock List-specific composition. Nothing here changes the shared Builder shell. */
+@layer components {
+  /* The stock register is an enterprise work surface, not a reading column. */
+  .builder-portal-content:has(.builder-stock-list-page) {
+    width: 100%;
+    max-width: none;
+    padding-top: 1.5rem;
+  }
+
+  .builder-portal-main:has(.builder-stock-list-page) {
+    background:
+      radial-gradient(circle at 78% 4%, hsl(var(--primary) / 0.1), transparent 34rem),
+      linear-gradient(145deg, hsl(var(--background)), hsl(var(--surface-2) / 0.5));
+  }
+
+  .builder-stock-list-page {
+    /* The public asset is supplied separately from this code-only change.
+       The navy header beneath it is the deliberate loading/error fallback. */
+    --builder-stock-list-hero-image: url('/images/builder/stock-list-architecture.webp');
+    gap: clamp(1.125rem, 1.35vw, 1.5rem);
+  }
+
+  .builder-stock-list-page > .builder-portal-page-header {
+    isolation: isolate;
+    min-height: 12.5rem;
+    padding: 1.75rem 2rem;
+    border-color: hsl(var(--primary) / 0.5);
+    background-color: hsl(var(--surface-2));
+    background-image:
+      radial-gradient(circle at 78% 35%, hsl(var(--primary) / 0.2), transparent 30rem),
+      linear-gradient(115deg, hsl(var(--surface-2)), hsl(var(--background)));
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: cover;
+    box-shadow:
+      0 1.5rem 4rem -2rem hsl(var(--primary) / 0.38),
+      inset 0 1px 0 hsl(var(--primary) / 0.34),
+      inset 0 -1px 0 hsl(var(--primary) / 0.12);
+  }
+
+  .builder-stock-list-page > .builder-portal-page-header::before {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    pointer-events: none;
+    inset: 0 0 0 auto;
+    width: 56%;
+    background-image: var(--builder-stock-list-hero-image);
+    background-position: 58% center;
+    background-repeat: no-repeat;
+    background-size: cover;
+    mask-image: linear-gradient(90deg, transparent 0%, hsl(var(--foreground) / 0.28) 16%, hsl(var(--foreground)) 42%);
+    -webkit-mask-image: linear-gradient(90deg, transparent 0%, hsl(var(--foreground) / 0.28) 16%, hsl(var(--foreground)) 42%);
+  }
+
+  .builder-stock-list-page > .builder-portal-page-header::after {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    pointer-events: none;
+    inset: 0;
+    width: auto;
+    height: auto;
+    border-radius: 0;
+    background:
+      linear-gradient(90deg, hsl(var(--surface-2) / 0.98) 0%, hsl(var(--surface-2) / 0.84) 34%, hsl(var(--background) / 0.28) 63%, hsl(var(--background) / 0.12) 100%),
+      linear-gradient(180deg, hsl(var(--primary) / 0.12), transparent 52%, hsl(var(--background) / 0.38)),
+      linear-gradient(0deg, hsl(var(--primary) / 0.72) 0 1px, transparent 1px);
+    filter: none;
+    transform: none;
+  }
+
+  .builder-stock-list-page > .builder-portal-page-header > div {
+    z-index: 1;
+    min-height: 9rem;
+  }
+
+  .builder-stock-list-page > .builder-portal-page-header h1 {
+    max-width: 13ch;
+    font-size: clamp(2.3rem, 2.65vw, 2.75rem);
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.045em;
+    text-wrap: balance;
+  }
+
+  .builder-stock-list-page > .builder-portal-page-header p {
+    max-width: 48rem;
+    margin-top: 0.6rem;
+    font-size: 0.94rem;
+    line-height: 1.55;
+    color: hsl(var(--foreground) / 0.84);
+  }
+
+  .builder-stock-list-page .builder-stock-list-hero-action {
+    min-height: 2.75rem;
+    padding-inline: 1.15rem;
+    box-shadow: 0 0.75rem 2rem -1rem hsl(var(--primary) / 0.6);
+  }
+
+  /* Targets the action cluster BY NAME. This was
+     `> .builder-portal-page-header > div > div:last-child`, which framed the
+     buttons only while `actions` happened to be the header row's second
+     child — so when the shell moved them under the title, the frame wrapped
+     the heading and description too. `BuilderPortalShell` owns the layout
+     inside its header; `builder-portal-page-actions` is the contract. */
+  .builder-stock-list-page .builder-portal-page-actions {
+    padding: 0.35rem;
+    border: 1px solid hsl(var(--primary) / 0.14);
+    border-radius: var(--radius-lg);
+    background-color: hsl(var(--background) / 0.34);
+    box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.05);
+  }
+
+  .builder-stock-list-page .builder-stock-list-hero-action:first-child {
+    border-color: hsl(var(--foreground) / 0.2);
+    background-color: hsl(var(--background) / 0.48);
+    box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.06);
+  }
+
+  .builder-stock-list-page .builder-stock-list-hero-action:last-child {
+    padding-inline: 1.35rem;
+  }
+
+  .builder-stock-list-metrics {
+    gap: 0.875rem;
+  }
+
+  .builder-stock-list-metric {
+    position: relative;
+    display: flex;
+    min-width: 0;
+    min-height: 7.35rem;
+    align-items: center;
+    gap: 1rem;
+    overflow: hidden;
+    padding: 1.15rem 1.3rem;
+    border: 1px solid hsl(var(--primary) / 0.2);
+    border-radius: var(--radius-lg);
+    background:
+      radial-gradient(circle at 12% 30%, hsl(var(--primary) / 0.23), transparent 42%),
+      linear-gradient(135deg, hsl(var(--surface-3) / 0.72), hsl(var(--surface-2) / 0.96));
+    box-shadow:
+      0 1.1rem 2.8rem -1.8rem hsl(var(--background) / 0.78),
+      0 0.75rem 2rem -1.5rem hsl(var(--primary) / 0.42),
+      inset 0 1px 0 hsl(var(--foreground) / 0.12);
+  }
+
+  .builder-stock-list-metric::after {
+    content: "";
+    position: absolute;
+    inset: auto 12% 0 12%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, hsl(var(--primary) / 0.44), transparent);
+  }
+
+  .builder-stock-list-metric-icon,
+  .builder-stock-list-import-icon {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid hsl(var(--primary) / 0.4);
+    border-radius: var(--radius-lg);
+    background: linear-gradient(145deg, hsl(var(--primary) / 0.3), hsl(var(--primary) / 0.1));
+    color: hsl(var(--primary));
+    box-shadow:
+      inset 0 1px 0 hsl(var(--primary-foreground) / 0.16),
+      0 0.8rem 2.2rem -0.8rem hsl(var(--primary) / 0.78);
+  }
+
+  .builder-stock-list-metric-icon {
+    width: 3.5rem;
+    height: 3.5rem;
+  }
+
+  .builder-stock-list-metric-label,
+  .builder-stock-list-metric-value {
+    display: block;
+  }
+
+  .builder-stock-list-metric-label {
+    color: hsl(var(--foreground) / 0.67);
+    font-size: 0.77rem;
+    font-weight: 500;
+    line-height: 1.35;
+  }
+
+  .builder-stock-list-metric-value {
+    margin-top: 0.22rem;
+    color: hsl(var(--foreground));
+    font-size: clamp(1.8rem, 2.15vw, 2rem);
+    font-weight: 720;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.045em;
+    line-height: 1;
+  }
+
+  .builder-stock-list-section,
+  .builder-stock-list-import,
+  .builder-stock-list-progress {
+    overflow: hidden;
+    border-color: hsl(var(--primary) / 0.18);
+    background-color: hsl(var(--card) / 0.88);
+    box-shadow:
+      0 1.35rem 3.4rem -2.4rem hsl(var(--primary) / 0.35),
+      inset 0 1px 0 hsl(var(--foreground) / 0.065);
+  }
+
+  .builder-stock-list-import {
+    border-color: hsl(var(--primary) / 0.3);
+    background-image: linear-gradient(100deg, hsl(var(--primary) / 0.13), transparent 48%);
+  }
+
+  .builder-stock-list-import-summary {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .builder-stock-list-import-icon {
+    width: 3.2rem;
+    height: 3.2rem;
+  }
+
+  .builder-stock-list-import-counts {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.5rem;
+  }
+
+  .builder-stock-list-import-count {
+    display: inline-flex;
+    min-height: 2.65rem;
+    align-items: baseline;
+    gap: 0.35rem;
+    padding: 0.58rem 0.85rem;
+    border: 1px solid hsl(var(--border) / 0.7);
+    border-radius: var(--radius-md);
+    background-color: hsl(var(--surface-3) / 0.52);
+    color: hsl(var(--foreground) / 0.68);
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+
+  .builder-stock-list-import-count strong {
+    color: hsl(var(--foreground));
+    font-size: 1.18rem;
+  }
+
+  .builder-stock-list-import-count-new {
+    border-color: hsl(var(--primary) / 0.4);
+    background-color: hsl(var(--primary) / 0.14);
+  }
+
+  .builder-stock-list-selection,
+  .builder-stock-list-processing {
+    background-color: hsl(var(--primary) / 0.055);
+    box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.05);
+  }
+
+  .builder-stock-list-workspace {
+    border-color: hsl(var(--primary) / 0.25);
+    background-color: hsl(var(--surface-2) / 0.88);
+    background-image:
+      radial-gradient(circle at 88% 0%, hsl(var(--primary) / 0.1), transparent 30rem),
+      linear-gradient(180deg, hsl(var(--primary) / 0.075), transparent 13rem);
+    box-shadow:
+      0 1.5rem 3.5rem -2rem hsl(var(--background) / 0.82),
+      inset 0 1px 0 hsl(var(--foreground) / 0.09);
+  }
+
+  .builder-stock-list-workspace-header {
+    gap: 0.9rem;
+    padding: 1.2rem 1.35rem 0;
+  }
+
+  .builder-stock-list-workspace-header h3,
+  .builder-stock-list-sources h3,
+  .builder-stock-list-selections h3 {
+    font-size: 1.05rem;
+    letter-spacing: -0.02em;
+  }
+
+  .builder-stock-list-workspace-header p,
+  .builder-stock-list-sources [class*='CardDescription'] {
+    color: hsl(var(--foreground) / 0.62);
+  }
+
+  .builder-stock-list-toolbar {
+    z-index: 1;
+    gap: 0;
+    overflow: hidden;
+    padding: 0;
+    border-color: hsl(var(--primary) / 0.24);
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    background-color: hsl(var(--surface-2) / 0.86);
+    box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.07);
+  }
+
+  .builder-stock-list-toolbar > * {
+    border-radius: 0;
+  }
+
+  .builder-stock-list-toolbar > * + * {
+    border-left-color: hsl(var(--primary) / 0.16);
+  }
+
+  .builder-stock-list-workspace-content {
+    padding: 0 1.35rem 1.3rem;
+  }
+
+  .builder-stock-list-processing {
+    margin-top: 0.9rem;
+  }
+
+  .builder-stock-list-table {
+    overflow: hidden;
+    border: 1px solid hsl(var(--primary) / 0.21);
+    border-top: 0;
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+    background-color: hsl(var(--background) / 0.48);
+  }
+
+  .builder-stock-list-table thead {
+    background:
+      linear-gradient(90deg, hsl(var(--primary) / 0.18), transparent 68%),
+      hsl(var(--surface-3) / 0.96);
+    box-shadow:
+      inset 0 1px 0 hsl(var(--foreground) / 0.08),
+      inset 0 -1px 0 hsl(var(--primary) / 0.18);
+  }
+
+  .builder-stock-list-table th {
+    height: 3rem;
+    padding-inline: 1rem;
+    color: hsl(var(--foreground) / 0.7);
+    font-size: 0.67rem;
+    font-weight: 650;
+    letter-spacing: 0.085em;
+    text-transform: uppercase;
+  }
+
+  .builder-stock-list-table tbody tr {
+    background-color: hsl(var(--card) / 0.22);
+    transition: background-color var(--motion-fast) var(--motion-ease-out);
+  }
+
+  .builder-stock-list-table tbody tr:hover {
+    background-color: hsl(var(--primary) / 0.095);
+  }
+
+  .builder-stock-list-table td {
+    padding: 0.88rem 1rem;
+    border-color: hsl(var(--primary) / 0.11);
+  }
+
+  .builder-stock-list-table td:first-child p:first-child,
+  .builder-stock-list-cards > li p:first-child {
+    font-weight: 650;
+  }
+
+  .builder-stock-list-table td:nth-child(3) p:first-child {
+    font-size: 0.94rem;
+    font-weight: 700;
+  }
+
+  .builder-stock-list-table td [role='combobox'] {
+    height: 2.25rem;
+    border-color: hsl(var(--primary) / 0.2);
+    background-color: hsl(var(--background) / 0.38);
+  }
+
+  .builder-stock-list-toolbar input,
+  .builder-stock-list-toolbar [role='combobox'] {
+    border-color: transparent;
+    background-color: hsl(var(--surface-3) / 0.42);
+  }
+
+  .builder-stock-list-toolbar input:focus-visible,
+  .builder-stock-list-toolbar [role='combobox']:focus-visible,
+  .builder-stock-list-table td [role='combobox']:focus-visible {
+    position: relative;
+    z-index: 2;
+    border-color: hsl(var(--primary) / 0.62);
+    box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.3), 0 0 0 3px hsl(var(--primary) / 0.13);
+  }
+
+  .builder-stock-list-configuration li {
+    min-height: 1.7rem;
+    border-color: hsl(var(--primary) / 0.16);
+    background-color: hsl(var(--primary) / 0.055);
+    box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.045);
+  }
+
+  .builder-stock-list-configuration svg {
+    color: hsl(var(--foreground) / 0.62);
+  }
+
+  .builder-stock-list-property > p:first-child {
+    color: hsl(var(--foreground));
+    font-weight: 650;
+  }
+
+  .builder-stock-list-property > p:last-child {
+    color: hsl(var(--foreground) / 0.56);
+  }
+
+  .builder-stock-list-price > p:first-child {
+    color: hsl(var(--foreground));
+    font-weight: 720;
+  }
+
+  .builder-stock-list-images > span:first-child {
+    min-height: 1.45rem;
+    padding-inline: 0.45rem;
+  }
+
+  .builder-stock-list-images > button {
+    min-height: 1.8rem;
+    color: hsl(var(--foreground) / 0.7);
+  }
+
+  .builder-stock-list-image-stages {
+    opacity: 0.68;
+  }
+
+  .builder-stock-list-cards {
+    padding-top: 0.9rem;
+  }
+
+  .builder-stock-list-cards > li {
+    overflow: hidden;
+    border-color: hsl(var(--primary) / 0.18);
+    border-radius: var(--radius-lg);
+    background:
+      linear-gradient(140deg, hsl(var(--primary) / 0.08), transparent 45%),
+      hsl(var(--surface-2) / 0.7);
+    box-shadow: inset 0 1px 0 hsl(var(--foreground) / 0.06);
+  }
+
+  .builder-stock-list-pagination {
+    padding-top: 1rem;
+    border-top: 1px solid hsl(var(--primary) / 0.13);
+  }
+
+  .builder-stock-list-sources > div:first-child {
+    padding: 1.3rem 1.35rem 1rem;
+    border-bottom: 1px solid hsl(var(--primary) / 0.14);
+  }
+
+  .builder-stock-list-sources > div:last-child {
+    padding: 0 1.35rem 1.3rem;
+  }
+
+  .builder-stock-list-sources thead {
+    background-color: hsl(var(--surface-3) / 0.7);
+  }
+
+  .builder-stock-list-sources tbody tr:hover {
+    background-color: hsl(var(--primary) / 0.055);
+  }
+
+  .builder-stock-list-dialog {
+    border-color: hsl(var(--primary) / 0.3);
+    box-shadow: var(--glass-shadow-lg), inset 0 1px 0 hsl(var(--primary) / 0.16);
+  }
+
+  @media (max-width: 1399px) {
+    .builder-stock-list-workspace-content {
+      padding-top: 0.9rem;
+    }
+
+    .builder-stock-list-toolbar {
+      border-radius: var(--radius-md);
+    }
+  }
+
+  @media (max-width: 767px) {
+    .builder-portal-content:has(.builder-stock-list-page) {
+      padding-top: 1rem;
+    }
+
+    .builder-stock-list-page > .builder-portal-page-header {
+      min-height: 18.25rem;
+      padding: 1.35rem;
+      background-image:
+        radial-gradient(circle at 68% 22%, hsl(var(--primary) / 0.16), transparent 24rem),
+        linear-gradient(155deg, hsl(var(--surface-2)), hsl(var(--background)));
+      background-position: center;
+      background-size: cover;
+    }
+
+    .builder-stock-list-page > .builder-portal-page-header::before {
+      inset: 0;
+      width: 100%;
+      background-position: 64% center;
+      mask-image: linear-gradient(180deg, hsl(var(--foreground) / 0.72), transparent 84%);
+      -webkit-mask-image: linear-gradient(180deg, hsl(var(--foreground) / 0.72), transparent 84%);
+      opacity: 0.56;
+    }
+
+    .builder-stock-list-page > .builder-portal-page-header::after {
+      background:
+        linear-gradient(180deg, hsl(var(--background) / 0.48), hsl(var(--background) / 0.9) 72%, hsl(var(--background))),
+        linear-gradient(90deg, hsl(var(--surface-2) / 0.72), transparent),
+        linear-gradient(0deg, hsl(var(--primary) / 0.62) 0 1px, transparent 1px);
+    }
+
+    .builder-stock-list-page > .builder-portal-page-header > div {
+      min-height: 15.5rem;
+    }
+
+    .builder-stock-list-page > .builder-portal-page-header h1 {
+      font-size: 2.35rem;
+    }
+
+    .builder-stock-list-page > .builder-portal-page-header p {
+      max-width: 30rem;
+    }
+
+    .builder-stock-list-import-summary {
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+
+    .builder-stock-list-import-counts {
+      width: 100%;
+      justify-content: flex-start;
+      padding-left: 4.2rem;
+    }
+
+    .builder-stock-list-workspace-header,
+    .builder-stock-list-workspace-content,
+    .builder-stock-list-sources > div:first-child,
+    .builder-stock-list-sources > div:last-child {
+      padding-inline: 1rem;
+    }
+
+    .builder-stock-list-workspace-content {
+      padding-top: 0.8rem;
+    }
+  }
+
+  @media (max-width: 479px) {
+    .builder-stock-list-metric {
+      min-height: 6.8rem;
+    }
+
+    .builder-stock-list-import-counts {
+      padding-left: 0;
+    }
+
+    .builder-stock-list-import-count {
+      flex: 1 1 auto;
+      justify-content: center;
+    }
+
+    .builder-stock-list-toolbar > * {
+      flex-basis: 100%;
+      border-left: 0;
+      border-top-color: hsl(var(--primary) / 0.14);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .builder-stock-list-table tbody tr {
+      transition: none;
+    }
+  }
+}

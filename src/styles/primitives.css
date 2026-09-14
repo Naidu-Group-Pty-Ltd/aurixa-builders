@@ -1,0 +1,866 @@
+/* ────────────────────────────────────────────────────────────────
+   Shared, token-driven component primitives.
+
+   These give feature code a single, brand-aware building block instead
+   of ad-hoc utility stacks. Everything here consumes design tokens — no
+   raw palette colours, no hardcoded font-family, no magic pixel sizes.
+   ──────────────────────────────────────────────────────────────── */
+
+@layer components {
+  /* Brand logo — one source of truth for logo dimensions. Change the
+     --logo-* tokens (or the White-Label page) and every logo updates. */
+  .brand-logo {
+    width: auto;
+    object-fit: contain;
+  }
+  .brand-logo-sidebar {
+    height: var(--logo-height-sidebar);
+    max-width: var(--logo-max-width);
+  }
+  .brand-logo-mobile {
+    height: var(--logo-height-mobile);
+    max-width: var(--logo-max-width);
+  }
+  .brand-logo-compact {
+    height: var(--logo-height-compact);
+    width: var(--logo-height-compact);
+    object-fit: contain;
+  }
+
+  /* Search field — consistent search input across the app. Wrap an <input>
+     and a leading <svg> icon; the icon is positioned and muted, the input
+     is padded to clear it. Used by <SearchField>. */
+  .field-search {
+    @apply relative flex items-center;
+  }
+  .field-search > svg {
+    @apply pointer-events-none absolute left-3 h-4 w-4 text-muted-foreground;
+  }
+  .field-search > input {
+    @apply pl-9;
+  }
+
+  /* ── Aurixa Agent primitives ────────────────────────────────────────
+     Glass surface, aurora background, hairline gradient border, and a
+     shimmer text style used across the agent surfaces. All token-driven. */
+  .aurixa-glass {
+    background:
+      linear-gradient(
+        180deg,
+        hsl(var(--aurixa-glass-bg) / 0.85),
+        hsl(var(--aurixa-glass-bg) / 0.65)
+      );
+    border: 1px solid hsl(var(--aurixa-glass-border) / 0.55);
+    box-shadow:
+      inset 0 1px 0 hsl(var(--aurixa-glow) / 0.08),
+      0 30px 80px -40px hsl(var(--aurixa-glow) / 0.35);
+    backdrop-filter: blur(18px) saturate(1.1);
+    -webkit-backdrop-filter: blur(18px) saturate(1.1);
+  }
+
+  .aurixa-hairline {
+    position: relative;
+    background: hsl(var(--aurixa-glass-bg) / 0.55);
+    border-radius: inherit;
+  }
+  .aurixa-hairline::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    padding: 1px;
+    border-radius: inherit;
+    background: linear-gradient(
+      135deg,
+      hsl(var(--aurixa-aurora-1) / 0.55),
+      hsl(var(--aurixa-hairline) / 0.25) 40%,
+      hsl(var(--aurixa-aurora-2) / 0.45)
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+            mask-composite: exclude;
+    pointer-events: none;
+  }
+
+  .aurixa-aurora-bg {
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+    background-color: hsl(var(--aurixa-obsidian));
+  }
+  .aurixa-aurora-bg::before {
+    content: "";
+    position: absolute;
+    inset: -30%;
+    z-index: -1;
+    background:
+      radial-gradient(45% 55% at 20% 30%, hsl(var(--aurixa-aurora-1) / 0.35), transparent 60%),
+      radial-gradient(40% 50% at 80% 25%, hsl(var(--aurixa-aurora-2) / 0.30), transparent 65%),
+      radial-gradient(50% 60% at 55% 85%, hsl(var(--aurixa-aurora-3) / 0.25), transparent 60%);
+    filter: blur(30px);
+    animation: aurora-drift 24s ease-in-out infinite;
+  }
+
+  .aurixa-shimmer-text {
+    background: linear-gradient(
+      100deg,
+      hsl(var(--foreground) / 0.55) 30%,
+      hsl(var(--aurixa-glow)) 50%,
+      hsl(var(--foreground) / 0.55) 70%
+    );
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+            background-clip: text;
+    color: transparent;
+    animation: aurixa-shimmer 1.8s linear infinite;
+  }
+
+  @keyframes aurora-drift {
+    0%,100% { transform: translate3d(0,0,0) rotate(0deg); }
+    50%      { transform: translate3d(2%, -1%, 0) rotate(6deg); }
+  }
+  @keyframes aurixa-shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+  @keyframes aurixa-orb-breathe {
+    0%,100% { transform: scale(1);   filter: brightness(1); }
+    50%     { transform: scale(1.04); filter: brightness(1.15); }
+  }
+  @keyframes aurixa-message-rise {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes aurixa-insight-unfold {
+    from { opacity: 0; transform: translateY(-4px) scaleY(0.98); transform-origin: top; }
+    to   { opacity: 1; transform: translateY(0)    scaleY(1); }
+  }
+  @keyframes aurixa-orb-spin {
+    to { transform: rotate(360deg); }
+  }
+  @keyframes aurixa-waveform {
+    0%,100% { transform: scaleY(0.25); }
+    50%     { transform: scaleY(1);    }
+  }
+
+  .animate-aurixa-rise    { animation: aurixa-message-rise 180ms ease-out both; }
+  .animate-aurixa-unfold  { animation: aurixa-insight-unfold 220ms ease-out both; }
+  .animate-aurixa-breathe { animation: aurixa-orb-breathe 4.5s ease-in-out infinite; }
+
+  .aurixa-waveform-bar {
+    height: 100%;
+    transform-origin: center;
+    animation: aurixa-waveform 900ms ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .aurixa-aurora-bg::before,
+    .aurixa-shimmer-text,
+    .aurixa-waveform-bar,
+    .animate-aurixa-rise,
+    .animate-aurixa-unfold,
+    .animate-aurixa-breathe {
+      animation: none !important;
+    }
+    .aurixa-shimmer-text { color: hsl(var(--foreground)); background: none; -webkit-background-clip: initial; background-clip: initial; }
+    .aurixa-waveform-bar { transform: scaleY(0.5); }
+  }
+}
+
+
+/* Listings map — markers, clusters, heat legend and Leaflet chrome.
+ Semantic tokens only: the whole surface re-themes with the white-label brand.
+
+ Deliberately NOT inside `@layer components`: Tailwind tree-shakes layered
+ rules against the content globs, and these selectors either belong to
+ Leaflet's own DOM or are composed at runtime (`listing-pin--${tier}`), so
+ they never appear literally in a .tsx file and would be stripped. */
+
+/* --- Leaflet chrome ------------------------------------------------------
+   Scoped under `.listings-map` so these beat Leaflet's own rules: leaflet.css
+   is pulled in by the lazily-imported map chunk and therefore lands *after*
+   the app stylesheet, so an equal-specificity override would lose. */
+.listings-map .leaflet-container {
+  background: hsl(var(--muted));
+  font-family: inherit;
+}
+
+.listings-map .leaflet-popup-content-wrapper,
+.listings-map .leaflet-popup-tip {
+  background: hsl(var(--popover));
+  color: hsl(var(--popover-foreground));
+  border: 1px solid hsl(var(--border));
+}
+
+.listings-map .leaflet-popup-content-wrapper {
+  border-radius: 0.9rem;
+  box-shadow: 0 18px 42px hsl(var(--foreground) / 0.22);
+}
+
+.listings-map .leaflet-popup-content {
+  margin: 0.85rem;
+  line-height: 1.35;
+}
+
+/* When the card is taller than the popup's ceiling, Leaflet scrolls it with
+   the browser's default scrollbar — a wide grey slab that sat on top of the
+   photo and cut the action row in half. Thin, token-coloured, and out of the
+   content's way. */
+.listings-map .leaflet-popup-content {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--muted-foreground) / 0.45) transparent;
+}
+
+.listings-map .leaflet-popup-content::-webkit-scrollbar {
+  width: 5px;
+}
+
+.listings-map .leaflet-popup-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.listings-map .leaflet-popup-content::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.45);
+  border-radius: 9999px;
+}
+
+.listings-map .leaflet-container a.leaflet-popup-close-button {
+  color: hsl(var(--muted-foreground));
+  padding: 0.35rem 0.4rem 0 0;
+}
+
+.listings-map .leaflet-container a.leaflet-popup-close-button:hover,
+.listings-map .leaflet-container a.leaflet-popup-close-button:focus {
+  color: hsl(var(--foreground));
+  background: transparent;
+}
+
+.listings-map .leaflet-container .leaflet-control-attribution {
+  background: hsl(var(--background) / 0.82);
+  color: hsl(var(--muted-foreground));
+  border-radius: 0.5rem 0 0 0;
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+
+.listings-map .leaflet-container .leaflet-control-attribution a {
+  color: hsl(var(--primary));
+}
+
+.listings-map .leaflet-container .leaflet-control-scale-line {
+  background: hsl(var(--background) / 0.82);
+  border-color: hsl(var(--border));
+  color: hsl(var(--foreground));
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+
+@media (max-width: 639px) {
+  .listings-map .leaflet-control-scale {
+    display: none;
+  }
+}
+
+/* --- Listing pins ------------------------------------------------------
+   Scoped under `.listings-map` for the reason given above: Leaflet ships
+   `.leaflet-marker-icon { display: block }`, which ties with a bare
+   `.listing-pin` on specificity and loads later, so an unscoped rule loses
+   the `display` and the icon's contents stop being centred. */
+.listings-map .listing-pin {
+  background: transparent;
+  border: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow: visible;
+  --pin-bg: hsl(var(--primary));
+  --pin-fg: hsl(var(--primary-foreground));
+}
+
+/* Price bands ride the configured brand ramp.
+
+   `--brand-50 … --brand-950` is generated at runtime from the White-Label brand
+   colour (src/branding/token-resolver.ts): one hue, one saturation, a fixed
+   lightness ladder. That makes it the only token family in the system that is
+   both *branded* and *ordered*, which is what a price scale needs — a
+   sequential variable wants a single-hue ramp, not four unrelated status hues.
+
+   Steps of roughly 20 lightness points keep the four bands apart at pin scale
+   whatever hue a tenant configures, and each band pairs with the ramp end that
+   contrasts against it.
+
+   `--primary` is deliberately not used even though it is also a brand token: it
+   is a single point rather than a scale, and in this palette's dark theme it is
+   byte-identical to `--warning`.
+
+   Scoped to match the base rule above. An unscoped `.listing-pin--top` loses to
+   `.listings-map .listing-pin`, and every pin on the map silently falls back to
+   one flat colour — the bands stop existing. */
+.listings-map .listing-pin--unknown {
+  /* Not part of the ramp: "no price on record" is a gap in the data, not a
+     cheap listing, so it must not read as the bottom of the scale. */
+  --pin-bg: hsl(var(--muted-foreground));
+  --pin-fg: hsl(var(--background));
+}
+.listings-map .listing-pin--low {
+  --pin-bg: hsl(var(--brand-200));
+  --pin-fg: hsl(var(--brand-950));
+}
+.listings-map .listing-pin--mid {
+  --pin-bg: hsl(var(--brand-500));
+  --pin-fg: hsl(var(--brand-950));
+}
+.listings-map .listing-pin--high {
+  --pin-bg: hsl(var(--brand-800));
+  --pin-fg: hsl(var(--brand-50));
+}
+.listings-map .listing-pin--top {
+  --pin-bg: hsl(var(--brand-950));
+  --pin-fg: hsl(var(--brand-50));
+}
+
+.listings-map .listing-pin--ghost {
+  align-items: center;
+}
+
+/* --- Chip pin (zoomed in): type glyph + price ---------------------------- */
+.listing-pin__chip {
+  /* Positioned so it shares a paint layer with the absolutely-positioned halo
+     and wins on DOM order — an unpositioned chip would paint underneath it. */
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  height: 1.625rem;
+  padding: 0 0.55rem 0 0.16rem;
+  border-radius: 9999px;
+  white-space: nowrap;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--pin-fg);
+  background: var(--pin-bg);
+  /* Two rings: the inner one lifts the pin off the tiles whatever the basemap,
+     the outer shadow gives it height. Together they are what makes a pin
+     traceable over satellite imagery. */
+  border: 1.5px solid hsl(var(--background));
+  box-shadow:
+    0 0 0 1px hsl(var(--foreground) / 0.14),
+    0 4px 12px hsl(var(--foreground) / 0.34);
+  transition:
+    transform 130ms ease,
+    box-shadow 130ms ease;
+}
+
+/* The glyph sits in a disc of the chip's own text colour, so the icon reads as
+   a knocked-out silhouette rather than a smudge at 12px. */
+.listing-pin__glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 1.15rem;
+  height: 1.15rem;
+  border-radius: 9999px;
+  background: var(--pin-fg);
+}
+
+.listing-pin__glyph-svg {
+  width: 0.75rem;
+  height: 0.75rem;
+  fill: var(--pin-bg);
+}
+
+.listing-pin__label {
+  padding-bottom: 0.03rem;
+}
+
+.listing-pin__stem {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 5.5px solid transparent;
+  border-right: 5.5px solid transparent;
+  border-top: 8px solid var(--pin-bg);
+  filter: drop-shadow(0 2px 2px hsl(var(--foreground) / 0.3));
+}
+
+.listing-pin--chip:hover .listing-pin__chip,
+.listing-pin--chip:focus-visible .listing-pin__chip {
+  transform: translateY(-2px);
+  box-shadow:
+    0 0 0 1px hsl(var(--foreground) / 0.14),
+    0 8px 18px hsl(var(--foreground) / 0.42);
+}
+
+/* --- Teardrop pin (zoomed out): type glyph, no price --------------------- */
+.listing-pin__marker {
+  position: relative; /* see `.listing-pin__chip` — paints over the halo */
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  filter: drop-shadow(0 3px 4px hsl(var(--foreground) / 0.42));
+  /* Grow away from the tip: the tip is the coordinate and must not move. */
+  transform-origin: 50% 96%;
+  transition: transform 140ms ease;
+}
+
+.listing-pin__body {
+  fill: var(--pin-bg);
+  stroke: hsl(var(--background));
+  stroke-width: 1.5;
+}
+
+.listing-pin__face {
+  fill: var(--pin-fg);
+}
+
+.listing-pin__symbol {
+  fill: var(--pin-bg);
+}
+
+.listing-pin--pin:hover .listing-pin__marker,
+.listing-pin--pin:focus-visible .listing-pin__marker {
+  transform: scale(1.12);
+}
+
+/* --- Selected pin -------------------------------------------------------- */
+.listing-pin--active .listing-pin__marker {
+  transform: scale(1.18);
+}
+
+.listing-pin--active .listing-pin__chip {
+  transform: translateY(-2px);
+  box-shadow:
+    0 0 0 2px hsl(var(--primary)),
+    0 8px 20px hsl(var(--foreground) / 0.45);
+}
+
+/* --- Peek: the pin for the row under the pointer in the results panel -----
+   Applied straight to the element rather than through the icon props, so
+   hovering a row costs one classList call instead of a marker re-render. */
+.listing-pin--peek .listing-pin__marker {
+  transform: scale(1.22);
+  filter: drop-shadow(0 0 3px hsl(var(--primary))) drop-shadow(0 4px 6px hsl(var(--foreground) / 0.45));
+}
+
+.listing-pin--peek .listing-pin__chip {
+  transform: translateY(-3px);
+  box-shadow:
+    0 0 0 2px hsl(var(--primary)),
+    0 8px 20px hsl(var(--foreground) / 0.45);
+}
+
+.listing-pin--peek .listing-pin__dot {
+  transform: scale(1.5);
+  opacity: 1;
+  border-color: hsl(var(--primary));
+}
+
+.listing-pin__halo {
+  position: absolute;
+  border-radius: 9999px;
+  background: var(--pin-bg);
+  opacity: 0.28;
+  animation: listing-pin-halo 1.9s ease-out infinite;
+}
+
+.listing-pin--pin .listing-pin__halo {
+  left: 50%;
+  top: 35.5%;
+  width: 2.5rem;
+  height: 2.5rem;
+  margin: -1.25rem 0 0 -1.25rem;
+}
+
+.listing-pin--chip .listing-pin__halo {
+  left: -0.3rem;
+  right: -0.3rem;
+  top: -0.3rem;
+  height: 2.225rem;
+}
+
+@keyframes listing-pin-halo {
+  0% {
+    transform: scale(0.82);
+    opacity: 0.4;
+  }
+  70%,
+  100% {
+    transform: scale(1.3);
+    opacity: 0;
+  }
+}
+
+/* Heat-only mode keeps hit targets so the surface stays interrogable. */
+.listing-pin--ghost .listing-pin__dot {
+  width: 0.875rem;
+  height: 0.875rem;
+  border-radius: 9999px;
+  background: hsl(var(--background) / 0.2);
+  border: 1px solid hsl(var(--foreground) / 0.45);
+  opacity: 0.3;
+  transition:
+    opacity 130ms ease,
+    transform 130ms ease;
+}
+
+.listing-pin--ghost:hover .listing-pin__dot,
+.listing-pin--ghost:focus-visible .listing-pin__dot {
+  opacity: 1;
+  transform: scale(1.2);
+  background: hsl(var(--background) / 0.8);
+  border-color: hsl(var(--primary));
+}
+
+.leaflet-container .listing-pin:focus-visible {
+  outline: 2px solid hsl(var(--primary));
+  outline-offset: 3px;
+  border-radius: 9999px;
+}
+
+/* The teardrop is taller than it is wide, so a pill outline would bow around it. */
+.leaflet-container .listing-pin--pin:focus-visible {
+  border-radius: 0.9rem;
+}
+
+/* --- Pin hover card ------------------------------------------------------
+   The tooltip a pin shows before anyone commits to a click: price, address,
+   spec line — the gallery card's reading order, on the map. Overrides
+   Leaflet's default tooltip chrome with the app's own tokens so it re-themes
+   with the palette and dark mode like every other surface. */
+.listings-map .listings-pin-tip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid hsl(var(--border) / 0.7);
+  border-radius: 0.65rem;
+  background: hsl(var(--background) / 0.96);
+  color: hsl(var(--foreground));
+  box-shadow: 0 10px 28px hsl(var(--foreground) / 0.18);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+.listings-map .listings-pin-tip::before {
+  border-top-color: hsl(var(--background) / 0.96);
+}
+
+.listings-pin-tip__photo {
+  width: 13rem;
+  max-width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  border-radius: 0.45rem;
+  margin-bottom: 0.25rem;
+  background: hsl(var(--muted));
+}
+
+.listings-pin-tip__price {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  line-height: 1.15;
+  color: hsl(var(--primary));
+}
+
+.listings-pin-tip__address {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: hsl(var(--foreground));
+  max-width: 15rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.listings-pin-tip__specs {
+  font-size: 0.625rem;
+  color: hsl(var(--muted-foreground));
+}
+
+.listings-pin-tip__note {
+  color: hsl(var(--warning));
+  font-weight: 600;
+}
+
+/* A suburb-centroid pin wears a dashed halo: visibly a region claim, not a
+   rooftop claim. The halo inherits the pin's own rounding so it fits chips
+   and dot pins alike. */
+.listings-map .listing-pin--approx {
+  opacity: 0.9;
+}
+
+.listings-map .listing-pin--approx::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border: 1.5px dashed hsl(var(--warning) / 0.85);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+/* --- Stacks -------------------------------------------------------------
+   Several properties standing on ONE coordinate.
+
+   Deliberately NOT the cluster bubble this replaces. That bubble stood for
+   properties spread over hundreds of kilometres and was drawn at one member's
+   position, so its location meant nothing — and a mark whose location means
+   nothing reads as a pin in the wrong place, which is how it was reported
+   every time it was seen: over Bass Strait, over the Southern Ocean, and over
+   the centre of the continent.
+
+   This is the pin itself with a count riding on its shoulder. The pin still
+   points at its coordinate, because every property behind the badge really is
+   at that coordinate. See listingsMap.groupByCoordinate. */
+.listings-map .listing-pin--stack {
+  overflow: visible;
+}
+
+.listing-pin__count {
+  position: absolute;
+  top: -2px;
+  right: -6px;
+  min-width: 1.05rem;
+  height: 1.05rem;
+  padding: 0 0.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-size: 0.625rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  box-shadow:
+    0 0 0 1.5px hsl(var(--primary)),
+    0 2px 6px hsl(var(--foreground) / 0.3);
+  pointer-events: none;
+}
+
+/* On the ghost dot the badge sits tighter, or it dwarfs the mark — and it is
+   hidden until the mark is hovered.
+
+   The ghost variant is drawn ONLY in heat-only mode, where the pins are meant
+   to recede behind the density surface. A solid, fully opaque count riding on
+   a 30%-opacity dot inverts that: the badge becomes the loudest thing on a
+   screen whose subject is the heat. The cluster bubble this replaces had the
+   same rule for the same reason. */
+.listing-pin--ghost .listing-pin__count {
+  top: -6px;
+  right: -8px;
+  min-width: 0.95rem;
+  height: 0.95rem;
+  font-size: 0.5625rem;
+  opacity: 0;
+  transition: opacity 130ms ease;
+}
+
+.listing-pin--ghost:hover .listing-pin__count,
+.listing-pin--ghost:focus-visible .listing-pin__count {
+  opacity: 1;
+}
+
+/* A stack's hover card lists its properties, one line each. */
+.listings-pin-tip__row {
+  display: block;
+  font-size: 0.6875rem;
+  color: hsl(var(--muted-foreground));
+  line-height: 1.35;
+}
+
+/* --- Your location ------------------------------------------------------
+   Deliberately unlike a listing pin: a fact about the viewer, not a record. */
+.listings-map .listings-locator {
+  background: transparent;
+  border: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: visible;
+}
+
+.listings-locator__dot {
+  position: relative;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 9999px;
+  background: hsl(var(--info));
+  border: 2px solid hsl(var(--background));
+  box-shadow: 0 1px 6px hsl(var(--foreground) / 0.45);
+}
+
+.listings-locator__pulse {
+  position: absolute;
+  inset: -0.25rem;
+  border-radius: 9999px;
+  background: hsl(var(--info) / 0.35);
+  animation: listings-locator-pulse 2.4s ease-out infinite;
+}
+
+@keyframes listings-locator-pulse {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.6;
+  }
+  70%,
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
+.listings-map .listings-accuracy {
+  fill: hsl(var(--info) / 0.12);
+  stroke: hsl(var(--info) / 0.5);
+  stroke-width: 1;
+}
+
+/* --- Heat legend ------------------------------------------------------- */
+/* Stops mirror the gradient handed to leaflet.heat in ListingsHeatLayer. */
+.listings-heat-ramp {
+  height: 0.5rem;
+  width: 100%;
+  border-radius: 9999px;
+  border: 1px solid hsl(var(--border) / 0.7);
+  background: linear-gradient(
+    to right,
+    hsl(var(--info)) 0%,
+    hsl(var(--info)) 25%,
+    hsl(var(--success)) 50%,
+    hsl(var(--warning)) 72%,
+    hsl(var(--destructive)) 100%
+  );
+}
+
+.listings-tier-swatch {
+  display: inline-block;
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 9999px;
+  border: 1px solid hsl(var(--background) / 0.7);
+}
+
+.listings-tier-swatch--low {
+  background: hsl(var(--brand-200));
+}
+.listings-tier-swatch--mid {
+  background: hsl(var(--brand-500));
+}
+.listings-tier-swatch--high {
+  background: hsl(var(--brand-800));
+}
+.listings-tier-swatch--top {
+  background: hsl(var(--brand-950));
+}
+
+/* --- Results panel rows -------------------------------------------------
+   The row's mark is the pin's mark: same glyph, same band colour, so a row
+   and the pin it points at are recognisably the same object. */
+.listings-row-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 1.375rem;
+  height: 1.375rem;
+  margin-top: 0.05rem;
+  border-radius: 9999px;
+  background: hsl(var(--muted-foreground));
+  color: hsl(var(--background));
+}
+
+.listings-row-mark svg {
+  width: 0.8125rem;
+  height: 0.8125rem;
+  fill: currentColor;
+}
+
+.listings-row-mark--low {
+  background: hsl(var(--brand-200));
+  color: hsl(var(--brand-950));
+}
+.listings-row-mark--mid {
+  background: hsl(var(--brand-500));
+  color: hsl(var(--brand-950));
+}
+.listings-row-mark--high {
+  background: hsl(var(--brand-800));
+  color: hsl(var(--brand-50));
+}
+.listings-row-mark--top {
+  background: hsl(var(--brand-950));
+  color: hsl(var(--brand-50));
+}
+
+/* Property-type key — the same glyph the pins carry, at legend scale. */
+.listings-glyph-swatch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 0.9375rem;
+  height: 0.9375rem;
+  border-radius: 9999px;
+  background: hsl(var(--foreground) / 0.08);
+  border: 1px solid hsl(var(--border) / 0.7);
+}
+
+.listings-glyph-swatch svg {
+  width: 0.625rem;
+  height: 0.625rem;
+  fill: hsl(var(--foreground) / 0.75);
+}
+
+/* Dark basemaps need a touch more separation from the tiles. */
+.listings-map--dark-tiles .listing-pin--ghost .listing-pin__dot {
+  border-color: hsl(var(--primary) / 0.65);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .listing-pin__chip,
+  .listing-pin__dot,
+  .listing-pin__marker,
+  .listing-pin__count {
+    transition: none;
+  }
+
+  .listing-pin--chip:hover .listing-pin__chip,
+  .listing-pin--pin:hover .listing-pin__marker {
+    transform: none;
+  }
+
+  /* The selection and the peeked row still have to be findable, so keep the
+     halo and the locator — just hold them steady instead of pulsing. */
+  .listing-pin__halo {
+    animation: none;
+    opacity: 0.32;
+  }
+
+  .listings-locator__pulse {
+    animation: none;
+    transform: scale(1.4);
+    opacity: 0.35;
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────
+   Builder / Developer Portal auth backdrop.
+
+   Lives here rather than as an inline `style` object so the gradient
+   is expressed purely through semantic tokens and does not register
+   as a hardcoded-style violation in `npm run audit:style`.
+   ──────────────────────────────────────────────────────────────── */
+.builder-auth-aurora {
+  background:
+    radial-gradient(60% 45% at 15% 10%, hsl(var(--primary) / 0.2), transparent 60%),
+    radial-gradient(50% 40% at 85% 0%, hsl(var(--accent) / 0.16), transparent 62%),
+    radial-gradient(70% 55% at 50% 100%, hsl(var(--primary) / 0.1), transparent 65%);
+}

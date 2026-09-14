@@ -1,0 +1,90 @@
+# Aurixa Builders Network — Supabase configuration.
+#
+# EVERY deployed function carries an explicit [functions.X] block. The prime
+# paid for the alternative: an omitted block is not "no opinion" — the CLI
+# reads it as verify_jwt = true, which asserts the gateway is checking a
+# Supabase JWT in front of that function, and it was wrong for 91 of 425.
+# scripts/check-verify-jwt-declared.mjs fails CI on a missing declaration.
+#
+# The portal functions are verify_jwt = false because their authentication is
+# the portal's own: a cookie-held session token, hashed server-side, failing
+# closed without the pepper (auth gateway, extraction plan §5). The gateway's
+# JWT check would demand a credential no portal user holds.
+
+project_id = "aurixa-builders"
+
+[functions.builder-portal-login]
+verify_jwt = false
+[functions.builder-portal-logout]
+verify_jwt = false
+[functions.builder-portal-verify]
+verify_jwt = false
+[functions.builder-portal-accept-invite]
+verify_jwt = false
+[functions.builder-portal-forgot-password]
+verify_jwt = false
+# The self-registration door and its email-verification twin (network
+# edition, plan §5): public by design, guarded by Turnstile + rate limits +
+# the enumeration-safe response shape, not by a JWT nobody holds yet.
+[functions.builder-portal-register]
+verify_jwt = false
+[functions.builder-portal-verify-email]
+verify_jwt = false
+[functions.builder-portal-reset-password]
+verify_jwt = false
+[functions.builder-portal-change-password]
+verify_jwt = false
+
+# The admin-plane lift landed (plan §5): invitations are the organisation's
+# own act, gated on an owner/administrator PORTAL session with CSRF — the
+# staff-JWT gate this block used to guard is gone, so the flip to false
+# arrives in the same change that replaced the check behind the door.
+[functions.builder-portal-invite]
+verify_jwt = false
+
+[functions.builder-portal-projects]
+verify_jwt = false
+[functions.builder-portal-inventory]
+verify_jwt = false
+[functions.builder-portal-transactions]
+verify_jwt = false
+[functions.builder-portal-construction]
+verify_jwt = false
+[functions.builder-portal-delivery]
+verify_jwt = false
+[functions.builder-portal-collaboration]
+verify_jwt = false
+[functions.builder-portal-workspace]
+verify_jwt = false
+[functions.builder-portal-stock]
+verify_jwt = false
+
+# The connection graph's builder-side surface: portal cookie session,
+# org-owner gate for mutations, CSRF like every portal mutation.
+[functions.builder-network-connections]
+verify_jwt = false
+
+# Mission Control's operator door: authorised by the RS256 federation
+# assertion (aud = this origin, scope builders:operate) verified against
+# MC's published JWKS — MC never holds this project's service-role key.
+[functions.builder-network-admin]
+verify_jwt = false
+
+# The clone -> network delivery door: authorised by the per-connection
+# symmetric HMAC over the raw body, never by a JWT — the caller is another
+# machine holding the connection secret.
+[functions.builder-network-inbound]
+verify_jwt = false
+
+# Workers: invoked by schedule or internal signature, never by a user JWT.
+[functions.builder-network-outbox-worker]
+verify_jwt = false
+[functions.builder-document-processor]
+verify_jwt = false
+[functions.builder-stock-image-settler]
+verify_jwt = false
+
+# The inbound Make-scenario callback: authorised by one-time capability
+# tokens minted when this product asked for the recovery, never by a JWT.
+[functions.builder-stock-link-callback]
+verify_jwt = false
