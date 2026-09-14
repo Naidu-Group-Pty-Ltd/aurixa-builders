@@ -1,0 +1,14 @@
+{
+  "name": "aurixa-builders",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Aurixa Builders Network — the central multi-vendor Builder Portal at builders.aurixasystems.com.au",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "db:baseline:build": "node scripts/db/build-baseline.mjs",
+    "db:baseline:check": "node scripts/db/baseline-check.mjs"
+  }
+}

@@ -1,0 +1,38 @@
+-- Builder stock — MARKETPLACE_ELIGIBILITY_VERSION 2: a mark too narrow to be a
+-- line of type no longer convicts a photograph.
+--
+-- WHAT WAS WRONG. Lot 40 Sandpiper's recovered facade carries no overlay of any
+-- kind — no pill, no ribbon, no caption — and the classifier refused it for a
+-- single 17x12px mark in the very top corner of the 400px reduction: FOLIAGE
+-- AGAINST SKY. One coincidence of high-contrast edges hid a clean builder
+-- photograph, and it is not the only one: this is the same class of false
+-- positive that hid the completely unmarked Lot 537 Kirramingly through the
+-- flat-colour pass instead.
+--
+-- WHAT CHANGED. A run of ink must now span at least 5.5% of the frame's width
+-- before it counts as a line of laid-over type. The floor sits between two
+-- populations measured on the production set: the narrowest REAL marketing run
+-- is Brownsplains' second word at 7.2%, and the foliage mark is 4.3%. Lot 13's
+-- pills run to 30%, Lot 1663's to 29.7%, Coridale's to 9.2%. It is a floor and
+-- never a ceiling — making a run wider is not something it can reject — so
+-- every marketing control detected before is detected now, and the flat-colour
+-- half of the classifier is untouched.
+--
+-- WHY THE TARGET HAS TO MOVE. Every stored verdict was reached with that mark
+-- counting, so every one of them is stale by definition.
+-- `needsEligibilityAssessment` compares the stored version against the
+-- constant, and all three eligibility states are terminal for the version that
+-- produced them — which is what stops the sweep re-judging settled pictures
+-- every five minutes. Raising the target is the designed way to bring them all
+-- back for a real second look, and the only one.
+--
+-- WHAT THIS DOES NOT DO. It rewrites no stored image, adds no column, table,
+-- policy or function, and touches no price, availability, configuration,
+-- status, selection, builder or project linkage. The machinery shipped with
+-- version 1; this is the number it acts on.
+
+-- MUST EQUAL `MARKETPLACE_ELIGIBILITY_VERSION` in
+-- `_shared/builderStock/marketplaceEligibility.pure.ts`. A bump ships both
+-- halves in one deployment; a test reads the migrations and fails when the
+-- highest target here disagrees with the constant there.
+SELECT public.set_builder_stock_eligibility_target(2);

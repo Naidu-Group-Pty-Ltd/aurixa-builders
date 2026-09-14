@@ -1,0 +1,68 @@
+-- Builder stock — SANITIZATION_VERSION 2: badges with no readable words, and
+-- proving a picture is clean.
+--
+-- WHAT WAS WRONG. Seventeen designated primaries were refused by the display
+-- classifier for carrying a laid-over graphic. Eleven were repaired. The other
+-- six were recorded as `nothing_to_remove` — the repair inspected them and
+-- found no extent it could take off — and every one of those cards stayed
+-- blank. Opening them showed that ONE answer was covering TWO completely
+-- different situations:
+--
+--   Lot 537 Kirramingly is an unmarked builder render. No pill, no ribbon, no
+--   banner, no caption. It was refused because its WHITE GARAGE DOOR is a flat
+--   coloured block, and a client saw an empty frame where the house is.
+--
+--   Cloverton Registered (four rows, two files) carries "Registered" on a green
+--   pill, a "HOUSE & LAND" plate and an artist-impression strip. The strict type
+--   pass reads NONE of it at any resolution from 400px to full size, so a mask
+--   derived from type alone comes out empty — on a picture with an obvious badge
+--   on it.
+--
+-- Both reported identically. A rule that cleared on "nothing to remove" would
+-- have put four marketing tiles onto cards; a rule that keeps hiding them
+-- leaves a clean photograph hidden. The two have to be told apart, and the
+-- thing that tells them apart is the COLOUR of the region the classifier
+-- convicted on: measured on production, every promotional plate is a brand
+-- colour (0.54-0.90 saturation, 112-174 chroma) and every architectural region
+-- is a material one (Lot 537's door: 0.045 and 10).
+--
+-- WHAT VERSION 2 DOES. Two things, both in
+-- `_shared/builderStock/overlayPlate.pure.ts` and
+-- `_shared/builderStock/overlayClearance.pure.ts`:
+--
+--   1  a flat region filled with a brand colour is a plate to remove, whether
+--      or not any words on it can be read — which is what makes the Cloverton
+--      badges repairable instead of invisible;
+--
+--   2  a picture with NO type of any kind, NO brand colour and NO plate is
+--      CLEARED: the classifier convicted it for part of the house, and the
+--      builder's ORIGINAL goes on the card, unaltered.
+--
+-- A CLEARANCE MAKES NOTHING AND CHANGES NOTHING. There is no derivative, no new
+-- object, no second set of pixels — the bytes a cleared card serves are the
+-- bytes already in the row. The record is one key in `source_detail` naming the
+-- exact original by id and by SHA-256, and it stops applying the moment those
+-- bytes change.
+--
+-- WHY THE TARGET HAS TO MOVE. All six of those images already carry a
+-- `sanitization_failure` at version 1, and `sanitizationSettled` counts a
+-- recorded failure as finished work — which is what stops the sweep re-running
+-- refused repairs every five minutes for ever. Raising the target is the
+-- designed way to reopen them, and the only one.
+--
+-- WHAT THIS DOES NOT DO. It rewrites no stored image, creates and deletes no
+-- stock item, and touches no price, availability, configuration, status,
+-- selection, builder or project linkage. It adds no column, no table, no
+-- policy and no function: the machinery all shipped with version 1, and this is
+-- the number it acts on.
+
+
+-- MUST EQUAL `SANITIZATION_VERSION` in
+-- `_shared/builderStock/sanitizedDerivative.pure.ts`. A bump ships both halves
+-- in one deployment; a test reads every migration and fails when the highest
+-- target here disagrees with the constant there.
+--
+-- `set_builder_stock_sanitization_target` is monotonic and reschedules the
+-- sweep if it had unscheduled itself — which it will have done, because the
+-- version-1 queue drained. A target nobody is acting on is a number in a table.
+SELECT public.set_builder_stock_sanitization_target(2);

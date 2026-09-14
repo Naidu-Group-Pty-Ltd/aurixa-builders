@@ -1,0 +1,248 @@
+{
+  "built_at": "2026-09-14T04:20:10.547Z",
+  "prime": "Naidu-Group-Pty-Ltd/npc-property-dashbord",
+  "reshape_sha256": "49b81293a40e1302461b3657de2f806a9be11ba5494efcd3742f601d42b78f3f",
+  "network_fixture_sha256": "90aa29b01c28b6646618161ebbbaa5e44f9504d1a26f1c40de4160df589e6222",
+  "corpus": [
+    {
+      "file": "20260801000000_builder_portal_phase1_organisations_users.sql",
+      "sha256": "53a521700a5635f893d78b659f72d5ceb905b23c557a6c31bae7b3a5d458c96c"
+    },
+    {
+      "file": "20260801000100_builder_portal_phase1_permissions.sql",
+      "sha256": "a9621a754557c0c2419adaa9aae6a50f85cb3c0d496e0a74379f1bf25fcded98"
+    },
+    {
+      "file": "20260801000200_builder_portal_phase1_sessions.sql",
+      "sha256": "cc8361fb26ba8c2e011ebcc32297f56fc78ec7e521c1b0cf3fe33681b3b202ca"
+    },
+    {
+      "file": "20260801000500_builder_portal_admin_module.sql",
+      "sha256": "a458bc807464fa1afbafaa14d59f0fd696004f1330a6fa56c47cc99e02793e9d"
+    },
+    {
+      "file": "20260801000600_builder_portal_activity_log.sql",
+      "sha256": "abfb9715d67f2891679ec5d6eead954855b662e8c5c1d7f9839e5d2c96971779"
+    },
+    {
+      "file": "20260802000000_builder_portal_phase2_auth_governance.sql",
+      "sha256": "6fc1d86b211e0f2ab45e7b8d64cbd411254192cc8b87b502efd0f5826df119bc"
+    },
+    {
+      "file": "20260803000000_builder_portal_phase3_projects.sql",
+      "sha256": "08c0ea8fab556f7768159a43af6f8b552a78c92a0f38082d2075435b859b4366"
+    },
+    {
+      "file": "20260804000000_builder_portal_inventory.sql",
+      "sha256": "dcbedb5b6335420d39b23e2066a0e7899c88396aaf4f2b6e5058bf631274675f"
+    },
+    {
+      "file": "20260805000000_builder_portal_transactions.sql",
+      "sha256": "643390756eb5622e16ef7cda044e9371da66f551ef80044074c95b682ca7de4f"
+    },
+    {
+      "file": "20260806000000_builder_portal_construction.sql",
+      "sha256": "73b075fdf46bac4aa871e233a155d726ab5bbb8bcf404ce36680f06aeedc3ae2"
+    },
+    {
+      "file": "20260807000000_builder_portal_delivery.sql",
+      "sha256": "4a8095833cb937ad9cf5ea32bd48a681916e3edb0dad34ba4b00bba100704c3f"
+    },
+    {
+      "file": "20260808000000_builder_portal_collaboration.sql",
+      "sha256": "5aed08063acc0b975823aee278221e4804a22fad8e37b69be3ddb0a121b4114f"
+    },
+    {
+      "file": "20260809000000_builder_portal_workspace.sql",
+      "sha256": "9b71b2c0fea5865195bb31582eecc2aa874232ea7db673b74ec6799cc482bfdc"
+    },
+    {
+      "file": "20260810000000_builder_portal_release_control_plane.sql",
+      "sha256": "d65147285f4a5e223c9eb95c0adfc8f438afb3d35754c3b5faf6018c604443e8"
+    },
+    {
+      "file": "20260810000100_builder_portal_onboarding_tour.sql",
+      "sha256": "72c25c37a10cb0f267d552b806446c7027cb85287bccacfee20ed06f48178658"
+    },
+    {
+      "file": "20260810000200_builder_document_quarantine_scanning.sql",
+      "sha256": "c8914318a64a363c41749fcf3ac9aab87ccc877c70e67abc1d62a2940e44e75e"
+    },
+    {
+      "file": "20260816130000_builder_stock_uploads_bootstrap.sql",
+      "sha256": "cee7c7f47b7e273454db52b9617c0a680decb5c95ccca3d031bc58415da86c1b"
+    },
+    {
+      "file": "20260816140000_builder_stock_source_image_settlement.sql",
+      "sha256": "8ba7410fac6c45041e5fac1df3ea9ae0e2f03e4b424e8461457391f8d75e517d"
+    },
+    {
+      "file": "20260818120000_builder_stock_marketplace_eligibility_settlement.sql",
+      "sha256": "a0a7ec506778f0a86a98c1b12ca13b72aeb9a3d6f5f64749201581cb3420bc27"
+    },
+    {
+      "file": "20260819090000_builder_stock_eligibility_target_version.sql",
+      "sha256": "f556a31141de7381eb17cbd3aac43799c9b2cb22a1f31880686bf4a8c2850a50"
+    },
+    {
+      "file": "20260820000000_builder_admin_safe_deletion.sql",
+      "sha256": "b0cf8dde24c20a4acc0ea581fa05369a889471228e544bea0c16b3915bec9871"
+    },
+    {
+      "file": "20260821000000_builder_admin_blocker_array_fix.sql",
+      "sha256": "63e0df92c8e4dfc20c246b382c096748786091b91a78a5356d4b48f05a2d8e89"
+    },
+    {
+      "file": "20260822000000_builder_deletion_lifecycle.sql",
+      "sha256": "8cac07691d5c52037f8fc69146409fcf0dd7b79534c095e140e0d5e0a24191bd"
+    },
+    {
+      "file": "20260823000000_builder_deletion_audit_constraints.sql",
+      "sha256": "d85425e2d98330d5bc89111d6941e179a7b478df41109352c9e4604774a0d84f"
+    },
+    {
+      "file": "20260915000000_builder_stock_list_marketplace.sql",
+      "sha256": "adeef21f0ca91672c9aab2d383fb3393ea657cc4d55c36ba98f843d7bbbd9748"
+    },
+    {
+      "file": "20260916000000_builder_stock_url_sources_and_deletion.sql",
+      "sha256": "be7f04921d6eccff556ee77acbb3333c0e2cdcb17241d8e50c87c9bd7ef74b17"
+    },
+    {
+      "file": "20260922000000_builder_stock_terminal_negative_provenance.sql",
+      "sha256": "e06658693bb33904ec16d29858926f73234d3137d091d5c8542dd1a057d515f8"
+    },
+    {
+      "file": "20260925000000_builder_stock_image_sanitization_settlement.sql",
+      "sha256": "38afa7371054fe5edd6a1df2ff75909e8c7bc3cce361166a20754c4faa8e265f"
+    },
+    {
+      "file": "20260926000000_builder_stock_overlay_clearance.sql",
+      "sha256": "a69a821272f2b3d546026cd80dd9a55ca2fba65ee1be9609f5d8c23df248d36a"
+    },
+    {
+      "file": "20260927000000_builder_stock_eligibility_v2.sql",
+      "sha256": "170ebed6f21f1af2c0cbb36997d1bb80d7d8ca73fa11f44f5fbe16018b565bd2"
+    },
+    {
+      "file": "20261005000000_builder_stock_cron_gate_fallback.sql",
+      "sha256": "71f088f20f7944954312aeba82fd44a1c0b2a96cf639e39482c22159894c0236"
+    },
+    {
+      "file": "20261012000000_builder_stock_auto_source_drain.sql",
+      "sha256": "e4a10064ad7a60a7cce5e3213d880b576f64db1562eea37eb414796b230a9a36"
+    },
+    {
+      "file": "20261019000000_builder_stock_item_work_claim.sql",
+      "sha256": "f3803b9846cbe6b5467aa57cd3f67d371a0b60924a3d39771082d50fe3a2964b"
+    },
+    {
+      "file": "20261021000000_builder_stock_item_work_claim_amendments.sql",
+      "sha256": "2beaacdce16a45851cc6853cc1f18e465fd4f5da110914403c4ac373db0df31b"
+    },
+    {
+      "file": "20261022000000_builder_stock_safe_publication.sql",
+      "sha256": "fdec579b1d98cb21fefdef8ec6c7927835bd24688704722252e01da71b8e6f70"
+    },
+    {
+      "file": "20261023000000_builder_stock_arm_on_upload.sql",
+      "sha256": "c26eb5335401617d4b5e83a581f59a6b3b46b4689e96ffa43711b5ba10666b48"
+    },
+    {
+      "file": "20261024000000_builder_stock_settler_fanout.sql",
+      "sha256": "3cb2498ee262bf78e08913d5ce08ffbee8e7556caf1f478c491399d460390666"
+    },
+    {
+      "file": "20261025000000_builder_stock_publish_sweep.sql",
+      "sha256": "2feae3c2648dee43ec7b37736dface0c97a4750ac55de01ea09e599254d466df"
+    },
+    {
+      "file": "20261026000000_builder_stock_reopen_stranded.sql",
+      "sha256": "c06b6bf469bb509612859456e7b76244ae12fe68c07a66549e67efe86fa898ac"
+    },
+    {
+      "file": "20261027010000_builder_stock_ladder_generation.sql",
+      "sha256": "5700eab8c059a8347dc18d8704834e0c447d38b6266cbe205aa6f1ba4e1e6264"
+    },
+    {
+      "file": "20261028000000_builder_stock_retire_unbuilt_streetview.sql",
+      "sha256": "de226ad62e5245dcad3e9adf8cb9c97affe3216dc8fc4126d5d6718ca3689476"
+    },
+    {
+      "file": "20261029000000_builder_stock_web_verified_status.sql",
+      "sha256": "3fef2d64d12c235881de10b94128fadaa46b90f3ec13baedb1fe6c74e7cbd2f3"
+    },
+    {
+      "file": "20261030000000_builder_stock_link_recovery.sql",
+      "sha256": "8a2ef6d8a5e5c786199f4986a266d63cb2b7d94fb1c7c5bb63e4cadf0f659a88"
+    },
+    {
+      "file": "20261102000000_builder_design_images.sql",
+      "sha256": "f49073cf3a8ececf12b697e0179cd579cd8819ba0c027cc3b6ffac179f7e13dd"
+    },
+    {
+      "file": "20261103000000_builder_stock_rearm_on_requeue.sql",
+      "sha256": "6c863609b4052589af0ee66b38202cc51f1b0e0b8b338f4597761e475246592a"
+    },
+    {
+      "file": "20261104000000_builder_stock_withdraw_design_renders.sql",
+      "sha256": "6367f606e34f5df2ec1556732b6370446ac795cbb561c532d71c6af8faa3658d"
+    },
+    {
+      "file": "20261105000000_builder_stock_reopen_at_v9.sql",
+      "sha256": "bb7425ebe563548dec61df62e1143dab82ce84d701aa68f12aaecce826c2f55d"
+    },
+    {
+      "file": "20261106000000_builder_stock_reopen_at_v10.sql",
+      "sha256": "f537c039c00ee90c3b2e8e7829224736b532dd2afc8a7cf0fa380d3b490a5a96"
+    },
+    {
+      "file": "20261107000000_builder_stock_reopen_at_v11.sql",
+      "sha256": "caef8ecc95bb153c2a8449a5b9beb24fb43e2ad17d69e113ff6aa52c99ab3221"
+    },
+    {
+      "file": "20261108000000_builder_stock_reopen_at_v12.sql",
+      "sha256": "a5370cf1592c673185f8f39b8fc0f07ab07e89051872f0c87450b68981634cf9"
+    },
+    {
+      "file": "20261109000000_builder_stock_upload_completion_liveness.sql",
+      "sha256": "457fa5d73e333c3a1f3c2745c9af507ef59792e70b66aec8743970b14709e92a"
+    },
+    {
+      "file": "20261110000000_builder_stock_reopen_at_v13.sql",
+      "sha256": "c0ed324d9b68ca6bea4f133b665169aa734cfbd1b2a9f3152b16808190bbe037"
+    },
+    {
+      "file": "20261111000000_builder_stock_package_uniqueness.sql",
+      "sha256": "0c06f711666f87d9ec7e49248b5b86bf475185c462a2184b22756fe3d3f74837"
+    },
+    {
+      "file": "20261111010000_builder_stock_reopen_at_v14.sql",
+      "sha256": "eaacdf3329617ddf4ff14c68c9e530ce7f9f8dbc5e8d4270b74593d5454211ab"
+    },
+    {
+      "file": "20261113110000_builder_stock_runtime_reopen.sql",
+      "sha256": "aea50ff462255c2469575163e27f4e4d71c04d7d740ed112132f22cf5f59376b"
+    },
+    {
+      "file": "20261113110001_builder_stock_settler_fixed_concurrency.sql",
+      "sha256": "4d87a87cd47f9f672948569b42de1c5ee38736b8813b3b0de74654ca7fd37f5c"
+    },
+    {
+      "file": "20261113120000_builder_stock_runtime_version_2.sql",
+      "sha256": "a152e5942f03763b1bfd0734624bcc5f3fe70ff56f8e2b356f83c3d49784280a"
+    },
+    {
+      "file": "20261115100000_builder_stock_runtime_version_3.sql",
+      "sha256": "de51706545093efbde4364d601a8350c9b7d9ba9eafbb677c83fbfe866e8286e"
+    },
+    {
+      "file": "20261119130000_builder_stock_provenance_target.sql",
+      "sha256": "8f6aa981296ed07362464df64f7d1a38eefde545f9eedc596742240f1333eaaf"
+    },
+    {
+      "file": "20261119170000_builder_stock_manual_stats.sql",
+      "sha256": "360925345eed07df9df0d0588f24b16785514982a3a020dca238f179ada22256"
+    }
+  ]
+}

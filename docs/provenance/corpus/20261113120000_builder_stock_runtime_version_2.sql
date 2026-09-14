@@ -1,0 +1,22 @@
+-- The worker's processing runtime moves to 2.
+--
+-- WHAT CHANGED, AND WHY IT IS A RUNTIME CHANGE RATHER THAN A PROVENANCE ONE.
+-- Version 1 gave the settler a serial claim loop and put the whole heavy PDF
+-- path behind one decode slot. It worked for five of the six properties it was
+-- built for, and it introduced a cost of its own: one isolate now reads several
+-- documents and never gives the memory back. Measured on Lot 608's brochure,
+-- six reads in one process took resident memory 50 -> 173 -> 236 -> 247 -> 254
+-- -> 287 -> 318 MB, so the FIFTH document crosses an Edge Function's ~256 MB
+-- ceiling. Each read is under a second, which is why the stage-aware time
+-- reserve added in the same change could not see it.
+--
+-- The settler now opens at most three documents per invocation. That is a
+-- change in how reliably we can OPEN a document, not in what the extractor
+-- understands, so it is this number and never PROVENANCE_VERSION.
+--
+-- WHAT IT REOPENS. Only a branch carrying a `runtime_version` stamp, which
+-- `recordPackageUnprocessable` and `recordPackageAttempt` are alone in writing:
+-- a document that answered and a link that could not be read carry none and are
+-- untouched. Counted against production immediately before this migration, the
+-- predicate matched exactly ONE row — the property version 1 wrongly retired.
+UPDATE public.builder_stock_settlement_target SET image_runtime_version = 2;

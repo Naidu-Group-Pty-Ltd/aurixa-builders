@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  baseline:
+    name: baseline stands alone
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        # The check needs nothing of Supabase's image: the bootstrap provides
+        # the platform shapes, and `public` is handed to the baseline empty.
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_USER: postgres
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      LOCAL_PG_HOST: 127.0.0.1
+      LOCAL_PG_PORT: "55432"
+      LOCAL_PG_USER: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: psql client
+        run: sudo apt-get update -q && sudo apt-get install -y -q postgresql-client
+      - name: baseline check
+        run: npm run db:baseline:check

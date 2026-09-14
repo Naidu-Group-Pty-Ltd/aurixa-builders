@@ -1,0 +1,39 @@
+-- The worker's processing runtime moves to 3.
+--
+-- WHAT CHANGED. The heavy PDF election no longer runs in the Edge Function at
+-- all. It runs on `builder-stock-pdf-worker`, a Cloudflare Worker that imports
+-- and executes the SAME `readPdfPageTextResult` and `electFromPdfBytes` this
+-- repository already had, inside a Durable Object with CPU for them.
+--
+-- WHY, MEASURED. Per-execution platform telemetry, 8 September 2026: thirteen
+-- settler kills in one cold start, every one `reason: CPUTime`. Successes
+-- ended at 1,828 ms of CPU or less, kills at 2,031 ms or more, against a
+-- 2,000 ms limit, while memory peaked at 108 MB of 256 and was never close.
+-- Reading one heavy brochure and electing its image is indivisible and costs
+-- about 2.4 s. Versions 1 and 2 counted documents per invocation and memory
+-- per isolate; both were the wrong ceiling, and no scheduling rule makes 2.4 s
+-- fit inside 2.0 s.
+--
+-- It is a change in how reliably we can OPEN a document, not in what the
+-- extractor understands — sharply so, since the extractor is the same code
+-- running somewhere else — so it is this number and never PROVENANCE_VERSION.
+--
+-- WHAT IT REOPENS: NOTHING, counted against production immediately before this
+-- migration, and that is the honest answer rather than a disappointing one.
+--
+--   settled, pictureless, active or staged                        0
+--   of those, carrying a runtime stamp below 3                    0
+--
+-- The two properties the thirteen kills cost — Lots 516 and 6706, which
+-- retired carrying `package_recovery_attempt` at runtime 2 — are on rows
+-- belonging to upload `4736c1c6`, which the operator deleted at 05:32 the same
+-- morning. The live upload `85f2b0bf` carries all thirteen properties with
+-- their facades elected from the brochures, including those two. So the
+-- predicate matching nothing is the predicate being right: there is no backlog
+-- to re-ask, and a reopen that found rows here would be reopening work that
+-- had already answered.
+--
+-- The value of this number is forward. `WORKER_RUNTIME_VERSION` is 3, so the
+-- constant reaching 3 is also what routes the election off the Edge Function —
+-- and the next upload carrying a heavy brochure is the one this saves.
+UPDATE public.builder_stock_settlement_target SET image_runtime_version = 3;
