@@ -44,6 +44,8 @@ const BuilderTasks = lazyWithRetry(() => import("@/pages/builder/BuilderTasks"))
 const BuilderNotifications = lazyWithRetry(() => import("@/pages/builder/BuilderNotifications"));
 const BuilderActivity = lazyWithRetry(() => import("@/pages/builder/BuilderActivity"));
 const BuilderSectionWithdrawn = lazyWithRetry(() => import("@/pages/builder/BuilderSectionWithdrawn"));
+const BuilderRegister = lazyWithRetry(() => import("@/pages/builder/BuilderRegister"));
+const BuilderVerifyEmail = lazyWithRetry(() => import("@/pages/builder/BuilderVerifyEmail"));
 
 /*
   Withdrawn-section pages: untouched and still imported (the prime's rule,
@@ -106,6 +108,11 @@ const App = () => (
                   <BuilderPortalAuthProvider>
                     <Routes>
                       <Route path="login" element={<BuilderLogin />} />
+                      <Route path="register" element={<BuilderRegister />} />
+                      {/* Public on purpose: the emailed link must work in a
+                          browser with no session; the guard sends signed-in
+                          unverified users here too. */}
+                      <Route path="verify-email" element={<BuilderVerifyEmail />} />
                       <Route path="accept-invite" element={<BuilderAcceptInvite />} />
                       <Route path="forgot-password" element={<BuilderForgotPassword />} />
                       <Route path="reset-password" element={<BuilderResetPassword />} />

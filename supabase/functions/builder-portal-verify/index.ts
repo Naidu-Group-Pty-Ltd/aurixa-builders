@@ -233,6 +233,7 @@ Deno.serve(async (req) => {
         phone: user.phone,
         job_title: user.job_title,
         must_change_password: user.must_change_password,
+        email_verified_at: user.email_verified_at ?? null,
         has_accepted_terms: user.has_accepted_terms,
         has_completed_onboarding: user.has_completed_onboarding,
         current_terms_version: user.current_terms_version,

@@ -31,6 +31,18 @@
       "owner": "builder-portal-program",
       "reviewed": true
     },
+    "builder-portal-register": {
+      "verify_jwt": false,
+      "exposure_class": "public-auth",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-verify-email": {
+      "verify_jwt": false,
+      "exposure_class": "public-auth",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
     "builder-portal-reset-password": {
       "verify_jwt": false,
       "exposure_class": "public-auth",

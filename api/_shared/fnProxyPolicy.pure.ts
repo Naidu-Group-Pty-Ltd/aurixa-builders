@@ -31,6 +31,8 @@
 export const PROXIED_FUNCTIONS = [
   'builder-portal-login',
   'builder-portal-logout',
+  'builder-portal-register',
+  'builder-portal-verify-email',
   'builder-portal-verify',
   'builder-portal-accept-invite',
   'builder-portal-forgot-password',

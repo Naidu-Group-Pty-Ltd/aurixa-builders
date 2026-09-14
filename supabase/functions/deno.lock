@@ -121,5 +121,10 @@
     "https://esm.sh/jszip@3.10.1": "0428be12429bcc51e7067c0f35e99e09b65db0f40843497cf9c23f1bdfff27c3",
     "https://esm.sh/unpdf@0.12.1": "fbffa8cb0799e760249fb47326cc2134abda5e15d1f71e2dc20c1594217aaad6",
     "https://esm.sh/xlsx@0.18.5": "feaad96c2697fd87d8d2cbf00030869f6f3cb87afc6f58c92602f1e33309dc03"
+  },
+  "workspace": {
+    "dependencies": [
+      "npm:@supabase/supabase-js@2.55.0"
+    ]
   }
 }

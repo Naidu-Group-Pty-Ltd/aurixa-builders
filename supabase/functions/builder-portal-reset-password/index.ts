@@ -133,6 +133,15 @@ Deno.serve(async (req) => {
     // same generic string as every other rejection.
     if (!updated) return json({ error: GENERIC_CODE_ERROR }, 400);
 
+    // A consumed reset code proves the mailbox (network governance reads
+    // email_verified_at). Written as a second, conditional statement rather
+    // than inside the atomic consume-update so a re-proof can never overwrite
+    // the date the mailbox was FIRST proven — the stamp is history.
+    await supabase.from('builder_portal_users')
+      .update({ email_verified_at: new Date().toISOString() })
+      .eq('id', result.user_id)
+      .is('email_verified_at', null);
+
     // Every live session dies with the old password. The Phase 1 trigger on
     // password_changed_at does this too; the explicit call keeps the count for
     // the audit record and covers any future trigger change.

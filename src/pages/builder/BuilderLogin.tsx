@@ -96,12 +96,21 @@ export default function BuilderLogin() {
       title="Welcome back"
       description="Sign in to your builder or developer workspace."
       footer={
-        <Link
-          to="/builder/forgot-password"
-          className="rounded px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          Forgot your password?
-        </Link>
+        <div className="flex flex-col items-center gap-1">
+          <Link
+            to="/builder/forgot-password"
+            className="rounded px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            Forgot your password?
+          </Link>
+          {/* NETWORK EDITION: the portal has a second door. */}
+          <Link
+            to="/builder/register"
+            className="rounded px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            New to the network? Create an account
+          </Link>
+        </div>
       }
     >
       <form onSubmit={handleSubmit} className="space-y-4">

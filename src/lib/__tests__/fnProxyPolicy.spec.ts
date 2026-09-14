@@ -21,7 +21,7 @@ const REPO_ROOT = join(__dirname, '..', '..', '..');
 const read = (p: string) => readFileSync(join(REPO_ROOT, p), 'utf8');
 
 describe('the allowlist', () => {
-  it('is exactly the fifteen browser-invocable portal functions', () => {
+  it('is exactly the seventeen browser-invocable portal functions', () => {
     expect([...PROXIED_FUNCTIONS].sort()).toEqual([
       'builder-portal-accept-invite',
       'builder-portal-change-password',
@@ -33,10 +33,12 @@ describe('the allowlist', () => {
       'builder-portal-login',
       'builder-portal-logout',
       'builder-portal-projects',
+      'builder-portal-register',
       'builder-portal-reset-password',
       'builder-portal-stock',
       'builder-portal-transactions',
       'builder-portal-verify',
+      'builder-portal-verify-email',
       'builder-portal-workspace',
     ]);
   });

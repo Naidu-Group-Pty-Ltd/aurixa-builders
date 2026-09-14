@@ -132,6 +132,9 @@ Deno.serve(async (req) => {
         invite_token_hash: null,
         invite_token_expires_at: null,
         invite_accepted_at: new Date().toISOString(),
+        // Accepting an emailed token proves the mailbox (network governance
+        // reads this; see builderPortalAuth.builderGovernanceError).
+        email_verified_at: new Date().toISOString(),
         status: 'active',
         is_active: true,
         last_login_at: new Date().toISOString(),

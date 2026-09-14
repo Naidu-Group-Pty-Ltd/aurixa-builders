@@ -119,3 +119,39 @@ export const AcceptInviteRequest = z.object({
   token: optionalField(tokenField),
   password: optionalField(passwordField),
 });
+
+/**
+ * `{ email, password, name, … , organisation, turnstile_token }` —
+ * builder-portal-register (network edition; the portal's second door).
+ *
+ * The organisation block is nested because it is one decision: which
+ * organisation this registrant claims. `website` is the honeypot field —
+ * real forms never render it, so a filled value is an automation tell
+ * (`honeypotTripped` in publicAbuseControls).
+ */
+export const BuilderRegisterRequest = z.object({
+  email: optionalField(emailField),
+  password: optionalField(passwordField),
+  name: optionalField(z.string().max(200)),
+  phone: optionalField(z.string().max(40)),
+  job_title: optionalField(z.string().max(120)),
+  organisation: optionalField(z.object({
+    legal_name: optionalField(z.string().max(300)),
+    trading_name: optionalField(z.string().max(300)),
+    org_type: optionalField(z.string().max(40)),
+    abn: optionalField(z.string().max(20)),
+    state: optionalField(z.string().max(3)),
+  })),
+  turnstile_token: optionalField(turnstileTokenField),
+  website: optionalField(z.string().max(300)),
+});
+
+/**
+ * `{ action, token }` — builder-portal-verify-email. `verify` consumes an
+ * emailed token (no session); `resend` mints a new one for the signed-in,
+ * still-unverified caller.
+ */
+export const VerifyEmailRequest = z.object({
+  action: optionalField(actionField),
+  token: optionalField(tokenField),
+});

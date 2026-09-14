@@ -81,10 +81,12 @@ const EXPECTED_FUNCTIONS = [
     'builder-portal-login',
     'builder-portal-logout',
     'builder-portal-projects',
+    'builder-portal-register',
     'builder-portal-reset-password',
     'builder-portal-stock',
     'builder-portal-transactions',
     'builder-portal-verify',
+    'builder-portal-verify-email',
     'builder-portal-workspace',
     // Cron sweep behind verifyInternal; holds a service-role client and
     // crosses organisations, so it is deliberately not a portal-reachable
@@ -157,6 +159,7 @@ check(client.includes("'X-Portal-Request': 'builder-portal'"),
 for (const name of [
   'builder-portal-logout',
   'builder-portal-verify',
+  'builder-portal-verify-email',
   'builder-portal-change-password',
   'builder-portal-invite',
 ]) {

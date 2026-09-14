@@ -23,6 +23,13 @@ verify_jwt = false
 verify_jwt = false
 [functions.builder-portal-forgot-password]
 verify_jwt = false
+# The self-registration door and its email-verification twin (network
+# edition, plan §5): public by design, guarded by Turnstile + rate limits +
+# the enumeration-safe response shape, not by a JWT nobody holds yet.
+[functions.builder-portal-register]
+verify_jwt = false
+[functions.builder-portal-verify-email]
+verify_jwt = false
 [functions.builder-portal-reset-password]
 verify_jwt = false
 [functions.builder-portal-change-password]

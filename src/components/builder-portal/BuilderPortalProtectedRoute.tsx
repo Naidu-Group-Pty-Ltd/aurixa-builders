@@ -55,6 +55,15 @@ export function BuilderPortalProtectedRoute() {
     );
   }
 
+  // An unproven mailbox outranks every later stage (network edition; the
+  // server's builderGovernanceError holds the same order — this mirror is a
+  // journey aid, not the authorization control).
+  if (!user.email_verified_at) {
+    return location.pathname === '/builder/verify-email'
+      ? <Outlet />
+      : <Navigate to="/builder/verify-email" replace />;
+  }
+
   // Temp-password users must rotate their password before anything else.
   if (user.must_change_password) {
     return location.pathname === '/builder/change-password'

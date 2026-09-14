@@ -29,7 +29,7 @@
  * (postgres).
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { catalogFingerprint } from './catalog-fingerprint.mjs';
 
@@ -76,6 +76,20 @@ if (rebuilt.hash !== recorded) {
   );
 } else {
   console.log(`fingerprint matches the build: ${rebuilt.hash.slice(0, 16)}… (${rebuilt.lines} catalog lines)`);
+}
+
+// --- 1b. Follow-on migrations ------------------------------------------------
+// The repository may carry migrations AFTER the baseline (the baseline is the
+// squash of the prime's corpus; network-native changes land as ordinary
+// files). The fingerprint above is asserted BEFORE they apply — it pins the
+// squash — and every later assertion runs AFTER, so the boundary, RLS and
+// seed proofs hold over the schema a fresh deployment would actually get.
+const followOn = readdirSync(join(repoRoot, 'supabase/migrations'))
+  .filter((f) => /^\d{14}_.+\.sql$/.test(f) && f !== '00000000000000_network_baseline.sql')
+  .sort();
+for (const file of followOn) {
+  psql(['-d', DB, '-q', '-v', 'ON_ERROR_STOP=1', '-f', join(repoRoot, 'supabase/migrations', file)]);
+  console.log(`follow-on migration applied: ${file}`);
 }
 
 // --- 2. The reshape's guarantees, re-proven on the rebuilt database ----------

@@ -34,6 +34,8 @@ export interface BuilderSessionUser {
   job_title: string | null;
   status: string;
   must_change_password: boolean;
+  /** When the mailbox was proven; NULL gates the portal (network edition). */
+  email_verified_at: string | null;
   /** The stored flag on the row. Mirrors `SolicitorSessionUser.has_accepted_terms`. */
   has_accepted_terms: boolean;
   has_completed_onboarding: boolean;
@@ -86,7 +88,7 @@ export const BUILDER_FORBIDDEN_KEYS = new Set<string>([
 ]);
 
 const BUILDER_USER_SELECT = `id, email, name, phone, job_title, status, is_active,
-  revoked_at, must_change_password, has_accepted_current_terms,
+  revoked_at, must_change_password, email_verified_at, has_accepted_current_terms,
   has_completed_onboarding, last_seen_at`;
 
 /**
@@ -200,6 +202,7 @@ export async function resolveBuilderSession(
       job_title: user.job_title ?? null,
       status: user.status,
       must_change_password: !!user.must_change_password,
+      email_verified_at: user.email_verified_at ?? null,
       has_accepted_terms: !!user.has_accepted_current_terms,
       has_completed_onboarding: !!user.has_completed_onboarding,
       last_seen_at: user.last_seen_at ?? null,
@@ -267,6 +270,13 @@ export async function listAccessibleOrganisations(
  */
 export function builderGovernanceError(result: BuilderSessionResult): string | null {
   if (!result.user) return 'auth_required';
+  // NETWORK EDITION, and deliberately SECOND (extraction plan §5): an
+  // unproven mailbox outranks every later stage, because every later stage
+  // sends email — a rotation prompt or a terms notice mailed to an address
+  // nobody demonstrated they hold is the enumeration/takeover surface
+  // self-registration opens. Invited users pass automatically: acceptance
+  // of an emailed token IS the proof, backfilled by the migration.
+  if (!result.user.email_verified_at) return 'email_verification_required';
   if (result.user.must_change_password) return 'password_rotation_required';
   if (!result.active_organisation) return 'organisation_selection_required';
   if (!result.user.has_accepted_current_terms) return 'terms_acceptance_required';

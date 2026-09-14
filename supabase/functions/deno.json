@@ -4,8 +4,19 @@
     "this repo deploys, plus the shared modules they import. Carried from the",
     "prime's builder-portal-admin/deno.json, where its header records why an",
     "untypechecked edge function is how three alignment findings reached a PR.",
-    "Run with: npm run typecheck:edge"
+    "Run with: npm run typecheck:edge",
+    "",
+    "The imports map pins the ONE remote package to the npm registry rather",
+    "than esm.sh: esm.sh builds submodules on the fly and re-resolves the",
+    "package's own dependencies by semver, so a transitive bump it cannot",
+    "build (storage-js 2.99.3 answered 408 for half an hour) fails every",
+    "typecheck and deploy at their CDN's whim. npm tarballs are immutable and",
+    "version-pinned; Deno and Supabase's edge runtime both resolve npm:",
+    "natively. Same package, same version \u2014 only the transport changes."
   ],
+  "imports": {
+    "https://esm.sh/@supabase/supabase-js@2.55.0": "npm:@supabase/supabase-js@2.55.0"
+  },
   "compilerOptions": {
     "strict": true,
     "noImplicitAny": true,

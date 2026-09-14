@@ -39,6 +39,8 @@ export interface BuilderPortalUser {
   has_accepted_terms: boolean;
   has_completed_onboarding: boolean;
   must_change_password: boolean;
+  /** When the mailbox was proven; null gates the portal (network edition). */
+  email_verified_at: string | null;
   current_terms_version: string | null;
   has_accepted_current_terms: boolean;
   has_completed_mandatory_onboarding: boolean;
@@ -60,6 +62,7 @@ export type BuilderPermissionMatrix = Record<
 
 export type BuilderGovernanceReason =
   | 'auth_required'
+  | 'email_verification_required'
   | 'password_rotation_required'
   | 'organisation_selection_required'
   | 'terms_acceptance_required'
@@ -207,6 +210,50 @@ export function builderChangePassword(currentPassword: string, newPassword: stri
     current_password: currentPassword,
     new_password: newPassword,
   });
+}
+
+export interface BuilderRegistrationInput {
+  email: string;
+  password: string;
+  name: string;
+  phone?: string;
+  job_title?: string;
+  organisation: {
+    legal_name: string;
+    trading_name?: string;
+    org_type: 'developer' | 'builder' | 'builder_developer' | 'sales_representative';
+    abn?: string;
+    state?: string;
+  };
+  turnstileToken?: string;
+}
+
+/**
+ * Self-registration (network edition). The server answers the same generic
+ * 202 whether the address is fresh or already registered — the difference
+ * happens in the mailbox — so a caller renders "check your inbox" and never
+ * a verdict about the address.
+ */
+export function builderRegister(input: BuilderRegistrationInput) {
+  const { turnstileToken, ...rest } = input;
+  return invokeBuilderFunction('builder-portal-register', {
+    ...rest,
+    ...(turnstileToken ? { turnstile_token: turnstileToken } : {}),
+  });
+}
+
+/** Consume an emailed verification token. No session needed. */
+export function builderVerifyEmail(token: string) {
+  return invokeBuilderFunction<{ success?: boolean; verified?: boolean; already_verified?: boolean; expired?: boolean }>(
+    'builder-portal-verify-email', { token },
+  );
+}
+
+/** Ask for a fresh verification email (signed-in, still-unverified caller). */
+export function builderResendVerificationEmail() {
+  return invokeBuilderFunction<{ success?: boolean; sent?: boolean; already_verified?: boolean }>(
+    'builder-portal-verify-email', { action: 'resend' },
+  );
 }
 
 export function builderRequestPasswordReset(email: string) {
