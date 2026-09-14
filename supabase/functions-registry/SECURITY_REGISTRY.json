@@ -57,7 +57,7 @@
     },
     "builder-portal-invite": {
       "verify_jwt": true,
-      "exposure_class": "module-gated",
+      "exposure_class": "portal-session",
       "owner": "builder-portal-program",
       "reviewed": true
     },

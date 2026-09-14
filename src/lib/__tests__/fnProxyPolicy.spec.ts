@@ -21,7 +21,7 @@ const REPO_ROOT = join(__dirname, '..', '..', '..');
 const read = (p: string) => readFileSync(join(REPO_ROOT, p), 'utf8');
 
 describe('the allowlist', () => {
-  it('is exactly the eighteen browser-invocable portal functions', () => {
+  it('is exactly the nineteen browser-invocable portal functions', () => {
     expect([...PROXIED_FUNCTIONS].sort()).toEqual([
       'builder-network-connections',
       'builder-portal-accept-invite',
@@ -31,6 +31,7 @@ describe('the allowlist', () => {
       'builder-portal-delivery',
       'builder-portal-forgot-password',
       'builder-portal-inventory',
+      'builder-portal-invite',
       'builder-portal-login',
       'builder-portal-logout',
       'builder-portal-projects',
@@ -44,12 +45,12 @@ describe('the allowlist', () => {
     ]);
   });
 
-  it('never includes the admin-plane, worker or callback functions', () => {
-    // invite is verify_jwt=true until the admin-plane lift; the workers are
-    // invoked by schedule or internal signature; the callback is Make's and
-    // is authorised by one-time capability tokens, not by a browser session.
+  it('never includes the workers or the callback', () => {
+    // The workers are invoked by schedule or internal signature; the
+    // callback is Make's and is authorised by one-time capability tokens,
+    // not by a browser session. (invite JOINED the allowlist with the
+    // admin-plane lift — it is an org-owner portal act now.)
     for (const name of [
-      'builder-portal-invite',
       'builder-document-processor',
       'builder-stock-image-settler',
       'builder-stock-link-callback',
@@ -89,7 +90,7 @@ describe('name resolution', () => {
     expect(resolveProxiedFunction('builder-portal-login/../x')).toEqual({ ok: false, reason: 'malformed' });
     expect(resolveProxiedFunction('builder-portal-login%2f..')).toEqual({ ok: false, reason: 'malformed' });
     expect(resolveProxiedFunction('Builder-Portal-Login')).toEqual({ ok: false, reason: 'malformed' });
-    expect(resolveProxiedFunction('builder-portal-invite')).toEqual({ ok: false, reason: 'not_proxied' });
+    expect(resolveProxiedFunction('builder-network-inbound')).toEqual({ ok: false, reason: 'not_proxied' });
     expect(resolveProxiedFunction('builder-document-processor')).toEqual({ ok: false, reason: 'not_proxied' });
   });
 

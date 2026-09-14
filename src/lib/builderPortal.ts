@@ -256,6 +256,23 @@ export function builderResendVerificationEmail() {
   );
 }
 
+/**
+ * Invite a colleague into the ACTIVE organisation (the admin-plane lift).
+ * Owner/administrator only — the server enforces; the card mirrors.
+ */
+export function builderInviteTeamMember(input: {
+  name: string;
+  email: string;
+  membership_role?: string;
+}) {
+  return invokeBuilderFunction<{
+    success?: boolean;
+    email_sent?: boolean;
+    expires_at?: string;
+    invite_url?: string;
+  }>('builder-portal-invite', { action: 'invite', ...input });
+}
+
 export function builderRequestPasswordReset(email: string) {
   return invokeBuilderFunction('builder-portal-forgot-password', { email });
 }

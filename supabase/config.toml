@@ -35,14 +35,12 @@ verify_jwt = false
 [functions.builder-portal-change-password]
 verify_jwt = false
 
-# Inherited TRUE from the prime, where the Command Centre's staff JWT invokes
-# it. The network has no Command Centre, so as declared this function is
-# deliberately unreachable — the org-owner invite flow arrives with the
-# admin-plane lift (plan §5), which re-gates it on portal sessions and flips
-# this to false IN THE SAME CHANGE. Flipping it alone would open a staff door
-# with no staff check behind it.
+# The admin-plane lift landed (plan §5): invitations are the organisation's
+# own act, gated on an owner/administrator PORTAL session with CSRF — the
+# staff-JWT gate this block used to guard is gone, so the flip to false
+# arrives in the same change that replaced the check behind the door.
 [functions.builder-portal-invite]
-verify_jwt = true
+verify_jwt = false
 
 [functions.builder-portal-projects]
 verify_jwt = false
