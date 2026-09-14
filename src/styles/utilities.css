@@ -1,0 +1,895 @@
+/* Mobile Safe Area Support */
+@layer utilities {
+  .safe-area-top {
+    padding-top: env(safe-area-inset-top);
+  }
+  
+  .safe-area-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  
+  .safe-area-left {
+    padding-left: env(safe-area-inset-left);
+  }
+  
+  .safe-area-right {
+    padding-right: env(safe-area-inset-right);
+  }
+  
+  .safe-area-inset {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+}
+
+/* Smooth scroll behavior */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Mobile-specific optimizations */
+@media (max-width: 767px) {
+  /* Prevent text size adjustment on orientation change */
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+  
+  /* Smoother scrolling on iOS with momentum. `overscroll-behavior-y` is the
+     browser default on purpose: `contain` here, combined with the overflow
+     guard further down (which used to promote body into a scroll container),
+     severed the touch scroll chain on Android — a pan landed on a body that
+     could never scroll itself and was then forbidden from handing the
+     gesture to the document. */
+  body {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: auto;
+  }
+  
+  /* Scrollable containers with momentum */
+  .overflow-auto,
+  .overflow-y-auto,
+  .overflow-x-auto,
+  [class*="scroll"] {
+    -webkit-overflow-scrolling: touch;
+    scroll-behavior: smooth;
+  }
+  
+  /* Better tap highlights */
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+  
+  /* Mobile-optimized touch targets - 44x44px minimum */
+  button, 
+  [role="button"],
+  input[type="checkbox"],
+  input[type="radio"],
+  .touch-target {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* ── A link in a sentence is not a control ────────────────────────────
+     This selector was a bare `a`, so under 768px EVERY anchor in the
+     product — including one inside running text — was given a 44x44 box.
+     An inline link with a 44px minimum height no longer shares a line box
+     with the words around it: its text rides at the top of the box and the
+     line grows to 44px, so the link sits ~14px above the prose beside it
+     and consecutive links stand 44px apart.
+
+     Measured on Compliance Home's "Also in this workspace" footer, which is
+     one sentence of four links: the label and the first link were on the
+     same flex line and 14px apart vertically, and the four entries occupied
+     96px of a page whose whole line should be 16px. The same rule reaches
+     every inline link in every portal on a phone.
+
+     The floor is kept for every anchor that IS a control — anything with
+     the button treatment, a list entry, a navigation item — and dropped
+     only where the anchor is running text. `:where()` keeps the exclusion
+     at zero specificity, so the rules below it still win.
+
+     None of this lowers a real tap target: the `@media (pointer: coarse)`
+     block further down is the considered version of this accommodation, it
+     is keyed on the pointer rather than on the width, and it is what a
+     tablet and a phone actually match. */
+  a:not(
+    :where(p, td, dd, dt, figcaption, blockquote, h1, h2, h3, h4, h5, h6) a
+  ) {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  
+  /* Ensure clickable items in lists have proper touch targets */
+  li > a,
+  li > button,
+  [role="menuitem"],
+  [role="option"],
+  [role="tab"] {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+  
+  /* Compact header titles on mobile */
+  h1 {
+    @apply text-2xl;
+  }
+  
+  h2 {
+    @apply text-xl;
+  }
+  
+  /* Better table scrolling */
+  .table-container {
+    @apply overflow-x-auto -mx-4 px-4;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* Touch-friendly utility classes */
+@layer utilities {
+  .touch-target {
+    @apply min-h-[44px] min-w-[44px];
+  }
+  
+  .touch-target-sm {
+    @apply min-h-[36px] min-w-[36px];
+  }
+  
+  .touch-target-lg {
+    @apply min-h-[48px] min-w-[48px];
+  }
+  
+  /* Momentum scrolling */
+  .scroll-momentum {
+    -webkit-overflow-scrolling: touch;
+    scroll-behavior: smooth;
+  }
+  
+  /* Hide scrollbar but keep functionality */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+  
+  /* Thin scrollbar */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.3);
+    border-radius: 4px;
+  }
+
+  /* Batch 5: Mobile-scrollable tabs & toolbars
+     Collapses any grid-based TabsList into a horizontally-scrollable flex strip
+     on phones, so tab labels never get crushed into illegible columns. */
+  @media (max-width: 639px) {
+    [role="tablist"].grid {
+      display: flex !important;
+      grid-template-columns: none !important;
+      flex-wrap: nowrap;
+      justify-content: flex-start;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+      scroll-snap-type: x proximity;
+    }
+    [role="tablist"].grid::-webkit-scrollbar { display: none; }
+    [role="tablist"].grid > * {
+      flex: 0 0 auto;
+      scroll-snap-align: start;
+    }
+  }
+
+  /* Horizontal toolbar / chip-row helper: opt-in via .toolbar-scroll */
+  .toolbar-scroll {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    gap: 0.5rem;
+  }
+  .toolbar-scroll::-webkit-scrollbar { display: none; }
+  .toolbar-scroll > * { flex: 0 0 auto; }
+
+  @media (min-width: 640px) {
+    .toolbar-scroll {
+      flex-wrap: wrap;
+      overflow-x: visible;
+    }
+  }
+
+
+  /* Batch 7 — Final mobile sweep
+     -------------------------------------------------- */
+
+  /* Global horizontal-overflow guard. Prevents stray fixed-width children
+     (legacy min-w-[600px], oversized SVGs, etc.) from causing the entire
+     page to scroll sideways on phones. Long-form content can still scroll
+     within its own container.
+
+     `clip`, not `hidden` — the same distinction the CONTAINMENT section
+     below records for the surface frames, but here it decides whether the
+     page can scroll at all. `overflow-x: hidden` beside an unstated
+     overflow-y computes overflow-y to `auto`, which silently promoted html,
+     body AND #root into three competing vertical scroll containers on every
+     phone. The Client Portal document-scrolls on mobile, and on Android a
+     touch pan could be consumed by a promoted container that had nothing to
+     scroll (body/#root: scrollHeight == clientHeight) instead of by the
+     document — with body's old `overscroll-behavior-y: contain` then
+     refusing to chain the gesture upward. `clip` clips the axis without
+     creating a scroll container; `overflow-y: visible` is stated explicitly
+     so the viewport keeps exactly ONE native vertical scroll owner. The
+     `hidden` line before it is the fallback for engines without `clip`
+     (Safari < 16), which simply keep today's behaviour. */
+  @media (max-width: 767px) {
+    html,
+    body,
+    #root {
+      max-width: 100%;
+      overflow-x: hidden;
+      overflow-x: clip;
+      overflow-y: visible;
+    }
+
+    html,
+    body {
+      min-height: 100%;
+    }
+
+    /* Client Portal only — the one portal whose mobile main is
+       `overflow-visible`, so the document itself owns vertical panning.
+       Scoped with :has() because a global `touch-action: pan-y` on body
+       would also disable the pinch-zoom index.html explicitly allows
+       (`user-scalable=yes`) on every other route. */
+    body:has(.client-portal-theme) {
+      overscroll-behavior-y: auto;
+      touch-action: pan-y;
+    }
+  }
+
+  /* Floating-action buttons (any fixed element using .fab or
+     [data-fab="true"]) must sit above the mobile bottom-nav and respect
+     the iOS safe-area inset. */
+  .fab,
+  [data-fab="true"] {
+    bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+  @media (max-width: 1023px) {
+    .fab,
+    [data-fab="true"] {
+      bottom: max(5.5rem, calc(env(safe-area-inset-bottom) + 4.75rem));
+    }
+  }
+
+  /* Long unbroken strings (URLs, emails, IDs) wrap inside table cells &
+     cards on phones instead of forcing horizontal scroll. */
+  @media (max-width: 639px) {
+    td, .break-anywhere {
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+  }
+
+
+
+  /* Reduced motion preferences */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  /* High contrast mode adjustments */
+  @media (prefers-contrast: more) {
+    :root {
+      --border: 30 10% 40%;
+    }
+    .dark {
+      --border: 40 6% 60%;
+    }
+  }
+
+
+  /* Focus visible styles for accessibility */
+  .focus-visible-ring:focus-visible {
+    outline: none;
+    ring: 2px;
+    ring-offset: 2px;
+    ring-color: hsl(var(--ring));
+  }
+
+  /* User-controlled reduced motion */
+  .reduce-motion,
+  .reduce-motion * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* User-controlled high contrast */
+  .high-contrast {
+    --border: 30 10% 35%;
+    --muted-foreground: 30 10% 30%;
+  }
+  .dark.high-contrast {
+    --border: 40 6% 65%;
+    --muted-foreground: 40 6% 75%;
+  }
+
+  /* Chat bubble styling for better contrast */
+  .qa-chat-bubble-user {
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+  }
+  
+  .qa-chat-bubble-assistant {
+    background: hsl(var(--secondary));
+    color: hsl(var(--secondary-foreground));
+    border: 1px solid hsl(var(--border));
+  }
+
+  .dark .qa-chat-bubble-assistant {
+    background: hsl(0 0% 12%);
+    border-color: hsl(var(--border));
+  }
+
+  .high-contrast .qa-chat-bubble-user {
+    background: hsl(43 74% 40%);
+    color: hsl(0 0% 100%);
+  }
+
+  .high-contrast .qa-chat-bubble-assistant {
+    background: hsl(var(--card));
+    border-width: 2px;
+  }
+
+  /* Motion-reduced pulse alternative */
+  .motion-reduce\\:animate-none {
+    animation: none !important;
+  }
+}
+
+
+/* ── Premium scrollbar ────────────────────────────────────────────
+   Slim, inset, brand-tinted scroll thumb for chat/message surfaces.
+   Replaces the OS-default chunky bar (with stepper arrows) that reads
+   as generic inside glass panels. Colours come from semantic tokens. */
+@layer utilities {
+  .scrollbar-premium {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--primary) / 0.45) transparent;
+  }
+
+  .scrollbar-premium::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .scrollbar-premium::-webkit-scrollbar-track {
+    background: transparent;
+    border-radius: 999px;
+  }
+
+  .scrollbar-premium::-webkit-scrollbar-thumb {
+    background: linear-gradient(
+      to bottom,
+      hsl(var(--primary) / 0.55),
+      hsl(var(--primary) / 0.3)
+    );
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    border-radius: 999px;
+    transition: background 0.2s ease;
+  }
+
+  .scrollbar-premium:hover::-webkit-scrollbar-thumb {
+    background: linear-gradient(
+      to bottom,
+      hsl(var(--primary) / 0.8),
+      hsl(var(--primary) / 0.5)
+    );
+    background-clip: padding-box;
+  }
+
+  .scrollbar-premium::-webkit-scrollbar-thumb:active {
+    background: hsl(var(--primary) / 0.9);
+    background-clip: padding-box;
+  }
+
+  /* Kill the legacy stepper arrows / corner square entirely. */
+  .scrollbar-premium::-webkit-scrollbar-button,
+  .scrollbar-premium::-webkit-scrollbar-corner {
+    display: none;
+    height: 0;
+    width: 0;
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────
+   POINTER ERGONOMICS
+
+   Everything below keys off `pointer: coarse` — "the primary input is a
+   finger" — rather than off a width breakpoint.
+
+   That distinction is the whole point. The app previously expressed every
+   touch accommodation as `sm:` or `md:`, i.e. "narrow means finger, wide
+   means mouse". Tablets break that assumption: an iPad is 768–1024px wide
+   AND touch-only, so it matched the desktop branch and got 40px controls,
+   16px checkboxes and 14px inputs. Measured across eleven viewports, that
+   was 60 sub-44px touch targets.
+
+   Nothing here changes the mouse experience: a desktop pointer is `fine`,
+   so none of these rules match. Everything is a `min-*`, so nothing that
+   is already large enough moves.
+   ──────────────────────────────────────────────────────────────── */
+@media (pointer: coarse) {
+  /* Note the `html` prefix on the two rules that have to win.
+     They are competing with the components' own Tailwind variants —
+     `sm:min-h-0` on the tab trigger, `md:text-sm` on the inputs — which are
+     single-class selectors of equal weight. Relying on source order to beat
+     them is not safe: Vite injects each CSS module as its own <style> tag in
+     dev, and HMR can reorder them. `html :is(…)` is (0,1,1) against their
+     (0,1,0), so these win by specificity in dev and in the bundle alike. */
+
+  /* 1. The 44px floor.
+     min-height only — width is left alone so buttons keep their intrinsic
+     size and toolbars do not reflow. */
+  html
+    :is(
+      .luxury-button,
+      .luxury-input,
+      .luxury-textarea,
+      .luxury-select-trigger,
+      .luxury-tabs-trigger,
+      .luxury-dropdown-item,
+      .luxury-select-item,
+      .luxury-command-item,
+      .dashboard-icon-button,
+      .dashboard-input-control,
+      .dashboard-surface-control,
+      .dashboard-sidebar-menu-button,
+      /* Primitives that are interactive but carry no `.luxury-*` hook.
+         Found by auditing the full component matrix rather than by
+         guessing: every one of these measured 20–40px tall on a tablet. */
+      [data-radix-collection-item],
+      [role='radio'],
+      [role='menuitemcheckbox'],
+      [role='menuitemradio'],
+      [role='option'],
+      [cmdk-item],
+      nav[aria-label='breadcrumb'] a,
+      nav[aria-label='pagination'] a,
+      [data-state][data-orientation] > button,
+      button[data-state='on'],
+      button[data-state='off'],
+      button[data-state='open'][aria-expanded],
+      button[data-state='closed'][aria-expanded]
+    ) {
+    min-height: 44px;
+  }
+
+  /* Icon-only controls need the floor in both axes or they stay 40px wide.
+     The dialog / sheet close buttons already declared a 44px floor and then
+     dropped it again at `sm:` — the same width-means-mouse assumption. On a
+     tablet that left a 16px tap target in the corner of every modal. */
+  html
+    :is(
+      .dashboard-icon-button,
+      .luxury-button:is(.w-10, .w-9, .w-8),
+      [data-radix-dialog-content] > button[type='button']:last-child,
+      [role='dialog'] > button.absolute
+    ) {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* 2. iOS zoom-on-focus.
+     Mobile Safari zooms the viewport when a focused control's text is under
+     16px, and does not zoom back out. The controls read `text-base md:text-sm`,
+     so phones were fine and tablets — 768px and up, but still touch — were not.
+     16px here is what stops the jump. */
+  html
+    :is(
+      .luxury-input,
+      .luxury-textarea,
+      .luxury-select-trigger,
+      input:not([type='checkbox']):not([type='radio']):not([type='range']),
+      textarea,
+      select,
+      [role='combobox']
+    ) {
+    font-size: max(16px, 1rem);
+  }
+
+  /* 3. Hit area without a visual change.
+     A checkbox is 16–20px because that is what a checkbox looks like;
+     growing it to 44px would be a redesign. Instead the control keeps its
+     size and gains an invisible 44px target centred on it, which is what
+     the finger actually needs. */
+  [data-slot='touch-target'],
+  [role='checkbox'],
+  [role='radio'],
+  [role='switch'] {
+    position: relative;
+  }
+
+  [data-slot='touch-target']::after,
+  [role='checkbox']::after,
+  [role='radio']::after,
+  [role='switch']::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(44px, 100%);
+    height: max(44px, 100%);
+    transform: translate(-50%, -50%);
+    /* Purely a hit surface: no paint, and it must not eat the label's own
+       clicks, so it is confined to the control itself. */
+    background: transparent;
+    pointer-events: auto;
+  }
+
+  /* 4. Hover styling is a lie on touch.
+     A finger has no hover state, so `:hover` fires on tap and sticks until
+     the next tap elsewhere — the "stuck hover" artifact. Lift and colour
+     shifts are suppressed; focus and active states still do their job. */
+  .glass-interactive:hover {
+    transform: none;
+  }
+
+  /* 5. Tap highlight.
+     iOS paints a grey box over anything tappable. The app already has
+     focus-visible rings that are clearer and theme-aware. */
+  a,
+  button,
+  [role='button'],
+  [role='tab'],
+  [role='menuitem'],
+  input,
+  textarea,
+  select,
+  label {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* Fine pointers get denser scrollbars; coarse pointers scroll by dragging
+   and never see them, so this stays out of the media query above. */
+@media (pointer: fine) {
+  .responsive-table-scroll {
+    scrollbar-width: thin;
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────
+   CONTAINMENT
+
+   Two things `overflow: hidden` does that authors rarely want, and that
+   the audit caught happening across the surface frames.
+   ──────────────────────────────────────────────────────────────── */
+
+/* 1. `overflow: hidden` makes the element a scroll container, which means
+      a `position: sticky` descendant sticks to *it* rather than to the
+      page — and since the container never scrolls, the child never sticks
+      at all. The frames only use hidden to clip decoration inside their
+      rounded corners, so `clip` is what they actually mean: identical
+      visual clipping, no scroll container, sticky keeps working.
+
+      Declared after `hidden` rather than instead of it: a browser that
+      does not know `clip` (Safari < 16) ignores the second declaration
+      and keeps today's behaviour. */
+.dashboard-theme-hero,
+.dashboard-theme-section,
+.dashboard-theme-premium-card,
+.dashboard-theme-chart-card,
+.client-portal-page-header,
+.finance-portal-page-header,
+.solicitor-portal-page-header,
+.builder-portal-page-header,
+.client-portal-stat-card,
+.finance-portal-stat-card,
+.solicitor-portal-stat-card,
+.builder-portal-stat-card {
+  overflow: hidden;
+  overflow: clip;
+}
+
+/* 2. A focus ring is drawn *outside* the control, so a scroll container
+      holding focusable chips clips it — the tab rail and the pagination
+      row both did.
+
+      Padding is the fix, not `overflow-clip-margin`. Two reasons, both
+      confirmed by testing rather than assumed: a container that scrolls on
+      one axis has `clip` coerced back to `hidden` on the other, so the
+      margin never applies to a horizontal rail; and WebKit does not
+      support the property at all — verified in WebKit 26.5, where
+      `CSS.supports('overflow-clip-margin', '4px')` is false while Chromium
+      and Firefox both report true.
+
+      The margin is still declared for the containers that do not scroll,
+      where the two engines that support it get a slightly tighter result.
+      Nothing depends on it. */
+.ci-tab-rail,
+nav[aria-label='pagination'] > ul {
+  overflow-clip-margin: 4px;
+}
+
+/* The rail scrolls horizontally, so `overflow-y: clip` is coerced back to
+   `hidden` by the spec whenever the other axis is not clip/visible — which
+   means `overflow-clip-margin` cannot help here. Padding can: the app's ring
+   is `ring-2 ring-offset-2`, i.e. 4px outside the control, so the rail needs
+   more than its existing 4px of `p-1` for the ring to survive the clip. */
+.luxury-tabs-list {
+  padding-block: 6px;
+}
+
+/* ────────────────────────────────────────────────────────────────
+   TRANSPARENCY OPT-OUT — the complete version
+
+   src/styles/tokens.css degrades the glass *scale* for these preferences
+   by setting `--glass-blur: 0px`. Auditing the full component matrix
+   showed that is not enough, for two reasons:
+
+     1. `backdrop-filter: blur(0px) saturate(1.5)` is not `none`. The blur
+        radius is zero, but the element still gets a compositing layer, a
+        stacking context, a containing block for fixed descendants — and
+        it is still saturating the colours behind it, which is exactly
+        what a reader asking for reduced transparency or forced colours
+        does not want.
+
+     2. The token scale only governs CSS that reads the tokens. It never
+        touched Tailwind's own `backdrop-blur-*` utilities, of which this
+        codebase uses roughly 240. Those kept blurring in every one of
+        these modes.
+
+   So the opt-out is enforced here, at the property, for everything.
+   `!important` is deliberate and appropriate: this implements an explicit
+   user or platform preference, and it must beat component-level utilities
+   that cannot know the preference exists.
+   ──────────────────────────────────────────────────────────────── */
+@media (prefers-reduced-transparency: reduce), (forced-colors: active), print {
+  *,
+  *::before,
+  *::after {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+}
+
+/* The modal scrim is the one surface that must stay translucent — an
+   opaque scrim would hide the page entirely rather than de-emphasise it —
+   so it is darkened instead of blurred. */
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  .luxury-dialog-overlay,
+  .luxury-alert-dialog-overlay,
+  .luxury-sheet-overlay,
+  .luxury-drawer-overlay,
+  .glass-scrim {
+    background-color: hsl(var(--aurixa-obsidian) / 0.86);
+  }
+
+  /* The loading skeleton was made translucent so it would read correctly
+     on glass. With transparency turned off it has nothing to sit on, so it
+     goes solid. */
+  .animate-pulse {
+    background-color: hsl(var(--muted));
+  }
+}
+
+/* ── Native date/time picker affordance ───────────────────────────
+   Filtering the UA glyph was never going to look right: Chromium draws it in
+   whatever polarity it resolved for the field, and a filter chain that forces
+   one polarity turns the glyph into a flat tinted block on the other. So we
+   stop tinting it and replace it outright — the native glyph is removed with
+   `-webkit-appearance: none`, and the button is painted from a lucide-style
+   SVG carried as a CSS mask. The colour then comes from `background-color`,
+   which means it is a real design token (`--primary`) rather than a hex baked
+   into a data URI, and it is identical in every browser that supports the
+   pseudo-element and in both themes. */
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator,
+input[type="month"]::-webkit-calendar-picker-indicator,
+input[type="week"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin-inline-start: 0.25rem;
+  padding: 0;
+  border-radius: 0.5rem;
+  opacity: 1;
+  filter: none;
+  background-color: hsl(var(--primary) / 0.85);
+  background-image: none;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: 1rem 1rem;
+  mask-size: 1rem 1rem;
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='4' width='18' height='18' rx='2'/><path d='M8 2v4M16 2v4M3 10h18'/></svg>");
+  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='4' width='18' height='18' rx='2'/><path d='M8 2v4M16 2v4M3 10h18'/></svg>");
+  transition: background-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+/* Time-only fields get a clock rather than a calendar — same treatment. */
+input[type="time"]::-webkit-calendar-picker-indicator {
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='9'/><path d='M12 7v5l3 2'/></svg>");
+  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='9'/><path d='M12 7v5l3 2'/></svg>");
+}
+
+/* Opt out, for a field that supplies its own picker button.
+   The replacement glyph above is a good default, but it is a UA pseudo-element:
+   it cannot be reached with Tab and carries no accessible name, so a field that
+   wants a keyboard-operable, labelled trigger has to draw a real button and
+   remove this one.
+
+   `display: none`, not `opacity: 0` — an invisible indicator still takes its
+   width and still answers a click, which is a second, unlabelled hit target
+   sitting next to the real one.
+
+   The class is required because of specificity. The rule above is an element
+   plus an attribute plus a pseudo-element, which out-ranks any utility class on
+   the same pseudo-element — `[&::-webkit-calendar-picker-indicator]:opacity-0`
+   was tried in Quick Add and did nothing at all, which is why that dialog drew
+   two calendars and two clocks (audit item 21). Adding the class here makes it
+   one rank higher, so it wins. */
+input[type="date"].has-custom-picker::-webkit-calendar-picker-indicator,
+input[type="time"].has-custom-picker::-webkit-calendar-picker-indicator,
+input[type="month"].has-custom-picker::-webkit-calendar-picker-indicator,
+input[type="week"].has-custom-picker::-webkit-calendar-picker-indicator,
+input[type="datetime-local"].has-custom-picker::-webkit-calendar-picker-indicator {
+  display: none;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator:hover,
+input[type="time"]::-webkit-calendar-picker-indicator:hover,
+input[type="month"]::-webkit-calendar-picker-indicator:hover,
+input[type="week"]::-webkit-calendar-picker-indicator:hover,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
+  background-color: hsl(var(--primary));
+  box-shadow: 0 0 0 4px hsl(var(--primary) / 0.14);
+  transform: translateY(-1px);
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator:focus-visible,
+input[type="time"]::-webkit-calendar-picker-indicator:focus-visible,
+input[type="month"]::-webkit-calendar-picker-indicator:focus-visible,
+input[type="week"]::-webkit-calendar-picker-indicator:focus-visible,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  input[type="date"]::-webkit-calendar-picker-indicator,
+  input[type="time"]::-webkit-calendar-picker-indicator,
+  input[type="month"]::-webkit-calendar-picker-indicator,
+  input[type="week"]::-webkit-calendar-picker-indicator,
+  input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+    transition: none;
+  }
+  input[type="date"]::-webkit-calendar-picker-indicator:hover,
+  input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
+    transform: none;
+  }
+}
+
+/* Firefox / Safari have no indicator pseudo-element, so the visible cue is
+   the field itself: pin the polarity so the typed value and any UA-drawn
+   affordance stay legible on our dark glass. */
+input[type="date"],
+input[type="time"],
+input[type="month"],
+input[type="week"],
+input[type="datetime-local"] {
+  color-scheme: dark;
+}
+
+:root:not(.dark) input[type="date"],
+:root:not(.dark) input[type="time"],
+:root:not(.dark) input[type="month"],
+:root:not(.dark) input[type="week"],
+:root:not(.dark) input[type="datetime-local"] {
+  color-scheme: light;
+}
+
+
+
+
+/* ── Platform scrollbar language ──────────────────────────────────
+   The premium thumb defined above is now the default everywhere rather
+   than an opt-in class, so no surface falls back to the chunky OS bar with
+   stepper arrows. Opt-outs (`.scrollbar-hide`, `.scrollbar-thin`) still win
+   because they are declared in the utilities layer. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--primary) / 0.42) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    to bottom,
+    hsl(var(--primary) / 0.5),
+    hsl(var(--primary) / 0.26)
+  );
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+  transition: background 0.2s ease;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(
+    to bottom,
+    hsl(var(--primary) / 0.78),
+    hsl(var(--primary) / 0.46)
+  );
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background: hsl(var(--primary) / 0.9);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-button,
+*::-webkit-scrollbar-corner {
+  display: none;
+  height: 0;
+  width: 0;
+}

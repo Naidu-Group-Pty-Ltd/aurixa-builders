@@ -1,0 +1,82 @@
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  /* Smooth theme transition */
+  html {
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+
+  html *,
+  html *::before,
+  html *::after {
+    transition: background-color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+  }
+
+  /* Disable transition on initial load */
+  html.no-transition,
+  html.no-transition *,
+  html.no-transition *::before,
+  html.no-transition *::after {
+    transition: none !important;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans;
+    font-size: var(--base-font-size, 1rem);
+
+    /* A floor against unbreakable strings.
+
+       This is a property CRM: client emails, street addresses, reference
+       numbers and file names all arrive as long tokens with nowhere to
+       wrap. A word that cannot break sets its container's min-content
+       width, and a grid or flex item will not shrink below that — so one
+       long email in one card pushed the whole portal 117px wider than an
+       iPad at 768px and the page scrolled sideways.
+
+       `break-word`, deliberately, not `anywhere`. Both break a token that
+       cannot fit, but `anywhere` also lets a break happen while the token
+       would still have fitted — which showed up immediately as `$2,400,000`
+       splitting across two lines in a table. `break-word` breaks the
+       500px email and leaves the 80px currency figure alone.
+
+       The other half of the old `anywhere` argument — that it lowers the
+       intrinsic min-content width, and so stops a long token widening its
+       container — is handled properly below by giving grid items a
+       min-width of 0, which is the actual cause rather than a side effect.
+
+       Components that want a single line still opt into `truncate`; this
+       only decides what happens when they don't. */
+    overflow-wrap: break-word;
+  }
+
+  /* Grid items must not be sized by a `truncate` descendant.
+
+     A grid item's automatic minimum size is its min-content width, and
+     `truncate` sets `white-space: nowrap`, whose min-content is the whole
+     unbroken string. So a truncated email nested anywhere inside a grid
+     item widens the entire track — and because the track is now wider than
+     the container, the text never truncates and the page scrolls sideways
+     instead. Measured here: one activity row pushed a 416px column to
+     548px on an iPad.
+
+     `min-width: 0` restores the intended behaviour — the track fits the
+     container and `truncate` truncates. Wrapped in `:where()` so it carries
+     zero specificity: any component that genuinely needs to size to its
+     content still wins with a plain `min-w-fit` / `w-auto`.
+
+     Deliberately grid-only. Flex items are left alone: shrinking a flex
+     child below its content is frequently intentional in this codebase
+     (toolbars rely on it), and changing that default would move real UI. */
+  :where(.grid) > * {
+    min-width: 0;
+  }
+
+  /* Headings inherit the brand heading font token (defaults to the sans
+     token, so appearance is unchanged until a brand heading font is set). */
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-heading);
+  }
+}

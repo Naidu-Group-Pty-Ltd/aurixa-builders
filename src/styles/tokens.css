@@ -1,0 +1,593 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Property Intake Dashboard Design System
+Clean, modern admin dashboard with confidence-based color coding
+*/
+
+@layer base {
+  :root {
+    /* Luxury Property Advisory Light — central defaults mirrored by BrandProvider tokens */
+    --background: 42 54% 96%;
+    --foreground: 34 20% 16%;
+
+    --card: 42 82% 99%;
+    --card-foreground: 34 17% 17%;
+
+    --popover: 42 82% 99%;
+    --popover-foreground: 34 17% 17%;
+
+    --primary: 262 66% 46%;
+    --primary-foreground: 0 0% 100%;
+    --primary-hover: 262 66% 38%;
+
+    --secondary: 40 54% 93%;
+    --secondary-foreground: 34 17% 17%;
+    --secondary-hover: 39 48% 89%;
+
+    --muted: 39 44% 91%;
+    --muted-foreground: 33 14% 38%;
+
+    --accent: 268 58% 54%;
+    --accent-foreground: 0 0% 100%;
+
+    /* ── Category B — semantic / functional colours ──────────────────
+       FIXED by design. These convey meaning (success/caution/error/info),
+       not brand, and must NOT follow the White-Label colour. Warning stays
+       amber, error stays red, success stays green, info stays blue. */
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 100%;
+    --success-light: 142 69% 95%;
+
+    --warning: 43 74% 49%;
+    --warning-foreground: 0 0% 100%;
+    --warning-light: 43 74% 95%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --destructive-light: 0 93% 97%;
+    --info: 200 98% 39%;
+    --info-foreground: 0 0% 100%;
+    --info-light: 200 100% 96%;
+
+    --chart-1: 43 74% 49%;
+    --chart-2: 41 62% 58%;
+    --chart-3: 142 71% 45%;
+    --chart-4: 0 84% 60%;
+    --chart-5: 262 42% 54%;
+    --chart-6: 25 86% 55%;
+    --chart-7: 173 70% 38%;
+    --chart-8: 330 58% 48%;
+    --chart-9: 43 74% 35%;
+    --chart-10: 88 44% 43%;
+
+    --border: 36 30% 81%;
+    --input: 36 30% 81%;
+    --ring: 262 66% 46%;
+
+    --radius: 0.75rem;
+
+    --sidebar-background: 39 52% 94%;
+    --sidebar-foreground: 34 20% 22%;
+    --sidebar-primary: 262 66% 46%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 268 58% 54%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 36 30% 83%;
+    --sidebar-ring: 262 66% 46%;
+
+    --dashboard-surface: 42 82% 99%;
+    --dashboard-surface-elevated: 41 62% 97%;
+    --dashboard-surface-muted: 39 44% 91%;
+    --dashboard-border-soft: 36 30% 81%;
+    --dashboard-border-strong: 37 32% 72%;
+    --dashboard-primary-soft: 262 42% 91%;
+    --dashboard-primary-strong: 262 66% 46%;
+    --surface-1: 42 82% 99%;
+    --surface-2: 41 62% 97%;
+    --surface-3: 39 44% 91%;
+    --surface-elevated: 42 82% 99%;
+    --surface-muted: 39 44% 91%;
+    --border-soft: 36 30% 81%;
+    --border-strong: 37 32% 72%;
+    --topbar-background: 42 82% 99%;
+    --sidebar-surface: 39 52% 94%;
+    --mobile-nav-background: 42 82% 99%;
+
+    /* Category A — Brand accent (the "gold"). A named token so components
+       stop reaching for amber utilities or raw hex. Wired to a White-Label
+       input in Phase 3; stays gold in light mode by default (does NOT inherit
+       the purple primary). */
+    --brand: 43 74% 49%;
+    --brand-foreground: 0 0% 10%;
+    --brand-light: 43 80% 94%;
+    /* Brand ramp (shade-preserving gold). Cascades from the brand hue. */
+    --brand-50: 43 74% 96%;
+    --brand-100: 43 74% 90%;
+    --brand-200: 43 74% 82%;
+    --brand-300: 43 74% 72%;
+    --brand-400: 43 74% 62%;
+    --brand-500: 43 74% 52%;
+    --brand-600: 43 74% 45%;
+    --brand-700: 43 74% 38%;
+    --brand-800: 43 74% 32%;
+    --brand-900: 43 74% 28%;
+    --brand-950: 43 74% 17%;
+
+    /* Typography — global font tokens. Populated from the White-Label page
+       (Phase 3); defaults mirror the previous system stack so appearance is
+       unchanged. No component should declare its own font-family. */
+    --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+    --font-heading: var(--font-sans);
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    --base-font-size: 1rem;
+
+    /* Sizing — brand logo dimensions (consumed by <BrandLogo> in Phase 4). */
+    --logo-height-sidebar: 2.5rem;
+    --logo-height-mobile: 2rem;
+    --logo-height-compact: 1.75rem;
+    --logo-max-width: 120px;
+
+    /* ── Aurixa Agent — signature UI tokens (light) ───────────────────
+       All derived from the brand ramp + neutral surfaces so white-label
+       changes cascade automatically. No raw hex. */
+    --aurixa-obsidian: 34 20% 12%;
+    --aurixa-aurora-1: 43 74% 62%;
+    --aurixa-aurora-2: 262 66% 58%;
+    --aurixa-aurora-3: 200 98% 55%;
+    --aurixa-glass-bg: 42 82% 99%;
+    --aurixa-glass-border: 36 30% 78%;
+    --aurixa-glow: 43 74% 55%;
+    --aurixa-hairline: 43 40% 70%;
+  }
+
+  .dark {
+    /* Dark mode - sophisticated dark theme with gold accents */
+    --background: 0 0% 4%;
+    --foreground: 40 6% 90%;
+
+    --card: 0 0% 7%;
+    --card-foreground: 40 6% 90%;
+
+    --popover: 0 0% 7%;
+    --popover-foreground: 40 6% 90%;
+
+    --primary: 43 74% 49%;
+    --primary-foreground: 0 0% 5%;
+    --primary-hover: 43 74% 42%;
+
+    --secondary: 0 0% 12%;
+    --secondary-foreground: 40 6% 90%;
+    --secondary-hover: 0 0% 16%;
+
+    --muted: 0 0% 12%;
+    --muted-foreground: 0 0% 55%;
+
+    --accent: 43 74% 49%;
+    --accent-foreground: 0 0% 5%;
+
+    /* ── Category B — semantic / functional colours (FIXED, never brand) ── */
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 100%;
+    --success-light: 142 69% 12%;
+
+    --warning: 43 74% 49%;
+    --warning-foreground: 0 0% 5%;
+    --warning-light: 43 74% 12%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --destructive-light: 0 93% 12%;
+    --info: 200 98% 59%;
+    --info-foreground: 0 0% 5%;
+    --info-light: 200 80% 14%;
+
+    --border: 0 0% 18%;
+    --input: 0 0% 18%;
+    --ring: 43 74% 49%;
+    --sidebar-background: 0 0% 6%;
+    --sidebar-foreground: 40 6% 90%;
+    --sidebar-primary: 43 74% 49%;
+    --sidebar-primary-foreground: 0 0% 5%;
+    --sidebar-accent: 43 74% 49%;
+    --sidebar-accent-foreground: 0 0% 5%;
+    --sidebar-border: 0 0% 14%;
+    --sidebar-ring: 43 74% 49%;
+
+    --dashboard-surface: 0 0% 7%;
+    --dashboard-surface-elevated: 0 0% 9%;
+    --dashboard-surface-muted: 0 0% 12%;
+    --dashboard-border-soft: 0 0% 18%;
+    --dashboard-border-strong: 43 22% 28%;
+    --dashboard-primary-soft: 43 70% 14%;
+    --dashboard-primary-strong: 43 74% 49%;
+    --surface-1: 0 0% 7%;
+    --surface-2: 0 0% 9%;
+    --surface-3: 0 0% 12%;
+    --surface-elevated: 0 0% 9%;
+    --surface-muted: 0 0% 12%;
+    --border-soft: 0 0% 18%;
+    --border-strong: 43 22% 28%;
+    --topbar-background: 0 0% 7%;
+    --sidebar-surface: 0 0% 6%;
+    --mobile-nav-background: 0 0% 7%;
+
+    /* Category A — Brand accent (gold). Wired to White-Label input in Phase 3. */
+    --brand: 43 74% 49%;
+    --brand-foreground: 0 0% 8%;
+    --brand-light: 43 70% 14%;
+
+    /* Typography — dark inherits the same font tokens (fonts are theme-agnostic). */
+    --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+    --font-heading: var(--font-sans);
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    --base-font-size: 1rem;
+
+    /* Sizing — logo dimensions. */
+    --logo-height-sidebar: 2.5rem;
+    --logo-height-mobile: 2rem;
+    --logo-height-compact: 1.75rem;
+    --logo-max-width: 120px;
+
+    /* ── Aurixa Agent — signature UI tokens (dark) ─────────────────── */
+    --aurixa-obsidian: 0 0% 5%;
+    --aurixa-aurora-1: 43 74% 55%;
+    --aurixa-aurora-2: 262 66% 60%;
+    --aurixa-aurora-3: 200 98% 58%;
+    --aurixa-glass-bg: 0 0% 9%;
+    --aurixa-glass-border: 43 30% 24%;
+    --aurixa-glow: 43 74% 49%;
+    --aurixa-hairline: 43 40% 30%;
+  }
+
+  /* ── Phase 1 — Motion, radius, elevation, aurora scale ────────────────
+     Additive tokens used by shared primitives (GlassCard, MetricTile,
+     TimelineRail, GlobalCommandPalette). Consumed via `hsl(var(--…))` or
+     `var(--…)` directly. Never reference raw hex from components. */
+  :root {
+    /* Motion */
+    --motion-fast: 120ms;
+    --motion-base: 200ms;
+    --motion-slow: 320ms;
+    --motion-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+    --motion-ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+
+    /* Radius scale (extends existing --radius) */
+    --radius-sm: 0.375rem;
+    --radius-md: 0.5rem;
+    --radius-lg: 0.75rem;
+    --radius-xl: 1.25rem;
+    --radius-2xl: 1.5rem;
+
+    /* Elevation scale — theme-agnostic shadows using foreground for tint */
+    --elevation-1: 0 1px 2px 0 hsl(var(--foreground) / 0.06),
+                   0 1px 3px 0 hsl(var(--foreground) / 0.05);
+    --elevation-2: 0 4px 8px -2px hsl(var(--foreground) / 0.08),
+                   0 2px 4px -2px hsl(var(--foreground) / 0.06);
+    --elevation-3: 0 12px 24px -6px hsl(var(--foreground) / 0.12),
+                   0 4px 8px -4px hsl(var(--foreground) / 0.08);
+    --elevation-4: 0 24px 48px -12px hsl(var(--foreground) / 0.18),
+                   0 8px 16px -8px hsl(var(--foreground) / 0.10);
+
+    /* Aurora composited gradient — used by AuroraHero + agent orb */
+    --aurora-gradient: radial-gradient(
+        1200px 400px at 20% -10%,
+        hsl(var(--aurixa-aurora-1) / 0.28),
+        transparent 60%
+      ),
+      radial-gradient(
+        800px 300px at 90% 10%,
+        hsl(var(--aurixa-aurora-2) / 0.22),
+        transparent 55%
+      ),
+      radial-gradient(
+        600px 220px at 50% 100%,
+        hsl(var(--aurixa-aurora-3) / 0.18),
+        transparent 60%
+      );
+
+    /* Glass tint — surface used by GlassCard over any background.
+       Kept as aliases of the canonical glass scale below so the older
+       primitives inherit the system without being rewritten. */
+    --glass-tint: var(--glass-fill);
+    --glass-hairline: var(--glass-stroke);
+  }
+
+  /* `.dark` is not the only way this app goes dark. The finance portal
+     ships its own palettes on <html>, and they cannot set `.dark` because
+     BrandProvider owns that class (see src/lib/finance-portal/theme.ts).
+     They mark themselves with `data-palette="dark"` instead, so the dark
+     half of the scale keys off both. Anything that means "this document is
+     dark" should test the pair; anything that means "this document is
+     light" should test `:root:not(.dark):not([data-palette='dark'])`. */
+  .dark,
+  :root[data-palette='dark'] {
+    /* Elevation shadows lean harder on black in dark mode */
+    --elevation-1: 0 1px 2px 0 hsl(0 0% 0% / 0.35),
+                   0 1px 3px 0 hsl(0 0% 0% / 0.30);
+    --elevation-2: 0 4px 8px -2px hsl(0 0% 0% / 0.45),
+                   0 2px 4px -2px hsl(0 0% 0% / 0.35);
+    --elevation-3: 0 12px 24px -6px hsl(0 0% 0% / 0.55),
+                   0 4px 8px -4px hsl(0 0% 0% / 0.40);
+    --elevation-4: 0 24px 48px -12px hsl(0 0% 0% / 0.65),
+                   0 8px 16px -8px hsl(0 0% 0% / 0.45);
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     GLASSMORPHISM SCALE
+
+     One source of truth for every frosted surface in the app. Feature
+     code never writes `backdrop-filter`, an alpha, or a shadow by hand —
+     it uses a `.glass-*` class from src/styles/glass.css, and those read
+     only from the tokens below.
+
+     Everything is derived from the existing semantic tokens (--card,
+     --popover, --border, --foreground, --primary), so a white-label
+     brand change re-tints the glass automatically and nothing here has
+     to be re-authored.
+
+     The alpha ladder, from most transparent to most opaque:
+       fill-subtle  → nested / inset surfaces that sit on another glass
+       fill         → the default content surface (cards, panels)
+       fill-strong  → chrome that must stay legible while scrolling
+       fill-raised  → portalled overlays that float over arbitrary
+                      content (dialog, popover, dropdown, tooltip) and
+                      therefore carry the highest opacity floor
+
+     Accessibility: the whole scale collapses to opaque in the
+     reduced-transparency / high-contrast / no-backdrop-filter /
+     forced-colors / print branches at the bottom of this file. Because
+     every surface consumes these variables, that is the only place a
+     fallback has to be written.
+     ══════════════════════════════════════════════════════════════════ */
+  :root {
+    /* Refraction. `--glass-blur` is the default; surfaces may step down
+       to -sm (nested, or repeated rows) or up to -lg (overlays). */
+    --glass-blur-sm: 8px;
+    --glass-blur: 16px;
+    --glass-blur-lg: 28px;
+    --glass-saturate: 1.5;
+
+    /* Surface fills — warm paper white, so light mode reads as frosted
+       glass over the parchment field rather than as flat cardstock. */
+    --glass-fill-subtle: hsl(var(--card) / 0.38);
+    --glass-fill: hsl(var(--card) / 0.58);
+    --glass-fill-strong: hsl(var(--card) / 0.76);
+    --glass-fill-raised: hsl(var(--popover) / 0.86);
+
+    /* Tinted fills for state — selection, hover and brand emphasis. */
+    --glass-fill-accent: hsl(var(--primary) / 0.10);
+    --glass-fill-hover: hsl(var(--card) / 0.72);
+
+    /* Edges. A glass pane reads as glass because of its lit edge, not
+       its fill — the stroke and the top specular highlight do the work. */
+    --glass-stroke: hsl(var(--border) / 0.58);
+    --glass-stroke-strong: hsl(var(--border) / 0.85);
+    --glass-stroke-accent: hsl(var(--primary) / 0.34);
+    --glass-specular: hsl(0 0% 100% / 0.55);
+    --glass-specular-soft: hsl(0 0% 100% / 0.28);
+
+    /* The sheen gradient laid over a pane: light catching the top edge
+       and falling away. Composited above the fill, below the content. */
+    --glass-sheen: linear-gradient(
+      160deg,
+      var(--glass-specular) 0%,
+      hsl(0 0% 100% / 0) 42%,
+      hsl(var(--primary) / 0.05) 100%
+    );
+
+    /* Depth. Glass floats, so the shadow is wide and soft rather than
+       tight and dark. Tinted with the foreground to stay theme-aware. */
+    --glass-shadow-sm: 0 2px 10px -4px hsl(var(--foreground) / 0.14);
+    --glass-shadow: 0 12px 34px -12px hsl(var(--foreground) / 0.20),
+                    0 2px 8px -4px hsl(var(--foreground) / 0.10);
+    --glass-shadow-lg: 0 28px 70px -24px hsl(var(--foreground) / 0.32),
+                       0 8px 22px -12px hsl(var(--foreground) / 0.16);
+
+    /* Inner light — the bevel that sells the pane's thickness. */
+    --glass-inner: inset 0 1px 0 0 var(--glass-specular),
+                   inset 0 -1px 0 0 hsl(var(--foreground) / 0.04);
+
+    /* Scrim behind modals: darkened *and* blurred, so the app reads as
+       out-of-focus glass behind the dialog rather than dimmed paper. */
+    --glass-scrim: hsl(var(--aurixa-obsidian) / 0.34);
+    --glass-scrim-blur: 6px;
+
+    /* Ambient field — the coloured light the panes refract. Painted once
+       behind the app shell; without it, blur has nothing to sample and
+       every pane collapses to flat translucency. */
+    --glass-field-opacity: 1;
+    --glass-field: radial-gradient(
+        46% 36% at 8% -4%,
+        hsl(var(--aurixa-aurora-1) / 0.12),
+        transparent 58%
+      ),
+      radial-gradient(
+        40% 32% at 94% 2%,
+        hsl(var(--aurixa-aurora-2) / 0.10),
+        transparent 56%
+      ),
+      radial-gradient(
+        44% 38% at 52% 104%,
+        hsl(var(--aurixa-aurora-3) / 0.07),
+        transparent 58%
+      );
+  }
+
+  .dark,
+  :root[data-palette='dark'] {
+    /* Dark glass is thinner and less saturated: a heavy frost over a
+       near-black field turns to grey mud, so the fill leans on the
+       lit edge instead of on opacity. */
+    --glass-saturate: 1.3;
+
+    --glass-fill-subtle: hsl(var(--card) / 0.34);
+    --glass-fill: hsl(var(--card) / 0.55);
+    --glass-fill-strong: hsl(var(--card) / 0.74);
+    --glass-fill-raised: hsl(var(--popover) / 0.84);
+
+    --glass-fill-accent: hsl(var(--primary) / 0.14);
+    --glass-fill-hover: hsl(var(--card) / 0.70);
+
+    --glass-stroke: hsl(0 0% 100% / 0.10);
+    --glass-stroke-strong: hsl(0 0% 100% / 0.18);
+    --glass-stroke-accent: hsl(var(--primary) / 0.38);
+    --glass-specular: hsl(0 0% 100% / 0.08);
+    --glass-specular-soft: hsl(0 0% 100% / 0.04);
+
+    --glass-sheen: linear-gradient(
+      160deg,
+      var(--glass-specular) 0%,
+      hsl(0 0% 100% / 0) 46%,
+      hsl(var(--primary) / 0.06) 100%
+    );
+
+    --glass-shadow-sm: 0 2px 10px -4px hsl(0 0% 0% / 0.50);
+    --glass-shadow: 0 12px 34px -12px hsl(0 0% 0% / 0.62),
+                    0 2px 8px -4px hsl(0 0% 0% / 0.40);
+    --glass-shadow-lg: 0 28px 70px -24px hsl(0 0% 0% / 0.78),
+                       0 8px 22px -12px hsl(0 0% 0% / 0.50);
+
+    --glass-inner: inset 0 1px 0 0 var(--glass-specular),
+                   inset 0 -1px 0 0 hsl(0 0% 0% / 0.20);
+
+    --glass-scrim: hsl(var(--aurixa-obsidian) / 0.62);
+
+    --glass-field: radial-gradient(
+        46% 36% at 8% -4%,
+        hsl(var(--aurixa-aurora-1) / 0.10),
+        transparent 58%
+      ),
+      radial-gradient(
+        40% 32% at 94% 2%,
+        hsl(var(--aurixa-aurora-2) / 0.10),
+        transparent 56%
+      ),
+      radial-gradient(
+        44% 38% at 52% 104%,
+        hsl(var(--aurixa-aurora-3) / 0.06),
+        transparent 58%
+      );
+  }
+
+  /* ── Glass fallbacks ───────────────────────────────────────────────
+     Each branch below re-points the same variables, so every surface
+     in the app degrades in one step and no component needs its own
+     opt-out. Opaque is always the safe direction. */
+
+  /* 1. The browser cannot blur a backdrop. Translucency without
+        refraction just looks like a washed-out card and hurts contrast,
+        so go opaque and keep the lit edge. */
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    :root,
+    .dark {
+      --glass-blur-sm: 0px;
+      --glass-blur: 0px;
+      --glass-blur-lg: 0px;
+      --glass-scrim-blur: 0px;
+      --glass-fill-subtle: hsl(var(--card));
+      --glass-fill: hsl(var(--card));
+      --glass-fill-strong: hsl(var(--card));
+      --glass-fill-raised: hsl(var(--popover));
+      --glass-fill-hover: hsl(var(--muted));
+      --glass-field-opacity: 0.5;
+    }
+  }
+
+  /* 2. The reader has asked for less transparency (macOS "Reduce
+        transparency", Windows equivalents). Honour it literally. */
+  @media (prefers-reduced-transparency: reduce) {
+    :root,
+    .dark {
+      --glass-blur-sm: 0px;
+      --glass-blur: 0px;
+      --glass-blur-lg: 0px;
+      --glass-scrim-blur: 0px;
+      --glass-fill-subtle: hsl(var(--card));
+      --glass-fill: hsl(var(--card));
+      --glass-fill-strong: hsl(var(--card));
+      --glass-fill-raised: hsl(var(--popover));
+      --glass-fill-hover: hsl(var(--muted));
+      --glass-fill-accent: hsl(var(--primary) / 0.16);
+      --glass-field-opacity: 0;
+      --glass-scrim: hsl(var(--aurixa-obsidian) / 0.82);
+    }
+  }
+
+  /* 3. High contrast — system preference and the app's own toggle.
+        Solid fills, hard strokes, no ambient wash behind text. */
+  @media (prefers-contrast: more) {
+    :root,
+    .dark {
+      --glass-fill-subtle: hsl(var(--card));
+      --glass-fill: hsl(var(--card));
+      --glass-fill-strong: hsl(var(--card));
+      --glass-fill-raised: hsl(var(--popover));
+      --glass-stroke: hsl(var(--border));
+      --glass-stroke-strong: hsl(var(--border));
+      --glass-field-opacity: 0;
+    }
+  }
+
+  .high-contrast {
+    --glass-fill-subtle: hsl(var(--card));
+    --glass-fill: hsl(var(--card));
+    --glass-fill-strong: hsl(var(--card));
+    --glass-fill-raised: hsl(var(--popover));
+    --glass-stroke: hsl(var(--border));
+    --glass-stroke-strong: hsl(var(--border));
+    --glass-specular: hsl(0 0% 100% / 0);
+    --glass-field-opacity: 0;
+  }
+
+  /* 4. Forced colours — the UA owns fill and stroke; blur and shadow
+        would only fight it. */
+  @media (forced-colors: active) {
+    :root,
+    .dark {
+      --glass-blur-sm: 0px;
+      --glass-blur: 0px;
+      --glass-blur-lg: 0px;
+      --glass-scrim-blur: 0px;
+      --glass-fill-subtle: Canvas;
+      --glass-fill: Canvas;
+      --glass-fill-strong: Canvas;
+      --glass-fill-raised: Canvas;
+      --glass-fill-hover: Canvas;
+      --glass-stroke: CanvasText;
+      --glass-stroke-strong: CanvasText;
+      --glass-specular: transparent;
+      --glass-sheen: none;
+      --glass-shadow-sm: none;
+      --glass-shadow: none;
+      --glass-shadow-lg: none;
+      --glass-inner: none;
+      --glass-field-opacity: 0;
+    }
+  }
+
+  /* 5. Print — paper has no backdrop. See
+        .claude/skills/npc-services-design/reports/REPORT_RULES.md for the
+        generated-PDF rules; this only covers browser print of the app. */
+  @media print {
+    :root,
+    .dark {
+      --glass-blur-sm: 0px;
+      --glass-blur: 0px;
+      --glass-blur-lg: 0px;
+      --glass-scrim-blur: 0px;
+      --glass-fill-subtle: hsl(var(--card));
+      --glass-fill: hsl(var(--card));
+      --glass-fill-strong: hsl(var(--card));
+      --glass-fill-raised: hsl(var(--popover));
+      --glass-sheen: none;
+      --glass-shadow-sm: none;
+      --glass-shadow: none;
+      --glass-shadow-lg: none;
+      --glass-inner: none;
+      --glass-field-opacity: 0;
+    }
+  }
+}
+
