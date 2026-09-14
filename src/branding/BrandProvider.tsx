@@ -28,26 +28,47 @@
  *     through the same `applyBrandTokenMap` the prime uses. A builder's theme
  *     preference is real even where the brand is not editable.
  *
- * `resolvedTokens` comes from the real resolver over the fixed settings — all
- * colour fields are null, so it resolves to the platform defaults, which is
- * exactly what `index.css` declares. `useTokens()` therefore returns real
- * values, not empty maps.
+ * `resolvedTokens` is the declared palette itself — the two token maps in
+ * `brand-defaults.ts`, which are the Aurixa brand transcribed from the
+ * marketing site's own `@theme` block and are exactly what `tokens.css`
+ * paints. It used to run the white-label RESOLVER over these fixed settings,
+ * on the belief that null colour fields resolve to the platform defaults; that
+ * held for the primary and for nothing else (see the note on `resolvedTokens`
+ * below). `useTokens()` returns real values either way.
  */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import type { BrandContextValue, BrandSaveResult, ThemeMode, WhiteLabelSettings } from './brand-types';
-import { BRAND_THEME_STORAGE_KEY, defaultBrandConfig } from './brand-defaults';
-import { applyBrandTokenMap, resolveBrandFontVars, resolveBrandTokens } from './token-resolver';
+import type {
+  BrandContextValue,
+  BrandSaveResult,
+  BrandTokenMap,
+  ThemeMode,
+  WhiteLabelSettings,
+} from './brand-types';
+import {
+  BRAND_THEME_STORAGE_KEY,
+  defaultBrandConfig,
+  defaultDarkTokenMap,
+  defaultLightTokenMap,
+} from './brand-defaults';
+import { applyBrandTokenMap, resolveBrandFontVars } from './token-resolver';
 
 /**
  * The one brand this deployment renders. Derived from the platform defaults
  * rather than restated, so a new `BrandConfig` field cannot silently go
- * missing here; `darkModeDefault` is `system` because the network respects
- * the reader's machine until they choose.
+ * missing here.
+ *
+ * `darkModeDefault` is `dark`, which is a change from `system`:
+ * aurixasystems.com.au is dark and only dark — `color-scheme: dark` on its
+ * `:root`, no light block anywhere — so a builder arriving from the marketing
+ * site on a machine set to light used to cross into a white application and
+ * read it as a different product. Their own choice still wins and is still
+ * remembered; this moves the default, not the control, and the light palette
+ * is the same brand rather than a leftover.
  */
 const NETWORK_BRAND: WhiteLabelSettings = {
   ...defaultBrandConfig,
   companyName: 'Aurixa Builders Network',
-  darkModeDefault: 'system',
+  darkModeDefault: 'dark',
 };
 
 function getSystemTheme(): 'light' | 'dark' {
@@ -84,7 +105,7 @@ function getInitialThemeMode(defaultTheme: ThemeMode): ThemeMode {
 
 function applyResolvedTheme(
   themeMode: ThemeMode,
-  resolvedTokens: ReturnType<typeof resolveBrandTokens>
+  resolvedTokens: { light: BrandTokenMap; dark: BrandTokenMap }
 ) {
   const resolvedTheme = themeMode === 'system' ? getSystemTheme() : themeMode;
   document.documentElement.classList.toggle('dark', resolvedTheme === 'dark');
@@ -103,8 +124,35 @@ export function BrandProvider({ children }: { children: React.ReactNode }) {
     themeMode === 'system' ? getSystemTheme() : themeMode
   );
 
-  // The settings never change, so both resolutions are once-per-mount.
-  const resolvedTokens = useMemo(() => resolveBrandTokens(settings), [settings]);
+  /*
+   * THE NETWORK'S PALETTE IS DECLARED, NOT DERIVED.
+   *
+   * `resolveBrandTokens` exists for a white-label tenant who picks ONE colour:
+   * it takes that primary and derives an accent, a ring, a brand wash and a
+   * ten-step chart ramp by rotating its hue, because the tenant supplied
+   * nothing else to use. This deployment is the opposite case — the brand is
+   * fixed (`NETWORK_BRAND`) and the palette is specified token by token, from
+   * aurixasystems.com.au's own `@theme` block, in `brand-defaults.ts`.
+   *
+   * Running the derivation over it does real damage, and the damage is
+   * measured rather than assumed: in dark it replaced the focus ring with the
+   * primary (losing the site's #5EDDE8 outline colour), replaced the accent
+   * with the primary (turning every menu hover into a saturated teal fill),
+   * and replaced the chart ramp with hue rotations of the teal — magenta,
+   * green, indigo — none of which is in the brand. It also wrote its own
+   * near-black over the ink the token maps declare. The file's own header used
+   * to claim these tokens "resolve to the platform defaults, which is exactly
+   * what index.css declares"; that was true of nothing but the primary.
+   *
+   * So the maps ARE the resolution here. `tokens.css` paints them, this writes
+   * the same values inline, and `brandPaletteParity.spec.ts` fails if the two
+   * stop agreeing. The resolver is untouched — a clone that does let somebody
+   * choose a colour still needs it.
+   */
+  const resolvedTokens = useMemo(
+    () => ({ light: defaultLightTokenMap, dark: defaultDarkTokenMap }),
+    [],
+  );
   const resolvedFontVars = useMemo(() => resolveBrandFontVars(settings), [settings]);
 
   // Font variables are theme-independent and cascade to every text component.

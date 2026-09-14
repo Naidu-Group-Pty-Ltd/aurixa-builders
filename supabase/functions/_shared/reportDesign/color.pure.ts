@@ -211,8 +211,36 @@ export function relativeLuminanceFromHex(hex: string): number {
   return luminanceFromRgb01(hexToRgb01(hex));
 }
 
+/**
+ * Pick whichever of two inks reads better on a ground.
+ *
+ * IT MEASURES RATHER THAN GUESSING A THRESHOLD. This used to be
+ * `luminance > 0.45 ? dark : light`, and 0.45 is nowhere near the crossover:
+ * black overtakes white as soon as the ground's relative luminance passes
+ * **0.1791** (solve `(L+0.05)/0.05 = 1.05/(L+0.05)`). Everything in the band
+ * between got white text when black was the more legible choice by a wide
+ * margin, and the band is not exotic — it is where mid-tone brand colours
+ * live. The Aurixa teal (#00A8B5, L≈0.314) rendered white-on-teal at
+ * **2.93:1**, under the floor for any text size, and the brand gold
+ * (#C89B3C, L≈0.361) was worse at 2.56:1. Both are above 7:1 with dark ink.
+ *
+ * Found by rendering the portal's sign-in page and measuring the button,
+ * which is the only way a defect of this shape is ever found: every
+ * declaration in the chain was correct, and the value they all deferred to
+ * was computed wrong.
+ *
+ * Comparing the two candidates directly also means a caller that passes a
+ * non-extreme ink (a brand navy rather than black) gets an answer about THAT
+ * ink rather than about black.
+ */
 export function getReadableForeground(backgroundHsl: string, dark = '0 0% 5%', light = '0 0% 100%'): string {
-  return relativeLuminanceFromHsl(backgroundHsl) > 0.45 ? dark : light;
+  const ground = relativeLuminanceFromHsl(backgroundHsl);
+  const against = (ink: string) => {
+    const l = relativeLuminanceFromHsl(ink);
+    return (Math.max(ground, l) + 0.05) / (Math.min(ground, l) + 0.05);
+  };
+  // Ties go to `dark`, which is the caller's first-named ink.
+  return against(dark) >= against(light) ? dark : light;
 }
 
 /** WCAG 2.1 contrast ratio between two hex colours. Always ≥ 1. */

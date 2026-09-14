@@ -8,6 +8,19 @@ import {
   LIGHT_DEFAULT_PRIMARY,
 } from './brand-defaults';
 import type { BrandConfig, BrandTokenMap, ResolvedBrandTokens } from './brand-types';
+
+/**
+ * The ink `getReadableForeground` reaches for when a ground wants dark text.
+ *
+ * Named per theme, and equal to `--primary-foreground` / `--brand-foreground`
+ * in the matching token map, because these tokens have THREE authorities —
+ * `tokens.css` paints the first frame, the map is the stored default, and this
+ * resolver computes what is finally written inline. Passing the map's own ink
+ * is what collapses them to one value; the generic `0 0% 5%` default would
+ * leave the resolver disagreeing with both by a shade nobody chose.
+ */
+const DARK_INK_ON_LIGHT = '221 39% 11%'; // #111827 — the site's chrome-900
+const DARK_INK_ON_DARK = '217 69% 5%'; // #040B16 — the site's base-950
 import { resolveFontStack, resolveFontScale } from './brand-fonts';
 import {
   formatHsl,
@@ -85,7 +98,9 @@ function createChartPalette(primary: string, accent: string, isDark: boolean) {
 function createBrandTokens(brand: string, isDark: boolean): BrandTokenMap {
   return {
     '--brand': brand,
-    '--brand-foreground': getReadableForeground(brand),
+    // Same rule as the primary: the ink is the one this theme's token map
+    // declares, so the resolver cannot disagree with the stylesheet.
+    '--brand-foreground': getReadableForeground(brand, isDark ? DARK_INK_ON_DARK : DARK_INK_ON_LIGHT),
     '--brand-light': isDark ? shiftLightness(brand, -35) : createLightBrandWash(brand),
     ...createBrandRamp(brand),
   };
@@ -105,10 +120,10 @@ function createLightTokens(config: BrandConfig): BrandTokenMap {
   return {
     ...defaultLightTokenMap,
     '--primary': primary,
-    '--primary-foreground': getReadableForeground(primary),
+    '--primary-foreground': getReadableForeground(primary, DARK_INK_ON_LIGHT),
     '--primary-hover': shiftLightness(primary, -7),
     '--accent': accent,
-    '--accent-foreground': getReadableForeground(accent),
+    '--accent-foreground': getReadableForeground(accent, DARK_INK_ON_LIGHT),
     ...createBrandTokens(brand, false),
     // Category B — semantic tokens stay fixed (never follow the brand).
     '--info': defaultLightTokenMap['--info'],
@@ -116,9 +131,9 @@ function createLightTokens(config: BrandConfig): BrandTokenMap {
     '--info-light': defaultLightTokenMap['--info-light'],
     '--ring': primary,
     '--sidebar-primary': primary,
-    '--sidebar-primary-foreground': getReadableForeground(primary),
+    '--sidebar-primary-foreground': getReadableForeground(primary, DARK_INK_ON_LIGHT),
     '--sidebar-accent': accent,
-    '--sidebar-accent-foreground': getReadableForeground(accent),
+    '--sidebar-accent-foreground': getReadableForeground(accent, DARK_INK_ON_LIGHT),
     '--sidebar-ring': primary,
     '--dashboard-primary-strong': primary,
     '--dashboard-primary-soft': createLightBrandWash(primary),
@@ -139,19 +154,19 @@ function createDarkTokens(config: BrandConfig): BrandTokenMap {
   return {
     ...defaultDarkTokenMap,
     '--primary': primary,
-    '--primary-foreground': getReadableForeground(primary),
+    '--primary-foreground': getReadableForeground(primary, DARK_INK_ON_DARK),
     '--primary-hover': shiftLightness(primary, -7),
     '--accent': accent,
-    '--accent-foreground': getReadableForeground(accent),
+    '--accent-foreground': getReadableForeground(accent, DARK_INK_ON_DARK),
     ...createBrandTokens(brand, true),
     // Category B — semantic tokens stay fixed (inherited from defaults):
     // --info / --warning / --success / --destructive are NOT derived from the
     // brand. They convey meaning, so blue stays blue, amber stays amber, etc.
     '--ring': primary,
     '--sidebar-primary': primary,
-    '--sidebar-primary-foreground': getReadableForeground(primary),
+    '--sidebar-primary-foreground': getReadableForeground(primary, DARK_INK_ON_DARK),
     '--sidebar-accent': accent,
-    '--sidebar-accent-foreground': getReadableForeground(accent),
+    '--sidebar-accent-foreground': getReadableForeground(accent, DARK_INK_ON_DARK),
     '--sidebar-ring': primary,
     '--dashboard-primary-strong': primary,
     '--dashboard-primary-soft': shiftLightness(primary, -35),
