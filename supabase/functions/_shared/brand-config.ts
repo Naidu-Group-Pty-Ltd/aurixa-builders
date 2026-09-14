@@ -71,13 +71,15 @@ export interface BrandConfig {
   abn: string;
 }
 
-// Hard fallbacks — only used when DB row is missing/empty.
-// These intentionally point at the legacy verified Resend sender so
-// existing flows never break before a new sender domain is verified.
-const FALLBACK_COMPANY = 'Property Consulting';
-const FALLBACK_EMAIL_NOREPLY = 'noreply@npcservices.com.au';
-const FALLBACK_EMAIL_ADMIN = 'admin@npcservices.com.au';
-const FALLBACK_EMAIL_NOTIFICATIONS = 'notifications@npcservices.com.au';
+// Hard fallbacks — only used when the DB row is missing/empty.
+// NETWORK EDITION: the prime's fallbacks were its own tenant's addresses,
+// and a network email must never issue under a tenant's name. These are the
+// platform's; the sender domain still has to be verified in the Resend
+// account whose key this project holds before any of them deliver.
+const FALLBACK_COMPANY = 'Aurixa Builders Network';
+const FALLBACK_EMAIL_NOREPLY = 'noreply@aurixasystems.com.au';
+const FALLBACK_EMAIL_ADMIN = 'admin@aurixasystems.com.au';
+const FALLBACK_EMAIL_NOTIFICATIONS = 'notifications@aurixasystems.com.au';
 const FALLBACK_PHONE = '';
 const FALLBACK_WEBSITE = '';
 const FALLBACK_ADDRESS = '';

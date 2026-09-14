@@ -408,26 +408,18 @@ export function extractSessionToken(
  *
  * Allowed origins come from `ALLOWED_ORIGINS` (comma-separated, fully-qualified
  * URLs) plus localhost for development. Preview deployments must be listed by
- * full URL in `ALLOWED_ORIGINS`. As a deliberate, auditable escape hatch,
- * setting `CORS_ALLOW_LOVABLE_PREVIEW=true` re-enables the Lovable suffix match
- * for non-production preview environments — it is OFF by default so production
- * is exact-origin without any configuration.
+ * full URL in `ALLOWED_ORIGINS`. NETWORK EDITION: the prime's flag-gated
+ * Lovable-preview suffix match is deleted rather than dormant — this product
+ * has no preview host family, and a dormant escape hatch is one env var away
+ * from suffix-trusting somebody else's hosting.
  *
- * SAFETY FALLBACK: If `ALLOWED_ORIGINS` is unset, we fall back to the legacy
- * production origin so existing deployments never break. Set `ALLOWED_ORIGINS`.
+ * SAFETY FALLBACK: If `ALLOWED_ORIGINS` is unset, we fall back to the
+ * network's own production origin so a deployment never breaks. Set
+ * `ALLOWED_ORIGINS`.
  */
 
 const LEGACY_FALLBACK_ORIGINS = [
-  'https://command-centre.npcservices.com.au',
-  'https://npc-property-dashbord.lovable.app',
-];
-
-// Exact, project-owned preview origins. These are safe to include regardless
-// of ALLOWED_ORIGINS and avoid credentialed auth requests failing CORS when the
-// preview host differs from the published host. Deliberately no suffix match.
-const PROJECT_PREVIEW_ORIGINS = [
-  'https://id-preview--7976d60b-c277-4851-889b-c170285f4be2.lovable.app',
-  'https://7976d60b-c277-4851-889b-c170285f4be2.lovableproject.com',
+  'https://builders.aurixasystems.com.au',
 ];
 
 /**
@@ -516,7 +508,7 @@ function parseAllowedOrigins(): string[] {
   // the deployed project cannot be determined from this repository, and it
   // cannot be determined from outside either: probing a deployed function with a
   // disallowed origin returns `allowedOrigins[0]`, which is
-  // `command-centre.npcservices.com.au` whether the variable is set to it or the
+  // `builders.aurixasystems.com.au` whether the variable is set to it or the
   // fallback supplied it. The two states are indistinguishable, and guessing
   // wrong takes every browser client offline at once — an outage traded for a
   // hygiene improvement is a bad trade.
@@ -540,37 +532,15 @@ function parseAllowedOrigins(): string[] {
 }
 
 /**
- * Opt-in, non-production escape hatch for Lovable preview iframes. OFF unless
- * `CORS_ALLOW_LOVABLE_PREVIEW=true` is explicitly set. Production leaves this
- * unset, so suffix origins are NOT trusted for credentialed responses.
- */
-function lovablePreviewSuffixAllowed(origin: string): boolean {
-  if ((Deno.env.get('CORS_ALLOW_LOVABLE_PREVIEW') || '').trim().toLowerCase() !== 'true') return false;
-  try {
-    const host = new URL(origin).hostname;
-    return host.endsWith('.lovable.app') || host.endsWith('.lovableproject.com');
-  } catch {
-    return false;
-  }
-}
-
-/**
  * The exact origins trusted for CREDENTIALED responses — i.e. the ones allowed
  * to read a response carrying the staff session cookie.
  */
 function credentialedOriginAllowlist(): string[] {
-  // WP-19: the two exact preview origins used to sit here unconditionally,
-  // which contradicted the posture stated two functions up — "Production leaves
-  // this unset, so suffix origins are NOT trusted for credentialed responses."
-  // The suffix rule was gated and the exact list was not, so two Lovable
-  // preview URLs could read a response carrying the staff session cookie in
-  // production. Both now answer to the same flag.
-  const preview = (Deno.env.get('CORS_ALLOW_LOVABLE_PREVIEW') || '').trim().toLowerCase() === 'true'
-    ? PROJECT_PREVIEW_ORIGINS
-    : [];
+  // NETWORK EDITION: the prime's flag-gated preview arm is deleted with the
+  // preview origins themselves (see WP-19 in the prime for why they were
+  // gated there; here there is nothing to gate).
   return [
     ...parseAllowedOrigins(),
-    ...preview,
     'http://localhost:5173',
     'http://localhost:8080',
     // Belt and braces: guarantees the list is never empty, so the
@@ -590,16 +560,15 @@ function credentialedOriginAllowlist(): string[] {
  */
 export function isAllowedOrigin(origin: string | null | undefined): boolean {
   if (!origin) return false;
-  return credentialedOriginAllowlist().includes(origin) || lovablePreviewSuffixAllowed(origin);
+  return credentialedOriginAllowlist().includes(origin);
 }
 
 export function createCorsHeaders(origin: string | null = null): Record<string, string> {
   const allowedOrigins = credentialedOriginAllowlist();
 
-  // Exact-origin allowlist only. Suffix matching is gated behind an explicit,
-  // default-off preview flag (see lovablePreviewSuffixAllowed). A disallowed
-  // origin gets a mismatched ACAO (allowedOrigins[0]) that the browser refuses
-  // to expose to the caller.
+  // Exact-origin allowlist only — no suffix matching exists in this edition.
+  // A disallowed origin gets a mismatched ACAO (allowedOrigins[0]) that the
+  // browser refuses to expose to the caller.
   const allowedOrigin = isAllowedOrigin(origin) ? origin! : allowedOrigins[0];
 
   return {
@@ -807,10 +776,18 @@ export function createClearSolicitorSessionCookie(): string {
  * session and vice versa. `__Host-` forbids a Domain attribute and requires
  * Path=/ and Secure, so the cookie cannot be scoped to a sibling host.
  *
- * SameSite=None is required because the Edge Functions are served from a
- * different origin than the SPA. The compensating controls are the central
- * CSRF guard on every mutation and the exact-origin allow-list — the same
- * arrangement the existing portals use.
+ * NETWORK EDITION — SameSite=Lax, not None.
+ *
+ * The prime serves its Edge Functions from *.supabase.co, a different site
+ * from the SPA, so its builder cookie NEEDS SameSite=None and compensates
+ * with the CSRF guard and the origin allow-list. On the network the browser
+ * never talks to Supabase at all: every call goes to the SAME-ORIGIN
+ * `/fn/<name>` proxy (extraction plan §5), which forwards to the functions
+ * server-side. First-party traffic means Lax fits — the cookie rides every
+ * portal call and is simply not sent on cross-site requests, which removes
+ * the CSRF surface structurally instead of by guard. `__Host-` still forbids
+ * a Domain attribute and requires Path=/ and Secure, so the cookie cannot be
+ * scoped to a sibling host; the origin allow-list stays as defence in depth.
  */
 export function createBuilderSessionCookie(
   sessionToken: string,
@@ -819,7 +796,7 @@ export function createBuilderSessionCookie(
 ): string {
   const maxAge = options?.clear ? 0 : Math.floor((expiresAt.getTime() - Date.now()) / 1000);
   const expires = options?.clear ? new Date(0).toUTCString() : expiresAt.toUTCString();
-  return `__Host-builder_session_token=${options?.clear ? '' : sessionToken}; HttpOnly; Secure; SameSite=None; Max-Age=${maxAge}; Expires=${expires}; Path=/`;
+  return `__Host-builder_session_token=${options?.clear ? '' : sessionToken}; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}; Expires=${expires}; Path=/`;
 }
 
 export function createClearBuilderSessionCookie(): string {

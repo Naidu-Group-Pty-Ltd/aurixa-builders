@@ -26,6 +26,7 @@
     "@types/node": "^26.4.0",
     "@types/react": "^18.3.23",
     "@types/react-dom": "^18.3.7",
+    "@vercel/node": "^13.0.0",
     "@vitejs/plugin-react": "^5.1.2",
     "autoprefixer": "^10.5.4",
     "deno": "^2.9.6",

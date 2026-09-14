@@ -33,9 +33,19 @@ export function extractBuilderSessionToken(headers: Headers): string | null {
   return token.length ? token : null;
 }
 
+/**
+ * NETWORK EDITION — the origins this product answers to.
+ *
+ * The prime's fallbacks were its own hosts (the Command Centre and its
+ * Lovable preview); carrying them here would let a page on the PRIME's
+ * origin drive the NETWORK's sessions. The network answers to exactly one
+ * production origin — the browser talks to the same-origin `/fn/*` proxy,
+ * which forwards the Origin header verbatim — plus local dev servers.
+ * `ALLOWED_ORIGINS` extends the list per environment (e.g. a preview host)
+ * without a deploy.
+ */
 const FALLBACK_ORIGINS = [
-  'https://command-centre.npcservices.com.au',
-  'https://npc-property-dashbord.lovable.app',
+  'https://builders.aurixasystems.com.au',
   'http://localhost:5173',
   'http://localhost:8080',
 ];

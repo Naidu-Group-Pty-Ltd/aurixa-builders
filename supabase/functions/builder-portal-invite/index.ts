@@ -120,7 +120,7 @@ Deno.serve(async (req) => {
     await supabase.rpc('builder_ensure_onboarding_steps', { _builder_user_id: builderUserId });
 
     const brand = await getBrandConfig();
-    const appUrl = Deno.env.get('APP_BASE_URL') || 'https://command-centre.npcservices.com.au';
+    const appUrl = Deno.env.get('APP_BASE_URL') || 'https://builders.aurixasystems.com.au';
     const inviteUrl = `${appUrl}/builder/accept-invite?token=${encodeURIComponent(inviteToken)}`;
 
     let emailSent = false;

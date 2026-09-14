@@ -11,26 +11,26 @@
  * and they are not supposed to mutate state.
  *
  * The allowlist is sourced from `ALLOWED_ORIGINS` (comma-separated, exact
- * fully-qualified URLs). SEC5-CORS: suffix trust for `*.lovable.app` /
- * `*.lovableproject.com` was removed — the SameSite=None staff cookie makes
- * exact-origin enforcement essential. The Lovable suffix is only honoured when
- * `CORS_ALLOW_LOVABLE_PREVIEW=true` is explicitly set (non-production preview).
+ * fully-qualified URLs), extending the network's own origin. Enforcement is
+ * exact-origin with no suffix trust — the prime removed suffix trust after
+ * SEC5-CORS and this edition removes the preview escape hatch too.
  * If no cookie is present on the request (auth is header-only), the CSRF check
  * is bypassed because the classic CSRF attack vector (ambient cookie authority)
  * does not apply.
  */
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
-const LEGACY_FALLBACK = [
-  'https://command-centre.npcservices.com.au',
-  'https://npc-property-dashbord.lovable.app',
-  'https://id-preview--7976d60b-c277-4851-889b-c170285f4be2.lovable.app',
-  // Exact first-party preview/sandbox origins for THIS project (belt-and-braces
-  // alongside lovableFirstPartyHost, which can be missed if a deployed bundle
-  // ships a stale copy of this module).
-  'https://7976d60b-c277-4851-889b-c170285f4be2.lovableproject.com',
-  'https://id-preview--7976d60b-c277-4851-889b-c170285f4be2.lovableproject.com',
-  'https://7976d60b-c277-4851-889b-c170285f4be2.lovable.app',
+/**
+ * NETWORK EDITION — the network's one first-party origin.
+ *
+ * The prime's list was its own hosts plus six Lovable preview spellings for
+ * ITS project id; every one of those is somebody else's origin here, and a
+ * carried carve-out is exactly how one product's page comes to drive
+ * another's cookie-authenticated mutations. `ALLOWED_ORIGINS` extends this
+ * per environment; nothing suffix-matches.
+ */
+const FIRST_PARTY_ORIGINS = [
+  'https://builders.aurixasystems.com.au',
 ];
 
 function parseAllowedOrigins(): string[] {
@@ -42,35 +42,7 @@ function parseAllowedOrigins(): string[] {
   // Environment configuration extends the known first-party origins rather
   // than replacing them. Replacing the list caused preview releases to become
   // CSRF-denied whenever production configured only the custom domain.
-  return [...new Set([...LEGACY_FALLBACK, ...fromEnv])];
-}
-
-// First-party Lovable preview/sandbox hosts for THIS project only. The project
-// id is part of every preview hostname Lovable mints for us, so matching on it
-// keeps enforcement exact-origin in spirit (no other tenant can satisfy it)
-// while surviving preview-host renames that previously produced csrf_denied.
-const LOVABLE_PROJECT_ID = '7976d60b-c277-4851-889b-c170285f4be2';
-const LOVABLE_HOST_SUFFIXES = ['.lovable.app', '.lovableproject.com', '.lovable.dev'];
-
-function lovableFirstPartyHost(origin: string): boolean {
-  try {
-    const host = new URL(origin).hostname.toLowerCase();
-    if (!LOVABLE_HOST_SUFFIXES.some((s) => host.endsWith(s))) return false;
-    return host.includes(LOVABLE_PROJECT_ID);
-  } catch {
-    return false;
-  }
-}
-
-function lovablePreviewSuffixAllowed(origin: string): boolean {
-  if (lovableFirstPartyHost(origin)) return true;
-  if (((globalThis as any).Deno?.env?.get?.('CORS_ALLOW_LOVABLE_PREVIEW') || '').trim().toLowerCase() !== 'true') return false;
-  try {
-    const host = new URL(origin).hostname;
-    return host.endsWith('.lovable.app') || host.endsWith('.lovableproject.com');
-  } catch {
-    return false;
-  }
+  return [...new Set([...FIRST_PARTY_ORIGINS, ...fromEnv])];
 }
 
 function originAllowed(origin: string | null): boolean {
@@ -80,10 +52,10 @@ function originAllowed(origin: string | null): boolean {
     'http://localhost:5173',
     'http://localhost:8080',
   ];
-  if (list.includes(origin)) return true;
-  // SEC5-CORS: exact-origin only; suffix match is gated behind the default-off
-  // preview flag so production cookie mutations require an exact allowlisted origin.
-  return lovablePreviewSuffixAllowed(origin);
+  // NETWORK EDITION: exact-origin only, with no suffix trust of any kind.
+  // The prime kept a flag-gated Lovable-preview suffix; this product has no
+  // preview host family, so the escape hatch is deleted rather than dormant.
+  return list.includes(origin);
 }
 
 export interface CsrfCheckResult {
