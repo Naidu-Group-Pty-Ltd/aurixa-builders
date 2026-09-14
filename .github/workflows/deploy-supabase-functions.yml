@@ -1,0 +1,94 @@
+name: Deploy Supabase functions
+
+# Ships the network's edge runtime to project htfluofznhxeumblwbww.
+#
+# The prime's workflow of the same name carries the whole story of why this
+# exists (a green merge is not a deploy, and the gap is silent by
+# construction); this edition inherits its one hard rule: when functions
+# change and there is no credential to ship them with, the check FAILS —
+# a red check on an unconfigured repo is the cheapest version of the lesson.
+#
+# The network is simpler than the prime on purpose: every function deploys
+# on every trigger (25 functions, one product, no changed-list derivation),
+# and `supabase/config.toml` carries the verify_jwt declaration for each —
+# the CLI reads it, and check-verify-jwt-declared.mjs in ci.yml keeps the
+# file complete.
+#
+# Required repository secret: SUPABASE_ACCESS_TOKEN (a personal access token
+# from supabase.com/dashboard/account/tokens with access to the
+# Naidu Group organisation).
+
+on:
+  push:
+    branches: [main, claude/sharp-cannon-ppx05x]
+    paths:
+      - 'supabase/functions/**'
+      - 'supabase/config.toml'
+      - '.github/workflows/deploy-supabase-functions.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-supabase-functions
+  cancel-in-progress: false
+
+env:
+  PROJECT_REF: htfluofznhxeumblwbww
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: refuse to pretend
+        if: ${{ env.TOKEN == '' }}
+        env:
+          TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          echo '::error::Edge functions are due to deploy but no SUPABASE_ACCESS_TOKEN secret is configured — nothing was shipped. Add it in Settings → Secrets and variables → Actions (mint at supabase.com/dashboard/account/tokens), then re-run.'
+          exit 1
+
+      - uses: supabase/setup-cli@v3
+        with:
+          version: latest
+
+      - name: deploy every function (config.toml carries verify_jwt)
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          failed=""
+          for dir in supabase/functions/*/; do
+            fn="$(basename "$dir")"
+            [ "$fn" = "_shared" ] && continue
+            echo "::group::deploy $fn"
+            if ! supabase functions deploy "$fn" --project-ref "$PROJECT_REF" --use-api; then
+              failed="$failed $fn"
+            fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::deploy failed for:$failed"
+            exit 1
+          fi
+
+      - name: set platform configuration secrets (never vendor keys)
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SESSION_PEPPER: ${{ secrets.NETWORK_SESSION_PEPPER }}
+          INTERNAL_SECRET: ${{ secrets.NETWORK_INTERNAL_SECRET }}
+        run: |
+          set -euo pipefail
+          # Public configuration ships from source; credentials only when the
+          # repository actually holds them — an empty write would blank a
+          # secret somebody set by hand.
+          supabase secrets set --project-ref "$PROJECT_REF" \
+            APP_BASE_URL=https://builders.aurixasystems.com.au \
+            MISSION_CONTROL_URL=https://mc.aurixasystems.com.au \
+            ALLOWED_ORIGINS=https://builders.aurixasystems.com.au
+          if [ -n "${SESSION_PEPPER:-}" ]; then
+            supabase secrets set --project-ref "$PROJECT_REF" SESSION_TOKEN_PEPPER="$SESSION_PEPPER"
+          fi
+          if [ -n "${INTERNAL_SECRET:-}" ]; then
+            supabase secrets set --project-ref "$PROJECT_REF" INTERNAL_EDGE_SECRET="$INTERNAL_SECRET"
+          fi
