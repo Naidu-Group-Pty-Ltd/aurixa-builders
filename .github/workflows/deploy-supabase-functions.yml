@@ -84,7 +84,7 @@ jobs:
           # secret somebody set by hand.
           supabase secrets set --project-ref "$PROJECT_REF" \
             APP_BASE_URL=https://builders.aurixasystems.com.au \
-            MISSION_CONTROL_URL=https://mc.aurixasystems.com.au \
+            MISSION_CONTROL_URL=https://mission-control.aurixasystems.com.au \
             ALLOWED_ORIGINS=https://builders.aurixasystems.com.au
           if [ -n "${SESSION_PEPPER:-}" ]; then
             supabase secrets set --project-ref "$PROJECT_REF" SESSION_TOKEN_PEPPER="$SESSION_PEPPER"
