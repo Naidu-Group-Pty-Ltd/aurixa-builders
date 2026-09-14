@@ -54,9 +54,11 @@ describe('the allowlist', () => {
       'builder-document-processor',
       'builder-stock-image-settler',
       'builder-stock-link-callback',
-      // Machine doors: HMAC and the internal signature, never a browser.
+      // Machine doors: HMAC, the internal signature and MC's federation
+      // assertion — never a browser.
       'builder-network-inbound',
       'builder-network-outbox-worker',
+      'builder-network-admin',
     ]) {
       expect(PROXIED_FUNCTIONS as readonly string[]).not.toContain(name);
     }

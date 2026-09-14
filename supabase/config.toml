@@ -64,6 +64,12 @@ verify_jwt = false
 [functions.builder-network-connections]
 verify_jwt = false
 
+# Mission Control's operator door: authorised by the RS256 federation
+# assertion (aud = this origin, scope builders:operate) verified against
+# MC's published JWKS — MC never holds this project's service-role key.
+[functions.builder-network-admin]
+verify_jwt = false
+
 # The clone -> network delivery door: authorised by the per-connection
 # symmetric HMAC over the raw body, never by a JWT — the caller is another
 # machine holding the connection secret.

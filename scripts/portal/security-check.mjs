@@ -70,6 +70,7 @@ const EXPECTED_FUNCTIONS = [
     // builder-stock-marketplace is the CLONE's marketplace reader and stays
     // there. A dir appearing here without a plan entry fails this gate.
     'builder-document-processor',
+    'builder-network-admin',
     'builder-network-connections',
     'builder-network-inbound',
     'builder-network-outbox-worker',
