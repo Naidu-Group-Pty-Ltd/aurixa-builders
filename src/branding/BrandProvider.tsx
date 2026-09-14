@@ -53,9 +53,46 @@ import {
 import { applyBrandTokenMap, resolveBrandFontVars } from './token-resolver';
 
 /**
+ * The Aurixa mark — the delta symbol, standing alone with its background
+ * transparent.
+ *
+ * It is byte-identical to `aurixa-systems/public/brand/aurixa-symbol-192.webp`,
+ * the same file the marketing site draws, because a builder crossing from
+ * aurixasystems.com.au to this portal should meet one company rather than two
+ * renderings of one.
+ *
+ * NOT `public/brand/aurixa-mark.svg`, which is already here and looks like the
+ * obvious choice: that one is the app-icon build, a full-bleed navy field with
+ * the delta on it, and on a navy panel it reads as a tile stuck to the page
+ * rather than as the mark. NOT the lockup either — `BrandLockup` draws the
+ * company name beside whatever it is given, and the lockup already contains the
+ * AURIXA SYSTEMS wordmark, so the two together say the name twice.
+ *
+ * 192px against a 56px maximum draw: the mark stays sharp on a retina screen
+ * and the file is 19 KB.
+ */
+const AURIXA_SYMBOL = '/brand/aurixa-symbol-192.webp';
+
+/**
  * The one brand this deployment renders. Derived from the platform defaults
  * rather than restated, so a new `BrandConfig` field cannot silently go
  * missing here.
+ *
+ * THE LOGO SLOTS ARE FILLED HERE, and they were empty. `BrandLogo` resolves a
+ * slot through `getBrandAssetSrc` and renders a `Building2` glyph in a tinted
+ * square when it resolves to nothing — a sensible fallback for a white-label
+ * tenant who has uploaded no mark, and simply wrong for a deployment whose
+ * brand is fixed and whose mark has been sitting in `public/brand/` all along.
+ * That placeholder was what the sign-in page and all three sidebar surfaces
+ * drew. Filling the three slots is the whole fix: every one of those five
+ * render sites already asks for `auth`, `sidebar` or `sidebar-icon`, so none
+ * of them changes.
+ *
+ * `favicon` stays null deliberately. Nothing in this edition writes the tab
+ * icon — `faviconFor` and `PLATFORM_FAVICON` have no callers here — so the
+ * `<link>` in `index.html` is the only authority on it, and setting a slot
+ * that `getBrandAssetSrc` would fall back through is how a tab comes to
+ * flicker from one mark to another on every load.
  *
  * `darkModeDefault` is `dark`, which is a change from `system`:
  * aurixasystems.com.au is dark and only dark — `color-scheme: dark` on its
@@ -68,6 +105,9 @@ import { applyBrandTokenMap, resolveBrandFontVars } from './token-resolver';
 const NETWORK_BRAND: WhiteLabelSettings = {
   ...defaultBrandConfig,
   companyName: 'Aurixa Builders Network',
+  authLogo: AURIXA_SYMBOL,
+  sidebarLogo: AURIXA_SYMBOL,
+  sidebarIcon: AURIXA_SYMBOL,
   darkModeDefault: 'dark',
 };
 
