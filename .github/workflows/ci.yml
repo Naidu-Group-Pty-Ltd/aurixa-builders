@@ -37,3 +37,20 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y -q postgresql-client
       - name: baseline check
         run: npm run db:baseline:check
+
+  edge:
+    name: edge functions typecheck + gates
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: install toolchain (deno via npm)
+        run: npm install --no-audit --no-fund
+      - name: verify_jwt declared for every function
+        run: npm run check:verify-jwt
+      - name: portal security check
+        run: npm run security:portal
+      - name: deno typecheck (strict, whole runtime)
+        run: npx deno check --config supabase/functions/deno.json supabase/functions/builder-portal-login/index.ts supabase/functions/builder-portal-logout/index.ts supabase/functions/builder-portal-verify/index.ts supabase/functions/builder-portal-accept-invite/index.ts supabase/functions/builder-portal-forgot-password/index.ts supabase/functions/builder-portal-reset-password/index.ts supabase/functions/builder-portal-change-password/index.ts supabase/functions/builder-portal-invite/index.ts supabase/functions/builder-portal-projects/index.ts supabase/functions/builder-portal-inventory/index.ts supabase/functions/builder-portal-transactions/index.ts supabase/functions/builder-portal-construction/index.ts supabase/functions/builder-portal-delivery/index.ts supabase/functions/builder-portal-collaboration/index.ts supabase/functions/builder-portal-workspace/index.ts supabase/functions/builder-portal-stock/index.ts supabase/functions/builder-document-processor/index.ts supabase/functions/builder-stock-image-settler/index.ts supabase/functions/builder-stock-link-callback/index.ts

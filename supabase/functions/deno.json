@@ -1,0 +1,24 @@
+{
+  "//": [
+    "Type-check scope for the Builders Network edge runtime \u2014 every function",
+    "this repo deploys, plus the shared modules they import. Carried from the",
+    "prime's builder-portal-admin/deno.json, where its header records why an",
+    "untypechecked edge function is how three alignment findings reached a PR.",
+    "Run with: npm run typecheck:edge"
+  ],
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitAny": true,
+    "lib": [
+      "deno.window",
+      "esnext"
+    ]
+  },
+  "lint": {
+    "rules": {
+      "tags": [
+        "recommended"
+      ]
+    }
+  }
+}
