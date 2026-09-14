@@ -2,35 +2,55 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Property Intake Dashboard Design System
-Clean, modern admin dashboard with confidence-based color coding
+/*
+  THE AURIXA BUILDERS NETWORK PALETTE.
+
+  Every colour here is a conversion of a token declared in the marketing
+  site's own Tailwind `@theme` block (`aurixa-systems/src/index.css`), so
+  builders.aurixasystems.com.au and aurixasystems.com.au are one identity
+  rather than two that resemble each other: teal #00A8B5 for action, gold
+  #C89B3C for the brand accent, #040B16 and #0B162C for ground and panel,
+  #5EDDE8 for the focus ring, Inter and Playfair Display for type.
+
+  The values below are DERIVED FROM `src/branding/brand-defaults.ts`, not
+  typed beside it. Both declarations exist for a reason — this sheet paints
+  the first frame, and `BrandProvider` then writes the same tokens as inline
+  styles, which win — so a disagreement is not a wrong colour, it is a page
+  that CHANGES colour on hydration. `brandPaletteParity.spec.ts` fails when
+  they drift.
+
+  This file inherited the prime's "Luxury Property Advisory" cream-and-purple
+  scheme when the portal was extracted. That palette belongs to a different
+  product; nothing of it survives here but the shape of the file.
 */
 
 @layer base {
   :root {
-    /* Luxury Property Advisory Light — central defaults mirrored by BrandProvider tokens */
-    --background: 42 54% 96%;
-    --foreground: 34 20% 16%;
+    /* Aurixa, light. The site is dark-only (`color-scheme: dark`), so this
+       is a light RENDERING of the same brand — chrome ground, navy ink, the
+       same teal and gold — rather than a palette the site could contradict. */
+    --background: 220 14% 96%;
+    --foreground: 221 39% 11%;
 
-    --card: 42 82% 99%;
-    --card-foreground: 34 17% 17%;
+    --card: 0 0% 100%;
+    --card-foreground: 221 39% 11%;
 
-    --popover: 42 82% 99%;
-    --popover-foreground: 34 17% 17%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 221 39% 11%;
 
-    --primary: 262 66% 46%;
+    --primary: 184 100% 25%;
     --primary-foreground: 0 0% 100%;
-    --primary-hover: 262 66% 38%;
+    --primary-hover: 184 100% 20%;
 
-    --secondary: 40 54% 93%;
-    --secondary-foreground: 34 17% 17%;
-    --secondary-hover: 39 48% 89%;
+    --secondary: 216 16% 93%;
+    --secondary-foreground: 221 39% 11%;
+    --secondary-hover: 216 16% 88%;
 
-    --muted: 39 44% 91%;
-    --muted-foreground: 33 14% 38%;
+    --muted: 216 16% 94%;
+    --muted-foreground: 220 9% 46%;
 
-    --accent: 268 58% 54%;
-    --accent-foreground: 0 0% 100%;
+    --accent: 216 16% 93%;
+    --accent-foreground: 221 39% 11%;
 
     /* ── Category B — semantic / functional colours ──────────────────
        FIXED by design. These convey meaning (success/caution/error/info),
@@ -51,75 +71,76 @@ Clean, modern admin dashboard with confidence-based color coding
     --info-foreground: 0 0% 100%;
     --info-light: 200 100% 96%;
 
-    --chart-1: 43 74% 49%;
-    --chart-2: 41 62% 58%;
+    --chart-1: 184 100% 25%;
+    --chart-2: 41 56% 51%;
     --chart-3: 142 71% 45%;
     --chart-4: 0 84% 60%;
-    --chart-5: 262 42% 54%;
+    --chart-5: 185 75% 44%;
     --chart-6: 25 86% 55%;
-    --chart-7: 173 70% 38%;
+    --chart-7: 216 65% 35%;
     --chart-8: 330 58% 48%;
-    --chart-9: 43 74% 35%;
+    --chart-9: 42 86% 52%;
     --chart-10: 88 44% 43%;
 
-    --border: 36 30% 81%;
-    --input: 36 30% 81%;
-    --ring: 262 66% 46%;
+    --border: 216 12% 84%;
+    --input: 216 12% 84%;
+    --ring: 184 100% 25%;
 
     --radius: 0.75rem;
 
-    --sidebar-background: 39 52% 94%;
-    --sidebar-foreground: 34 20% 22%;
-    --sidebar-primary: 262 66% 46%;
+    --sidebar-background: 220 20% 97%;
+    --sidebar-foreground: 221 30% 20%;
+    --sidebar-primary: 184 100% 25%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 268 58% 54%;
-    --sidebar-accent-foreground: 0 0% 100%;
-    --sidebar-border: 36 30% 83%;
-    --sidebar-ring: 262 66% 46%;
+    --sidebar-accent: 216 16% 93%;
+    --sidebar-accent-foreground: 221 39% 11%;
+    --sidebar-border: 216 12% 86%;
+    --sidebar-ring: 184 100% 25%;
 
-    --dashboard-surface: 42 82% 99%;
-    --dashboard-surface-elevated: 41 62% 97%;
-    --dashboard-surface-muted: 39 44% 91%;
-    --dashboard-border-soft: 36 30% 81%;
-    --dashboard-border-strong: 37 32% 72%;
-    --dashboard-primary-soft: 262 42% 91%;
-    --dashboard-primary-strong: 262 66% 46%;
-    --surface-1: 42 82% 99%;
-    --surface-2: 41 62% 97%;
-    --surface-3: 39 44% 91%;
-    --surface-elevated: 42 82% 99%;
-    --surface-muted: 39 44% 91%;
-    --border-soft: 36 30% 81%;
-    --border-strong: 37 32% 72%;
-    --topbar-background: 42 82% 99%;
-    --sidebar-surface: 39 52% 94%;
-    --mobile-nav-background: 42 82% 99%;
+    --dashboard-surface: 0 0% 100%;
+    --dashboard-surface-elevated: 220 20% 98%;
+    --dashboard-surface-muted: 216 16% 94%;
+    --dashboard-border-soft: 216 12% 84%;
+    --dashboard-border-strong: 216 14% 74%;
+    --dashboard-primary-soft: 184 45% 92%;
+    --dashboard-primary-strong: 184 100% 25%;
+    --surface-1: 0 0% 100%;
+    --surface-2: 220 20% 98%;
+    --surface-3: 216 16% 94%;
+    --surface-elevated: 0 0% 100%;
+    --surface-muted: 216 16% 94%;
+    --border-soft: 216 12% 84%;
+    --border-strong: 216 14% 74%;
+    --topbar-background: 0 0% 100%;
+    --sidebar-surface: 220 20% 97%;
+    --mobile-nav-background: 0 0% 100%;
 
-    /* Category A — Brand accent (the "gold"). A named token so components
-       stop reaching for amber utilities or raw hex. Wired to a White-Label
-       input in Phase 3; stays gold in light mode by default (does NOT inherit
-       the purple primary). */
-    --brand: 43 74% 49%;
-    --brand-foreground: 0 0% 10%;
-    --brand-light: 43 80% 94%;
+    /* Category A — the brand accent. A named token so components stop
+       reaching for amber utilities or raw hex. It is the site's gold
+       (#C89B3C) in BOTH themes, and it is deliberately not the primary: the
+       teal is what a builder clicks, the gold is what the product signs its
+       name with. */
+    --brand: 41 56% 51%;
+    --brand-foreground: 221 39% 11%;
+    --brand-light: 41 56% 93%;
     /* Brand ramp (shade-preserving gold). Cascades from the brand hue. */
-    --brand-50: 43 74% 96%;
-    --brand-100: 43 74% 90%;
-    --brand-200: 43 74% 82%;
-    --brand-300: 43 74% 72%;
-    --brand-400: 43 74% 62%;
-    --brand-500: 43 74% 52%;
-    --brand-600: 43 74% 45%;
-    --brand-700: 43 74% 38%;
-    --brand-800: 43 74% 32%;
-    --brand-900: 43 74% 28%;
-    --brand-950: 43 74% 17%;
+    --brand-50: 41 56% 96%;
+    --brand-100: 41 56% 90%;
+    --brand-200: 41 56% 82%;
+    --brand-300: 41 56% 72%;
+    --brand-400: 41 56% 62%;
+    --brand-500: 41 56% 54%;
+    --brand-600: 41 56% 47%;
+    --brand-700: 41 56% 40%;
+    --brand-800: 41 56% 33%;
+    --brand-900: 41 56% 27%;
+    --brand-950: 41 56% 17%;
 
     /* Typography — global font tokens. Populated from the White-Label page
        (Phase 3); defaults mirror the previous system stack so appearance is
        unchanged. No component should declare its own font-family. */
-    --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
-    --font-heading: var(--font-sans);
+    --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+    --font-heading: "Playfair Display", ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
     --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     --base-font-size: 1rem;
 
@@ -132,40 +153,40 @@ Clean, modern admin dashboard with confidence-based color coding
     /* ── Aurixa Agent — signature UI tokens (light) ───────────────────
        All derived from the brand ramp + neutral surfaces so white-label
        changes cascade automatically. No raw hex. */
-    --aurixa-obsidian: 34 20% 12%;
-    --aurixa-aurora-1: 43 74% 62%;
-    --aurixa-aurora-2: 262 66% 58%;
-    --aurixa-aurora-3: 200 98% 55%;
-    --aurixa-glass-bg: 42 82% 99%;
-    --aurixa-glass-border: 36 30% 78%;
-    --aurixa-glow: 43 74% 55%;
-    --aurixa-hairline: 43 40% 70%;
+    --aurixa-obsidian: 221 39% 11%;
+    --aurixa-aurora-1: 184 100% 35%;
+    --aurixa-aurora-2: 41 56% 51%;
+    --aurixa-aurora-3: 185 75% 64%;
+    --aurixa-glass-bg: 0 0% 100%;
+    --aurixa-glass-border: 216 12% 84%;
+    --aurixa-glow: 184 100% 45%;
+    --aurixa-hairline: 216 20% 70%;
   }
 
   .dark {
-    /* Dark mode - sophisticated dark theme with gold accents */
-    --background: 0 0% 4%;
-    --foreground: 40 6% 90%;
+    /* Aurixa, dark — the site's own palette, value for value. */
+    --background: 217 69% 5%;
+    --foreground: 0 0% 100%;
 
-    --card: 0 0% 7%;
-    --card-foreground: 40 6% 90%;
+    --card: 220 60% 11%;
+    --card-foreground: 0 0% 100%;
 
-    --popover: 0 0% 7%;
-    --popover-foreground: 40 6% 90%;
+    --popover: 220 60% 11%;
+    --popover-foreground: 0 0% 100%;
 
-    --primary: 43 74% 49%;
-    --primary-foreground: 0 0% 5%;
-    --primary-hover: 43 74% 42%;
+    --primary: 184 100% 35%;
+    --primary-foreground: 217 69% 5%;
+    --primary-hover: 184 100% 29%;
 
-    --secondary: 0 0% 12%;
-    --secondary-foreground: 40 6% 90%;
-    --secondary-hover: 0 0% 16%;
+    --secondary: 216 45% 16%;
+    --secondary-foreground: 0 0% 100%;
+    --secondary-hover: 216 45% 21%;
 
-    --muted: 0 0% 12%;
-    --muted-foreground: 0 0% 55%;
+    --muted: 216 42% 14%;
+    --muted-foreground: 218 11% 65%;
 
-    --accent: 43 74% 49%;
-    --accent-foreground: 0 0% 5%;
+    --accent: 216 45% 16%;
+    --accent-foreground: 0 0% 100%;
 
     /* ── Category B — semantic / functional colours (FIXED, never brand) ── */
     --success: 142 71% 45%;
@@ -173,54 +194,70 @@ Clean, modern admin dashboard with confidence-based color coding
     --success-light: 142 69% 12%;
 
     --warning: 43 74% 49%;
-    --warning-foreground: 0 0% 5%;
+    --warning-foreground: 217 69% 5%;
     --warning-light: 43 74% 12%;
 
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
     --destructive-light: 0 93% 12%;
     --info: 200 98% 59%;
-    --info-foreground: 0 0% 5%;
+    --info-foreground: 217 69% 5%;
     --info-light: 200 80% 14%;
 
-    --border: 0 0% 18%;
-    --input: 0 0% 18%;
-    --ring: 43 74% 49%;
-    --sidebar-background: 0 0% 6%;
-    --sidebar-foreground: 40 6% 90%;
-    --sidebar-primary: 43 74% 49%;
-    --sidebar-primary-foreground: 0 0% 5%;
-    --sidebar-accent: 43 74% 49%;
-    --sidebar-accent-foreground: 0 0% 5%;
-    --sidebar-border: 0 0% 14%;
-    --sidebar-ring: 43 74% 49%;
+    /* The dark chart ramp was declared only in the token map, so a chart
+       drawn before BrandProvider hydrated took the LIGHT ramp out of
+       `:root`. Declared here too, and the two are pinned to each other by
+       `brandPaletteParity.spec.ts`. */
+    --chart-1: 184 100% 35%;
+    --chart-2: 41 56% 51%;
+    --chart-3: 185 75% 64%;
+    --chart-4: 42 86% 72%;
+    --chart-5: 142 71% 55%;
+    --chart-6: 0 84% 68%;
+    --chart-7: 216 45% 55%;
+    --chart-8: 330 70% 62%;
+    --chart-9: 25 95% 60%;
+    --chart-10: 88 50% 56%;
 
-    --dashboard-surface: 0 0% 7%;
-    --dashboard-surface-elevated: 0 0% 9%;
-    --dashboard-surface-muted: 0 0% 12%;
-    --dashboard-border-soft: 0 0% 18%;
-    --dashboard-border-strong: 43 22% 28%;
-    --dashboard-primary-soft: 43 70% 14%;
-    --dashboard-primary-strong: 43 74% 49%;
-    --surface-1: 0 0% 7%;
-    --surface-2: 0 0% 9%;
-    --surface-3: 0 0% 12%;
-    --surface-elevated: 0 0% 9%;
-    --surface-muted: 0 0% 12%;
-    --border-soft: 0 0% 18%;
-    --border-strong: 43 22% 28%;
-    --topbar-background: 0 0% 7%;
-    --sidebar-surface: 0 0% 6%;
-    --mobile-nav-background: 0 0% 7%;
+    --border: 216 40% 18%;
+    --input: 216 40% 18%;
+    --ring: 185 75% 64%;
+    --sidebar-background: 216 65% 8%;
+    --sidebar-foreground: 218 14% 82%;
+    --sidebar-primary: 184 100% 35%;
+    --sidebar-primary-foreground: 217 69% 5%;
+    --sidebar-accent: 216 45% 16%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 216 40% 15%;
+    --sidebar-ring: 185 75% 64%;
 
-    /* Category A — Brand accent (gold). Wired to White-Label input in Phase 3. */
-    --brand: 43 74% 49%;
-    --brand-foreground: 0 0% 8%;
-    --brand-light: 43 70% 14%;
+    --dashboard-surface: 220 60% 11%;
+    --dashboard-surface-elevated: 216 50% 14%;
+    --dashboard-surface-muted: 216 42% 14%;
+    --dashboard-border-soft: 216 40% 18%;
+    --dashboard-border-strong: 216 40% 26%;
+    --dashboard-primary-soft: 186 55% 13%;
+    --dashboard-primary-strong: 184 100% 35%;
+    --surface-1: 220 60% 11%;
+    --surface-2: 216 50% 14%;
+    --surface-3: 216 42% 17%;
+    --surface-elevated: 216 50% 14%;
+    --surface-muted: 216 42% 14%;
+    --border-soft: 216 40% 18%;
+    --border-strong: 216 40% 26%;
+    --topbar-background: 220 60% 11%;
+    --sidebar-surface: 216 65% 8%;
+    --mobile-nav-background: 220 60% 11%;
+
+    /* Category A — the brand accent. In Aurixa's identity that is the gold
+       (#C89B3C), beside the teal primary rather than instead of it. */
+    --brand: 41 56% 51%;
+    --brand-foreground: 217 69% 5%;
+    --brand-light: 41 45% 15%;
 
     /* Typography — dark inherits the same font tokens (fonts are theme-agnostic). */
-    --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
-    --font-heading: var(--font-sans);
+    --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+    --font-heading: "Playfair Display", ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
     --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     --base-font-size: 1rem;
 
@@ -231,14 +268,14 @@ Clean, modern admin dashboard with confidence-based color coding
     --logo-max-width: 120px;
 
     /* ── Aurixa Agent — signature UI tokens (dark) ─────────────────── */
-    --aurixa-obsidian: 0 0% 5%;
-    --aurixa-aurora-1: 43 74% 55%;
-    --aurixa-aurora-2: 262 66% 60%;
-    --aurixa-aurora-3: 200 98% 58%;
-    --aurixa-glass-bg: 0 0% 9%;
-    --aurixa-glass-border: 43 30% 24%;
-    --aurixa-glow: 43 74% 49%;
-    --aurixa-hairline: 43 40% 30%;
+    --aurixa-obsidian: 217 69% 5%;
+    --aurixa-aurora-1: 184 100% 42%;
+    --aurixa-aurora-2: 41 56% 51%;
+    --aurixa-aurora-3: 185 75% 64%;
+    --aurixa-glass-bg: 220 60% 11%;
+    --aurixa-glass-border: 216 40% 18%;
+    --aurixa-glow: 185 75% 64%;
+    --aurixa-hairline: 216 40% 24%;
   }
 
   /* ── Phase 1 — Motion, radius, elevation, aurora scale ────────────────

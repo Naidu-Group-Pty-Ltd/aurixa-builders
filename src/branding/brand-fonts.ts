@@ -13,9 +13,27 @@
  * front of the stack — nothing else in the pipeline needs to change.
  */
 
-/** Matches the default --font-sans in src/styles/tokens.css. */
+/** The platform's dependency-free fallback, and the tail of both brand stacks. */
 export const SYSTEM_FONT_STACK =
   'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji"';
+
+/**
+ * The Aurixa brand faces — the network's own default, and the two families
+ * aurixasystems.com.au sets.
+ *
+ * The site declares them as `--font-sans` / `--font-display` in its Tailwind
+ * `@theme` and loads them from Google Fonts; this is the same pair, SELF-HOSTED
+ * through `@fontsource` (imported in `main.tsx`), which is what keeps the rule
+ * above true — the allow-list is stacks that need no third party to render.
+ *
+ * Both keep `SYSTEM_FONT_STACK` behind them, so a blocked or slow font file
+ * degrades to the stack this portal shipped with rather than to a serif nobody
+ * chose. The display stack's own fallbacks are serif, because a heading set in
+ * Playfair that falls back to a sans changes the page's whole voice.
+ */
+export const AURIXA_SANS_STACK = `"Inter", ${SYSTEM_FONT_STACK}`;
+export const AURIXA_DISPLAY_STACK =
+  '"Playfair Display", ui-serif, Georgia, Cambria, "Times New Roman", Times, serif';
 
 export interface FontOption {
   /** Stable key persisted in whitelabel_settings.theme_config. */
@@ -27,7 +45,9 @@ export interface FontOption {
 }
 
 export const FONT_OPTIONS: FontOption[] = [
-  { key: 'system', label: 'System (default)', stack: SYSTEM_FONT_STACK },
+  { key: 'aurixa-sans', label: 'Aurixa — Inter', stack: AURIXA_SANS_STACK },
+  { key: 'aurixa-display', label: 'Aurixa — Playfair Display', stack: AURIXA_DISPLAY_STACK },
+  { key: 'system', label: 'System', stack: SYSTEM_FONT_STACK },
   {
     key: 'grotesk',
     label: 'Grotesk — Helvetica / Arial',
