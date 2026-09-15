@@ -34,6 +34,7 @@
 import { isPrimaryRole, readStoredRole } from './sourceImageRole.pure.ts';
 
 /** The ladder's last rung. Everything before it is work outstanding. */
+export const FAILED_WORK_STAGE = 'failed';
 export const SETTLED_WORK_STAGE = 'settled';
 
 export type StockImageProgress =
@@ -41,6 +42,12 @@ export type StockImageProgress =
   | 'drawn'
   /** The engine still owes this property a stage. Wait. */
   | 'working'
+  /**
+   * Processing is exhausted and a PERSON is owed — the terminal 'failed'
+   * work stage. Distinct from `working` (nothing further happens on its
+   * own) and from `none_found` (the documents were never the problem).
+   */
+  | 'attention'
   /** Finished, and the row attaches no document to read a picture out of. */
   | 'no_document'
   /**
@@ -103,6 +110,13 @@ export function stockImageProgress(input: StockImageProgressInput): StockImagePr
    * on the page into a promise that something is about to happen.
    */
   const stage = typeof input.workStage === 'string' ? input.workStage.trim() : '';
+  /*
+   * TERMINAL FAILURE IS NOT "WORKING". The 'failed' stage means our
+   * processing gave out and support is on it; reading it as `working` would
+   * put "Finding a picture…" back on a card nothing is finding a picture
+   * for — the exact indefinite spinner this taxonomy exists to end.
+   */
+  if (stage === FAILED_WORK_STAGE) return 'attention';
   if (stage && stage !== SETTLED_WORK_STAGE) return 'working';
   if (input.sourceDocuments <= 0) return 'no_document';
   /*
@@ -138,6 +152,7 @@ export function stockImageProgress(input: StockImageProgressInput): StockImagePr
 export const STOCK_IMAGE_PROGRESS_LABEL: Record<StockImageProgress, string> = {
   drawn: 'Image ready',
   working: 'Finding a picture…',
+  attention: 'Photo needs attention',
   no_document: 'No brochure on this row',
   unreadable: 'Picture not available yet',
   source_unavailable: 'A linked document could not be opened',
@@ -168,6 +183,7 @@ export const STOCK_IMAGE_PROGRESS_LABEL: Record<StockImageProgress, string> = {
 export const STOCK_IMAGE_PROGRESS_BADGE: Record<StockImageProgress, string> = {
   drawn: 'Image ready',
   working: 'Finding a picture…',
+  attention: 'Needs attention',
   no_document: 'No brochure on this row',
   unreadable: 'Picture not available yet',
   // Still points at the link, because that failure is the link's.
@@ -180,6 +196,8 @@ export const STOCK_IMAGE_PROGRESS_DETAIL: Record<StockImageProgress, string> = {
   drawn: 'This property has a picture on its card.',
   working: 'The documents on this row are being read now. '
     + 'This finishes on its own — the page updates when it does.',
+  attention: 'This property\u2019s photo could not be processed and our team has '
+    + 'been alerted. You can also add a picture yourself with \u201cAdd picture\u201d.',
   no_document: 'This stock list attaches no brochure or plan to this property. '
     + 'Add a link to its row and the photograph is read from it.',
   /*

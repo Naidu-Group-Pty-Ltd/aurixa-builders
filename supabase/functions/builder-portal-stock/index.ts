@@ -1487,6 +1487,24 @@ Deno.serve(async (req) => {
       });
     }
 
+    if (operation === 'image_progress') {
+      /*
+       * THE TRUTHFUL AGGREGATE the page's banner draws from: real counts of
+       * real item state per recent upload — photos_ready counts READY
+       * builder-source primaries only, so a card can say "4 of 6 photos
+       * ready" and mean it. Read-only, org-scoped by the session, computed
+       * by the database in one call.
+       */
+      const { data, error } = await supabase
+        .rpc('builder_stock_image_progress', { p_organisation_id: activeOrganisationId });
+      if (error) {
+        // A deployment mid-migration has no RPC yet; the page keeps its
+        // per-item derivation and loses only the aggregate line.
+        return json({ success: true, records: [], unavailable: true });
+      }
+      return json({ success: true, records: data ?? [] });
+    }
+
     if (operation === 'get_upload') {
       const upload = await loadUpload(cleanText(body.upload_id, 64));
       if (!upload) return notFoundHere('That stock list');

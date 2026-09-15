@@ -170,6 +170,23 @@ export function isTraversableBranch(branch: RowSourceBranch): boolean {
 export function rowSourceBranches(
   unmapped: Record<string, string> | null | undefined,
 ): RowSourceBranch[] {
+  return rowSourceBranchCandidates(unmapped)
+    .filter((branch) => branch.kind !== 'unsupported');
+}
+
+/**
+ * Every URL the row carries, the unsupported ones INCLUDED.
+ *
+ * `rowSourceBranches` used to drop an unsupported URL entirely, so a row
+ * whose only documents were extension-less download links read as "no
+ * evidence" and the old pipeline bought the online ladder against a row
+ * that plainly carried builder documents. The manifest records them as
+ * `unsupported` instead — visible to the operator and to the readiness
+ * arithmetic — while the working set stays exactly what it was.
+ */
+export function rowSourceBranchCandidates(
+  unmapped: Record<string, string> | null | undefined,
+): RowSourceBranch[] {
   const seen = new Set<string>();
   const branches: RowSourceBranch[] = [];
 
@@ -180,9 +197,7 @@ export function rowSourceBranches(
       const url = candidate.replace(/[),.]+$/, '');
       if (seen.has(url)) continue;
       seen.add(url);
-      const kind = classifyBranch(url);
-      if (kind === 'unsupported') continue;
-      branches.push({ url, column, kind });
+      branches.push({ url, column, kind: classifyBranch(url) });
     }
   }
   return branches;

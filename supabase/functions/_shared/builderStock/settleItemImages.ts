@@ -46,12 +46,11 @@ import { settleMarketplaceEligibility } from './settleMarketplaceEligibility.ts'
 import {
   settleImageSanitization, type RepairBudget,
 } from './settleImageSanitization.ts';
-import { settleFallbackImages } from './settleFallbackImages.ts';
 import { chooseAndStorePrimaryImage } from './primaryImage.ts';
 import { repairStoredIdentity } from './storedIdentityRepair.pure.ts';
 import { reverifyStoredWebImages } from './reverifyWebImages.ts';
 import {
-  describeSuppliedEvidence, fallbackMayRun, readStoredRowEvidence,
+  describeSuppliedEvidence, readStoredRowEvidence,
   type SuppliedEvidenceReading,
 } from './suppliedEvidence.pure.ts';
 import { PROVENANCE_VERSION } from './provenanceVersion.pure.ts';
@@ -73,15 +72,24 @@ export interface ItemSettlement {
   error?: string;
   /** True when this settlement wrote or corrected the card's picture. */
   primarySet: boolean;
+  /**
+   * A REAL failure happened — a source read that crashed or reported a fault,
+   * a dependency that refused. Carried to `completeItemWork(p_failed)`, which
+   * is the only writer of the bounded failure backoff and the counter the
+   * watchdog escalates into the terminal 'failed' stage. Deferrals, clean
+   * handbacks and stages with more to do never set it.
+   */
+  failed?: boolean;
 }
 
-/** The order the stages run in. */
+/** The order the stages run in. Both terminals map to themselves. */
 const NEXT_STAGE: Record<ItemWorkStage, ItemWorkStage> = {
   source: 'eligibility',
   eligibility: 'sanitization',
   sanitization: 'fallback',
   fallback: 'settled',
   settled: 'settled',
+  failed: 'failed',
 };
 
 /**
@@ -100,7 +108,6 @@ export interface ItemSettlementDeps {
   repairSource?: typeof repairSourceImagesForUpload;
   settleEligibility?: typeof settleMarketplaceEligibility;
   settleSanitization?: typeof settleImageSanitization;
-  settleFallback?: typeof settleFallbackImages;
   choosePrimary?: typeof chooseAndStorePrimaryImage;
 }
 
@@ -128,7 +135,6 @@ export async function settleClaimedItem(
   const repairSource = deps.repairSource ?? repairSourceImagesForUpload;
   const settleEligibility = deps.settleEligibility ?? settleMarketplaceEligibility;
   const settleSanitization = deps.settleSanitization ?? settleImageSanitization;
-  const settleFallback = deps.settleFallback ?? settleFallbackImages;
   const choosePrimary = deps.choosePrimary ?? chooseAndStorePrimaryImage;
 
   const settlement: ItemSettlement = {
@@ -189,6 +195,20 @@ export async function settleClaimedItem(
           || repair.matched > 0 || repair.demoted > 0 || repair.primaryUpdated > 0;
         settlement.result = `source: stored ${repair.imagesStored}, matched ${repair.matched}`;
         /*
+         * A SOURCE THAT COULD NOT BE READ IS A FAILURE, NOT A FINISHED READ.
+         * `repair.error` used to be console.warn'd and forgotten while the
+         * item advanced out of `source` — production 2026-09-15: "That source
+         * could not be read again", six blank active cards. It now counts
+         * (bounded backoff, watchdog escalation) and the item stays put.
+         */
+        if (repair.error) {
+          settlement.failed = true;
+          settlement.progressed = false;
+          settlement.error = String(repair.error).slice(0, 400);
+          settlement.result = 'source read failed';
+          settlement.nextStage = 'source';
+        } else
+        /*
          * `incomplete` means this property's source work has more to do — a
          * package it declined to open on the remaining budget, say. It stays
          * on `source`, and because a claim that RETURNED reports progress
@@ -222,114 +242,89 @@ export async function settleClaimedItem(
       settlement.nextStage = sanitization.incomplete ? 'sanitization' : NEXT_STAGE.sanitization;
     } else if (stage === 'fallback') {
       /*
-       * WHERE A PROPERTY GOES WHEN THE BUILDER'S OWN SOURCES ARE NOT FINISHED.
+       * THE LAST RUNG IS NO LONGER A LADDER — the invariant of 2026-09-15.
        *
-       * `settleFallbackImages` REFUSES to run the external ladder unless the
-       * supplied evidence is exhausted — that is the enforcement and it
-       * protects every caller. This read is the ROUTING, over the same pure
-       * function and the same stored record, and the two cannot disagree
-       * because there is only one implementation of the question.
+       * Builder Stock imagery is authoritative, so nothing external is bought
+       * here any more. This stage is now purely the ACCOUNTING of what the
+       * builder's own sources yielded, routed over the same
+       * `readSuppliedEvidence` record as before so no second implementation
+       * of the question can drift:
        *
-       * Three destinations, and the third is the one that matters:
+       *   found — the builder's picture is on the card. The property settles
+       *   and its enrichment is marked complete, which is what retires it
+       *   from every queue.
        *
-       *   pending / processing — sources are still owed a look, so the
-       *   property goes BACK to `source`. It terminates because every branch
-       *   ends terminal within its own attempt budget.
+       *   pending / processing — sources are still owed a look; back to
+       *   `source`.
        *
-       *   retryable_failure — every source is finished and at least one
-       *   finished on a fault of OURS. Returning it to `source` would spin: a
-       *   retired branch is terminal, so the source stage has nothing left to
-       *   do. So it SETTLES, with a blank card and a reason on the row. The
-       *   way back is a `PROVENANCE_VERSION` bump, which is keyed into every
-       *   branch record and re-opens the question from zero — never a hand
-       *   edit.
+       *   retryable_failure — at least one source finished on a fault of
+       *   OURS. The old code settled this with a blank card and
+       *   `enrichment_status='failed'` — production 2026-09-15, six live
+       *   properties whose own row said "this is a fault on our side". It is
+       *   now a COUNTED failure that returns to `source`: bounded backoff,
+       *   twelve failures and the watchdog moves it to the terminal 'failed'
+       *   stage where a person is paged, and a PROVENANCE_VERSION bump
+       *   re-opens the branches for a corrected extractor. Never blank, never
+       *   silent, never external.
        *
-       *   found / exhausted / no_evidence — fall through to the ladder, which
-       *   for `found` spends nothing: it records its paid stages as skipped
-       *   ("the builder supplied an image") and marks the enrichment
-       *   complete, which is what takes the property out of the queue.
+       *   exhausted / no_evidence — every builder source was genuinely READ
+       *   and none supplies a photograph, or the row names no source at all.
+       *   Under the invariant that is terminal 'failed' too: the remedy is a
+       *   person's (link a brochure, or "Add picture"), and the card must
+       *   say so rather than publish blank or borrow the internet's imagery.
        */
       const evidence = await readItemSuppliedEvidence(db, item.id);
-      if (evidence && !fallbackMayRun(evidence.state)) {
-        settlement.result = describeSuppliedEvidence(evidence);
+      if (!evidence) {
+        settlement.failed = true;
+        settlement.result = 'supplied evidence could not be read';
+        settlement.nextStage = 'fallback';
+      } else if (evidence.state === 'found') {
         settlement.progressed = true;
-        settlement.nextStage = evidence.state === 'pending'
-            || evidence.state === 'processing'
-          ? 'source'
-          : 'settled';
-        /*
-         * A PROPERTY THAT SETTLES WITHOUT THE LADDER MUST STILL LEAVE THE
-         * LADDER'S QUEUE. `readFallbackQueue` selects on
-         * `enrichment_status IN ('pending','enriching')`, and the settler's
-         * own completion rule keeps the cron alive while that queue is
-         * non-empty — so a card parked on `retryable_failure` with its status
-         * still `pending` would hold the whole deployment's cron awake for
-         * ever, ticking and withholding the same property every minute.
-         *
-         * `failed` is the vocabulary the ladder itself uses for "ended with
-         * no picture", and the reason is already on the row in
-         * `image_work_last_result`. A provenance bump's migration sets the
-         * status back to `pending` when it requeues, so the way back in is
-         * the same as for every other terminal reading.
-         */
-        if (settlement.nextStage === 'settled') {
-          try {
-            await db.from('builder_stock_items')
-              .update({
-                enrichment_status: 'failed',
-                enriched_at: new Date().toISOString(),
-              })
-              .eq('id', item.id)
-              .eq('organisation_id', item.organisation_id);
-          } catch {
-            // Unwritten means the queue read keeps it; the next claim retries.
-          }
+        settlement.result = describeSuppliedEvidence(evidence);
+        settlement.nextStage = 'settled';
+        try {
+          await db.from('builder_stock_items')
+            .update({
+              enrichment_status: 'complete',
+              enriched_at: new Date().toISOString(),
+            })
+            .eq('id', item.id)
+            .eq('organisation_id', item.organisation_id);
+        } catch {
+          // Unwritten means the queue read keeps it; the next claim retries.
         }
-        console.info('[builderStock] fallback not reached', {
+      } else if (evidence.state === 'pending' || evidence.state === 'processing') {
+        settlement.progressed = true;
+        settlement.result = describeSuppliedEvidence(evidence);
+        settlement.nextStage = 'source';
+      } else if (evidence.state === 'retryable_failure') {
+        settlement.failed = true;
+        settlement.result = describeSuppliedEvidence(evidence);
+        settlement.nextStage = 'source';
+      } else {
+        settlement.progressed = true;
+        settlement.result = describeSuppliedEvidence(evidence);
+        settlement.nextStage = 'failed';
+        try {
+          await db.from('builder_stock_items')
+            .update({
+              enrichment_status: 'failed',
+              enriched_at: new Date().toISOString(),
+            })
+            .eq('id', item.id)
+            .eq('organisation_id', item.organisation_id);
+        } catch {
+          // Unwritten means the queue read keeps it; the next claim retries.
+        }
+      }
+      if (evidence) {
+        console.info('[builderStock] supplied evidence routed', {
           phase: 'fallback_routing', stock_item_id: item.id,
           supplied_evidence: evidence.state, next_stage: settlement.nextStage,
           sources_total: evidence.total, sources_open: evidence.open,
           sources_inspected: evidence.inspected,
           sources_operational: evidence.operational,
         });
-      } else {
-        const fallback = await settleFallback(db, {
-          limit: 1, deadlineAt: input.deadlineAt, stockItemId: item.id,
-        });
-        /*
-         * PROGRESS IS A RUNG CLIMBED, NOT A PROPERTY OFFERED.
-         *
-         * This used to be `fallback.attempted > 0`, and `attempted` rises for
-         * a property the ladder looked at and could not move — `nextImageStage`
-         * answering `none` or `wait` runs nothing at all. Reported as progress
-         * it clears the claim's backoff and sets `retryAfterSeconds: 0`, so the
-         * row is claimable again in the same millisecond and the settler's
-         * serial loop takes it straight back: measured, 126 iterations of one
-         * property at one stage inside a single 80-second invocation, and a
-         * card reading "Finding a picture…" indefinitely.
-         *
-         * A stage that genuinely ran, or a picture that genuinely landed, is
-         * progress. Anything else leaves the attempt counter standing so the
-         * claim's own exponential backoff carries the property out of the
-         * queue's way instead of it being asked the same question for ever.
-         */
-        settlement.progressed = fallback.resolved > 0 || fallback.laddered > 0;
-        settlement.result = `fallback: attempted ${fallback.attempted}, `
-          + `climbed ${fallback.laddered}, resolved ${fallback.resolved}`;
-        /*
-         * The ladder is climbed one rung per claim. `remaining` counts THIS
-         * property's outstanding rungs, so a property still owed a stage comes
-         * straight back rather than being declared settled with a blank card.
-         *
-         * A tick the gate WITHHELD is not a rung owed: it left `attempted` at
-         * zero and the row still in the queue, so counting it as remaining
-         * would hold the property at `fallback` for ever. That case never
-         * reaches here — the branch above routes it — but `withheld` is
-         * subtracted so the arithmetic is honest for any other caller.
-         */
-        settlement.nextStage = fallback.remaining > fallback.withheld
-          ? 'fallback'
-          : NEXT_STAGE.fallback;
       }
     }
   } catch (error) {

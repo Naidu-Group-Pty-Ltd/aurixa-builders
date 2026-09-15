@@ -1,3 +1,4 @@
+import { type BuilderStockImageProgressRecord } from '@/lib/builderStock';
 /**
  * Builder Portal — Stock List query layer.
  *
@@ -638,5 +639,27 @@ export function useEnrichPendingStockImages() {
       operation: 'enrich_images',
     }),
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: builderStockKeys.root() }); },
+  });
+}
+
+/**
+ * The page banner's aggregate: real counts per recent upload, from the one
+ * database function that owns them. Polls only while something is genuinely
+ * moving, at the same cadence as the rest of the page.
+ */
+export function useBuilderStockImageProgress() {
+  return useQuery({
+    queryKey: [...builderStockKeys.root(), 'image-progress'],
+    queryFn: async () => await invoke<{
+      records: BuilderStockImageProgressRecord[];
+      unavailable?: boolean;
+    }>({ operation: 'image_progress' }),
+    refetchInterval: (query) => {
+      const records = query.state.data?.records ?? [];
+      return records.some((record) => record.working > 0
+        || (!record.published && record.total > 0))
+        ? STOCK_WORKING_POLL_MS
+        : false;
+    },
   });
 }

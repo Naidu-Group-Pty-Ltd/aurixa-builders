@@ -48,6 +48,14 @@ function env(name: string): string {
 const unreachable = (detail: string): PackageOutcome => ({ status: 'unreachable', detail });
 
 /**
+ * The bounded in-process fallback for a MISSING worker. Documents to this size
+ * are measured electing in single-digit seconds in-process (Lot 709 Verve's
+ * 7.2 MB brochure elected in 4.4 s); the per-isolate decode mutex and the
+ * settler's one-document-at-a-time discipline bound the concurrency to one.
+ */
+const IN_PROCESS_NO_CAPACITY_MAX_BYTES = 6 * 1024 * 1024;
+
+/**
  * Run the election, wherever this deployment runs it.
  *
  * THE ONE ENTRY POINT, so "where does the heavy election run" is answered in a
@@ -90,13 +98,34 @@ export async function runElectionOnRoute(
     return await electFromPdfBytes(bytes, readPageTexts, context);
   }
   /*
-   * NO SILENT FALLBACK. Under the worker runtime the in-process election is
-   * the thing measured to exceed the CPU ceiling, so running it here when the
-   * worker is missing or broken would re-create the exact failure this change
-   * exists to fix — and would spend the whole item budget doing it. The
-   * property is told nothing and asked again instead.
+   * NO SILENT FALLBACK — but no silent STARVATION either. Under the worker
+   * runtime the in-process election is what was measured to exceed the CPU
+   * ceiling on large brochures, so it must not quietly resume as the default.
+   * What production then shipped was the opposite failure, measured
+   * 2026-09-15 on project htfluofznhxeumblwbww: NO worker secrets are
+   * configured at all, so every linked brochure answered `no_capacity`, was
+   * banked `unreachable` six times, and six live properties settled blank —
+   * a missing config expressed as "that document could not be read".
+   *
+   * So the fallback is BOUNDED and LOUD: a document small enough that the
+   * in-process election is known to finish in seconds is elected here, under
+   * the same per-isolate decode mutex and the settler's one-document-at-a-
+   * time discipline, with the missing secret named in the log every time.
+   * A larger document refuses BY NAME — the operator action is stated in the
+   * refusal, and the item's bounded failure accounting (never a blank card)
+   * carries it from there.
    */
-  if (route.kind === 'no_capacity') return unreachable(route.detail);
+  if (route.kind === 'no_capacity') {
+    if (bytes.length > 0 && bytes.length <= IN_PROCESS_NO_CAPACITY_MAX_BYTES) {
+      console.error('[builderStock] pdf election worker unconfigured '
+        + '(BUILDER_STOCK_PDF_WORKER_URL / BUILDER_STOCK_PDF_WORKER_TOKEN); '
+        + `electing ${bytes.length} bytes in-process under the bounded fallback`);
+      return await electFromPdfBytes(bytes, readPageTexts, context);
+    }
+    return unreachable(`${route.detail} — and at ${bytes.length} bytes this document is above `
+      + `the ${IN_PROCESS_NO_CAPACITY_MAX_BYTES}-byte bounded in-process fallback. Configure `
+      + 'BUILDER_STOCK_PDF_WORKER_URL and BUILDER_STOCK_PDF_WORKER_TOKEN to read it.');
+  }
   return await electViaWorker(bytes, context, route.endpoint, route.token);
 }
 

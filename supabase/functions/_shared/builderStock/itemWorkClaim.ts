@@ -39,12 +39,17 @@ export interface ClaimedItem {
   lifecycle_status: string | null;
 }
 
-/** Where a claimed property goes next. Mirrors the column's CHECK constraint. */
+/**
+ * Where a claimed property goes next. Mirrors the column's CHECK constraint.
+ * `settled` is done WITH a photograph; `failed` is processing exhausted and a
+ * person owed — both are terminal to the claim (the SQL excludes them), and
+ * only the watchdog, a version bump or a recovered source re-opens either.
+ */
 export type ItemWorkStage =
-  | 'source' | 'eligibility' | 'sanitization' | 'fallback' | 'settled';
+  | 'source' | 'eligibility' | 'sanitization' | 'fallback' | 'settled' | 'failed';
 
 export const ITEM_WORK_STAGES: readonly ItemWorkStage[] = [
-  'source', 'eligibility', 'sanitization', 'fallback', 'settled',
+  'source', 'eligibility', 'sanitization', 'fallback', 'settled', 'failed',
 ];
 
 export type ClaimResult =
@@ -150,16 +155,38 @@ export async function completeItemWork(
      * behaviour it had; only the handback passes it explicitly.
      */
     resetAttempts?: boolean;
+    /**
+     * A REAL failure — a source read that crashed, a dependency that refused,
+     * a store that could not persist. This is the ONLY thing that raises
+     * `image_work_failures` and buys bounded (≤5 min) backoff; the claim
+     * itself no longer punishes anything, so a worker that dies leaves its
+     * evidence to the watchdog's lease reclaim instead. Never set for a
+     * deferral, a clean handback, or a stage that simply has more to do.
+     */
+    failed?: boolean;
   },
 ): Promise<{ available: boolean }> {
-  const { error } = await db.rpc('complete_builder_stock_image_work', {
+  const args: Record<string, unknown> = {
     p_item_id: itemId,
     p_next_stage: outcome.nextStage ?? null,
     p_result: outcome.result ?? null,
     p_error: outcome.error ?? null,
     p_retry_after_seconds: Math.max(0, Math.trunc(outcome.retryAfterSeconds ?? 0)),
     p_reset_attempts: outcome.resetAttempts ?? outcome.progressed === true,
-  });
+  };
+  if (outcome.failed === true) args.p_failed = true;
+  let { error } = await db.rpc('complete_builder_stock_image_work', args);
+  /*
+   * DEPLOYMENT SKEW SHIM. Functions deploy before the migration applies, so a
+   * new worker may briefly face the six-argument RPC. A failure completion is
+   * still a completion: retry without the flag rather than stranding the
+   * claim, and the bounded backoff begins on the next post-migration lap.
+   */
+  if (error && outcome.failed === true
+    && /p_failed|function|schema cache/i.test(String((error as { message?: string }).message ?? ''))) {
+    delete args.p_failed;
+    ({ error } = await db.rpc('complete_builder_stock_image_work', args));
+  }
   if (error && isMissingCapability(error)) return { available: false };
   if (error) {
     throw new Error(`builder stock item completion failed: ${

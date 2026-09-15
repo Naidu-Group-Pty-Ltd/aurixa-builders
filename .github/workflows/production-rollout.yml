@@ -28,7 +28,7 @@ on:
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, smoke]
+        options: [verify, apply, smoke, recover]
 
 concurrency:
   group: production-rollout
@@ -59,6 +59,6 @@ jobs:
         run: |
           set -euo pipefail
           case "${{ inputs.phase }}" in
-            verify|apply) node scripts/ops/production-rollout.mjs "${{ inputs.phase }}" ;;
-            smoke)        node scripts/ops/production-smoke.mjs ;;
+            verify|apply|recover) node scripts/ops/production-rollout.mjs "${{ inputs.phase }}" ;;
+            smoke)                node scripts/ops/production-smoke.mjs ;;
           esac

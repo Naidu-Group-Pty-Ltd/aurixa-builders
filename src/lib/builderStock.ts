@@ -767,6 +767,23 @@ export const STOCK_PROVENANCE_LABEL: Record<StockImageProvenance, string> = {
 };
 
 /** The provenance of one image, or null where it may not be shown at all. */
+/**
+ * One upload's truthful photo aggregate, exactly as the database computed it
+ * (`builder_stock_image_progress`): photos_ready counts READY builder-source
+ * primaries only, so "4 of 6 ready" always means four real photographs.
+ */
+export interface BuilderStockImageProgressRecord {
+  upload_id: string;
+  total: number;
+  photos_ready: number;
+  failed: number;
+  working: number;
+  manifest_state: string | null;
+  failure_state: string | null;
+  blocked_reason: string | null;
+  published: boolean;
+}
+
 export function stockImageProvenance(
   image: BuilderStockImage,
 ): StockImageProvenance | null {
@@ -780,23 +797,14 @@ export function primaryStockImage(item: BuilderStockItem): BuilderStockImage | n
   const displayable = (item.images ?? []).filter(isDisplayableSourceImage);
 
   /*
-   * NO BUILDER IMAGE: THE FALLBACKS, IN ORDER. A verified web photograph of
-   * this exact property first, a Street View of its address second, nothing
-   * third. Both are ranked BELOW every builder row, so a source image
-   * arriving later always takes the card back.
+   * NO BUILDER IMAGE MEANS NO IMAGE — the invariant of 2026-09-15. This used
+   * to fall back to a verified web photograph and then to Street View, which
+   * put the browser at odds with the server (whose ranking had already
+   * retired both) and put somebody else's imagery on a Builder Stock card.
+   * A card without the builder's own photograph now reads as having none,
+   * and the row's progress state says why and what happens next.
    */
-  if (!displayable.length) {
-    const fallback = (item.images ?? []).filter(isVerifiedWebImage);
-    const tier = fallback.length ? fallback : (item.images ?? []).filter(isStreetViewImage);
-    if (!tier.length) return null;
-    if (item.primary_image_id) {
-      const chosen = tier.find((image) => image.id === item.primary_image_id);
-      if (chosen) return chosen;
-    }
-    return [...tier].sort((a, b) =>
-      (a.position ?? 0) - (b.position ?? 0)
-      || String(a.id).localeCompare(String(b.id)))[0] ?? null;
-  }
+  if (!displayable.length) return null;
 
   if (item.primary_image_id) {
     const chosen = displayable.find((image) => image.id === item.primary_image_id);

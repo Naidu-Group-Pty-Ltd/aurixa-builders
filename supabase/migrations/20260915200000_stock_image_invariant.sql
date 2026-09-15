@@ -214,12 +214,14 @@ CREATE OR REPLACE FUNCTION public.claim_builder_stock_image_work(
 $$;
 
 -- The bounded failure backoff, in one place so the completion RPC and the
--- watchdog cannot drift apart: 30s, 60s, 120s, 240s, then flat 300s.
+-- watchdog cannot drift apart: failure n waits 30·2^(n−1) seconds capped at
+-- five minutes — 30s, 60s, 120s, 240s, then flat 300s. Never the hour.
 CREATE OR REPLACE FUNCTION public.builder_stock_failure_backoff(p_failures integer)
 RETURNS interval
     LANGUAGE sql IMMUTABLE
     AS $$
-  SELECT make_interval(secs => least(30 * power(2, least(greatest(coalesce(p_failures, 0), 0), 4))::integer, 300));
+  SELECT make_interval(secs => least(
+    30 * power(2, least(greatest(coalesce(p_failures, 1), 1) - 1, 4))::integer, 300));
 $$;
 
 -- The completion RPC gains p_failed. The old six-argument overload is DROPPED
@@ -1014,7 +1016,31 @@ RETURNS uuid LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$ DECL
 END $$;
 
 -- ============================================================================
--- 14. Post-migration assertions — shapes, not hopes
+-- 14. Re-open what the old extractor wrongly closed
+--
+-- PROVENANCE_VERSION 24 → 25: the extractor gained direct-image ingestion
+-- (a row's own linked JPG/PNG/WebP is now the property's photograph), so
+-- every `no_deterministic_image` it banked — including "That link is an
+-- image rather than a package document" — is stale by definition.
+-- RUNTIME 3 → 4: the worker gained the bounded in-process election fallback
+-- and honest folder-listing failures, so retirements caused by the OLD
+-- runtime's unconfigured-worker starvation re-open too. The versioned
+-- re-open machinery (negativeProvenanceStillStands, the reopen sweeps) does
+-- the rest; nothing is hand-edited.
+-- ============================================================================
+
+SELECT public.set_builder_stock_source_images_target(25);
+
+INSERT INTO public.builder_stock_settlement_target (id, image_runtime_version)
+VALUES (true, 4)
+ON CONFLICT (id) DO UPDATE
+  SET image_runtime_version =
+        GREATEST(public.builder_stock_settlement_target.image_runtime_version,
+                 EXCLUDED.image_runtime_version),
+      updated_at = now();
+
+-- ============================================================================
+-- 15. Post-migration assertions — shapes, not hopes
 -- ============================================================================
 
 DO $$
