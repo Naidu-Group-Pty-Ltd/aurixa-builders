@@ -27,7 +27,7 @@
  */
 import {
   driveDownloadUrl, driveFileId, driveFolderId, driveFolderUrl, driveRenditionUrl,
-  isGoogleDriveHost,
+  isGoogleDriveHost, isNonFacadeImageName,
   lotAndDesignFrom, parseDriveFolderListing, selectLotFolder, selectPackageDocument,
   selectNamedDocument, selectPropertyPhotograph, streetAddressFrom,
   type ScopedEntry,
@@ -68,20 +68,35 @@ export class DriveListingCache {
   async list(folderId: string): Promise<DriveEntry[]> {
     const cached = this.entries.get(folderId);
     if (cached) return cached;
-    if (this.reads >= MAX_LISTINGS_PER_RUN) return [];
+    /*
+     * A LISTING THAT FAILED IS NOT AN EMPTY FOLDER — 2026-09-15. This used to
+     * catch every fetch failure into a cached `[]` and return the budget's
+     * overflow the same way, so a walk over a half-read library concluded
+     * "no document names this property" and BANKED it as inspected
+     * knowledge, admitting conclusions a failed fetch never earned. Both
+     * cases now THROW; the branch's own error handling counts them as the
+     * operational failures they are (unreachable — retried, bounded, never
+     * converted into "the folder names nothing").
+     */
+    if (this.reads >= MAX_LISTINGS_PER_RUN) {
+      throw new Error(
+        `the folder-listing budget (${MAX_LISTINGS_PER_RUN}) is spent for this run; `
+        + 'the library is larger than one attempt may read');
+    }
 
     this.reads += 1;
+    let listing: DriveEntry[];
     try {
       const { bytes } = await this.fetchPackage(driveFolderUrl(folderId));
       const html = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-      const listing = parseDriveFolderListing(html);
-      this.entries.set(folderId, listing);
-      return listing;
-    } catch {
-      // A folder that will not load is a folder we have nothing to say about.
-      this.entries.set(folderId, []);
-      return [];
+      listing = parseDriveFolderListing(html);
+    } catch (error) {
+      throw new Error(`a folder listing could not be read (${
+        String((error as { safeMessage?: string })?.safeMessage
+          ?? (error as { message?: string })?.message ?? error).slice(0, 120)})`);
     }
+    this.entries.set(folderId, listing);
+    return listing;
   }
 }
 
@@ -221,6 +236,17 @@ async function recoverPackageImageInner(
      * the suburb. See `pageStatesIdentity`, test 4.
      */
     identityHints?: string[] | null;
+    /**
+     * Whether THIS URL also appears on other rows of the same upload.
+     *
+     * The row's own cell linking an image file IS deterministic attribution —
+     * that row named that file — but only while the naming is exclusive: an
+     * estate masterplan pasted into every row points at one file from forty
+     * rows, and taking it as each row's photograph would be attribution by
+     * repetition. The caller computes this over the upload's rows because
+     * only it can see them.
+     */
+    linkSharedWithOtherRows?: boolean;
   },
   deps: {
     fetchPackage?: PackageFetcher;
@@ -262,6 +288,34 @@ async function recoverPackageImageInner(
    */
   const design = labelParts.design ?? (String(input.design ?? '').trim() || null);
 
+  /*
+   * How a linked IMAGE file is treated everywhere below. The row's own cell
+   * linking a picture is the builder handing the photograph over — unless the
+   * same link serves other rows too (estate collateral), or the file's own
+   * name declares it to be something other than the house. See
+   * `takeLinkedPhotograph` for the rule in one place.
+   */
+  const linkedImage = {
+    accept: input.linkSharedWithOtherRows !== true,
+    sharedAcrossRows: input.linkSharedWithOtherRows === true,
+  };
+
+  /*
+   * THE ROW LINKED THE PICTURE ITSELF. `direct_image` never used to reach a
+   * handler at all — it fell through the host checks into "not a source we
+   * can read", and the builder's own photograph was banked as a package that
+   * names no image. Production 2026-09-15: two of the four links on each of
+   * six blank live cards were exactly this.
+   */
+  if (classifyBranch(input.packageUrl) === 'direct_image') {
+    return await takeLinkedPhotograph(fetchPackage, {
+      url: sharedLinkFileUrl(input.packageUrl),
+      fileName: documentNameFromUrl(input.packageUrl),
+      driveId: null,
+      ...linkedImage,
+    });
+  }
+
   if (!isGoogleDriveHost(host)) {
     /*
      * NOT DRIVE IS NOT UNREADABLE, and refusing here was banked as knowledge.
@@ -289,7 +343,8 @@ async function recoverPackageImageInner(
       return await extractFromDocument(
         fetchPackage, readPageTexts, sharedLinkFileUrl(input.packageUrl),
         documentNameFromUrl(input.packageUrl), input.label, 'direct_link', design,
-        input.identityHints);
+        input.identityHints,
+        { ...linkedImage, driveId: null, fileName: documentNameFromUrl(input.packageUrl) });
     }
     return { status: 'not_identified', detail: 'That package is not on a source we can read.' };
   }
@@ -299,7 +354,8 @@ async function recoverPackageImageInner(
   if (directFileId) {
     return await extractFromDocument(
       fetchPackage, readPageTexts, driveDownloadUrl(directFileId), 'the linked document',
-      input.label, 'direct_link', design, input.identityHints);
+      input.label, 'direct_link', design, input.identityHints,
+      { ...linkedImage, driveId: directFileId, fileName: documentNameFromUrl(input.packageUrl) });
   }
 
   const rootId = driveFolderId(input.packageUrl);
@@ -564,6 +620,105 @@ async function takePhotographAsFiled(
   };
 }
 
+/**
+ * A picture the ROW ITSELF linked, taken as the property's own photograph.
+ *
+ * THE ATTRIBUTION IS THE CELL. `rowSourceBranches` reads links out of one
+ * stored row's own columns and nowhere else, so a link arriving here was
+ * written by the builder against exactly this property — evidence of the same
+ * kind as a folder named for the lot, and stated at the same level. Two
+ * refusals keep the mapping honest, and both are FINDINGS rather than errors:
+ * a link that also serves other rows is estate collateral, not this house;
+ * and a file whose own name says "siting", "masterplan", "floor plan" and kin
+ * is declared by its author to be something other than the house. Everything
+ * else about the picture — role, eligibility, sanitization — is judged by the
+ * same downstream machinery as every stored source image.
+ */
+async function takeLinkedPhotograph(
+  fetchPackage: PackageFetcher,
+  input: {
+    url: string; fileName: string; driveId: string | null;
+    accept: boolean; sharedAcrossRows: boolean;
+  },
+): Promise<PackageOutcome> {
+  let fetched: { bytes: Uint8Array; finalUrl: string };
+  try {
+    fetched = await fetchPackage(input.url);
+  } catch {
+    return { status: 'unreachable', detail: 'That linked picture could not be downloaded.' };
+  }
+  if (!fetched?.bytes?.length) {
+    return { status: 'unreachable', detail: 'That linked picture came back empty.' };
+  }
+  if (!sniffImageContentType(fetched.bytes)) {
+    return {
+      status: 'not_identified',
+      detail: 'That link names an image file but does not answer with one.',
+    };
+  }
+  return await acceptLinkedImageBytes(fetchPackage, fetched.bytes, input.url, input);
+}
+
+/** The shared acceptance rule for image bytes a row's own link answered. */
+async function acceptLinkedImageBytes(
+  fetchPackage: PackageFetcher,
+  bytes: Uint8Array,
+  url: string,
+  linkedImage: {
+    accept: boolean; sharedAcrossRows: boolean;
+    driveId?: string | null; fileName?: string;
+  },
+): Promise<PackageOutcome> {
+  const fileName = linkedImage.fileName || documentNameFromUrl(url);
+  if (linkedImage.sharedAcrossRows || !linkedImage.accept) {
+    return {
+      status: 'not_identified',
+      detail: 'That linked image also serves other rows of this stock list, so it is '
+        + 'estate collateral rather than this property\'s own photograph.',
+    };
+  }
+  if (isNonFacadeImageName(fileName)) {
+    return {
+      status: 'not_identified',
+      detail: `That linked image's own name ("${fileName.slice(0, 80)}") declares it to be `
+        + 'collateral rather than a photograph of the house.',
+    };
+  }
+
+  let taken = bytes;
+  // Same rescue as `takePhotographAsFiled`: Drive renders the SAME file
+  // smaller by its own id, and a rendition that cannot be had changes nothing.
+  if (taken.length > MAX_SOURCE_IMAGE_BYTES && linkedImage.driveId) {
+    try {
+      const smaller = await fetchPackage(driveRenditionUrl(linkedImage.driveId, 1600));
+      if (smaller?.bytes?.length && smaller.bytes.length <= MAX_SOURCE_IMAGE_BYTES
+        && sniffImageContentType(smaller.bytes)) {
+        taken = smaller.bytes;
+      }
+    } catch {
+      // Keep the original and let the store speak for itself.
+    }
+  }
+
+  return {
+    status: 'recovered_photograph',
+    photograph: {
+      bytes: taken,
+      contentType: sniffImageContentType(taken) ?? 'application/octet-stream',
+      reference: `row-link/${fileName}`.slice(0, 200),
+      fileName,
+      fileUrl: url,
+      folderPath: [],
+      role: {
+        role: PRIMARY_ROLE,
+        evidenceLevel: 2,
+        evidence: `the row's own cell links ${fileName}`,
+        reason: 'The stock list row links this image file directly for this property.',
+      },
+    },
+  };
+}
+
 /** What the builder named the file, read from the link's own path. */
 function documentNameFromUrl(rawUrl: string): string {
   try {
@@ -611,6 +766,16 @@ async function extractFromDocument(
   /** The row's other identity names, for the cover rule's corroboration
    * test alone. See `pageStatesIdentity`. */
   identityHints?: readonly string[] | null,
+  /**
+   * How to treat bytes that turn out to be a PICTURE rather than a document.
+   * Present only on the `direct_link` paths: a row's own cell pointing at an
+   * image file is the builder handing the photograph over, and it is taken —
+   * unless the link is shared across rows or its name declares collateral.
+   */
+  linkedImage?: {
+    accept: boolean; sharedAcrossRows: boolean;
+    driveId?: string | null; fileName?: string;
+  },
 ): Promise<PackageOutcome> {
   let bytes: Uint8Array;
   try {
@@ -655,6 +820,22 @@ async function extractFromDocument(
    */
   if (bytes.length >= 5 && String.fromCharCode(...bytes.subarray(0, 5)) !== '%PDF-'
     && sniffImageContentType(bytes)) {
+    /*
+     * THE LINK IS THE PHOTOGRAPH — 2026-09-15. The refusal below shipped on a
+     * mapping argument ("pointing is not naming") that is right for a link
+     * SHARED across rows and wrong for a link that is this row's alone: a
+     * builder who puts a picture's address in a property's own cell has named
+     * that property's picture as deterministically as a folder names a lot.
+     * Six live blank cards each carried two such links, refused here.
+     *
+     * So the two facts are finally told apart. Exclusive to this row, and not
+     * named as collateral → the photograph is taken as filed, at the row's
+     * own evidence. Shared across rows, or named "siting"/"masterplan"/
+     * "floor plan" and their kin → the refusal stands, with the honest reason.
+     */
+    if (linkedImage) {
+      return await acceptLinkedImageBytes(fetchPackage, bytes, url, linkedImage);
+    }
     return {
       status: 'not_identified',
       detail: 'That link is an image rather than a package document, so it presents no '

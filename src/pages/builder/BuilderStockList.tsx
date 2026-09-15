@@ -35,7 +35,7 @@ import { AU_LOCALE } from '@/lib/aml/displayDate';
 import { BuilderSchedule } from '@/components/builder-portal/ui/BuilderSchedule';
 import { useDebounce } from '@/hooks/useDebounce';
 import {
-  importBuilderStockUrl, type StockImportSummary, type StockUploadProgress, type StockUploadResult, uploadBuilderStockFile, useAcknowledgeStockSelection, useBuilderStockItems, useBuilderStockSelections, useBuilderStockUploads, useArchiveBuilderStockItem, useDeleteBuilderStockSource, useEnrichPendingStockImages, useRecoverStockSourceImages, useRefreshBrochureLinks, useReprocessStockSource,
+  importBuilderStockUrl, type StockImportSummary, type StockUploadProgress, type StockUploadResult, uploadBuilderStockFile, useAcknowledgeStockSelection, useBuilderStockItems, useBuilderStockSelections, useBuilderStockUploads, useBuilderStockImageProgress, useArchiveBuilderStockItem, useDeleteBuilderStockSource, useEnrichPendingStockImages, useRecoverStockSourceImages, useRefreshBrochureLinks, useReprocessStockSource,
   useSetBuilderStockAvailability, builderStockImageUrl,
 } from '@/lib/builderStockQueries';
 import {
@@ -169,6 +169,23 @@ export default function BuilderStockList() {
     unreachableDocuments: item.source_documents_unreachable ?? 0,
     workStage: item.image_work_stage,
   })));
+  /*
+   * THE TRUTHFUL AGGREGATE. The page-scoped count above says how many rows on
+   * THIS PAGE are still moving; the record below is the database's own answer
+   * for the whole upload — real photos ready of real properties, and how many
+   * have terminally failed and been handed to support. The banner prefers it
+   * whenever it exists, so a builder watching a 44-property list sees
+   * "12 of 44" rather than a page-local number.
+   */
+  const imageProgressQuery = useBuilderStockImageProgress();
+  const progressRecords = imageProgressQuery.data?.records ?? [];
+  const progressRecord = progressRecords.find(
+    (record) => !record.published && Number(record.total) > 0)
+    ?? progressRecords.find((record) => Number(record.working) > 0)
+    ?? null;
+  const photosReady = progressRecord ? Number(progressRecord.photos_ready ?? 0) : null;
+  const photosTotal = progressRecord ? Number(progressRecord.total ?? 0) : null;
+  const photosFailed = progressRecord ? Number(progressRecord.failed ?? 0) : 0;
   const uploads = uploadsQuery.data?.records ?? [];
   const selections = selectionsQuery.data?.records ?? [];
 
@@ -639,15 +656,17 @@ export default function BuilderStockList() {
                   />
                   <div className="min-w-0 text-sm">
                     <p className="font-medium">
-                      {workingImages > 0
-                        ? workingImages === 1
-                          ? 'Finding a picture for 1 property'
-                          : `Finding pictures for ${workingImages} properties`
-                        : 'Bringing in your stock list'}
+                      {photosTotal !== null && photosTotal > 0 && workingImages > 0
+                        ? `Processing property photos — ${photosReady} of ${photosTotal} ready`
+                        : workingImages > 0
+                          ? workingImages === 1
+                            ? 'Finding a picture for 1 property'
+                            : `Finding pictures for ${workingImages} properties`
+                          : 'Bringing in your stock list'}
                     </p>
                     <p className="mt-0.5 text-xs text-muted-foreground">
                       {workingImages > 0
-                        ? 'Their brochures are being read now. '
+                        ? 'Their photos are being read from your stock list now. '
                         : null}
                       {arrivingUploads > 0
                         ? 'A stock list is still being processed, so more properties '
@@ -656,6 +675,38 @@ export default function BuilderStockList() {
                       This runs on its own and finishes without you — the list
                       updates as each one lands, so there is no need to upload the
                       file again.
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+
+              {/*
+                THE HONEST FAILURE LINE. Photos the pipeline has exhausted are
+                a different fact from photos still coming, and hiding them
+                inside the spinner was how six blank cards sat unexplained for
+                half an hour. No jargon, no re-upload ask: support already has
+                it, and "Add picture" always works.
+              */}
+              {photosFailed > 0 ? (
+                <div
+                  role="status"
+                  className="builder-stock-list-processing mb-5 flex items-start gap-3 rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3"
+                >
+                  <AlertTriangle
+                    className="mt-0.5 h-4 w-4 shrink-0 text-destructive"
+                    aria-hidden
+                  />
+                  <div className="min-w-0 text-sm">
+                    <p className="font-medium">
+                      {photosFailed === 1
+                        ? 'One property’s photo needs attention'
+                        : `${photosFailed} properties’ photos need attention`}
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      Their photos could not be processed from the stock list and
+                      our team has been alerted. The rest of your list is
+                      unaffected. You can also add a picture to any property
+                      yourself with {'“'}Add picture{'”'}.
                     </p>
                   </div>
                 </div>
@@ -1299,6 +1350,14 @@ function ImageSources({ item, showLabels = false }: { item: BuilderStockItem; sh
   const progress = stockImageProgress({
     hasImage: !!image,
     sourceDocuments: item.source_documents ?? 0,
+    /*
+     * BOTH COUNTS, exactly as the banner passes them. Leaving them off made
+     * the chip collapse "a document we failed to read" and "a link that
+     * would not open" into "No picture found" — the one conflation the
+     * progress module exists to prevent.
+     */
+    unprocessedDocuments: item.source_documents_unprocessed ?? 0,
+    unreachableDocuments: item.source_documents_unreachable ?? 0,
     workStage: item.image_work_stage,
   });
   const working = progress === 'working';

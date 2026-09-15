@@ -26,6 +26,7 @@
  *   `organisation_id`, so an asset from one builder's source cannot reach
  *   another builder's stock even if two rows happen to read alike.
  */
+import { syncSourceAssetState } from './sourceAssetManifest.ts';
 import { classifyFetchedSource, classifyStockFile } from './fileTypes.pure.ts';
 import { RUNTIME_VERSION } from './runtimeVersion.pure.ts';
 import { PROCESSED_LIFECYCLE } from './stockLifecycle.pure.ts';
@@ -480,7 +481,7 @@ export async function repairSourceImagesForUpload(
     .eq('organisation_id', input.organisationId)
     .maybeSingle();
   if (!upload || upload.deleted_at) {
-    return { ...outcome, error: 'That source could not be found.' };
+    return { ...outcome, incomplete: true, error: 'That source could not be found.' };
   }
 
   let rows: Array<Record<string, unknown>> = [];
@@ -549,7 +550,7 @@ export async function repairSourceImagesForUpload(
       if (deps.readNotionSource) {
         const read = await deps.readNotionSource(sourceUrl);
         if (!read.ok) {
-          return { ...outcome, error: 'That Notion page could not be read again.' };
+          return { ...outcome, incomplete: true, error: 'That Notion page could not be read again.' };
         }
         rows = read.rows;
         rowAssets = read.assets;
@@ -563,7 +564,7 @@ export async function repairSourceImagesForUpload(
         const html = new TextDecoder('utf-8', { fatal: false }).decode(fetched.bytes);
         const recovery = await recoverNotionPublicContent(fetched.finalUrl, html);
         if (!recovery.ok) {
-          return { ...outcome, error: 'That Notion page could not be read again.' };
+          return { ...outcome, incomplete: true, error: 'That Notion page could not be read again.' };
         }
         if (!recovery.matrix) {
           return { ...outcome, error: 'That Notion page no longer lists properties in rows.' };
@@ -613,7 +614,7 @@ export async function repairSourceImagesForUpload(
         const { data: blob, error: downloadError } = await db.storage
           .from(upload.storage_bucket).download(upload.storage_path);
         if (downloadError || !blob) {
-          return { ...outcome, error: 'The stored copy of that source could not be read.' };
+          return { ...outcome, incomplete: true, error: 'The stored copy of that source could not be read.' };
         }
         bytes = new Uint8Array(await blob.arrayBuffer());
       }
@@ -642,6 +643,9 @@ export async function repairSourceImagesForUpload(
   } catch (error) {
     return {
       ...outcome,
+      // The read FAILED — the stage is not finished, and the caller counts
+      // this as a real failure rather than advancing past an unread source.
+      incomplete: true,
       error: String((error as { safeMessage?: string })?.safeMessage
         ?? 'That source could not be read again.'),
     };
@@ -782,6 +786,30 @@ export async function repairSourceImagesForUpload(
    * the property as stage 1 is unproven, and unproven means not displayable.
    */
   const provenByItem = new Map<string, Set<string>>();
+  /*
+   * WHICH LINKS ARE ONE ROW'S OWN, counted before any row is worked.
+   *
+   * A linked IMAGE is taken as the row's photograph only while the link is
+   * exclusive to that row (see `takeLinkedPhotograph`): an estate masterplan
+   * pasted into forty rows names no house. The count runs over the document's
+   * own rows AND every stored row's recovered link columns, because a Google
+   * Sheet's targets exist only on the stored rows.
+   */
+  const branchRowCounts = new Map<string, number>();
+  const countBranchUrls = (unmapped: Record<string, string> | null | undefined) => {
+    const seen = new Set<string>();
+    for (const branch of rowSourceBranches(unmapped ?? null)) {
+      if (seen.has(branch.url)) continue;
+      seen.add(branch.url);
+      branchRowCounts.set(branch.url, (branchRowCounts.get(branch.url) ?? 0) + 1);
+    }
+  };
+  for (const raw of rows) {
+    countBranchUrls((raw as { unmapped?: Record<string, string> | null })?.unmapped ?? null);
+  }
+  for (const storedRow of storedRowByItem.values()) {
+    countBranchUrls(unmappedWithRecoveredLinks(null, storedRow));
+  }
   /** Properties whose imagery this run actually re-fetched. The CPU bound. */
   let restored = 0;
   /** Of those, the ones that cost a whole PDF parse. The tighter bound. */
@@ -1110,6 +1138,10 @@ export async function repairSourceImagesForUpload(
         outcome.incomplete = true;
       } else {
         outcome.packageNotIdentified += 1;
+        await syncSourceAssetState(db, {
+        organisationId: input.organisationId, uploadId: upload.id, stockItemId: itemId,
+        reference: packageUrl, state: 'failed', detail: `retired after ${priorAttempts} resource-limit failures`,
+      });
       }
       outcome.problems.push({
         reference: packageUrl.slice(0, 400),
@@ -1232,7 +1264,13 @@ export async function repairSourceImagesForUpload(
           .eq('organisation_id', input.organisationId);
         // Unrecorded means unadvanced; say so rather than settle on it.
         if (bankError) outcome.incomplete = true;
-        else outcome.packageNotIdentified += 1;
+        else {
+          outcome.packageNotIdentified += 1;
+          await syncSourceAssetState(db, {
+        organisationId: input.organisationId, uploadId: upload.id, stockItemId: itemId,
+        reference: packageUrl, state: 'unreadable', detail: `link retired after ${MAX_UNREACHABLE_ATTEMPTS} unreadable answers`,
+      });
+        }
         outcome.problems.push({
           reference: packageUrl.slice(0, 400),
           reason: `link retired after ${MAX_UNREACHABLE_ATTEMPTS} unreadable answers`,
@@ -1269,6 +1307,13 @@ export async function repairSourceImagesForUpload(
            * — see `roleFromDesignCover`.
            */
           design: designOf(record),
+          /*
+           * Exclusive to this row, or estate collateral? Decided over the
+           * whole document up front; `takeLinkedPhotograph` refuses shared
+           * links with the honest reason instead of taking one file as forty
+           * houses.
+           */
+          linkSharedWithOtherRows: (branchRowCounts.get(packageUrl) ?? 0) > 1,
         },
         { fetchPackage: deps.fetchPackage, cache, readPageTexts: deps.readPageTexts },
       );
@@ -1373,6 +1418,10 @@ export async function repairSourceImagesForUpload(
       });
       if (storedPhoto) {
         await clearAttempt();
+        await syncSourceAssetState(db, {
+        organisationId: input.organisationId, uploadId: upload.id, stockItemId: itemId,
+        reference: packageUrl, state: 'stored', detail: 'the builder\'s filed photograph was stored from this link',
+      });
         outcome.imagesStored += 1;
         outcome.fromPackage += 1;
         prove(itemId, photo.reference);
@@ -1427,6 +1476,11 @@ export async function repairSourceImagesForUpload(
           reference: packageUrl.slice(0, 400),
           reason: String((writeError as { message?: string })?.message ?? writeError).slice(0, 200),
         });
+      } else {
+        await syncSourceAssetState(db, {
+          organisationId: input.organisationId, uploadId: upload.id, stockItemId: itemId,
+          reference: packageUrl, state: 'no_image', detail: recovered.detail,
+        });
       }
       continue;
     }
@@ -1476,6 +1530,11 @@ export async function repairSourceImagesForUpload(
     });
     if (written) {
       await clearAttempt();
+      await syncSourceAssetState(db, {
+        organisationId: input.organisationId, uploadId: upload.id, stockItemId: itemId,
+        reference: packageUrl, state: 'stored',
+        detail: 'a photograph was extracted from this document',
+      });
       outcome.imagesStored += 1;
       outcome.fromPackage += 1;
       prove(itemId, recovered.image.reference);

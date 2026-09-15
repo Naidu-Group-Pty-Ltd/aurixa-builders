@@ -9,13 +9,18 @@
  * anyway. The cost was a marketplace of empty frames whenever a builder's
  * source carried no usable render.
  *
- * The rule is now a PRIORITY, and the ranking is the whole of it:
+ * The rule is now an INVARIANT, and since 2026-09-15 the ranking is short:
  *
  *   1  the builder's own file, measured clean or cleared
  *   2  the builder's own file with a promotional graphic rebuilt out of it
- *   3  a web-search photograph VERIFIED to be this exact property
- *   4  Street View of this exact address
- *   5  nothing
+ *   3  nothing — visibly owed, never quietly blank
+ *
+ * Ranks that used to sit below the builder's file — a verified web-search
+ * photograph, then Street View — are retired for Builder Stock: a stock list
+ * contains its photographs, so a card without one marks OUR processing debt
+ * (`image_work_stage = 'failed'`, upload attention, operations paged) rather
+ * than a licence to substitute somebody else's imagery. Their predicates and
+ * their stored rows remain; only the ranking and the spend are gone.
  *
  * FOUR THINGS THIS MODULE WILL NOT DO, and each is a defect it exists to
  * prevent rather than a preference:
@@ -245,7 +250,24 @@ export function rankImage<T extends DisplayableImage>(image: T): RankedImage<T> 
       provenance: 'builder_supplied',
     };
   }
-  if (isVerifiedWebImage(image)) return { image, rank: 3, provenance: 'web_sourced' };
+  /*
+   * A WEB PHOTOGRAPH IS NO LONGER A CARD IMAGE EITHER — the invariant of
+   * 2026-09-15 finishes what the Street View removal below started. Builder
+   * Stock imagery is AUTHORITATIVE: the photograph on a card comes from the
+   * builder's own stock list or a builder-supplied source, and a web-search
+   * result verified to be the right house is still not that. Six live
+   * properties proved the failure mode this closes: their brochure links
+   * failed on OUR side, and the pipeline bought Street View stills and
+   * Perplexity search results as substitutes instead of saying so.
+   *
+   * `isVerifiedWebImage` stays, and so does every stored row: like Street
+   * View below, this changes what may be DRAWN, never what was recorded. A
+   * property whose only picture is external now reads as having none, which
+   * the client-visibility predicate, the publication gate and the frontend
+   * all say out loud — and our processing failure becomes a named, owed
+   * piece of work instead of somebody else's photograph.
+   */
+  if (isVerifiedWebImage(image)) return null;
   /*
    * STREET VIEW IS NO LONGER A CARD IMAGE, AND THAT REVERSES A DECISION MADE
    * HERE DELIBERATELY.
@@ -380,23 +402,18 @@ export function nextImageStage(
   if (sourcePending || !options.sourceSettlementComplete) return 'wait';
 
   /*
-   * A STAGE THAT RAN AND FOUND NOTHING HAS BEEN TRIED.
+   * THE PAID LADDER IS RETIRED FOR BUILDER STOCK — the invariant of
+   * 2026-09-15. `web_search` and `street_view` are never asked for again:
+   * the builder's stock list contains the photograph, and a property whose
+   * source processing is finished without one is OUR failure to surface
+   * (`image_work_stage = 'failed'`, upload attention, operations paged) —
+   * never a licence to buy somebody else's picture of the street.
    *
-   * This used to count a stage as attempted only where it had left a `ready`
-   * row, so a search that returned nothing — or returned only candidates the
-   * identity check refused — read as a stage never run, and the ladder asked
-   * for it again instead of moving down. Lot 1663 Ringer Street spent both of
-   * its passes on `web_search`, was marked `failed`, and left the queue with
-   * Street View NEVER ATTEMPTED; Lot 3 Yamanto and Lot 1342 Austin Estate the
-   * same. All three showed blank on the live Marketplace with an untried stage
-   * behind them. Any row for a stage is now the record that it ran.
+   * The rung types, `isVerifiedWebImage`, `isStreetViewImage` and
+   * `stageWasAttempted` all remain: historical rows still carry these
+   * stages, the reverify sweep still re-judges them, and a future surface
+   * with a different contract may rank them again. What no longer exists is
+   * a path from "no builder photograph" to an external spend.
    */
-  if (rows.some((image) => isVerifiedWebImage(image))) return 'none';
-  if (!rows.some((image) => stageWasAttempted(image, WEB_SEARCH_STAGE))) return 'web_search';
-
-  if (rows.some((image) => isStreetViewImage(image))) return 'none';
-  if (!rows.some((image) => stageWasAttempted(image, STREET_VIEW_STAGE))) return 'street_view';
-
-  // Every stage has been tried and none produced a displayable picture.
   return 'none';
 }

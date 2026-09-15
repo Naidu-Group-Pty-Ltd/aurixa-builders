@@ -548,6 +548,131 @@ BEGIN
   IF NOT v_caught THEN RAISE EXCEPTION 'another organisation''s id reached the announcement'; END IF;
 END $proof$;`);
 
+proof('stock image invariant: blanks never publish, externals never qualify, failures never vanish', `
+DO $proof$
+DECLARE
+  v_org uuid; v_upload uuid; v_item uuid; v_active uuid; v_blank uuid; v_strand uuid;
+  v_web uuid; v_src uuid; v_workspace uuid; v_connection uuid;
+  v_ready record; v_res jsonb; v_row record; v_caught boolean := false;
+BEGIN
+  INSERT INTO public.builder_organisations(legal_name, org_type, status, is_active, activated_at)
+  VALUES ('Invariant Proof Org', 'builder', 'active', true, now()) RETURNING id INTO v_org;
+  INSERT INTO public.builder_stock_uploads(organisation_id, original_filename, storage_path, status)
+  VALUES (v_org, 'invariant.csv', 'proof/invariant.csv', 'enriching') RETURNING id INTO v_upload;
+  IF (SELECT image_invariant FROM public.builder_stock_uploads WHERE id = v_upload) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'a new upload did not default onto the invariant';
+  END IF;
+
+  -- A staged property with no photograph blocks publication BY NAME.
+  INSERT INTO public.builder_stock_items(organisation_id, upload_id, lifecycle_status, address_line, suburb)
+  VALUES (v_org, v_upload, 'staged', '9 Invariant Rise', 'Truganina') RETURNING id INTO v_item;
+  SELECT * INTO v_ready FROM public.builder_stock_publication_readiness(v_upload);
+  IF v_ready.ready OR v_ready.missing_primary <> 1 THEN
+    RAISE EXCEPTION 'readiness passed a blank property (ready %, missing %)', v_ready.ready, v_ready.missing_primary;
+  END IF;
+  v_res := public.publish_builder_stock_upload(v_upload);
+  IF (v_res->>'published')::boolean OR v_res->>'reason' <> 'not_ready' THEN
+    RAISE EXCEPTION 'a blank stock list published (%)', v_res;
+  END IF;
+  IF (SELECT publication_blocked_reason FROM public.builder_stock_uploads WHERE id = v_upload) IS NULL THEN
+    RAISE EXCEPTION 'the refusal left no reason on the upload';
+  END IF;
+
+  -- The claim carries a lease and NOTHING punitive; a failed completion buys
+  -- bounded backoff and one counted failure.
+  UPDATE public.builder_stock_items SET image_work_next_attempt_at = now() WHERE id = v_item;
+  PERFORM * FROM public.claim_builder_stock_image_work(1, 60, v_org);
+  SELECT * INTO v_row FROM public.builder_stock_items WHERE id = v_item;
+  IF v_row.image_work_claim_until IS NULL OR v_row.image_work_next_attempt_at > now() + interval '2 seconds' THEN
+    RAISE EXCEPTION 'the claim wrote punitive backoff (next %)', v_row.image_work_next_attempt_at;
+  END IF;
+  PERFORM public.complete_builder_stock_image_work(v_item, NULL, 'proof failure', 'x', 0, false, true);
+  SELECT * INTO v_row FROM public.builder_stock_items WHERE id = v_item;
+  IF v_row.image_work_failures <> 1
+     OR v_row.image_work_next_attempt_at NOT BETWEEN now() + interval '20 seconds' AND now() + interval '40 seconds' THEN
+    RAISE EXCEPTION 'a failed completion did not buy the bounded backoff (failures %, next %)',
+      v_row.image_work_failures, v_row.image_work_next_attempt_at;
+  END IF;
+
+  -- A verified WEB photograph is not client visibility and is not readiness.
+  INSERT INTO public.builder_stock_items(organisation_id, lifecycle_status, address_line, suburb)
+  VALUES (v_org, 'active', '11 Invariant Rise', 'Truganina') RETURNING id INTO v_active;
+  INSERT INTO public.builder_stock_item_images(organisation_id, stock_item_id, source_stage,
+    source_reference, verification_status, processing_status, external_url)
+  VALUES (v_org, v_active, 'internet_search', 'proof-web', 'property_identity_verified', 'ready',
+    'https://example.com/not-this-house.jpg') RETURNING id INTO v_web;
+  UPDATE public.builder_stock_items SET primary_image_id = v_web WHERE id = v_active;
+  IF public.builder_stock_item_client_visible(v_active) THEN
+    RAISE EXCEPTION 'a web photograph satisfied client visibility';
+  END IF;
+
+  -- The publications boundary refuses what the predicate refuses.
+  INSERT INTO public.workspace_registry(mc_clone_id, slug, display_name)
+  VALUES (gen_random_uuid(), 'invariant-proof', 'Invariant Proof Workspace') RETURNING id INTO v_workspace;
+  INSERT INTO public.workspace_connections(workspace_id, builder_organisation_id, state, initiated_by, accepted_at, outbound_hmac_secret)
+  VALUES (v_workspace, v_org, 'active', 'workspace', now(), repeat('d', 64)) RETURNING id INTO v_connection;
+  BEGIN
+    INSERT INTO public.builder_stock_publications(stock_item_id, connection_id, organisation_id)
+    VALUES (v_active, v_connection, v_org);
+  EXCEPTION WHEN others THEN
+    v_caught := SQLERRM LIKE '%STOCK_ITEM_NOT_CLIENT_VISIBLE%';
+  END;
+  IF NOT v_caught THEN RAISE EXCEPTION 'a web-primary item was offered to a connection'; END IF;
+
+  -- The builder's own READY photograph is the whole of the requirement.
+  INSERT INTO public.builder_stock_item_images(organisation_id, stock_item_id, source_stage,
+    source_reference, verification_status, processing_status, storage_path)
+  VALUES (v_org, v_active, 'uploaded_document', 'proof-src', 'source_supplied', 'ready',
+    'proof/facade.jpg') RETURNING id INTO v_src;
+  UPDATE public.builder_stock_items SET primary_image_id = v_src WHERE id = v_active;
+  IF NOT public.builder_stock_item_client_visible(v_active) THEN
+    RAISE EXCEPTION 'a ready builder-source photograph did not satisfy visibility';
+  END IF;
+  INSERT INTO public.builder_stock_publications(stock_item_id, connection_id, organisation_id)
+  VALUES (v_active, v_connection, v_org);
+
+  -- The watchdog: a served blank that settled is re-opened; an archived
+  -- strand is closed; nothing is deleted.
+  INSERT INTO public.builder_stock_items(organisation_id, lifecycle_status, address_line,
+    image_work_stage, image_work_updated_at)
+  VALUES (v_org, 'active', '13 Invariant Rise', 'settled', now() - interval '11 minutes')
+  RETURNING id INTO v_blank;
+  INSERT INTO public.builder_stock_items(organisation_id, lifecycle_status, address_line, image_work_stage)
+  VALUES (v_org, 'archived', '15 Invariant Rise', 'eligibility') RETURNING id INTO v_strand;
+  PERFORM public.builder_stock_image_watchdog();
+  IF (SELECT image_work_stage FROM public.builder_stock_items WHERE id = v_blank) <> 'source' THEN
+    RAISE EXCEPTION 'a served blank stayed settled past the watchdog';
+  END IF;
+  IF (SELECT image_work_stage FROM public.builder_stock_items WHERE id = v_strand) <> 'settled' THEN
+    RAISE EXCEPTION 'an archived strand stayed in the queue';
+  END IF;
+
+  -- 100%% coverage publishes; below it never did. The staged property earns
+  -- its photograph, settles, and the cutover promotes it.
+  INSERT INTO public.builder_stock_item_images(organisation_id, stock_item_id, upload_id, source_stage,
+    source_reference, verification_status, processing_status, storage_path)
+  VALUES (v_org, v_item, v_upload, 'uploaded_document', 'proof-staged-src', 'source_supplied', 'ready',
+    'proof/staged.jpg') RETURNING id INTO v_src;
+  UPDATE public.builder_stock_items
+     SET primary_image_id = v_src, image_work_stage = 'settled'
+   WHERE id = v_item;
+  SELECT * INTO v_ready FROM public.builder_stock_publication_readiness(v_upload);
+  IF NOT v_ready.ready THEN
+    RAISE EXCEPTION 'full coverage did not read ready (missing %, failed %)', v_ready.missing_primary, v_ready.failed_items;
+  END IF;
+  v_res := public.publish_builder_stock_upload(v_upload);
+  IF NOT (v_res->>'published')::boolean THEN
+    RAISE EXCEPTION 'a fully covered stock list did not publish (%)', v_res;
+  END IF;
+  IF (SELECT lifecycle_status FROM public.builder_stock_items WHERE id = v_item) <> 'active'
+     OR NOT public.builder_stock_item_client_visible(v_item) THEN
+    RAISE EXCEPTION 'the published property is not a client-visible builder photograph';
+  END IF;
+  IF (SELECT publication_blocked_reason FROM public.builder_stock_uploads WHERE id = v_upload) IS NOT NULL THEN
+    RAISE EXCEPTION 'publication left its refusal standing';
+  END IF;
+END $proof$;`);
+
 psql(['-d', 'postgres', '-c', `DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`]);
 
 if (failures.length) {

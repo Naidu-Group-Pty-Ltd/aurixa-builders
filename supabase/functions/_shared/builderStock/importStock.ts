@@ -35,6 +35,7 @@ import {
 import { STOCK_IMAGE_BUCKET } from './fileTypes.pure.ts';
 import type { RowLinkDiscovery } from './suppliedEvidence.pure.ts';
 import type { ExtractedMedia } from './extract.ts';
+import { writeUploadSourceManifest } from './sourceAssetManifest.ts';
 import {
   attributeDocumentMedia, settleContainerMediaRoles, settleRowAssetRoles,
   type AnchoredAssets, type SourceImageAsset,
@@ -1084,6 +1085,55 @@ export async function importStockRecords(
       .eq('organisation_id', input.organisationId)
       .in('id', touched)
       .is('primary_image_id', null);
+  }
+
+  /*
+   * THE SOURCE-ASSET MANIFEST — enumerated once, here, while the import holds
+   * everything it needs. Every row branch (unsupported ones included, so they
+   * stop vanishing from evidence) lands as a durable row the workers consume
+   * and the readiness gate counts. A truncated media enumeration is a
+   * PROCESSING FAILURE that blocks publication, never a silent loss: the
+   * state says so and operations is told.
+   */
+  {
+    const manifest = await writeUploadSourceManifest(db, {
+      organisationId: input.organisationId, uploadId: input.uploadId,
+    });
+    const truncated = (input.media ?? []).some((entry) =>
+      (entry as { enumeration?: { truncated?: boolean } }).enumeration?.truncated === true);
+    const manifestState = manifest.error || truncated ? 'failed' : 'complete';
+    const { error: manifestStampError } = await db
+      .from('builder_stock_uploads')
+      .update({ source_manifest_state: manifestState })
+      .eq('id', input.uploadId)
+      .eq('organisation_id', input.organisationId);
+    if (manifestStampError) {
+      // A deployment mid-migration has no column yet; the manifest rows still
+      // stand and the stamp lands on the next full read.
+      console.warn('[builderStock] manifest state not stamped', {
+        phase: 'source_manifest', upload_id: input.uploadId,
+        detail: String(manifestStampError.message ?? manifestStampError).slice(0, 160),
+      });
+    }
+    if (manifestState === 'failed') {
+      outcome.failures.push({
+        label: 'stock list imagery',
+        reason: manifest.error
+          ? `the source's assets could not be fully enumerated (${manifest.error.slice(0, 120)})`
+          : 'the source carries more media than one read may keep, so enumeration is '
+            + 'recorded as failed rather than silently truncated',
+      });
+      try {
+        await db.rpc('record_portal_operational_event', {
+          _event_name: 'builder_stock_source_enumeration_failed',
+          _severity: 'high', _correlation_id: crypto.randomUUID(),
+          _request_id: null, _actor_type: 'system', _actor_id: null,
+          _portal: 'builder', _case_id: null, _matter_id: null, _firm_id: null,
+          _duration_ms: null, _success: false,
+          _metadata: { upload_id: input.uploadId, truncated, error: manifest.error ?? null },
+        });
+      } catch { /* telemetry never fails an import */ }
+    }
   }
 
   outcome.replacesUploadIds = [...supersededUploads];

@@ -292,6 +292,26 @@ export async function runStockImport(input: RunImportInput): Promise<RunImportRe
       + 'will show no photograph.');
   }
 
+  /*
+   * START THE IMAGE WORK NOW — the import is the moment work exists, and a
+   * six-property list must begin six-wide immediately instead of trickling
+   * through the cron at two workers a minute (measured 2026-09-15: ~25
+   * minutes for six properties). The kick re-arms the watchdog schedule and
+   * fans out signed settler invocations sized to the claimable backlog.
+   * BEST-EFFORT BY DESIGN: the every-minute tick reaches the same queue, so
+   * a deployment mid-migration or a pg_net hiccup costs latency, never work.
+   */
+  try {
+    const { error: kickError } = await input.supabase
+      .rpc('builder_stock_kick_image_work', { p_upload_id: input.upload.id });
+    if (kickError) {
+      console.warn('[builderStock] image work kick unavailable; cron will drive', {
+        phase: 'image_work_dispatch', upload_id: input.upload.id,
+        detail: String(kickError.message ?? kickError).slice(0, 160),
+      });
+    }
+  } catch { /* the cron tick is the guarantee */ }
+
   return {
     ok: true,
     summary: {

@@ -45,8 +45,8 @@ const BASELINE_VERSION = '00000000000000';
 const AGREEMENT_HASH = 'f5612fc2daef61ef645b43465005f411cd85979c8687cfb023f358c615e00af5';
 
 const phase = process.argv[2];
-if (!['verify', 'apply'].includes(phase || '')) {
-  console.error('usage: production-rollout.mjs <verify|apply>');
+if (!['verify', 'apply', 'recover'].includes(phase || '')) {
+  console.error('usage: production-rollout.mjs <verify|apply|recover>');
   process.exit(2);
 }
 if (!ACCESS_TOKEN) {
@@ -364,8 +364,139 @@ const { pending, ledgerColumns } = await preflight();
 const { vaultNames } = await statusSnapshot();
 
 if (phase === 'verify') {
+  await diagnoseImagePipelineRuntime();
   console.log('\nverify complete — nothing was changed.');
   process.exit(0);
+}
+
+if (phase === 'recover') {
+  await recoverHistoricalStockImages();
+  if (failures.length) {
+    console.error(`\n${failures.length} failure(s) — recovery is NOT complete.`);
+    process.exit(1);
+  }
+  console.log('\nrecover pass complete. Re-run this phase until "awaiting reprocessing" reads 0; each run is idempotent.');
+  process.exit(0);
+}
+
+/**
+ * THE ONE-TIME HISTORICAL RECOVERY, resumable and idempotent.
+ *
+ * Re-opens every served or staged Builder Stock property that violates the
+ * source-photograph invariant — blank primaries, external (web/Street View)
+ * primaries, terminal failures from the OLD pipeline — back into the source
+ * stage of the CORRECTED pipeline, from their original stored sources.
+ * Nothing is deleted, no selection or announcement is touched, no valid
+ * builder photograph is replaced. The invariant flag flips to universal as
+ * coverage is earned: published legacy uploads immediately (the gate is
+ * publication-time, so it is a documentation of the end state for them),
+ * unpublished legacy uploads only once their coverage is real.
+ */
+async function recoverHistoricalStockImages() {
+  const sql = (text) => q('recover', text);
+  const sourcePrimary = `EXISTS (
+    SELECT 1 FROM public.builder_stock_item_images im
+     WHERE im.id = i.primary_image_id
+       AND im.source_stage = 'uploaded_document'
+       AND im.verification_status = 'source_supplied'
+       AND im.processing_status = 'ready')`;
+
+  const before = await sql(`SELECT
+      count(*) FILTER (WHERE NOT ${sourcePrimary}) AS violating,
+      count(*) FILTER (WHERE i.primary_image_id IS NULL) AS blank,
+      count(*) FILTER (WHERE i.image_work_stage = 'failed') AS failed,
+      count(*) FILTER (WHERE i.primary_image_id IS NOT NULL AND NOT ${sourcePrimary}) AS external_primary
+    FROM public.builder_stock_items i
+    WHERE i.lifecycle_status IN ('active','staged')`);
+  note(`before: ${JSON.stringify(before[0])} (served/staged items vs the invariant)`);
+
+  const reopened = await sql(`WITH reopened AS (
+      UPDATE public.builder_stock_items i
+         SET image_work_stage = 'source',
+             enrichment_status = 'pending',
+             image_work_failures = 0,
+             image_work_claim_until = NULL,
+             image_work_next_attempt_at = now(),
+             image_work_updated_at = now()
+       WHERE i.lifecycle_status IN ('active','staged')
+         AND i.upload_id IS NOT NULL
+         AND i.image_work_stage <> 'source'
+         AND NOT ${sourcePrimary}
+       RETURNING i.id)
+    SELECT count(*) AS reopened FROM reopened`);
+  note(`re-opened into the corrected source stage: ${reopened[0]?.reopened ?? 0}`);
+
+  const kicked = await sql(`SELECT public.builder_stock_kick_image_work(NULL) AS dispatched`);
+  note(`workers dispatched now: ${kicked[0]?.dispatched ?? 0} (the every-minute tick continues regardless)`);
+
+  const flippedPublished = await sql(`WITH f AS (
+      UPDATE public.builder_stock_uploads u
+         SET image_invariant = true
+       WHERE u.image_invariant = false AND u.published_at IS NOT NULL
+       RETURNING u.id)
+    SELECT count(*) AS n FROM f`);
+  note(`legacy PUBLISHED uploads moved onto the universal invariant: ${flippedPublished[0]?.n ?? 0}`);
+
+  const flippedCovered = await sql(`WITH covered AS (
+      SELECT u.id FROM public.builder_stock_uploads u
+       WHERE u.image_invariant = false AND u.published_at IS NULL AND u.deleted_at IS NULL
+         AND EXISTS (SELECT 1 FROM public.builder_stock_items i
+                      WHERE (i.upload_id = u.id AND i.lifecycle_status = 'staged')
+                         OR i.pending_upload_id = u.id)
+         AND NOT EXISTS (
+           SELECT 1 FROM public.builder_stock_items i
+            WHERE ((i.upload_id = u.id AND i.lifecycle_status = 'staged') OR i.pending_upload_id = u.id)
+              AND (i.image_work_stage NOT IN ('settled') OR NOT ${sourcePrimary}))),
+    f AS (UPDATE public.builder_stock_uploads u SET image_invariant = true
+           WHERE u.id IN (SELECT id FROM covered) RETURNING u.id)
+    SELECT count(*) AS n FROM f`);
+  note(`legacy unpublished uploads whose coverage is now real, flipped: ${flippedCovered[0]?.n ?? 0}`);
+
+  const remaining = await sql(`SELECT
+      (SELECT count(*) FROM public.builder_stock_uploads u
+        WHERE u.image_invariant = false AND u.deleted_at IS NULL) AS uploads_awaiting,
+      (SELECT count(*) FROM public.builder_stock_items i
+        WHERE i.lifecycle_status IN ('active','staged') AND NOT ${sourcePrimary}) AS items_awaiting`);
+  note(`awaiting reprocessing: ${JSON.stringify(remaining[0])} — the workers converge these; re-run 'recover' to flip stragglers and re-report`);
+}
+
+/**
+ * The image pipeline's external dependencies, PROVEN rather than inferred.
+ *
+ * The Builder Stock source path depends on Edge Function secrets the deploy
+ * workflow does not ship (they are project-level, set by hand): the off-process
+ * PDF election worker, the sheet-links recovery webhook, and the two paid
+ * imagery providers. Absence from the repository proves nothing about the
+ * runtime — this reads the live secret NAMES via the Management API (never a
+ * value) and, where a URL-shaped dependency is present, probes reachability
+ * with a credential-free request so the report can say configured-and-
+ * reachable / configured-but-failing / missing.
+ */
+async function diagnoseImagePipelineRuntime() {
+  console.log('\n— image pipeline runtime dependencies —');
+  const res = await fetch(`https://api.supabase.com/v1/projects/${PROJECT_REF}/secrets`, {
+    headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+  });
+  if (!res.ok) {
+    fail(`could not list function secret names (HTTP ${res.status}) — diagnosis incomplete`);
+    return;
+  }
+  const names = new Set(((await res.json()) ?? []).map((s) => s.name));
+  const wanted = [
+    'BUILDER_STOCK_PDF_WORKER_URL',
+    'BUILDER_STOCK_PDF_WORKER_TOKEN',
+    'MAKE_SHEET_LINKS_WEBHOOK_URL',
+    'GOOGLE_MAPS_API_KEY',
+    'PERPLEXITY_API_KEY',
+  ];
+  for (const name of wanted) {
+    note(`secret ${name}: ${names.has(name) ? 'PRESENT' : 'MISSING'}`);
+  }
+  if (names.has('BUILDER_STOCK_PDF_WORKER_URL') && names.has('BUILDER_STOCK_PDF_WORKER_TOKEN')) {
+    note('pdf worker: configured — behaviour must be judged from provenance/operational events, not from here (the URL value is a secret and is not read).');
+  } else {
+    note('pdf worker: NOT fully configured — with RUNTIME_VERSION=3 every linked-brochure election answers no_capacity, which the pre-invariant runtime retired as "unreachable" after 6 attempts. The corrected worker surfaces this as a named, non-terminal failure.');
+  }
 }
 
 if (!pending.length) {

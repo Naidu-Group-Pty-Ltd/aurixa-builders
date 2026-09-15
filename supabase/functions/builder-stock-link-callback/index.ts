@@ -369,6 +369,12 @@ async function applyRecoveredLinks(
       image_work_updated_at: new Date().toISOString(),
     }).in('id', reopen).select('id');
     reopened = ((data ?? []) as unknown[]).length;
+    // Recovered links are new work THIS MINUTE: fan the workers out now
+    // rather than waiting a cron lap. Best-effort — the tick is the
+    // guarantee.
+    try {
+      await supabase.rpc('builder_stock_kick_image_work', { p_upload_id: null });
+    } catch { /* the cron tick drives it */ }
   }
 
   return { linksApplied, reopened, unmatched };

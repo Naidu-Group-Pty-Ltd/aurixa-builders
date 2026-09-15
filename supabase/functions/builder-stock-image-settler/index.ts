@@ -77,7 +77,7 @@ import {
 } from '../_shared/builderStock/settleSourceImages.ts';
 import { newRepairBudget } from '../_shared/builderStock/settleImageSanitization.ts';
 import {
-  settleFallbackImages, MAX_FALLBACK_ITEMS_PER_TICK,
+  MAX_FALLBACK_ITEMS_PER_TICK,
 } from '../_shared/builderStock/settleFallbackImages.ts';
 import { previewSanitization } from '../_shared/builderStock/previewSanitization.ts';
 import { RECOVERY_DEADLINE_MS } from '../_shared/builderStock/packageImages.ts';
@@ -569,6 +569,9 @@ Deno.serve(async (req: Request) => {
       error: settlement.error ?? null,
       retryAfterSeconds: 0,
       progressed: settlement.progressed,
+      // A REAL failure buys bounded backoff and feeds the watchdog's terminal
+      // ceiling; everything else completes exactly as before.
+      failed: settlement.failed === true,
     });
     if (!completion.available) {
       console.error('[builder-stock-image-settler] work was claimed but could not be recorded', {
@@ -970,37 +973,15 @@ Deno.serve(async (req: Request) => {
        * to have the real picture. That is #2305's rule, kept rather than
        * traded for speed.
        */
-      const fallback = await settleFallbackImages(supabase, {
-        limit: MAX_FALLBACK_ITEMS_PER_TICK,
-        deadlineAt,
-      });
-
-      if (fallback.problems.length) {
-        console.warn('[builder-stock-image-settler] fallback problems', {
-          phase: 'fallback_enrichment', problems: fallback.problems.slice(0, 3),
-        });
-      }
-
       /*
-       * An unreadable queue is not an empty one. Answering `complete` on a
-       * failed read would unschedule the cron on a database fault — the same
-       * shape as the missing-column bug above, and just as silent.
+       * THE PAID LADDER IS RETIRED — 2026-09-15 invariant. This slot used to
+       * run `settleFallbackImages` (web search, then Street View) for
+       * properties whose builder sources had finished without a picture.
+       * Builder Stock imagery is authoritative now: such a property is OWED
+       * WORK or it is `failed` where a person is paged, and nothing external
+       * is bought in either case. The module and its stored rows remain for
+       * historical reads; no path spends through it any more.
        */
-      if (fallback.unavailable) {
-        console.error('[builder-stock-image-settler] fallback queue unreadable', {
-          phase: 'fallback_enrichment',
-        });
-        return json({
-          success: false, error: 'fallback_queue_unreadable', deploymentReady: true,
-        }, 503);
-      }
-
-      console.log('[builder-stock-image-settler] fallback tick', {
-        phase: 'fallback_enrichment',
-        attempted: fallback.attempted,
-        resolved: fallback.resolved,
-        remaining: fallback.remaining,
-      });
 
       /*
        * THE WEB-IMAGE PASS RUNS ON THIS EXIT TOO. It was placed only after
@@ -1026,18 +1007,18 @@ Deno.serve(async (req: Request) => {
       });
 
       /*
-       * THE COMPLETION RULE. Quiet requires BOTH queues empty. A settlement
-       * queue at zero with fallback work outstanding keeps the cron alive.
+       * THE COMPLETION RULE. With the paid ladder retired, an empty
+       * settlement queue on this exit IS quiet: per-item work is the tick's
+       * own count, and anything terminally `failed` is a person's queue, not
+       * this one's. The SQL tick's keep-alive independently holds the cron
+       * open while a blocked upload exists.
        */
       return json({
         success: true,
         phase: 'fallback_enrichment',
         settled: 0,
         remaining: 0,
-        fallbackAttempted: fallback.attempted,
-        fallbackResolved: fallback.resolved,
-        fallbackRemaining: fallback.remaining,
-        complete: fallback.remaining === 0,
+        complete: true,
         deploymentReady: true, eligibilityTarget, sanitizationTarget,
       });
     }
