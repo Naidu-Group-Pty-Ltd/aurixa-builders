@@ -239,11 +239,42 @@ export async function settleClaimedItem(
       const sanitization = await settleSanitization(db, item.organisation_id, {
         deadlineAt: input.deadlineAt, stockItemId: item.id, budget: input.repairBudget,
       });
-      settlement.progressed = sanitization.repaired > 0
-        || sanitization.cleared > 0 || sanitization.scanned > 0;
+      /*
+       * An ANSWER is a repair, a clearance or a refusal — the three outcomes
+       * that settle an image. A scan alone is not one: it re-reads the row and
+       * decides nothing.
+       */
+      const answered = sanitization.repaired + sanitization.cleared + sanitization.refused;
+      settlement.progressed = answered > 0;
       settlement.result = `sanitization: repaired ${sanitization.repaired}, `
-        + `cleared ${sanitization.cleared}`;
-      settlement.nextStage = sanitization.incomplete ? 'sanitization' : NEXT_STAGE.sanitization;
+        + `cleared ${sanitization.cleared}, refused ${sanitization.refused}`;
+      /*
+       * A SWEEP THAT ANSWERED NO IMAGE DOES NOT SPIN HERE — the stall this
+       * fixes, measured live 2026-09-15.
+       *
+       * The overlay-inpaint worker is an OPTIONAL dependency
+       * (`BUILDER_STOCK_IMAGE_WORKER_URL`), and a deployment without it cannot
+       * repair an annotated tile: `sanitizeSourceImage` returns operationally,
+       * `settleImageSanitization` records no answer, and the image stays
+       * `outstanding` for ever — so `incomplete` was true every tick, the item
+       * looped `nextStage=sanitization` and never reached `fallback`, where its
+       * OTHER builder sources are judged. Four live properties spun that way
+       * (`progressed=true` each tick, primary never set) while a row-linked
+       * brochure whose facade IS recoverable sat one stage on.
+       *
+       * So `incomplete` keeps the item on `sanitization` only while the sweep
+       * is actually ANSWERING images (more to do, and doing it); a sweep that
+       * answered none advances to `fallback`. Fallback routes a property whose
+       * builder facade is still recoverable back to `source` (where it is
+       * elected and becomes the primary), and a genuinely exhausted one to the
+       * terminal `failed` — a person paged, never a blank published card, never
+       * a silent spin. A `SANITIZATION_VERSION` bump re-opens the deferred
+       * images once a worker is configured. No optional worker is a
+       * degradation, not a deadlock.
+       */
+      settlement.nextStage = (sanitization.incomplete && answered > 0)
+        ? 'sanitization'
+        : NEXT_STAGE.sanitization;
     } else if (stage === 'fallback') {
       /*
        * THE LAST RUNG IS NO LONGER A LADDER — the invariant of 2026-09-15.

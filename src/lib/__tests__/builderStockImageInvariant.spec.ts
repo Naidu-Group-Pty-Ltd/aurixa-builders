@@ -206,6 +206,21 @@ describe('publication requires 100% builder-source photo coverage', () => {
     expect(code).toContain('const MAX_MEDIA = 150;');
     expect(code).toContain('remains LOUD and publication-blocking');
   });
+
+  it('sanitization advances instead of spinning when the optional worker answers nothing', () => {
+    const code = read(`${SHARED}/settleItemImages.ts`);
+    // A scan alone is no longer "progress", and an answerless sweep advances to
+    // fallback rather than looping on sanitization for ever.
+    expect(code).toContain(
+      'const answered = sanitization.repaired + sanitization.cleared + sanitization.refused');
+    expect(code).toContain('settlement.progressed = answered > 0');
+    expect(code).toContain('(sanitization.incomplete && answered > 0)');
+    // The pre-fix rule — any scan counting as progress, incomplete always
+    // looping — must be gone.
+    expect(code).not.toContain('|| sanitization.scanned > 0');
+    expect(code).not.toContain(
+      'settlement.nextStage = sanitization.incomplete ? \'sanitization\'');
+  });
 });
 
 describe('the versions that reopen the wrongly-retired branches', () => {
