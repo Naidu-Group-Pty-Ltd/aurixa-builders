@@ -30,8 +30,11 @@ import {
   type SourceImageAsset,
 } from './sourceAssets.pure.ts';
 import { eligibilityDetailFor } from './assessSourceImage.ts';
+import { isMarketplaceEligible } from './marketplaceEligibility.pure.ts';
 import { roleDetail } from './sourceImageRole.pure.ts';
-import { sanitizationCarryForward } from './sanitizedDerivative.pure.ts';
+import {
+  sanitizationCarryForward, servableClearanceFor, servableDerivativeFor,
+} from './sanitizedDerivative.pure.ts';
 import { sha256Hex } from './rasterPng.ts';
 import {
   classifyPrimaryImageStanding, type DisplayableImage, type PrimaryImageStanding,
@@ -690,9 +693,25 @@ export async function hasReadySourceImage(
     .eq('source_stage', 'uploaded_document')
     .eq('processing_status', 'ready')
     .limit(20);
-  return (data ?? []).some((row: any) =>
-    (row.storage_path || row.external_url)
-    && Number((row.source_detail ?? {}).provenance_version ?? 0) >= minimumProvenanceVersion);
+  /*
+   * READY IS NOT ENOUGH TO END A SEARCH — 2026-09-15, measured in production
+   * within the hour it shipped. Six rows' quick image links stored a shared
+   * 302 KB plan-like PNG; the eligibility classifier refused it
+   * (`overlay_uncertain`), so it can never be the card — and this predicate,
+   * reading only `ready`, made the source stage SKIP the brochures that
+   * carry the real facade photographs. A stored image ends the search only
+   * when the display gate would actually serve it: measured eligible, or
+   * carrying a servable derivative or clearance. Anything else keeps the
+   * property's own package worth reading.
+   */
+  return (data ?? []).some((row: any) => {
+    if (!(row.storage_path || row.external_url)) return false;
+    const detail = (row.source_detail ?? {}) as Record<string, unknown>;
+    if (Number(detail.provenance_version ?? 0) < minimumProvenanceVersion) return false;
+    return isMarketplaceEligible(detail)
+      || !!servableDerivativeFor(detail)
+      || !!servableClearanceFor(detail);
+  });
 }
 
 /**

@@ -47,6 +47,10 @@ import {
   settleImageSanitization, type RepairBudget,
 } from './settleImageSanitization.ts';
 import { chooseAndStorePrimaryImage } from './primaryImage.ts';
+import { isMarketplaceEligible } from './marketplaceEligibility.pure.ts';
+import {
+  servableClearanceFor, servableDerivativeFor,
+} from './sanitizedDerivative.pure.ts';
 import { repairStoredIdentity } from './storedIdentityRepair.pure.ts';
 import { reverifyStoredWebImages } from './reverifyWebImages.ts';
 import {
@@ -505,16 +509,32 @@ async function readItemSuppliedEvidence(
      * this read, a property whose brochure just yielded its image reads
      * `pending` and is routed back to `source` on every lap, for ever.
      */
+    /*
+     * ACCEPTED MEANS DISPLAYABLE — 2026-09-15, measured live within the hour
+     * the invariant shipped. A ready row the classifier refused
+     * (`overlay_uncertain` on a shared plan-like PNG) read as "the builder's
+     * picture is on this card" and settled six properties with NULL
+     * primaries while their brochures went unread. 'found' now means what
+     * the card can actually serve: measured eligible, or a servable
+     * derivative or clearance.
+     */
     let builderImageAccepted = false;
     try {
       const { data: supplied, error: suppliedError } = await db
         .from('builder_stock_item_images')
-        .select('id')
+        .select('id, storage_path, external_url, source_detail')
         .eq('stock_item_id', itemId)
         .eq('source_stage', 'uploaded_document')
         .eq('processing_status', 'ready')
-        .limit(1);
-      builderImageAccepted = !suppliedError && Array.isArray(supplied) && supplied.length > 0;
+        .limit(20);
+      builderImageAccepted = !suppliedError && Array.isArray(supplied)
+        && supplied.some((row: any) => {
+          if (!(row.storage_path || row.external_url)) return false;
+          const detail = (row.source_detail ?? {}) as Record<string, unknown>;
+          return isMarketplaceEligible(detail)
+            || !!servableDerivativeFor(detail)
+            || !!servableClearanceFor(detail);
+        });
     } catch {
       builderImageAccepted = false;
     }
