@@ -174,6 +174,39 @@ await cleanup('start');
 
 try { // every section below; a crash must still reach the cleanup
 
+// --- 0. The deployed frontend is main's ------------------------------------
+// The Vercel project settings are not readable from here; what IS provable
+// is which code the production domain serves. `announced_at` and the join
+// request card exist only in the remediation's bundle, so finding them in
+// the served assets proves production tracks main past the merge.
+console.log('\n0. Deployed frontend');
+try {
+  const page = await (await fetch(`${ORIGIN}/`)).text();
+  // Entry assets from the HTML, then lazy chunks named inside the entry —
+  // the strings this looks for live in code-split routes.
+  const seen = new Set([...page.matchAll(/\/assets\/[A-Za-z0-9._-]+\.js/g)].map((m) => m[0]));
+  let bundle = '';
+  const queue = [...seen];
+  while (queue.length && seen.size <= 48) {
+    const path = queue.shift();
+    let source = '';
+    try { source = await (await fetch(`${ORIGIN}${path}`)).text(); } catch { continue; }
+    bundle += source;
+    for (const match of source.matchAll(/assets\/[A-Za-z0-9._-]+\.js/g)) {
+      const found = `/${match[0]}`;
+      if (!seen.has(found) && seen.size < 48) { seen.add(found); queue.push(found); }
+    }
+    if (bundle.includes('announced_at') && bundle.includes('Requests to join')) break;
+  }
+  record('0: the production domain serves the remediation bundle (tracks main)',
+    bundle.includes('announced_at') && bundle.includes('Requests to join'),
+    `assetsScanned=${seen.size} announced_at=${bundle.includes('announced_at')} joinCard=${bundle.includes('Requests to join')}`,
+    { required: false });
+} catch (error) {
+  record('0: the production domain serves the remediation bundle (tracks main)', false,
+    String(error?.message ?? error).slice(0, 120), { required: false });
+}
+
 // --- A. Existing-user governance -------------------------------------------
 console.log('\nA. Existing-user governance journey');
 const alpha = await seedGovernedUser('alpha');
