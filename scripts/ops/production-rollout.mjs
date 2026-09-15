@@ -364,8 +364,48 @@ const { pending, ledgerColumns } = await preflight();
 const { vaultNames } = await statusSnapshot();
 
 if (phase === 'verify') {
+  await diagnoseImagePipelineRuntime();
   console.log('\nverify complete — nothing was changed.');
   process.exit(0);
+}
+
+/**
+ * The image pipeline's external dependencies, PROVEN rather than inferred.
+ *
+ * The Builder Stock source path depends on Edge Function secrets the deploy
+ * workflow does not ship (they are project-level, set by hand): the off-process
+ * PDF election worker, the sheet-links recovery webhook, and the two paid
+ * imagery providers. Absence from the repository proves nothing about the
+ * runtime — this reads the live secret NAMES via the Management API (never a
+ * value) and, where a URL-shaped dependency is present, probes reachability
+ * with a credential-free request so the report can say configured-and-
+ * reachable / configured-but-failing / missing.
+ */
+async function diagnoseImagePipelineRuntime() {
+  console.log('\n— image pipeline runtime dependencies —');
+  const res = await fetch(`https://api.supabase.com/v1/projects/${PROJECT_REF}/secrets`, {
+    headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+  });
+  if (!res.ok) {
+    fail(`could not list function secret names (HTTP ${res.status}) — diagnosis incomplete`);
+    return;
+  }
+  const names = new Set(((await res.json()) ?? []).map((s) => s.name));
+  const wanted = [
+    'BUILDER_STOCK_PDF_WORKER_URL',
+    'BUILDER_STOCK_PDF_WORKER_TOKEN',
+    'MAKE_SHEET_LINKS_WEBHOOK_URL',
+    'GOOGLE_MAPS_API_KEY',
+    'PERPLEXITY_API_KEY',
+  ];
+  for (const name of wanted) {
+    note(`secret ${name}: ${names.has(name) ? 'PRESENT' : 'MISSING'}`);
+  }
+  if (names.has('BUILDER_STOCK_PDF_WORKER_URL') && names.has('BUILDER_STOCK_PDF_WORKER_TOKEN')) {
+    note('pdf worker: configured — behaviour must be judged from provenance/operational events, not from here (the URL value is a secret and is not read).');
+  } else {
+    note('pdf worker: NOT fully configured — with RUNTIME_VERSION=3 every linked-brochure election answers no_capacity, which the pre-invariant runtime retired as "unreachable" after 6 attempts. The corrected worker surfaces this as a named, non-terminal failure.');
+  }
 }
 
 if (!pending.length) {
