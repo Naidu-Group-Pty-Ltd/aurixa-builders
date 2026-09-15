@@ -111,23 +111,39 @@ export interface StockExtraction {
 const MAX_ROWS = 5000;
 const MAX_TEXT_CHARS = 120_000;
 /**
- * The media COUNT ceiling is a backstop, not a working limit.
+ * EMBEDDED-MEDIA ENUMERATION IS COMPLETE; the safeguards are BYTES.
  *
- * Memory was never the thing this count protected: embedded photographs are
- * stored in their container already compressed (JPEG/PNG deflate to roughly
- * themselves), so the media a ≤25 MB upload can carry is ≈25 MB of bytes
- * whatever the COUNT says — the per-file cap below and the upload cap bound
- * the memory, and they did before this changed. What the old 40 actually did,
- * measured on the requirement it broke: a fifty-property list whose document
- * embeds one photograph per row hits 40 and the last ten properties' own
- * photographs are refused unread — then, under the invariant, the truncation
- * (correctly, loudly) blocks the whole upload's publication. So the ceiling
- * now sits far above any container the byte caps admit, and exists only so a
- * pathological container (thousands of tiny parts) still terminates. Hitting
- * it remains LOUD and publication-blocking, exactly as before.
+ * There is no media COUNT ceiling any more. Every count this had — 40, then
+ * 150 — was arbitrary against the requirement it kept breaking: a list whose
+ * document embeds one photograph per row hits the number and the properties
+ * past it have their own photographs refused unread, which the invariant then
+ * (correctly, loudly) turns into a blocked publication. A count also never
+ * guarded the resource it claimed to: photographs sit in their container
+ * already compressed, so the bytes a ≤25 MB upload can decompress to are
+ * bounded by the byte caps below whatever the count says.
+ *
+ * THE SUPPORTED SIZE CONTRACT, stated once, here, where it is enforced:
+ *   • a stock-list FILE — uploaded or linked — is admitted to 25 MB
+ *     (`MAX_STOCK_FILE_BYTES` / `MAX_SOURCE_BYTES`); larger is refused at the
+ *     door with the limit named, never queued and never silent;
+ *   • a linked brochure PDF is read and its cover elected IN-PROCESS to that
+ *     same 25 MB; above it the document is UNSUPPORTED — the refusal names
+ *     the size, and no optional worker extends the limit;
+ *   • one embedded image may decompress to `MAX_MEDIA_BYTES` (8 MB); larger
+ *     parts are skipped and counted, which flags the enumeration truncated;
+ *   • one container's media may decompress to `MAX_MEDIA_TOTAL_BYTES` in
+ *     total — 40 MB, above anything a legitimate 25 MB container can hold
+ *     (its images are stored compressed), so the only thing that can reach
+ *     it is a decompression bomb, and hitting it is the same LOUD,
+ *     publication-blocking truncation it always was.
+ *
+ * Enumeration is a single pass over a ≤25 MB container and completes within
+ * one invocation; what takes real time — storing and judging each image —
+ * already resumes across invocations through the settlement sweeps' budgets
+ * and idempotent upserts, so a larger count changes duration, never outcome.
  */
-const MAX_MEDIA = 150;
 const MAX_MEDIA_BYTES = 8 * 1024 * 1024;
+const MAX_MEDIA_TOTAL_BYTES = 40 * 1024 * 1024;
 
 export function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
@@ -228,12 +244,16 @@ async function readZipMedia(
 
   let skipped = 0;
   let capped = false;
+  let totalBytes = 0;
   for (const name of names) {
-    if (media.length >= MAX_MEDIA) { capped = true; break; }
     const contentType = mediaContentType(name);
     if (!contentType) { skipped += 1; continue; }
     const content: Uint8Array = await zip.files[name].async('uint8array');
     if (!content.length || content.length > MAX_MEDIA_BYTES) { skipped += 1; continue; }
+    // The bomb guard, not a working limit: a legitimate container cannot
+    // reach it (see the contract on `MAX_MEDIA_TOTAL_BYTES`).
+    if (totalBytes + content.length > MAX_MEDIA_TOTAL_BYTES) { capped = true; break; }
+    totalBytes += content.length;
     media.push({ name, bytes: content, contentType, anchor: anchors?.get(name) ?? null });
   }
 
@@ -623,9 +643,13 @@ export async function extractStockFile(
       result.pageOrderAuthoritative = found.pageOrderAuthoritative;
       let pdfSkipped = 0;
       let pdfCapped = false;
+      let pdfTotalBytes = 0;
       for (const asset of found.assets) {
-        if (result.media.length >= MAX_MEDIA) { pdfCapped = true; break; }
         if (asset.bytes.length > MAX_MEDIA_BYTES) { pdfSkipped += 1; continue; }
+        // Same bomb guard as the zip containers; a count would refuse real
+        // pages, bytes only ever refuse what a 25 MB file cannot honestly hold.
+        if (pdfTotalBytes + asset.bytes.length > MAX_MEDIA_TOTAL_BYTES) { pdfCapped = true; break; }
+        pdfTotalBytes += asset.bytes.length;
         /**
          * THE OBJECT NUMBER IS PART OF THE NAME, and it has to be.
          *

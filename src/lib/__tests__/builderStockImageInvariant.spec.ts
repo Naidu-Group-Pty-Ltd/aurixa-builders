@@ -201,10 +201,21 @@ describe('publication requires 100% builder-source photo coverage', () => {
     expect(imports).toContain('builder_stock_source_enumeration_failed');
   });
 
-  it('the media ceiling sits above any container the byte caps admit, and stays loud', () => {
+  it('embedded-media enumeration has NO count ceiling; the safeguards are bytes, and loud', () => {
     const code = read(`${SHARED}/extract.ts`);
-    expect(code).toContain('const MAX_MEDIA = 150;');
-    expect(code).toContain('remains LOUD and publication-blocking');
+    // The arbitrary counts (40, then 150) are gone for good: a count refuses
+    // real properties' photographs, bytes only refuse what a 25 MB container
+    // cannot honestly hold. scripts/ops/stock-extraction-proof.ts proves 160
+    // row-attributed images enumerate completely, and that the byte budget
+    // still truncates a decompression bomb loudly.
+    expect(code).not.toMatch(/const MAX_MEDIA = \d+;/);
+    expect(code).not.toContain('>= MAX_MEDIA)');
+    expect(code).toContain('const MAX_MEDIA_TOTAL_BYTES = 40 * 1024 * 1024;');
+    expect(code).toContain('const MAX_MEDIA_BYTES = 8 * 1024 * 1024;');
+    expect(code).toContain('totalBytes + content.length > MAX_MEDIA_TOTAL_BYTES) { capped = true;');
+    expect(code).toContain('pdfTotalBytes + asset.bytes.length > MAX_MEDIA_TOTAL_BYTES) { pdfCapped = true;');
+    // The size contract is stated where it is enforced.
+    expect(code).toContain('THE SUPPORTED SIZE CONTRACT');
   });
 
   it('sanitization advances instead of spinning when the optional worker answers nothing', () => {
