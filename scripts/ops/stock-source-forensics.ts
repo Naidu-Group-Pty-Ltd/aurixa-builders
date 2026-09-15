@@ -424,7 +424,7 @@ for (const row of uploadRows) {
 console.log(`shared-link counts computed over ${uploadRows.length} row(s) of ${uploadIds.length} upload(s)\n`);
 
 const manifest = await sql('manifest rows', `
-  SELECT stock_item_id, kind, reference, state, detail
+  SELECT stock_item_id, kind, reference, state, state_detail
     FROM public.builder_stock_source_assets
    WHERE stock_item_id IN (${items.map((item) => `'${item.id}'`).join(',')})
    ORDER BY stock_item_id, kind, reference`);
@@ -573,7 +573,7 @@ for (const item of items) {
     console.log('\n  manifest (builder_stock_source_assets):');
     for (const row of rows) {
       console.log(`    ${row.kind} ${row.state}: ${String(row.reference).slice(0, 90)}`
-        + (row.detail ? ` — ${String(row.detail).slice(0, 120)}` : ''));
+        + (row.state_detail ? ` — ${String(row.state_detail).slice(0, 120)}` : ''));
     }
   }
 }
