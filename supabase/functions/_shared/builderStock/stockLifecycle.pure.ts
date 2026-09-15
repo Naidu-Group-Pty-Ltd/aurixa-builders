@@ -56,23 +56,26 @@ export function isProcessed(lifecycle: unknown): boolean {
 }
 
 /**
- * Where a newly IMPORTED property starts.
+ * Where a newly IMPORTED property starts: STAGED, always.
  *
- * STAGED ONLY WHERE THERE IS SOMETHING TO PROTECT. An organisation with no
- * published stock has no working Marketplace to blank, and staging its first
- * upload would leave it looking at an empty page until the imagery finished —
- * turning a fix for the replacement case into a regression for the first-run
- * case. So the very first list publishes as it always did, and every list after
- * it stages.
+ * This used to publish an organisation's FIRST list immediately — "an empty
+ * page is worse than a slow one" — which meant the very upload with the least
+ * proven imagery was the only one that skipped the readiness gate, and the
+ * client-visibility predicate (defence-in-depth, never the mechanism) was all
+ * that stood between a first import and a blank Marketplace card. One
+ * publication model for every upload: rows import staged, the settler asks
+ * `publish_builder_stock_upload` as their photographs settle, and the whole
+ * list goes live in one cutover the moment every property carries its
+ * builder-source photograph. The builder is not looking at an empty page in
+ * the meantime — the portal's progress banner reads the same per-upload
+ * arithmetic the gate does ("Processing property photos — X of Y ready").
  *
  * This decides the INSERT only. A row the import MATCHED is updated in place
  * and keeps whatever lifecycle it already had, which is what lets #2347's
  * unchanged properties go on serving their correct imagery throughout.
  */
-export function lifecycleForNewProperty(
-  input: { organisationHasPublishedStock: boolean },
-): StockLifecycle {
-  return input.organisationHasPublishedStock ? 'staged' : 'active';
+export function lifecycleForNewProperty(): StockLifecycle {
+  return 'staged';
 }
 
 /**
@@ -89,9 +92,8 @@ export function lifecycleForNewProperty(
  *               its correct imagery throughout the replacement.
  *   `staged`    stays invisible. It publishes when its upload is ready and
  *               never because it was mentioned again.
- *   `archived`  is revived — to `staged` where there is a Marketplace to
- *               protect, and to `active` where there is not, exactly as a
- *               brand-new property would be.
+ *   `archived`  is revived — to `staged`, exactly as a brand-new property
+ *               would be, and publishes with its upload's cutover.
  */
 export function lifecycleForMatchedProperty(
   current: unknown,

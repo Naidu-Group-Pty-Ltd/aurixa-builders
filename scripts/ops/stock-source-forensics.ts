@@ -31,7 +31,7 @@
  * The access token is read from the environment and never printed.
  */
 import {
-  DRIVE_FOLDER_MIME, type DriveEntry, driveFolderUrl,
+  DRIVE_FOLDER_MIME, type DriveEntry, driveDownloadUrl, driveFileId, driveFolderUrl,
   isGoogleDriveHost, isNonFacadeImageName, lotAndDesignFrom, namesThisProperty,
   normaliseDriveName, parseDriveFolderListing, streetAddressFrom,
 } from '../../supabase/functions/_shared/builderStock/drivePackage.pure.ts';
@@ -478,7 +478,11 @@ for (const item of items) {
     console.log(`    ${branch.url}`);
 
     // ---- inventory: what the target actually is ----
-    const asset = await forensicFetch(branch.url);
+    // A `/file/d/<id>/view` link answers the VIEWER page; the asset behind it
+    // is at the download address, exactly as the pipeline fetches it.
+    const inventoryFileId = driveFileId(branch.url);
+    const asset = await forensicFetch(
+      inventoryFileId ? driveDownloadUrl(inventoryFileId) : branch.url);
     const kind = assetKind(asset);
     const declared = asset.declaredLength !== null ? ` declared ${mb(asset.declaredLength)}` : '';
     console.log(`    fetched: HTTP ${asset.status}, ${mb(asset.bytes.length)}${declared}, sniffed ${kind}`

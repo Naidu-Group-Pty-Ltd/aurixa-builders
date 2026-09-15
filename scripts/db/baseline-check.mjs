@@ -578,6 +578,18 @@ BEGIN
     RAISE EXCEPTION 'the refusal left no reason on the upload';
   END IF;
 
+  -- The retired legacy flag reopens nothing. A settled blank under
+  -- image_invariant=false is EXACTLY the shape the pre-invariant branch
+  -- published ("no staged item still reading its source"); it must refuse.
+  UPDATE public.builder_stock_uploads SET image_invariant = false WHERE id = v_upload;
+  UPDATE public.builder_stock_items SET image_work_stage = 'settled' WHERE id = v_item;
+  SELECT * INTO v_ready FROM public.builder_stock_publication_readiness(v_upload);
+  IF v_ready.ready THEN
+    RAISE EXCEPTION 'image_invariant=false reopened the legacy publication branch';
+  END IF;
+  UPDATE public.builder_stock_uploads SET image_invariant = true WHERE id = v_upload;
+  UPDATE public.builder_stock_items SET image_work_stage = 'source' WHERE id = v_item;
+
   -- The claim carries a lease and NOTHING punitive; a failed completion buys
   -- bounded backoff and one counted failure.
   UPDATE public.builder_stock_items SET image_work_next_attempt_at = now() WHERE id = v_item;

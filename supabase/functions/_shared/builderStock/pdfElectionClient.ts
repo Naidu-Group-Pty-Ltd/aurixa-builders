@@ -48,12 +48,24 @@ function env(name: string): string {
 const unreachable = (detail: string): PackageOutcome => ({ status: 'unreachable', detail });
 
 /**
- * The bounded in-process fallback for a MISSING worker. Documents to this size
- * are measured electing in single-digit seconds in-process (Lot 709 Verve's
- * 7.2 MB brochure elected in 4.4 s); the per-isolate decode mutex and the
- * settler's one-document-at-a-time discipline bound the concurrency to one.
+ * The bounded in-process fallback for a MISSING worker: every document the
+ * ingest cap admits. `fetchStockSource` refuses anything over 25 MB before an
+ * election is ever asked for, so this bound and that cap are the same fact
+ * stated twice, and no supported brochure can be refused for size alone.
+ *
+ * WHY THE OLD 6 MB LINE WAS THE DEFECT AND NOT THE SAFETY. Measured
+ * 2026-09-15, forensics run 34939752502, on the six live blank properties:
+ * five of their row-exclusive brochures are 7.2–10.2 MB, every one elects a
+ * facade from page 1 in single-digit seconds when simply allowed to read
+ * (Lot 709's 7.2 MB elected in 4.4 s in-process in production earlier), and
+ * the 6 MB line was the ONLY thing between those properties and their own
+ * photographs. The protections that matter are unchanged and are not a size:
+ * the per-isolate decode mutex and the settler's one-document-at-a-time
+ * discipline bound memory; the work item's lease, bounded failure accounting
+ * and the watchdog make a killed isolate a counted, retried, LOUD event —
+ * never a blank card and never a silent stall.
  */
-const IN_PROCESS_NO_CAPACITY_MAX_BYTES = 6 * 1024 * 1024;
+const IN_PROCESS_NO_CAPACITY_MAX_BYTES = 25 * 1024 * 1024;
 
 /**
  * Run the election, wherever this deployment runs it.

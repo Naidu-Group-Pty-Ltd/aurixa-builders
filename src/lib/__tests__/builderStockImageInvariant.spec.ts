@@ -25,11 +25,15 @@ import {
 import {
   RUNTIME_VERSION,
 } from '../../../supabase/functions/_shared/builderStock/runtimeVersion.pure';
+import {
+  lifecycleForNewProperty,
+} from '../../../supabase/functions/_shared/builderStock/stockLifecycle.pure';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const read = (p: string) => readFileSync(join(REPO_ROOT, p), 'utf8');
 
 const MIGRATION = 'supabase/migrations/20260915200000_stock_image_invariant.sql';
+const UNIVERSAL = 'supabase/migrations/20260916090000_stock_invariant_universal.sql';
 const SHARED = 'supabase/functions/_shared/builderStock';
 
 describe('external imagery is never a Builder Stock substitute', () => {
@@ -199,12 +203,19 @@ describe('publication requires 100% builder-source photo coverage', () => {
 });
 
 describe('the versions that reopen the wrongly-retired branches', () => {
-  it('provenance 25 (direct-image capability) and runtime 4 (bounded fallback, honest listings)', () => {
-    expect(PROVENANCE_VERSION).toBe(25);
+  it('provenance 26 (full-size in-process election) and runtime 4 (bounded fallback, honest listings)', () => {
+    expect(PROVENANCE_VERSION).toBe(26);
     expect(RUNTIME_VERSION).toBe(4);
     const migration = read(MIGRATION);
     expect(migration).toContain('set_builder_stock_source_images_target(25)');
     expect(migration).toContain('image_runtime_version');
+    expect(read(UNIVERSAL)).toContain('set_builder_stock_source_images_target(26)');
+  });
+
+  it('the missing-worker in-process election reads to the 25 MB ingest cap — the 6 MB line is gone', () => {
+    const code = read(`${SHARED}/pdfElectionClient.ts`);
+    expect(code).toContain('IN_PROCESS_NO_CAPACITY_MAX_BYTES = 25 * 1024 * 1024');
+    expect(code).not.toContain('= 6 * 1024 * 1024');
   });
 
   it('the settler reports real failures to the completion RPC', () => {
@@ -220,5 +231,25 @@ describe('the versions that reopen the wrongly-retired branches', () => {
     expect(page).toContain('of ${photosTotal} ready');
     expect(page).toContain('photos need attention');
     expect(page).toContain('unprocessedDocuments: item.source_documents_unprocessed');
+  });
+});
+
+describe('no grandfathering, no ungated first publication', () => {
+  it('readiness has one rule for every upload: the legacy branch is removed and the flag retired', () => {
+    const universal = read(UNIVERSAL);
+    expect(universal).toContain('SET image_invariant = true');
+    expect(universal).toContain('the legacy branch survived');
+    const body = universal.slice(
+      universal.indexOf('CREATE OR REPLACE FUNCTION public.builder_stock_publication_readiness'),
+      universal.indexOf('COMMENT ON FUNCTION public.builder_stock_publication_readiness'));
+    expect(body).not.toContain('image_invariant');
+    expect(body).toContain('c.failed_items = 0');
+    expect(body).toContain('c.missing_primary = 0');
+  });
+
+  it('every newly imported property starts staged — a first-ever upload passes the same 100% gate', () => {
+    expect(lifecycleForNewProperty()).toBe('staged');
+    const importer = read(`${SHARED}/importStock.ts`);
+    expect(importer).not.toContain('organisationHasPublishedStock');
   });
 });

@@ -624,8 +624,6 @@ export async function importStockRecords(
    * archived property stays archived and a new row stays a new row.
    */
   const archivedByAnchor = new Map<string, AnchoredProperty>();
-  /** How much PUBLISHED stock this organisation already serves. */
-  let published = 0;
   /** Item id -> the upload supplying it before this import touched anything. */
   const supplierBefore = new Map<string, string>();
   /** Item id -> its lifecycle before this import, so a match cannot publish it. */
@@ -636,14 +634,6 @@ export async function importStockRecords(
     const developmentUnit = developmentUnitKey(item);
     if (developmentUnit) byDevelopmentUnit.set(developmentUnit, item.id);
 
-    /*
-     * DOES THIS ORGANISATION HAVE A WORKING MARKETPLACE TO PROTECT?
-     *
-     * Only a PUBLISHED row counts. A staged row from an earlier, unfinished
-     * replacement is invisible, so an organisation holding nothing but staged
-     * rows still has an empty page — and staging again would keep it empty.
-     */
-    if (item.lifecycle_status === 'active') published += 1;
     /* The supplier as it stands NOW, before any of this import's re-pointing. */
     if (item.upload_id) supplierBefore.set(item.id, item.upload_id);
     lifecycleBefore.set(item.id, item.lifecycle_status);
@@ -672,13 +662,12 @@ export async function importStockRecords(
   /** Uploads whose rows this one takes over. See `replacesUploadIds`. */
   const supersededUploads = new Set<string>();
   /*
-   * WHERE A NEW PROPERTY STARTS. Decided ONCE, from the state before this
-   * import wrote anything, so a twenty-three-row list cannot stage its first
-   * row and publish its last because the count moved underneath it.
+   * WHERE A NEW PROPERTY STARTS: staged, for every upload alike. First-ever
+   * lists used to publish on insert, which made the least-proven upload the
+   * only one that skipped the readiness gate; now the same cutover promotes
+   * them once every property carries its builder-source photograph.
    */
-  const newPropertyLifecycle = lifecycleForNewProperty({
-    organisationHasPublishedStock: published > 0,
-  });
+  const newPropertyLifecycle = lifecycleForNewProperty();
 
   for (const record of records) {
     const label = stockRecordLabel(record);

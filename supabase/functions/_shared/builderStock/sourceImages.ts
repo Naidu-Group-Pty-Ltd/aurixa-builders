@@ -339,6 +339,26 @@ import {
  * question. Nothing else changes and nothing requeues for this bump alone —
  * the two affected properties are requeued by hand after deploy.
  *
+ * 25 ROUTES A ROW-LINKED IMAGE FILE AS AN IMAGE. A stock row whose own cell
+ * links a JPG/PNG/WebP used to fall through the package host checks into
+ * "not a source we can read" and be banked as a document naming no image —
+ * the builder handing the photograph over, refused unread. Such a link is
+ * now ingested as the builder-supplied image it is (exclusive to its row;
+ * estate collateral shared across rows still refuses), so every negative
+ * banked at 24 for a `direct_image` branch was decided by a reader that
+ * never looked, and is stale by definition.
+ *
+ * 26 LETS THE IN-PROCESS ELECTION READ EVERY SUPPORTED BROCHURE. With no PDF
+ * worker configured, documents over the 6 MB no-capacity line were refused
+ * by size and, after six refusals, retired as links that answer nothing —
+ * knowledge about our budget banked as knowledge about the builder's
+ * documents. Proven 2026-09-15 (forensics run 34939752502): five live
+ * properties' row-exclusive brochures, 7.2–10.2 MB, each elect their facade
+ * from page 1 in seconds through this same election once the bytes are
+ * allowed in; the line now sits at the 25 MB ingest cap itself. Every
+ * `unreadable` retirement banked at 25 for such a branch was a size refusal,
+ * and is stale by definition.
+ *
  * This is the bump doing precisely the job it exists for: `negativeProvenance`
  * compares the stored version against this one, so raising it reopens every
  * banked negative for a reader that can now find what the old one could not.
