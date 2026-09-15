@@ -200,6 +200,12 @@ describe('publication requires 100% builder-source photo coverage', () => {
     expect(imports).toContain('writeUploadSourceManifest');
     expect(imports).toContain('builder_stock_source_enumeration_failed');
   });
+
+  it('the media ceiling sits above any container the byte caps admit, and stays loud', () => {
+    const code = read(`${SHARED}/extract.ts`);
+    expect(code).toContain('const MAX_MEDIA = 150;');
+    expect(code).toContain('remains LOUD and publication-blocking');
+  });
 });
 
 describe('the versions that reopen the wrongly-retired branches', () => {

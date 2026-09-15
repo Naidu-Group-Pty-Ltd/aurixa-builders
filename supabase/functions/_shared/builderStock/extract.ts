@@ -110,7 +110,23 @@ export interface StockExtraction {
 
 const MAX_ROWS = 5000;
 const MAX_TEXT_CHARS = 120_000;
-const MAX_MEDIA = 40;
+/**
+ * The media COUNT ceiling is a backstop, not a working limit.
+ *
+ * Memory was never the thing this count protected: embedded photographs are
+ * stored in their container already compressed (JPEG/PNG deflate to roughly
+ * themselves), so the media a ≤25 MB upload can carry is ≈25 MB of bytes
+ * whatever the COUNT says — the per-file cap below and the upload cap bound
+ * the memory, and they did before this changed. What the old 40 actually did,
+ * measured on the requirement it broke: a fifty-property list whose document
+ * embeds one photograph per row hits 40 and the last ten properties' own
+ * photographs are refused unread — then, under the invariant, the truncation
+ * (correctly, loudly) blocks the whole upload's publication. So the ceiling
+ * now sits far above any container the byte caps admit, and exists only so a
+ * pathological container (thousands of tiny parts) still terminates. Hitting
+ * it remains LOUD and publication-blocking, exactly as before.
+ */
+const MAX_MEDIA = 150;
 const MAX_MEDIA_BYTES = 8 * 1024 * 1024;
 
 export function bytesToBase64(bytes: Uint8Array): string {
