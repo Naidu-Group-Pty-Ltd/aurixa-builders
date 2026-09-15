@@ -323,7 +323,6 @@ const surfaces = [
   ['Projects', 'builder-portal-projects', { operation: 'list_projects' }],
   ['Stock sources', 'builder-portal-stock', { operation: 'list_uploads' }],
   ['Stock properties', 'builder-portal-stock', { operation: 'list_stock' }],
-  ['Messages', 'builder-portal-collaboration', { operation: 'list_conversations' }],
   ['Tasks', 'builder-portal-collaboration', { operation: 'my_tasks' }],
   ['Notifications', 'builder-portal-collaboration', { operation: 'list_notifications' }],
   ['Activity', 'builder-portal-workspace', { operation: 'activity_history' }],
@@ -336,6 +335,20 @@ for (const [label, fn, body] of surfaces) {
   record(`C: ${label} loads`, response.status === 200 && !response.json?.error,
     `status ${response.status}${response.json?.error ? ` (${String(response.json.error).slice(0, 80)})` : ''}`);
 }
+
+// Messages: conversations are SCOPED (project/unit/transaction/case), and a
+// fresh organisation holds none of those — the page's empty state. What the
+// backend must prove is that the path parses, validates and authorises
+// without a schema error: a bare list is refused by NAME, and a forged
+// scope id reads as out of reach, never as a 500.
+const messagesBare = await call('builder-portal-collaboration',
+  { operation: 'list_conversations' }, session.cookie);
+const messagesForged = await call('builder-portal-collaboration',
+  { operation: 'list_conversations', scope_type: 'project', scope_id: randomUUID() }, session.cookie);
+record('C: Messages validates and authorises its scope (no schema errors)',
+  messagesBare.status === 400 && /scope_type and scope_id/.test(String(messagesBare.json?.error))
+    && [403, 404].includes(messagesForged.status),
+  `bare=${messagesBare.status} forged=${messagesForged.status}`);
 
 // --- D. Stock List ----------------------------------------------------------
 console.log('\nD. Stock List');
