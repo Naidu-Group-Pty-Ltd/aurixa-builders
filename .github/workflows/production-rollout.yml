@@ -19,6 +19,11 @@ name: Production rollout
 #            without a ready builder-source photograph back through the
 #            corrected pipeline, kicks the workers, flips the temporary
 #            invariant scoping to universal as coverage is earned.
+#   forensics read-only source audit for properties still without a ready
+#            builder-source photograph: fetches every link their stored rows
+#            carry (resolving Drive's virus-scan interstitial), censuses each
+#            PDF page-by-page with the pipeline's own readers, and replays the
+#            pipeline's own recovery/election per branch. Writes nothing.
 #
 # Secrets used (never printed; SQL text is never logged):
 #   SUPABASE_ACCESS_TOKEN   Management API (same token the deploy uses)
@@ -29,11 +34,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | smoke | recover'
+        description: 'verify | apply | smoke | recover | forensics'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, smoke, recover]
+        options: [verify, apply, smoke, recover, forensics]
 
 concurrency:
   group: production-rollout
@@ -47,6 +52,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: denoland/setup-deno@v2
+        if: ${{ inputs.phase == 'forensics' }}
+        with:
+          deno-version: v2.x
 
       - name: refuse to pretend
         if: ${{ env.TOKEN == '' }}
@@ -66,4 +75,5 @@ jobs:
           case "${{ inputs.phase }}" in
             verify|apply|recover) node scripts/ops/production-rollout.mjs "${{ inputs.phase }}" ;;
             smoke)                node scripts/ops/production-smoke.mjs ;;
+            forensics)            deno run -A --config supabase/functions/deno.json scripts/ops/stock-source-forensics.ts ;;
           esac
