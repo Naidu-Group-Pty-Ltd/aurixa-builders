@@ -77,6 +77,7 @@ import {
 import {
   branchQuestion, branchRecord, isTraversableBranch, rowSourceBranches,
   unmappedWithRecoveredLinks, type RowSourceBranch,
+  BRANCH_IMAGE_RECOVERED,
 } from './sourceBranches.pure.ts';
 
 /**
@@ -246,6 +247,15 @@ export function classifyBranchRecord(
   if (!record) return 'open';
   if (Number(record.provenance_version) !== question.provenanceVersion) return 'open';
   if ((record.source_anchor ?? null) !== (question.sourceAnchor ?? null)) return 'open';
+
+  /*
+   * A branch that DELIVERED a photograph is finished knowledge about the
+   * source — whether the display gate later certifies that photograph is the
+   * eligibility pipeline's question, not this branch's. Reading it as open
+   * re-fetched the same file every lap; reading it as operational would
+   * withhold verdicts a fault never caused.
+   */
+  if (record.result === BRANCH_IMAGE_RECOVERED) return 'inspected';
 
   if (record.result === NO_DETERMINISTIC_IMAGE) {
     /*

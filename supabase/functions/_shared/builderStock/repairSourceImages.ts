@@ -60,7 +60,7 @@ import {
 import { driveFileId, driveFolderId } from './drivePackage.pure.ts';
 import {
   branchForAttempt, branchRecord, openBranches, rowSourceBranches,
-  unmappedWithRecoveredLinks, writeBranchState,
+  unmappedWithRecoveredLinks, writeBranchState, recordImageRecovered,
 } from './sourceBranches.pure.ts';
 import {
   DriveListingCache, recoverPackageImage, type PackageFetcher, type PackageOutcome,
@@ -1191,15 +1191,25 @@ export async function repairSourceImagesForUpload(
      * left and `packageAttemptsExhausted` became unreachable. See
      * `provenanceAfterAttempt`, which is why this is not a raw `?? null`.
      */
-    const clearAttempt = async () => {
+    /*
+     * A DELIVERED BRANCH IS WRITTEN DOWN AS DELIVERED. This replaces the old
+     * clear-to-nothing on success: with the displayability rule, an open
+     * success branch is re-taken every lap while its siblings starve — so
+     * the success is now itself the terminal record, cleared like every
+     * other answer only by a provenance bump.
+     */
+    const recordBranchRecovered = async (reference: string) => {
       await db
         .from('builder_stock_items')
         .update({
           source_provenance_result: writeBranchState(negativeBefore.get(itemId), packageUrl,
-            provenanceAfterAttempt(branchBefore, question)),
+            recordImageRecovered(question, reference)),
         })
         .eq('id', itemId)
         .eq('organisation_id', input.organisationId);
+      negativeBefore.set(itemId,
+        writeBranchState(negativeBefore.get(itemId), packageUrl,
+          recordImageRecovered(question, reference)));
     };
 
     /**
@@ -1417,7 +1427,7 @@ export async function repairSourceImagesForUpload(
         },
       });
       if (storedPhoto) {
-        await clearAttempt();
+        await recordBranchRecovered(photo.reference);
         await syncSourceAssetState(db, {
         organisationId: input.organisationId, uploadId: upload.id, stockItemId: itemId,
         reference: packageUrl, state: 'stored', detail: 'the builder\'s filed photograph was stored from this link',
@@ -1426,20 +1436,8 @@ export async function repairSourceImagesForUpload(
         outcome.fromPackage += 1;
         prove(itemId, photo.reference);
         touched.add(itemId);
-        if (negativeBefore.has(itemId)) {
-          // THIS branch's record only. A sibling branch that answered honestly
-          // — read, nothing for this property — keeps its answer, or the next
-          // run re-reads a document it has already finished with.
-          await db.from('builder_stock_items')
-            .update({
-              source_provenance_result: writeBranchState(
-                negativeBefore.get(itemId), packageUrl, null),
-            })
-            .eq('id', itemId)
-            .eq('organisation_id', input.organisationId);
-          negativeBefore.set(itemId,
-            writeBranchState(negativeBefore.get(itemId), packageUrl, null));
-        }
+        // The recovered record above IS this branch's standing answer; the
+        // old clear-to-null would erase it and re-open the branch each lap.
       } else {
         // The claim STANDS: nothing durable happened, so this question is
         // still unanswered and the next attempt must count towards retiring it.
@@ -1529,7 +1527,7 @@ export async function repairSourceImagesForUpload(
       },
     });
     if (written) {
-      await clearAttempt();
+      await recordBranchRecovered(recovered.image.reference);
       await syncSourceAssetState(db, {
         organisationId: input.organisationId, uploadId: upload.id, stockItemId: itemId,
         reference: packageUrl, state: 'stored',
@@ -1539,20 +1537,9 @@ export async function repairSourceImagesForUpload(
       outcome.fromPackage += 1;
       prove(itemId, recovered.image.reference);
       touched.add(itemId);
-      /*
-       * A package that has just produced an image is not one that names none.
-       * The stale answer would be harmless to the sweep — a property holding a
-       * current image is skipped before the question is even asked — but it
-       * would sit in the column contradicting the picture beside it, and this
-       * column is read by people.
-       */
-      if (negativeBefore.has(itemId)) {
-        await db.from('builder_stock_items')
-          .update({ source_provenance_result: null })
-          .eq('id', itemId)
-          .eq('organisation_id', input.organisationId);
-        negativeBefore.delete(itemId);
-      }
+      // The recovered record above is this branch's standing answer. The old
+      // whole-column null erased every SIBLING's answer too — a delivered
+      // brochure must not send the siting plan back for a re-read.
     } else {
       // The claim STANDS — see above.
       outcome.incomplete = true;

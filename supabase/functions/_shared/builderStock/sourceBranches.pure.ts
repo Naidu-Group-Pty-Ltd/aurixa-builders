@@ -43,6 +43,35 @@ import {
   NO_DETERMINISTIC_IMAGE, negativeProvenanceStillStands,
   type ProvenanceQuestion,
 } from './negativeProvenance.pure.ts';
+
+/**
+ * THE POSITIVE TERMINAL — a branch that ANSWERED with a photograph.
+ *
+ * Success used to leave no record at all: the exit was "the property holds a
+ * ready image, stop looking", so an open branch that had already delivered
+ * was harmless. Under the displayability rule it is not — a stored image the
+ * classifier refused keeps the search alive, and a success branch with no
+ * record is then re-taken every lap while the brochures behind it are never
+ * reached (measured live, 2026-09-15 06:12–06:18, six properties stalling on
+ * their own stored link). A branch that delivered writes this down and is
+ * finished; a provenance bump reopens it like every other answer.
+ */
+export const BRANCH_IMAGE_RECOVERED = 'image_recovered' as const;
+
+export function recordImageRecovered(
+  question: ProvenanceQuestion,
+  reference: string,
+  now: () => Date = () => new Date(),
+) {
+  return {
+    result: BRANCH_IMAGE_RECOVERED,
+    provenance_version: question.provenanceVersion,
+    package_reference: question.packageReference,
+    source_anchor: question.sourceAnchor,
+    stored_reference: String(reference ?? '').slice(0, 200),
+    checked_at: now().toISOString(),
+  };
+}
 import {
   PACKAGE_RECOVERY_ATTEMPT, packageAttemptsExhausted,
 } from './packageAttempt.pure.ts';
@@ -354,6 +383,11 @@ export function branchTerminal(
   }
   if (record.result === PACKAGE_RECOVERY_ATTEMPT) {
     return packageAttemptsExhausted(record, question);
+  }
+  // A branch that delivered its photograph is finished. Version/anchor were
+  // already compared above; an older success reopens like any other answer.
+  if (record.result === BRANCH_IMAGE_RECOVERED) {
+    return Number(record.provenance_version) >= question.provenanceVersion;
   }
   return false;
 }
