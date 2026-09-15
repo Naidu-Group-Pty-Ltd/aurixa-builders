@@ -419,7 +419,10 @@ record('D: a photo-less first upload stages and does NOT publish (the source-pho
  * coverage publishes the whole list atomically and each property then passes
  * client visibility.
  */
-const publishRows = await q('publish when covered', `
+// The seed and the cutover run as their own statement: a DO block followed by
+// a SELECT in one Management API call answers with the DO block's empty
+// result, which is not a finding about the gate.
+await q('seed builder-source photographs and publish', `
   DO $$
   DECLARE v_org uuid := ${sqlLit(alpha.orgId)}::uuid; v_item record; v_img uuid; v_upload uuid;
   BEGIN
@@ -439,7 +442,8 @@ const publishRows = await q('publish when covered', `
        WHERE id = v_item.id;
     END LOOP;
     PERFORM public.publish_builder_stock_upload(v_upload);
-  END $$;
+  END $$;`);
+const publishRows = await q('publication outcome', `
   SELECT
     (SELECT count(*) FROM public.builder_stock_items WHERE organisation_id = ${sqlLit(alpha.orgId)}::uuid AND lifecycle_status = 'active') AS active,
     (SELECT count(*) FROM public.builder_stock_items i WHERE i.organisation_id = ${sqlLit(alpha.orgId)}::uuid
