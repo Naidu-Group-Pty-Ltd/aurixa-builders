@@ -14,6 +14,11 @@ name: Production rollout
 #            governance journey, self-registration, the active surfaces,
 #            the Stock List including a live HMAC-signed selection
 #            announcement round trip, and cleanup of every test row.
+#   recover  the one-time (re-runnable, idempotent) historical recovery for
+#            the stock image invariant: re-opens served/staged properties
+#            without a ready builder-source photograph back through the
+#            corrected pipeline, kicks the workers, flips the temporary
+#            invariant scoping to universal as coverage is earned.
 #
 # Secrets used (never printed; SQL text is never logged):
 #   SUPABASE_ACCESS_TOKEN   Management API (same token the deploy uses)
@@ -24,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | smoke'
+        description: 'verify | apply | smoke | recover'
         required: true
         default: 'verify'
         type: choice
