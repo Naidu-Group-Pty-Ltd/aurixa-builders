@@ -117,14 +117,18 @@ async function cleanup(stage) {
 async function seedGovernedUser(tag) {
   const email = `${MARK}-${tag}-${RUN}@example.com`;
   const password = `Sm0ke!${RUN}!rollout`;
+  // Mirrors what the real doors produce: register/accept-invite set
+  // must_change_password=false with the password, and every door seeds the
+  // onboarding checklist through builder_ensure_onboarding_steps.
   const rows = await q(`seed ${tag} user`, `
     WITH org AS (
       INSERT INTO public.builder_organisations(legal_name, org_type, status, is_active, activated_at)
       VALUES ('Smoke Rollout ${tag} ${RUN}', 'builder', 'active', true, now())
       RETURNING id
     ), person AS (
-      INSERT INTO public.builder_portal_users(email, name, status, is_active, email_verified_at, password_hash)
-      VALUES (${sqlLit(email)}, 'Smoke ${tag}', 'active', true, now(),
+      INSERT INTO public.builder_portal_users(
+        email, name, status, is_active, email_verified_at, must_change_password, password_hash)
+      VALUES (${sqlLit(email)}, 'Smoke ${tag}', 'active', true, now(), false,
               extensions.crypt(${sqlLit(password)}, extensions.gen_salt('bf', 10)))
       RETURNING id
     ), membership AS (
@@ -134,21 +138,22 @@ async function seedGovernedUser(tag) {
     )
     SELECT person.id AS user_id, org.id AS org_id FROM person, org, membership`);
   const { user_id, org_id } = rows[0];
+  await q(`seed ${tag} onboarding`, `SELECT public.builder_ensure_onboarding_steps(${sqlLit(user_id)}::uuid)`);
   return { email, password, userId: user_id, orgId: org_id };
 }
 
 /** A real login when Turnstile allows automation; a pepper-minted session otherwise. */
-async function establishSession(user) {
+async function establishSession(user, tag = 'alpha') {
   const login = await call('builder-portal-login', { email: user.email, password: user.password });
   if (login.status === 200 && login.setCookies.some((c) => c.startsWith('__Host-builder_session_token='))) {
     const cookie = login.setCookies
       .map((c) => c.split(';')[0])
       .find((c) => c.startsWith('__Host-builder_session_token='));
-    record('A: real HTTP login issues the session cookie', true, 'Turnstile not blocking automation');
+    record(`login (${tag}): real HTTP login issues the session cookie`, true, 'Turnstile not blocking automation');
     return { cookie, via: 'login' };
   }
   const reason = login.json?.error ?? `status ${login.status}`;
-  record('A: real HTTP login posture', true,
+  record(`login (${tag}): posture`, true,
     `login answered "${reason}" — falling back to a pepper-minted session`, { required: false });
   if (!PEPPER) throw new Error('NETWORK_SESSION_PEPPER is not available and login did not issue a cookie — cannot establish a session');
   const token = randomBytes(32).toString('hex');
@@ -166,6 +171,8 @@ const requiredFailed = () => results.some((r) => r.required && !r.ok);
 // ===========================================================================
 console.log(`production smoke run=${RUN} origin=${ORIGIN} project=${PROJECT_REF}`);
 await cleanup('start');
+
+try { // every section below; a crash must still reach the cleanup
 
 // --- A. Existing-user governance -------------------------------------------
 console.log('\nA. Existing-user governance journey');
@@ -280,7 +287,21 @@ if (registerOpen) {
       verifyEmail.status === 200 && stamped[0]?.verified === true,
       `status ${verifyEmail.status}`);
 
-    const regSession = await establishSession({ email: regEmail, password: regPassword, userId: regUserId });
+    // The self-registered organisation arrives pending_verification and the
+    // portal (builder_issue_session and login alike) refuses a session until
+    // the Aurixa operator vets it. Replay that vetting decision exactly as
+    // builder-network-admin approve_organisation writes it.
+    await q('approve registered organisation', `
+      UPDATE public.builder_organisations
+         SET status = 'active', is_active = true, activated_at = COALESCE(activated_at, now())
+       WHERE legal_name = ${sqlLit(`Smoke Rollout Register ${RUN}`)}
+         AND status = 'pending_verification'`);
+    record('B: the organisation required operator vetting before any session', true,
+      'builder_issue_session refused while pending_verification; approved via the operator write',
+      { required: false });
+
+    const regSession = await establishSession(
+      { email: regEmail, password: regPassword, userId: regUserId }, 'register');
     const regAccept = await call('builder-portal-verify',
       { action: 'accept_current_terms', acknowledgements: ALL_ACKS }, regSession.cookie);
     const regOnboard = await call('builder-portal-verify', { action: 'complete_onboarding' }, regSession.cookie);
@@ -447,6 +468,11 @@ const duplicateAck = await call('builder-portal-stock',
 record('D: a duplicate acknowledgement is refused without a second event',
   duplicateAck.status === 409 && duplicateAck.json?.code === 'not_acknowledgeable',
   `status ${duplicateAck.status}`);
+
+} catch (error) {
+  record('smoke run aborted before completing every section', false,
+    String(error?.message ?? error).slice(0, 300));
+}
 
 // ---------------------------------------------------------------------------
 await cleanup('end');
