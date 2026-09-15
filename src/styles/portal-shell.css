@@ -1,0 +1,92 @@
+/*
+  The Builder Portal's shell geometry — the piece of the prime's
+  `report-qa.css` this portal actually mounts.
+
+  ── Why this sheet exists ──────────────────────────────────────────────
+  The extraction cut `report-qa.css` because its NAME says Report Q&A and
+  ci-foundation, surfaces the network does not ship. But that sheet also
+  carried the partner-portal geometry block — the page container's width,
+  centring and padding ladder, the hero pane's own padding and border, the
+  soft panel's shape — for all four portals, Builder included. Losing it
+  left every `.builder-portal-*` surface with MATERIAL (glass.css) and
+  RE-SKIN (builder-drafting.css) but no GEOMETRY: content ran full-bleed
+  against the sidebar and the window edge, the hero had no padding at all,
+  and on a wide monitor the whole page smeared edge to edge. The Stock
+  List's own sheet even overrides `max-width: none` against the container
+  rule that no longer existed.
+
+  Everything below is the prime's block verbatim, narrowed to the Builder
+  selectors (the network mounts no Client, Finance or Solicitor portal).
+  Import order preserves the prime's cascade: this sheet loads BEFORE
+  utilities/glass/builder-drafting, so the drafting re-cuts (square
+  corners, the border-left cut) keep winning exactly as they do upstream.
+*/
+@layer components {
+  .builder-portal-main {
+    /* min-w-0 is load-bearing, not decoration: this sits in a flex row
+       next to a 288px sidebar, and without it one wide table pushes the
+       whole portal sideways. `relative` anchors the wash below. */
+    @apply relative min-w-0;
+  }
+
+  .builder-portal-main::before {
+    content: "";
+    @apply pointer-events-none absolute inset-x-0 top-0 h-56;
+    background: linear-gradient(180deg, hsl(var(--primary) / 0.08), transparent);
+  }
+
+  /* Content width is the one thing that genuinely differs per portal in
+     the prime: the client portal is a reading surface, the partner
+     portals are working surfaces. Builder is a working surface: 7xl. */
+  .builder-portal-content {
+    @apply relative mx-auto w-full max-w-7xl py-5 md:py-8 lg:py-10;
+  }
+
+  /* Inline padding is set here rather than with px-* utilities so it can
+     be max()'d against the display cutout. index.html ships
+     `viewport-fit=cover`, so the page paints edge to edge and reserving
+     room for the notch and the home indicator is the author's job.
+     env() is 0 on every device without a cutout, so max() leaves the
+     normal spacing exactly as it was. */
+  .builder-portal-content {
+    --portal-pad-x: 1rem;
+    padding-left: max(var(--portal-pad-x), env(safe-area-inset-left));
+    padding-right: max(var(--portal-pad-x), env(safe-area-inset-right));
+    padding-bottom: max(1.25rem, calc(env(safe-area-inset-bottom) + 0.75rem));
+  }
+
+  @media (min-width: 768px) {
+    .builder-portal-content {
+      --portal-pad-x: 2rem;
+      padding-bottom: max(2rem, calc(env(safe-area-inset-bottom) + 1rem));
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .builder-portal-content {
+      --portal-pad-x: 2.5rem;
+      padding-bottom: max(2.5rem, calc(env(safe-area-inset-bottom) + 1rem));
+    }
+  }
+
+  /* Grid and flex children default to min-width:auto, so a long unbroken
+     cell or a wide table refuses to shrink and overflows the column. */
+  .builder-portal-content > * {
+    @apply relative z-10 min-w-0;
+  }
+
+  .builder-portal-page-header {
+    @apply relative overflow-hidden rounded-2xl border p-6 md:p-8;
+  }
+
+  .builder-portal-page-header::after {
+    content: "";
+    @apply pointer-events-none absolute right-0 top-0 h-40 w-40 rounded-full blur-3xl;
+    background: hsl(var(--primary) / 0.12);
+    transform: translate(20%, -35%);
+  }
+
+  .builder-portal-soft-panel {
+    @apply rounded-2xl border;
+  }
+}

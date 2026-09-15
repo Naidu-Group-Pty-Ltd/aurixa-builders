@@ -10,10 +10,16 @@
   This is the prime's `src/index.css` cut to the sheets the Builder Portal
   actually mounts — the finance-portal, workflow, report-qa and ci-assessment
   sheets style surfaces that do not exist on the network and stayed behind.
+  One piece of report-qa.css DID belong to this portal: the partner-portal
+  shell geometry (the page container, the hero pane's padding, the soft
+  panel's shape). portal-shell.css carries that block, at report-qa.css's
+  own position in the order so the later sheets keep out-ranking it exactly
+  as they do in the prime.
 */
 @import "./styles/tokens.css";
 @import "./styles/base.css";
 @import "./styles/primitives.css";
+@import "./styles/portal-shell.css";
 @import "./styles/utilities.css";
 @import "./styles/components.css";
 @import "./styles/glass.css";
