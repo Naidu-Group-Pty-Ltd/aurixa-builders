@@ -464,7 +464,9 @@ const publishRows = await q('publication outcome', `
       WHERE organisation_id = ${sqlLit(alpha.orgId)}::uuid AND deleted_at IS NULL LIMIT 1) AS published`);
 record('D: 100% builder-source coverage publishes the list atomically, each property client-visible',
   Number(publishRows[0]?.active) === 2 && Number(publishRows[0]?.visible) === 2
-    && String(publishRows[0]?.published) === 't',
+    // The Management API answers JSON, so a boolean arrives as true — not the
+    // 't' psql prints. Accept both spellings of the same fact.
+    && ['true', 't'].includes(String(publishRows[0]?.published)),
   `active=${publishRows[0]?.active} visible=${publishRows[0]?.visible} published=${publishRows[0]?.published}`);
 
 const uploadsList = await call('builder-portal-stock', { operation: 'list_uploads' }, session.cookie);
