@@ -431,14 +431,26 @@ await q('seed builder-source photographs and publish', `
     FOR v_item IN SELECT id FROM public.builder_stock_items
       WHERE organisation_id = v_org AND lifecycle_status = 'staged'
     LOOP
+      /*
+       * Measured-eligible and SETTLED, so the live settler does not claim these
+       * rows mid-assertion and demote a primary it cannot vouch for. Without
+       * that the check races the real pipeline: it read active=2, published=true
+       * and visible=1 because a worker had already re-judged one row.
+       */
       INSERT INTO public.builder_stock_item_images
         (organisation_id, stock_item_id, upload_id, source_stage, source_reference,
-         verification_status, processing_status, storage_path)
+         verification_status, processing_status, storage_path, source_detail)
       VALUES (v_org, v_item.id, v_upload, 'uploaded_document', 'smoke-brochure#page1',
-         'source_supplied', 'ready', 'smoke/' || v_item.id || '.jpg')
+         'source_supplied', 'ready', 'smoke/' || v_item.id || '.jpg',
+         jsonb_build_object(
+           'role', 'primary_property',
+           'marketplace_measured', true,
+           'marketplace_display_eligible', true,
+           'marketplace_eligibility_state', 'eligible'))
       RETURNING id INTO v_img;
       UPDATE public.builder_stock_items
-         SET primary_image_id = v_img, image_work_stage = 'settled'
+         SET primary_image_id = v_img, image_work_stage = 'settled',
+             enrichment_status = 'complete', enriched_at = now()
        WHERE id = v_item.id;
     END LOOP;
     PERFORM public.publish_builder_stock_upload(v_upload);
