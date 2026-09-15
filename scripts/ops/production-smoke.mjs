@@ -390,13 +390,66 @@ const imported = await call('builder-portal-stock', { operation: 'import_url', u
 record('D: a stock list imports over the normal URL path',
   imported.status === 200 && !imported.json?.error, `status ${imported.status}${imported.json?.error ? ` (${imported.json.error})` : ''}`);
 
-const stockRows = await q('imported stock', `
+/*
+ * THE SOURCE-PHOTOGRAPH GATE, ON THE LIVE DEPLOYMENT.
+ *
+ * This fixture is a plain CSV carrying no imagery, so under the invariant its
+ * properties MUST stage and MUST NOT publish: every client-visible Builder
+ * Stock property needs a ready builder-source photograph, and a first upload
+ * passes the same gate a replacement does. The old expectation here — two
+ * ACTIVE properties straight off an import — is exactly the behaviour the
+ * invariant removed.
+ */
+const stagedRows = await q('imported stock', `
   SELECT
     (SELECT count(*) FROM public.builder_stock_uploads WHERE organisation_id = ${sqlLit(alpha.orgId)}::uuid AND deleted_at IS NULL) AS uploads,
-    (SELECT count(*) FROM public.builder_stock_items WHERE organisation_id = ${sqlLit(alpha.orgId)}::uuid AND lifecycle_status = 'active') AS items`);
-record('D: the source and both properties are on the books',
-  Number(stockRows[0]?.uploads) === 1 && Number(stockRows[0]?.items) === 2,
-  `uploads=${stockRows[0]?.uploads} items=${stockRows[0]?.items}`);
+    (SELECT count(*) FROM public.builder_stock_items WHERE organisation_id = ${sqlLit(alpha.orgId)}::uuid AND lifecycle_status = 'staged') AS staged,
+    (SELECT count(*) FROM public.builder_stock_items WHERE organisation_id = ${sqlLit(alpha.orgId)}::uuid AND lifecycle_status = 'active') AS active,
+    (SELECT coalesce(publication_blocked_reason, '') FROM public.builder_stock_uploads
+      WHERE organisation_id = ${sqlLit(alpha.orgId)}::uuid AND deleted_at IS NULL LIMIT 1) AS blocked`);
+record('D: a photo-less first upload stages and does NOT publish (the source-photograph gate)',
+  Number(stagedRows[0]?.uploads) === 1 && Number(stagedRows[0]?.staged) === 2
+    && Number(stagedRows[0]?.active) === 0,
+  `uploads=${stagedRows[0]?.uploads} staged=${stagedRows[0]?.staged} active=${stagedRows[0]?.active}`);
+
+/*
+ * AND THE CUTOVER, once every property carries its builder-source photograph.
+ * The images are seeded here (this suite has no builder brochure to fetch);
+ * what is being proven is the live gate and the live cutover — that 100%
+ * coverage publishes the whole list atomically and each property then passes
+ * client visibility.
+ */
+const publishRows = await q('publish when covered', `
+  DO $$
+  DECLARE v_org uuid := ${sqlLit(alpha.orgId)}::uuid; v_item record; v_img uuid; v_upload uuid;
+  BEGIN
+    SELECT id INTO v_upload FROM public.builder_stock_uploads
+      WHERE organisation_id = v_org AND deleted_at IS NULL LIMIT 1;
+    FOR v_item IN SELECT id FROM public.builder_stock_items
+      WHERE organisation_id = v_org AND lifecycle_status = 'staged'
+    LOOP
+      INSERT INTO public.builder_stock_item_images
+        (organisation_id, stock_item_id, upload_id, source_stage, source_reference,
+         verification_status, processing_status, storage_path)
+      VALUES (v_org, v_item.id, v_upload, 'uploaded_document', 'smoke-brochure#page1',
+         'source_supplied', 'ready', 'smoke/' || v_item.id || '.jpg')
+      RETURNING id INTO v_img;
+      UPDATE public.builder_stock_items
+         SET primary_image_id = v_img, image_work_stage = 'settled'
+       WHERE id = v_item.id;
+    END LOOP;
+    PERFORM public.publish_builder_stock_upload(v_upload);
+  END $$;
+  SELECT
+    (SELECT count(*) FROM public.builder_stock_items WHERE organisation_id = ${sqlLit(alpha.orgId)}::uuid AND lifecycle_status = 'active') AS active,
+    (SELECT count(*) FROM public.builder_stock_items i WHERE i.organisation_id = ${sqlLit(alpha.orgId)}::uuid
+       AND public.builder_stock_item_client_visible(i.id)) AS visible,
+    (SELECT (published_at IS NOT NULL) FROM public.builder_stock_uploads
+      WHERE organisation_id = ${sqlLit(alpha.orgId)}::uuid AND deleted_at IS NULL LIMIT 1) AS published`);
+record('D: 100% builder-source coverage publishes the list atomically, each property client-visible',
+  Number(publishRows[0]?.active) === 2 && Number(publishRows[0]?.visible) === 2
+    && String(publishRows[0]?.published) === 't',
+  `active=${publishRows[0]?.active} visible=${publishRows[0]?.visible} published=${publishRows[0]?.published}`);
 
 const uploadsList = await call('builder-portal-stock', { operation: 'list_uploads' }, session.cookie);
 const itemsList = await call('builder-portal-stock', { operation: 'list_stock' }, session.cookie);
