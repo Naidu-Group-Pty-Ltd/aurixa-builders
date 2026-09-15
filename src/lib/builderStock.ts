@@ -246,39 +246,34 @@ export interface BuilderStockItem {
   builder_organisation?: { id: string; legal_name: string; trading_name: string | null } | null;
   selection_count?: number;
   latest_selection?: {
-    id: string; status: StockSelectionStatus; selected_at: string; acknowledged_at: string | null;
+    id: string; status: StockSelectionStatus; announced_at: string; acknowledged_at: string | null;
   } | null;
-  /** Live selections on this property. Carries no client identifier — see
-   *  `decorate()` in `builder-stock-marketplace`. */
-  selections?: Array<{
-    id: string; status: StockSelectionStatus; selected_at: string;
-  }>;
 }
 
-/** What the BUILDER is shown. No client, no adviser, no note. */
+/**
+ * A workspace's selection ANNOUNCEMENT, as the builder sees it (network
+ * edition). The Command Centre's own selection record — client, adviser,
+ * internal notes — stayed in the clone; what crosses the connection is this:
+ * which connection, which property, an opaque `remote_selection_ref` the
+ * workspace minted, the label the workspace chose to send, and safe status
+ * and timestamps. There is no client identifier to strip because the
+ * network table never carried one.
+ */
 export interface BuilderStockSelectionForBuilder {
   id: string;
+  connection_id: string;
   stock_item_id: string;
   organisation_id: string;
-  source_upload_id: string | null;
-  originating_builder_user_id: string | null;
-  builder_project_id: string | null;
+  remote_selection_ref: string;
+  remote_client_label: string | null;
   status: StockSelectionStatus;
-  selected_at: string;
+  /** When the network learned of the selection (the announcement's created_at). */
+  announced_at: string;
   acknowledged_at: string | null;
   acknowledged_by_builder_user_id: string | null;
-  builder_reference: string | null;
+  /** The announcing workspace's directory display name, when registered. */
+  workspace_label?: string | null;
   stock_item?: Partial<BuilderStockItem> | null;
-}
-
-/** What the COMMAND CENTRE is shown — it made the selection. */
-export interface BuilderStockSelection extends BuilderStockSelectionForBuilder {
-  client_id: string;
-  selected_by_user_id: string;
-  withdrawn_at: string | null;
-  internal_notes: string | null;
-  client?: { id: string; primary_first_name: string; primary_surname: string } | null;
-  builder_organisation?: { id: string; legal_name: string; trading_name: string | null } | null;
 }
 
 // ---------------------------------------------------------------------------

@@ -222,6 +222,12 @@ Deno.serve(async (req) => {
           state: 'revoked',
           revoked_at: new Date().toISOString(),
           revoke_reason: reason,
+          // The transport credential dies WITH the connection: nothing may
+          // sign or verify for a revoked link, so the secret is cleared at
+          // rest rather than left to age. Reconnection is a new row with a
+          // new secret, provisioned afresh.
+          outbound_hmac_secret: null,
+          hmac_provisioned_at: null,
         })
         .eq('id', connection.id)
         .neq('state', 'revoked')

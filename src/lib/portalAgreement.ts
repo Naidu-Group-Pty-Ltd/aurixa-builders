@@ -2,9 +2,11 @@
  * The Portal Access, Confidentiality, Privacy and AML/CTF Compliance Passport
  * Agreement, as it appears to a partner organisation in any portal.
  *
- * One agreement, one set of acknowledgments, three portals. The document itself
- * lives in `portal_terms_versions`, one row per portal so each carries its own
- * version, hash and acceptance history — but the text is the same text, and the
+ * One agreement, one set of acknowledgments, three portals — though this
+ * network deploys only the builder edition: the document lives in
+ * `builder_terms_versions` (the prime's `portal_terms_versions`, renamed by
+ * the extraction), one current row whose version, hash and acceptance
+ * history are the builder portal's own — but the text is the same text, and the
  * acknowledgments below are the same four everywhere. Solicitors, builders and
  * finance partners are all "the Partner Organisation" in that document; giving
  * each portal its own wording would mean three agreements drifting apart under

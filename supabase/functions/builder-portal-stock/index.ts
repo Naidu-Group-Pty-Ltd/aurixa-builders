@@ -106,7 +106,7 @@ import {
 import { newRepairBudget } from '../_shared/builderStock/settleImageSanitization.ts';
 import { readAllRows } from '../_shared/builderStock/pagedRead.ts';
 import {
-  BUILDER_SELECTION_SELECT, STOCK_AVAILABILITY_STATUSES, STOCK_IMAGE_SELECT,
+  BUILDER_ANNOUNCEMENT_SELECT, STOCK_AVAILABILITY_STATUSES, STOCK_IMAGE_SELECT,
   STOCK_ITEM_SELECT, STOCK_UPLOAD_SELECT, stockPagination,
 } from '../_shared/builderStock/projection.pure.ts';
 import { applyManualStatsToAll, parseManualStats } from '../_shared/builderStock/manualStats.pure.ts';
@@ -1820,16 +1820,24 @@ Deno.serve(async (req) => {
       const archiveIds = itemsToArchiveOnSourceDelete(rows, upload.id);
       const retained = rows.length - archiveIds.length;
 
-      // Counted, never touched. A selection an adviser already made for a
-      // buyer survives the builder tidying up their sources.
+      // Counted, never touched. A selection a workspace already announced
+      // against a property survives the builder tidying up their sources —
+      // the network edition counts announcements, the only selection record
+      // this side of the boundary holds.
       let affectedSelections = 0;
       if (archiveIds.length) {
-        const { count } = await supabase
-          .from('builder_stock_selections')
+        const { count, error: selectionCountError } = await supabase
+          .from('builder_stock_selection_announcements')
           .select('id', { count: 'exact', head: true })
           .eq('organisation_id', activeOrganisationId)
           .in('stock_item_id', archiveIds)
           .neq('status', 'withdrawn');
+        if (selectionCountError) {
+          // The count decides what the confirmation SAYS; refusing beats
+          // reporting "0 selections affected" over a failed read.
+          console.error('[builder-portal-stock] announcement count failed', selectionCountError.message);
+          return json({ success: false, error: 'stock_could_not_be_read' }, 503);
+        }
         affectedSelections = count ?? 0;
 
         // Archived, not deleted. Both marketplace reads filter on
@@ -1900,30 +1908,62 @@ Deno.serve(async (req) => {
 
     if (operation === 'list_selections') {
       const { page, pageSize, from, to } = stockPagination(body);
-      const { data, count } = await supabase
-        .from('builder_stock_selections')
-        // BUILDER_SELECTION_SELECT omits client_id, selected_by_user_id and
-        // internal_notes. The builder learns THAT one of their properties was
-        // selected, never who by or for whom.
-        .select(BUILDER_SELECTION_SELECT, { count: 'exact' })
+      // BUILDER_ANNOUNCEMENT_SELECT is the network contract: connection,
+      // property, the workspace's opaque ref and chosen label, status and
+      // timestamps. The builder learns THAT one of their properties was
+      // selected, never who by or for whom — the announcement table never
+      // carried a client column to strip.
+      const { data, count, error } = await supabase
+        .from('builder_stock_selection_announcements')
+        .select(BUILDER_ANNOUNCEMENT_SELECT, { count: 'exact' })
         .eq('organisation_id', activeOrganisationId)
-        .order('selected_at', { ascending: false })
+        .order('created_at', { ascending: false })
         .range(from, to);
+      if (error) {
+        console.error('[builder-portal-stock] announcement list failed', error.message);
+        return json({ success: false, error: 'selections_could_not_be_read' }, 503);
+      }
 
-      const selections = data ?? [];
-      const itemIds = Array.from(new Set(selections.map((row: any) => row.stock_item_id)));
-      const { data: items } = itemIds.length
-        ? await supabase.from('builder_stock_items')
-          .select('id, address_line, suburb, state, development_name, project_name, lot_number, unit_number, external_reference, price, availability_status')
-          .eq('organisation_id', activeOrganisationId)
-          .in('id', itemIds)
-        : { data: [] };
+      const announcements = data ?? [];
+      const itemIds = Array.from(new Set(announcements.map((row: any) => row.stock_item_id)));
+      const connectionIds = Array.from(new Set(announcements.map((row: any) => row.connection_id)));
+      const [{ data: items }, { data: connections }] = await Promise.all([
+        itemIds.length
+          ? supabase.from('builder_stock_items')
+            .select('id, address_line, suburb, state, development_name, project_name, lot_number, unit_number, external_reference, price, availability_status')
+            .eq('organisation_id', activeOrganisationId)
+            .in('id', itemIds)
+          : Promise.resolve({ data: [] } as any),
+        connectionIds.length
+          ? supabase.from('workspace_connections')
+            .select('id, workspace_id')
+            .in('id', connectionIds)
+          : Promise.resolve({ data: [] } as any),
+      ]);
       const itemById = new Map((items ?? []).map((item: any) => [item.id, item]));
+
+      // The workspace's DISPLAY NAME is directory data the workspace itself
+      // asserted to the network; showing the builder which connection
+      // selected their property is the point of the announcement.
+      const workspaceIds = Array.from(new Set((connections ?? []).map((c: any) => c.workspace_id)));
+      const { data: registry } = workspaceIds.length
+        ? await supabase.from('workspace_registry')
+          .select('id, slug, display_name').in('id', workspaceIds)
+        : { data: [] };
+      const workspaceById = new Map((registry ?? []).map((w: any) => [w.id, w]));
+      const workspaceByConnection = new Map((connections ?? []).map((c: any) => {
+        const workspace = workspaceById.get(c.workspace_id) as
+          | { slug: string; display_name: string | null } | undefined;
+        return [c.id, workspace ? (workspace.display_name || workspace.slug) : null];
+      }));
 
       return json({
         success: true,
-        records: selections.map((row: any) => ({
+        records: announcements.map((row: any) => ({
           ...row,
+          // The honest name for what created_at records here.
+          announced_at: row.created_at,
+          workspace_label: workspaceByConnection.get(row.connection_id) ?? null,
           stock_item: itemById.get(row.stock_item_id) ?? null,
         })),
         pagination: {
@@ -1938,36 +1978,48 @@ Deno.serve(async (req) => {
         return json({ error: 'You do not have permission to manage stock', code: 'permission_denied' }, 403);
       }
       const selectionId = cleanText(body.selection_id, 64);
-      const { data: selection } = await supabase
-        .from('builder_stock_selections')
-        .select('id, status, organisation_id, stock_item_id')
-        .eq('id', selectionId)
-        .eq('organisation_id', activeOrganisationId)
-        .maybeSingle();
-      if (!selection) return notFoundHere('That selection');
-      if (selection.status !== 'selected') {
-        return json({ error: 'This selection has already moved on.', code: 'not_acknowledgeable' }, 409);
+      if (!selectionId) return notFoundHere('That selection');
+
+      // One transactional command: the acknowledgement stamp, the outbound
+      // stock.selection.acknowledged event and the activity entry commit
+      // together — the workspace that announced the selection is told, and
+      // cannot be told without the stamp having happened.
+      const { data, error } = await supabase.rpc('builder_stock_acknowledge_announcement', {
+        _announcement_id: selectionId,
+        _organisation_id: activeOrganisationId,
+        _builder_user_id: me.id,
+      });
+      if (error) {
+        const message = String(error.message);
+        if (message.includes('BUILDER_ANNOUNCEMENT_NOT_FOUND')) return notFoundHere('That selection');
+        if (message.includes('BUILDER_ANNOUNCEMENT_NOT_ACKNOWLEDGEABLE')) {
+          return json({ error: 'This selection has already moved on.', code: 'not_acknowledgeable' }, 409);
+        }
+        console.error('[builder-portal-stock] acknowledge failed', message);
+        return json({ error: 'The selection could not be updated' }, 400);
       }
 
-      const { data, error } = await supabase
-        .from('builder_stock_selections')
-        .update({
-          status: 'builder_acknowledged',
-          acknowledged_at: new Date().toISOString(),
-          acknowledged_by_builder_user_id: me.id,
-        })
-        .eq('id', selection.id)
-        .eq('organisation_id', activeOrganisationId)
-        .select(BUILDER_SELECTION_SELECT)
-        .single();
-      if (error) return json({ error: 'The selection could not be updated' }, 400);
-
-      await logBuilderProjectActivity(supabase, req, {
-        builderUserId: me.id, organisationId: activeOrganisationId,
-        action: 'builder_stock_selection_acknowledged',
-        entityType: 'stock_selection', entityId: selection.id,
+      const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
+      if (!row) return json({ error: 'The selection could not be updated' }, 400);
+      // Project to the announcement contract — the RPC returns the row, the
+      // browser receives the same columns every other read serves.
+      return json({
+        success: true,
+        record: {
+          id: row.id,
+          connection_id: row.connection_id,
+          stock_item_id: row.stock_item_id,
+          organisation_id: row.organisation_id,
+          remote_selection_ref: row.remote_selection_ref,
+          remote_client_label: row.remote_client_label ?? null,
+          status: row.status,
+          announced_at: row.created_at,
+          acknowledged_at: row.acknowledged_at ?? null,
+          acknowledged_by_builder_user_id: row.acknowledged_by_builder_user_id ?? null,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+        },
       });
-      return json({ success: true, record: data });
     }
 
     return json({ error: `Unknown operation: ${operation}` }, 400);
@@ -2046,8 +2098,8 @@ async function decorateItems(
       .in('stock_item_id', ids)
       .eq('organisation_id', organisationId)
       .order('position', { ascending: true }),
-    supabase.from('builder_stock_selections')
-      .select('id, stock_item_id, status, selected_at, acknowledged_at')
+    supabase.from('builder_stock_selection_announcements')
+      .select('id, stock_item_id, status, created_at, acknowledged_at')
       .in('stock_item_id', ids)
       .eq('organisation_id', organisationId)
       .neq('status', 'withdrawn'),
@@ -2176,10 +2228,16 @@ async function decorateItems(
        */
       ...(packagesByItem.get(String(item.id))?.notes ?? []),
     ].slice(0, MAX_STOCK_DOCUMENT_NOTES),
-    // The builder's activation signal: how many Command Centre selections this
-    // property has, and where the most recent one is up to.
+    // The builder's activation signal: how many workspace selection
+    // announcements this property carries, and where the most recent one is
+    // up to. `announced_at` is the announcement row's created_at — when the
+    // network learned of the selection.
     selection_count: (selectionsByItem.get(item.id) ?? []).length,
     latest_selection: (selectionsByItem.get(item.id) ?? [])
-      .sort((a, b) => String(b.selected_at).localeCompare(String(a.selected_at)))[0] ?? null,
+      .map((row: any) => ({
+        id: row.id, status: row.status,
+        announced_at: row.created_at, acknowledged_at: row.acknowledged_at ?? null,
+      }))
+      .sort((a, b) => String(b.announced_at).localeCompare(String(a.announced_at)))[0] ?? null,
   }));
 }

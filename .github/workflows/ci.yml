@@ -50,6 +50,8 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: verify_jwt declared for every function
         run: npm run check:verify-jwt
+      - name: runtime references no removed schema objects
+        run: npm run check:schema-refs
       - name: portal security check
         run: npm run security:portal
       - name: deno typecheck (strict, whole runtime)

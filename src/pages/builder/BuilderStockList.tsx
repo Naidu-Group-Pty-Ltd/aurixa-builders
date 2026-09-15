@@ -487,7 +487,7 @@ export default function BuilderStockList() {
           <CardHeader>
             <CardTitle className="text-base">Selected for a buyer</CardTitle>
             <CardDescription>
-              A Command Centre adviser has selected these properties from your stock list.
+              A connected workspace has selected these properties from your stock list.
               Acknowledge each one to confirm you have seen it.
             </CardDescription>
           </CardHeader>
@@ -504,7 +504,9 @@ export default function BuilderStockList() {
                       : 'A property from your stock'}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Selected {new Date(selection.selected_at).toLocaleString('en-AU')}
+                    Selected {new Date(selection.announced_at).toLocaleString('en-AU')}
+                    {selection.workspace_label ? ` · by ${selection.workspace_label}` : ''}
+                    {selection.remote_client_label ? ` · ${selection.remote_client_label}` : ''}
                   </p>
                 </div>
                 <Button

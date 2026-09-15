@@ -198,6 +198,19 @@ Deno.serve(async (req) => {
       return json({ error: 'Registration could not be completed. Try again shortly.' }, 500);
     }
 
+    // The onboarding checklist exists from the moment the user does — the
+    // same `builder_ensure_onboarding_steps` call the invite paths make, so
+    // both doors mint identical journeys. Without it a self-registered user
+    // reaches the onboarding gate with zero mandatory steps, and
+    // `has_completed_mandatory_onboarding` (which requires steps to EXIST)
+    // can never come true. Idempotent in the database; a transient failure
+    // is repaired by the decision path's own ensure call and logged here.
+    const { error: onboardingSeedError } = await supabase
+      .rpc('builder_ensure_onboarding_steps', { _builder_user_id: createdUser.id });
+    if (onboardingSeedError) {
+      console.error('[builder-portal-register] onboarding seed failed', onboardingSeedError);
+    }
+
     // --- Organisation: join request on an ABN match, new org otherwise -----
     let organisationOutcome = 'created_pending_verification';
     let joinRequestOrgId: string | null = null;

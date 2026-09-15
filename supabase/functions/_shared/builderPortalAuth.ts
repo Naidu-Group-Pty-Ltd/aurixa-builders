@@ -170,20 +170,37 @@ export async function resolveBuilderSession(
   // `has_accepted_current_terms` flag instead would leave every existing user
   // showing as accepted the moment a new terms version is published, because
   // nothing clears the flag — acceptance would no longer be version-exact.
-  const { data: terms } = await supabase
-    .from('portal_terms_versions').select('id, version')
+  //
+  // ERRORS THROW. These reads decide the governance verdict; a discarded
+  // failure would read as "no current terms" and park every user at a terms
+  // gate that cannot be satisfied — precisely what the extraction shipped
+  // while this query still named the clone's `portal_terms_versions`. A
+  // governance stage the database cannot answer is a 500, never a verdict.
+  const { data: terms, error: termsError } = await supabase
+    .from('builder_terms_versions').select('id, version')
     .eq('portal', 'builder').is('retired_at', null)
     .lte('effective_at', new Date().toISOString())
     .order('effective_at', { ascending: false }).limit(1).maybeSingle();
+  if (termsError) {
+    throw new Error(`[builderPortalAuth] current terms lookup failed: ${termsError.message}`);
+  }
 
-  const [{ data: acceptance }, { data: onboarding }] = await Promise.all([
+  const [acceptanceRead, onboardingRead] = await Promise.all([
     terms
-      ? supabase.from('portal_terms_acceptances').select('id')
+      ? supabase.from('builder_terms_acceptances').select('id')
         .eq('terms_version_id', terms.id).eq('builder_user_id', user.id).maybeSingle()
-      : Promise.resolve({ data: null }),
+      : Promise.resolve({ data: null, error: null }),
     supabase.from('builder_onboarding_steps').select('mandatory, completed_at')
       .eq('builder_user_id', user.id),
   ]);
+  if (acceptanceRead.error) {
+    throw new Error(`[builderPortalAuth] terms acceptance lookup failed: ${acceptanceRead.error.message}`);
+  }
+  if (onboardingRead.error) {
+    throw new Error(`[builderPortalAuth] onboarding steps lookup failed: ${onboardingRead.error.message}`);
+  }
+  const acceptance = acceptanceRead.data;
+  const onboarding = onboardingRead.data;
   const mandatorySteps = (onboarding || []).filter((step: any) => step.mandatory);
   const mandatoryComplete = mandatorySteps.length > 0
     && mandatorySteps.every((step: any) => !!step.completed_at);

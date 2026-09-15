@@ -317,6 +317,144 @@ Deno.serve(async (req) => {
       return json(GENERIC_OK);
     }
 
+    // ======================================================================
+    // Join requests — the deciding half of registration's never-auto-join
+    // rule (extraction plan §5). Registration writes the pending row; the
+    // organisation's OWN owners and administrators decide it here, behind
+    // the same session + governance + role gate as every other act in this
+    // function. Mission Control sees the queue (builder-network-admin
+    // list_join_requests) and deliberately cannot decide it.
+    // ======================================================================
+
+    // ----------------------------------------------------- list_join_requests
+    if (action === 'list_join_requests') {
+      // The ACTIVE organisation's queue and nobody else's: the filter is the
+      // server-resolved organisation id, never one the browser named.
+      const { data: requests, error } = await supabase
+        .from('builder_org_join_requests')
+        .select('id, builder_user_id, status, message, created_at, decided_by, decided_at')
+        .eq('organisation_id', activeOrganisationId)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: true });
+      if (error) {
+        console.error('[builder-portal-invite] join request list failed', error.message);
+        return json({ error: 'Join requests could not be read' }, 500);
+      }
+
+      // The requester's own name and email are what the owner is deciding
+      // on — they were volunteered TO this organisation by the request.
+      const userIds = [...new Set((requests ?? []).map((r: any) => r.builder_user_id))];
+      const { data: users } = userIds.length
+        ? await supabase.from('builder_portal_users')
+          .select('id, name, email, email_verified_at').in('id', userIds)
+        : { data: [] };
+      const userById = new Map((users ?? []).map((u: any) => [u.id, u]));
+
+      return json({
+        success: true,
+        join_requests: (requests ?? []).map((r: any) => {
+          const requester = userById.get(r.builder_user_id) as
+            | { name: string; email: string; email_verified_at: string | null }
+            | undefined;
+          return {
+            id: r.id,
+            status: r.status,
+            message: r.message,
+            created_at: r.created_at,
+            requester: requester
+              ? {
+                name: requester.name,
+                email: requester.email,
+                email_verified: !!requester.email_verified_at,
+              }
+              : null,
+          };
+        }),
+      });
+    }
+
+    // ------------------------------- approve_join_request / decline_join_request
+    if (action === 'approve_join_request' || action === 'decline_join_request') {
+      const requestId = String(body.request_id || '');
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestId)) {
+        return json({ error: 'request_id is required' }, 400);
+      }
+      const approve = action === 'approve_join_request';
+
+      // One transactional command: decision stamp, membership grant and the
+      // activity entry commit together. The database re-verifies the
+      // decider's own owner/administrator membership of THIS organisation —
+      // the browser supplied only the request id.
+      const { data, error } = await supabase.rpc('builder_decide_org_join_request', {
+        _request_id: requestId,
+        _organisation_id: activeOrganisationId,
+        _decided_by: caller.id,
+        _approve: approve,
+      });
+      if (error) {
+        const message = String(error.message);
+        if (message.includes('BUILDER_JOIN_REQUEST_NOT_FOUND')) {
+          return json({ error: 'No such join request for this organisation' }, 404);
+        }
+        if (message.includes('BUILDER_JOIN_REQUEST_ALREADY_DECIDED')) {
+          return json({ error: 'This request has already been decided.', code: 'already_decided' }, 409);
+        }
+        if (message.includes('BUILDER_JOIN_REQUEST_USER_REVOKED')) {
+          return json({ error: 'This account has been revoked and cannot be approved.' }, 409);
+        }
+        if (message.includes('BUILDER_NOT_ORG_ADMIN')) {
+          return json({ error: 'Only an organisation owner or administrator may decide join requests' }, 403);
+        }
+        throw error;
+      }
+      const decided = Array.isArray(data) ? data[0] : data;
+
+      // The registrant was promised "you'll be notified when they do". The
+      // notice goes to the mailbox; the response to the decider says only
+      // what they did.
+      const { data: requestRow } = await supabase
+        .from('builder_org_join_requests')
+        .select('builder_user_id')
+        .eq('id', requestId)
+        .maybeSingle();
+      const { data: requester } = requestRow
+        ? await supabase.from('builder_portal_users')
+          .select('email, name').eq('id', requestRow.builder_user_id).maybeSingle()
+        : { data: null };
+      const resendApiKey = Deno.env.get('RESEND_API_KEY');
+      if (requester?.email && resendApiKey) {
+        const brand = await getBrandConfig();
+        const appUrl = Deno.env.get('APP_BASE_URL') || 'https://builders.aurixasystems.com.au';
+        const organisationName = session.active_organisation?.legal_name || brand.companyName;
+        try {
+          await meteredFetch('https://api.resend.com/emails', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${resendApiKey}` },
+            body: JSON.stringify({
+              from: brand.fromHeaderAdmin,
+              to: [requester.email],
+              subject: approve
+                ? `You have joined ${organisationName} on the ${brand.companyName} Builder Portal`
+                : `Your request to join ${organisationName}`,
+              text: approve
+                ? `Hi ${String(requester.name || 'there').replace(/[<>]/g, '')},\n\nYour request to join ${organisationName} was approved. Sign in to continue:\n\n${appUrl}/builder/login`
+                : `Hi ${String(requester.name || 'there').replace(/[<>]/g, '')},\n\nYour request to join ${organisationName} was not approved. If you believe this is a mistake, contact the organisation directly.`,
+              tags: [{ name: 'category', value: 'builder_org_join_request' }],
+            }),
+          });
+        } catch (mailError) {
+          console.error('[builder-portal-invite] decision notice failed', mailError);
+        }
+      }
+
+      return json({
+        success: true,
+        request_id: decided?.request_id ?? requestId,
+        status: decided?.request_status ?? (approve ? 'approved' : 'declined'),
+        membership_created: decided?.membership_created === true,
+      });
+    }
+
     return json({ error: `Unknown action: ${action}` }, 400);
   } catch (error) {
     console.error('[builder-portal-invite]', error);

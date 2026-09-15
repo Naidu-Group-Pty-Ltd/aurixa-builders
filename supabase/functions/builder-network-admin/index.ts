@@ -330,7 +330,16 @@ Deno.serve(async (req) => {
       if (!reason) return json({ error: 'a_reason_is_required' }, 400);
       const { data: updated } = await supabase
         .from('workspace_connections')
-        .update({ state: 'revoked', revoked_at: new Date().toISOString(), revoke_reason: reason })
+        .update({
+          state: 'revoked',
+          revoked_at: new Date().toISOString(),
+          revoke_reason: reason,
+          // Revocation retires the transport credential WITH the connection:
+          // the secret is gone at rest, not merely unreachable, and a future
+          // reconnection is a new row with a new secret.
+          outbound_hmac_secret: null,
+          hmac_provisioned_at: null,
+        })
         .eq('id', connectionId)
         .neq('state', 'revoked')
         .select('id')
@@ -343,6 +352,108 @@ Deno.serve(async (req) => {
         detail: { mc_operator: operator, reason },
       });
       return json({ success: true, state: 'revoked' });
+    }
+
+    // ------------------------------------------------------------- transport
+    // The courier half of the handshake. Acceptance (builder-network-
+    // connections) MINTS the per-connection symmetric secret and stores it
+    // RLS-closed; the clone's builder-network-inbound and this network's
+    // outbox worker both need it, and Mission Control — which provisions the
+    // clone and holds ITS service credentials, never this project's — is the
+    // machinery that installs it clone-side (the prime's mirror migration
+    // says exactly this). So the secret leaves this project EXACTLY ONCE,
+    // through this federation-asserted door, and never through any Builder
+    // Portal read: `provision_transport` returns it once and stamps
+    // `hmac_provisioned_at`; afterwards only `rotate_transport` — which
+    // mints a NEW secret — returns anything, so a compromised operator
+    // token cannot quietly re-read a live credential. Neither event row
+    // carries the secret.
+    if (operation === 'provision_transport' || operation === 'rotate_transport') {
+      const connectionId = String(body.connection_id || '');
+      if (!connectionId) return json({ error: 'connection_id_is_required' }, 400);
+      const { data: connection } = await supabase
+        .from('workspace_connections')
+        .select('id, state, outbound_hmac_secret, hmac_provisioned_at')
+        .eq('id', connectionId)
+        .maybeSingle();
+      if (!connection) return json({ error: 'connection_not_found' }, 404);
+      if (connection.state !== 'active') {
+        // Not yet accepted → no secret exists; revoked → none may exist.
+        return json({ error: 'transport_provisions_only_on_an_active_connection', state: connection.state }, 409);
+      }
+
+      const networkInboundUrl =
+        `${String(Deno.env.get('SUPABASE_URL') || '').replace(/\/+$/, '')}/functions/v1/builder-network-inbound`;
+
+      if (operation === 'provision_transport') {
+        if (connection.hmac_provisioned_at) {
+          return json({
+            error: 'transport_already_provisioned',
+            provisioned_at: connection.hmac_provisioned_at,
+            remedy: 'rotate_transport issues a new secret and invalidates the old one',
+          }, 409);
+        }
+        if (!connection.outbound_hmac_secret) {
+          // Active but secretless should be impossible (acceptance mints);
+          // refuse rather than mint here so the mint stays in one place.
+          return json({ error: 'connection_has_no_transport_secret' }, 409);
+        }
+        const { data: stamped } = await supabase
+          .from('workspace_connections')
+          .update({ hmac_provisioned_at: new Date().toISOString() })
+          .eq('id', connection.id)
+          .is('hmac_provisioned_at', null)
+          .select('id')
+          .maybeSingle();
+        // A concurrent provision lost the conditional update: the secret was
+        // already handed out once, and once is the contract.
+        if (!stamped) return json({ error: 'transport_already_provisioned' }, 409);
+
+        await supabase.from('workspace_connection_events').insert({
+          connection_id: connection.id,
+          event_type: 'transport_provisioned',
+          actor_side: 'platform',
+          detail: { mc_operator: operator },
+        });
+        return json({
+          success: true,
+          connection_id: connection.id,
+          // Returned ONCE, for MC to install in the clone's
+          // builder_network_connections row alongside this URL.
+          hmac_secret: connection.outbound_hmac_secret,
+          network_inbound_url: networkInboundUrl,
+        });
+      }
+
+      // rotate_transport: a NEW secret, returned once. The old one stops
+      // verifying the moment this commits — deliveries in flight retry with
+      // the new signature on the worker's next pass.
+      const rotated = Array.from(crypto.getRandomValues(new Uint8Array(32)))
+        .map((b) => b.toString(16).padStart(2, '0')).join('');
+      const { data: stamped } = await supabase
+        .from('workspace_connections')
+        .update({
+          outbound_hmac_secret: rotated,
+          hmac_provisioned_at: new Date().toISOString(),
+        })
+        .eq('id', connection.id)
+        .eq('state', 'active')
+        .select('id')
+        .maybeSingle();
+      if (!stamped) return json({ error: 'transport_rotation_failed' }, 409);
+
+      await supabase.from('workspace_connection_events').insert({
+        connection_id: connection.id,
+        event_type: 'transport_rotated',
+        actor_side: 'platform',
+        detail: { mc_operator: operator },
+      });
+      return json({
+        success: true,
+        connection_id: connection.id,
+        hmac_secret: rotated,
+        network_inbound_url: networkInboundUrl,
+      });
     }
 
     if (operation === 'set_inbound_url') {
