@@ -529,7 +529,11 @@ export type BuilderActivityEntityType =
   | 'inspection' | 'defect' | 'practical_completion' | 'handover' | 'warranty_claim'
   | 'document' | 'document_version' | 'document_grant'
   | 'conversation' | 'message' | 'task' | 'task_assignment' | 'notification'
-  | 'stock_upload' | 'stock_item' | 'stock_selection';
+  | 'stock_upload' | 'stock_item' | 'stock_selection'
+  // The network operator plane's own acts (builder-network-admin). Added to
+  // the database CHECK by 20260915140000 — without it every operator audit
+  // write failed the constraint and vanished into a console error.
+  | 'network_admin';
 
 /**
  * Append a project event to the trusted activity log.

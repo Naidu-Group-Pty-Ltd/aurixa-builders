@@ -1,0 +1,64 @@
+name: Production rollout
+
+# Applies pending database migrations to the LIVE Supabase project and runs
+# the production smoke suite — the repository's migration procedure from the
+# remediation onward. Manual dispatch only, one phase at a time:
+#
+#   verify   read-only: live ledger, pending migrations, divergence, vault
+#            entry names, extensions, cron jobs. Run this first, always.
+#   apply    apply pending migrations in order (never the baseline), record
+#            them in the ledger, prove the remediation objects, ensure
+#            pg_cron/pg_net + the two network driver schedules, and seed the
+#            Vault entries the signed cron invoker reads.
+#   smoke    controlled end-to-end tests over the deployed portal: the
+#            governance journey, self-registration, the active surfaces,
+#            the Stock List including a live HMAC-signed selection
+#            announcement round trip, and cleanup of every test row.
+#
+# Secrets used (never printed; SQL text is never logged):
+#   SUPABASE_ACCESS_TOKEN   Management API (same token the deploy uses)
+#   NETWORK_INTERNAL_SECRET vault: internal_edge_secret (apply phase)
+#   NETWORK_SESSION_PEPPER  smoke: mint session/verification token hashes
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: 'verify | apply | smoke'
+        required: true
+        default: 'verify'
+        type: choice
+        options: [verify, apply, smoke]
+
+concurrency:
+  group: production-rollout
+  cancel-in-progress: false
+
+jobs:
+  rollout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: refuse to pretend
+        if: ${{ env.TOKEN == '' }}
+        env:
+          TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          echo '::error::SUPABASE_ACCESS_TOKEN is not configured — nothing can run against the live project.'
+          exit 1
+
+      - name: run phase ${{ inputs.phase }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          NETWORK_INTERNAL_SECRET: ${{ secrets.NETWORK_INTERNAL_SECRET }}
+          NETWORK_SESSION_PEPPER: ${{ secrets.NETWORK_SESSION_PEPPER }}
+        run: |
+          set -euo pipefail
+          case "${{ inputs.phase }}" in
+            verify|apply) node scripts/ops/production-rollout.mjs "${{ inputs.phase }}" ;;
+            smoke)        node scripts/ops/production-smoke.mjs ;;
+          esac

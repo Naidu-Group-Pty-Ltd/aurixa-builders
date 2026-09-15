@@ -94,4 +94,15 @@ describe('the surface', () => {
     expect(admin).not.toContain('builder_decide_org_join_request');
     expect(admin).not.toMatch(/approve_join_request|decline_join_request/);
   });
+
+  it('the operator plane audits under a vocabulary word the CHECK accepts', () => {
+    // builder-network-admin logs entity_type 'network_admin'; the migration
+    // teaches the activity log's CHECK that word so operator audits land
+    // instead of dying against the constraint.
+    expect(readCode('supabase/functions/builder-network-admin/index.ts'))
+      .toContain("_entity_type: 'network_admin'");
+    const migration = read('supabase/migrations/20260915140000_network_admin_audit_entity.sql');
+    expect(migration).toContain("'network_admin'::text");
+    expect(migration).toContain("'stock_selection'::text");
+  });
 });
