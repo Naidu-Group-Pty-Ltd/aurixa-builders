@@ -111,8 +111,8 @@ Deno.serve(async (req) => {
     }
 
     if (action === 'get_governance') {
-      const [{ data: terms }, { data: steps }] = await Promise.all([
-        supabase.from('portal_terms_versions')
+      const [termsRead, stepsRead] = await Promise.all([
+        supabase.from('builder_terms_versions')
           .select('id, version, title, content_markdown, document_hash, effective_at')
           .eq('portal', 'builder').is('retired_at', null)
           .lte('effective_at', new Date().toISOString())
@@ -121,11 +121,21 @@ Deno.serve(async (req) => {
           .select('step_key, mandatory, completed_at')
           .eq('builder_user_id', user.id).order('created_at'),
       ]);
+      // A failed read must never become `success: true, terms: null` — that
+      // is indistinguishable from "no terms are published" and turns a
+      // schema drift into a permanently unsatisfiable gate. Say what broke.
+      if (termsRead.error || stepsRead.error) {
+        console.error('[builder-portal-verify] governance read failed', {
+          terms: termsRead.error?.message ?? null,
+          steps: stepsRead.error?.message ?? null,
+        });
+        return json({ success: false, error: 'Governance state could not be read' }, 503);
+      }
       return json({
         success: true,
-        terms,
+        terms: termsRead.data,
         terms_accepted: user.has_accepted_current_terms,
-        steps: steps ?? [],
+        steps: stepsRead.data ?? [],
       });
     }
 

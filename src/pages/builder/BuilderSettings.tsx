@@ -14,6 +14,7 @@ import {
   BuilderOrganisationSettingsCard,
 } from '@/components/builder-portal/BuilderOrganisationSettingsCard';
 import { BuilderTeamInviteCard } from '@/components/builder-portal/BuilderTeamInviteCard';
+import { BuilderJoinRequestsCard } from '@/components/builder-portal/BuilderJoinRequestsCard';
 import { BUILDER_TOUR_EVENT } from '@/components/builder-portal/BuilderOnboardingTour';
 import { BuilderPortalShell } from '@/components/builder-portal/BuilderPortalShell';
 
@@ -142,6 +143,8 @@ export default function BuilderSettings() {
       <BuilderOrganisationSettingsCard />
 
       <BuilderTeamInviteCard />
+
+      <BuilderJoinRequestsCard />
 
       <Card>
         <CardHeader>

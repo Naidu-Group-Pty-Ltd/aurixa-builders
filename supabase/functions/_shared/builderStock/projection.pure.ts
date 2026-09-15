@@ -92,31 +92,26 @@ export const STOCK_IMAGE_SELECT = `
 `;
 
 /**
- * Selection columns for the BUILDER.
+ * Selection ANNOUNCEMENT columns for the builder (network edition).
  *
- * `client_id`, `internal_notes` and `selected_by_user_id` are absent. That is
- * the control: a builder cannot be shown a column that was never read.
+ * The Command Centre's `builder_stock_selections` stayed in the clone with
+ * its `client_id`, `selected_by_user_id` and `internal_notes` — they were
+ * always Command Centre data. What crosses the network is the announcement:
+ * connection, property, an opaque `remote_selection_ref` the WORKSPACE
+ * minted, the label the workspace chose to send, and safe status and
+ * timestamps. This list is that contract as a select string — a projection
+ * that forgets to strip a client column cannot exist because the table
+ * never carried one.
+ *
+ * `created_at` doubles as "when the network learned of the selection"; the
+ * handler aliases it to `announced_at` so the browser reads the honest name.
  */
-export const BUILDER_SELECTION_SELECT = `
-  id, stock_item_id, organisation_id, source_upload_id,
-  originating_builder_user_id, builder_project_id, status, selected_at,
-  acknowledged_at, acknowledged_by_builder_user_id, builder_reference,
+export const BUILDER_ANNOUNCEMENT_SELECT = `
+  id, connection_id, stock_item_id, organisation_id,
+  remote_selection_ref, remote_client_label, status,
+  acknowledged_at, acknowledged_by_builder_user_id,
   created_at, updated_at
 `;
-
-/** Selection columns for the Command Centre, which made the selection. */
-export const COMMAND_SELECTION_SELECT = `
-  id, stock_item_id, organisation_id, source_upload_id,
-  originating_builder_user_id, builder_project_id, client_id,
-  selected_by_user_id, status, selected_at, acknowledged_at,
-  acknowledged_by_builder_user_id, withdrawn_at, internal_notes,
-  builder_reference, created_at, updated_at
-`;
-
-/** Statuses a Command Centre user may move a selection to. */
-export const COMMAND_SELECTION_STATUSES = [
-  'selected', 'progressed', 'completed', 'withdrawn',
-] as const;
 
 /** Statuses the BUILDER may set. Acknowledging is the whole of their side. */
 export const BUILDER_SELECTION_STATUSES = ['builder_acknowledged'] as const;

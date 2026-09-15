@@ -20,7 +20,11 @@ name: Deploy Supabase functions
 
 on:
   push:
-    branches: [main, claude/sharp-cannon-ppx05x]
+    # MAIN ONLY. The development branch that bootstrapped the repo shipped to
+    # production on push while it existed; that lane is closed — production
+    # deploys ride main, and anything else is a workflow_dispatch someone
+    # chose to run.
+    branches: [main]
     paths:
       - 'supabase/functions/**'
       - 'supabase/config.toml'

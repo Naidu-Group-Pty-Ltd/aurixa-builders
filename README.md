@@ -19,8 +19,13 @@ its own `mck_*` key to MC (`builders:federate`, per-workspace opt-in) and
 receives a five-minute signed assertion; this network verifies it **offline**
 against MC's published JWKS (`/api/public/builders/jwks`). MC sits on the
 token path about once an hour per workspace, never on the request path.
-Network → clone deliveries are HMAC-SHA256 with per-connection secrets the
-clone minted. Neither side ever holds the other's service-role key, and
+Deliveries in both directions are HMAC-SHA256 over the raw body with a
+per-connection symmetric secret: **minted network-side at acceptance**,
+handed out exactly once through the federated operator door
+(`builder-network-admin` `provision_transport`, thereafter only
+`rotate_transport`) for MC — which holds the clone's service credentials,
+never this project's — to install clone-side, and cleared at rest on
+revocation. Neither side ever holds the other's service-role key, and
 connections are **access control, never agreement formation** — scopes are
 unilateral, revocable grants.
 

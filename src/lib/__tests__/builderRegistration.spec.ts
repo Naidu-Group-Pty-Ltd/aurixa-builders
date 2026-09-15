@@ -126,3 +126,34 @@ describe('the doors are wired', () => {
     expect(read('src/pages/builder/BuilderLogin.tsx')).toContain('to="/builder/register"');
   });
 });
+
+describe('every door mints the onboarding checklist', () => {
+  it('self-registration seeds steps with the SAME rpc the invite paths use', () => {
+    const register = readCode('supabase/functions/builder-portal-register/index.ts');
+    const userInsertAt = register.indexOf("from('builder_portal_users')\n      .insert(");
+    const ensureAt = register.indexOf("rpc('builder_ensure_onboarding_steps'");
+    expect(userInsertAt).toBeGreaterThan(-1);
+    expect(ensureAt).toBeGreaterThan(userInsertAt);
+    // No duplicated step list in TypeScript: the catalogue stays in the
+    // database function, one place, both doors.
+    expect(register).not.toMatch(/profile_confirmed|organisation_confirmed|contact_confirmed|security_reviewed/);
+  });
+
+  it('the invite paths still seed through the same rpc', () => {
+    expect(readCode('supabase/functions/builder-portal-invite/index.ts'))
+      .toContain("rpc('builder_ensure_onboarding_steps'");
+    expect(readCode('supabase/functions/builder-portal-accept-invite/index.ts'))
+      .toContain("rpc('builder_ensure_onboarding_steps'");
+  });
+
+  it('users created before the fix are backfilled, and the migration proves zero-row users gone', () => {
+    const migration = read('supabase/migrations/20260915110000_join_request_decisions_and_onboarding.sql');
+    expect(migration).toContain('builder_ensure_onboarding_steps(v_user)');
+    expect(migration).toMatch(/a builder user still has zero onboarding rows/);
+  });
+
+  it('approval of a join request also ensures the checklist', () => {
+    const migration = read('supabase/migrations/20260915110000_join_request_decisions_and_onboarding.sql');
+    expect(migration).toContain('builder_ensure_onboarding_steps(v_request.builder_user_id)');
+  });
+});

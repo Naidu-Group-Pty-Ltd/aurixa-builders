@@ -129,6 +129,17 @@ Deno.serve(async (req) => {
       return json({ error: 'delivery_not_recorded' }, 500);
     }
 
+    // The sweep converges the mirror; this door only LANDS. Running one pass
+    // here is opportunism, not application-on-receipt: the same idempotent
+    // consumer pg_cron drives every minute, so a failure here changes nothing
+    // but latency — which is why its error is logged and the delivery still
+    // answers accepted.
+    const { error: applyError } = await supabase
+      .rpc('builder_network_apply_inbound_events', { _limit: 25 });
+    if (applyError) {
+      console.error('[builder-network-inbound] opportunistic apply failed', applyError.message);
+    }
+
     // The stamp says WHETHER; source_version says WHAT. Monotonic: an
     // out-of-order redelivery may not wind the version back.
     const { data: pending } = await supabase

@@ -273,6 +273,39 @@ export function builderInviteTeamMember(input: {
   }>('builder-portal-invite', { action: 'invite', ...input });
 }
 
+/** A pending request to join the ACTIVE organisation, as the owner sees it. */
+export interface BuilderOrgJoinRequest {
+  id: string;
+  status: 'pending' | 'approved' | 'declined';
+  message: string | null;
+  created_at: string;
+  requester: { name: string; email: string; email_verified: boolean } | null;
+}
+
+/**
+ * The ACTIVE organisation's pending join requests (registration's
+ * never-auto-join rule writes them; owners decide them here).
+ */
+export function builderListJoinRequests() {
+  return invokeBuilderFunction<{
+    success?: boolean;
+    join_requests?: BuilderOrgJoinRequest[];
+  }>('builder-portal-invite', { action: 'list_join_requests' });
+}
+
+/** Approve or decline one pending join request. Owner/administrator only. */
+export function builderDecideJoinRequest(requestId: string, approve: boolean) {
+  return invokeBuilderFunction<{
+    success?: boolean;
+    request_id?: string;
+    status?: string;
+    membership_created?: boolean;
+  }>('builder-portal-invite', {
+    action: approve ? 'approve_join_request' : 'decline_join_request',
+    request_id: requestId,
+  });
+}
+
 export function builderRequestPasswordReset(email: string) {
   return invokeBuilderFunction('builder-portal-forgot-password', { email });
 }

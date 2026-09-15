@@ -13,6 +13,7 @@
     "typecheck:edge": "deno check --config supabase/functions/deno.json supabase/functions/builder-*/index.ts",
     "security:portal": "node scripts/portal/security-check.mjs",
     "check:verify-jwt": "node scripts/security/check-verify-jwt-declared.mjs",
+    "check:schema-refs": "node scripts/security/check-runtime-schema-refs.mjs",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
