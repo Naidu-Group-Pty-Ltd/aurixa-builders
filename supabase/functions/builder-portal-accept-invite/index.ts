@@ -30,6 +30,7 @@ import { auditBuilderIdentity, issueBuilderSession } from '../_shared/builderSes
 import { listAccessibleOrganisations } from '../_shared/builderPortalAuth.ts';
 import { parseJsonBody } from '../_shared/validate.ts';
 import { AcceptInviteRequest, AUTH_MAX_BODY_BYTES } from '../_shared/authBodySchemas.ts';
+import { enforceAuthRateLimit } from '../_shared/authRateLimit.ts';
 
 const GENERIC_INVITE_ERROR = 'Invalid or expired invite link';
 
@@ -60,11 +61,17 @@ Deno.serve(async (req) => {
       return json({ error: GENERIC_INVITE_ERROR, valid: false }, 400);
     }
 
-    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
-    const { data: allowed } = await supabase.rpc('check_and_bump_rate_limit', {
-      p_key: `builder_invite:${ip}`, p_max: 20, p_window_seconds: 3600,
+    // The shared limiter, not a hand-rolled one. The previous version keyed on
+    // `X-Forwarded-For`, which the caller sets — a fresh value per request was
+    // an unlimited allowance — and only refused on an explicit `false`, so an
+    // RPC error (`undefined`) let the request through. `enforceAuthRateLimit`
+    // buckets on the address the platform vouched for and falls back to a
+    // per-isolate counter rather than to no limit at all. Same budget, same
+    // response, so nothing downstream changes.
+    const rateLimit = await enforceAuthRateLimit(supabase, req, {
+      scope: 'bai', ip: { max: 20, windowSeconds: 3600 },
     });
-    if (allowed === false) return json({ error: GENERIC_INVITE_ERROR, valid: false }, 429);
+    if (!rateLimit.allowed) return json({ error: GENERIC_INVITE_ERROR, valid: false }, 429);
 
     const tokenHash = await hashSessionToken(token);
     if (!tokenHash) return json({ error: GENERIC_INVITE_ERROR, valid: false }, 400);

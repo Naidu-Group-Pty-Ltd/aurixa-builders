@@ -28,6 +28,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0';
 import { createCorsHeaders } from '../_shared/auth.ts';
 import { enforceCsrf, csrfDenied } from '../_shared/csrfGuard.ts';
+import { readBoundedJson, DEFAULT_MAX_BODY_BYTES } from '../_shared/validate.ts';
 import {
   resolveBuilderSession,
   builderGovernanceError,
@@ -85,7 +86,10 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
 
-    const body = await req.json().catch(() => ({} as Record<string, any>));
+    // Bounded BEFORE the session is resolved below, so an unauthenticated
+    // caller cannot make this isolate buffer a body of any size it likes.
+    const body = await readBoundedJson(req, DEFAULT_MAX_BODY_BYTES)
+      .catch(() => ({} as Record<string, any>));
     const operation = String(body.operation || '');
 
     const session = await resolveBuilderSession(supabase, req);
@@ -488,7 +492,9 @@ Deno.serve(async (req) => {
         _actor_user_id: null,
         _actor_type: 'builder_user',
         _actor_builder_user_id: me.id,
-        _project_id: recordId ? null : res.project.id,
+        // The authorised parent is ALWAYS sent. The guarded command scopes its
+        // update by it, so a child id belonging to another project matches no row.
+        _project_id: res.project.id,
         _payload: payload,
         _expected_version: expectedVersion,
         _reason: cleanText(body.reason, 500),

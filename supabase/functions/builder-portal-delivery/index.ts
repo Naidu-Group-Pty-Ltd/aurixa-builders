@@ -31,6 +31,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0';
 import { createCorsHeaders } from '../_shared/auth.ts';
 import { enforceCsrf, csrfDenied } from '../_shared/csrfGuard.ts';
+import { readBoundedJson, DEFAULT_MAX_BODY_BYTES } from '../_shared/validate.ts';
 import {
   resolveBuilderSession,
   builderGovernanceError,
@@ -83,7 +84,10 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
 
-    const body = await req.json().catch(() => ({} as Record<string, any>));
+    // Bounded BEFORE the session is resolved below, so an unauthenticated
+    // caller cannot make this isolate buffer a body of any size it likes.
+    const body = await readBoundedJson(req, DEFAULT_MAX_BODY_BYTES)
+      .catch(() => ({} as Record<string, any>));
     const operation = String(body.operation || '');
 
     const session = await resolveBuilderSession(supabase, req);
@@ -281,10 +285,24 @@ Deno.serve(async (req) => {
       const approvalId = cleanText(body.approval_id, 64);
       const variationId = cleanText(body.variation_id, 64);
       let expectedVersion: number | null = null;
+      // The parent this write is scoped by. On create it is the caller's
+      // variation, proven to belong to the authorised case. On UPDATE the
+      // caller's claim is irrelevant: the approval's OWN variation decides,
+      // and that variation must belong to the authorised case too. Without
+      // this, an approval id from another organisation was updatable.
+      let scopedVariationId: string | null = variationId;
       if (approvalId) {
         const version = requireVersion();
         if (typeof version !== 'number') return version.error;
         expectedVersion = version;
+        const { data: existingApproval } = await supabase
+          .from('builder_variation_approvals')
+          .select('variation_id').eq('id', approvalId).maybeSingle();
+        scopedVariationId = existingApproval?.variation_id ?? null;
+        if (!scopedVariationId
+            || !await ownedByCase('variation', scopedVariationId, res.caseId)) {
+          return json({ error: 'Approval not found' }, 404);
+        }
       } else {
         if (!variationId) return json({ error: 'variation_id is required' }, 400);
         if (!await ownedByCase('variation', variationId, res.caseId)) {
@@ -301,7 +319,7 @@ Deno.serve(async (req) => {
         _actor_type: 'builder_user',
         _actor_builder_user_id: me.id,
         _approval_id: approvalId,
-        _variation_id: approvalId ? null : variationId,
+        _variation_id: scopedVariationId,
         _payload: payload,
         _expected_version: expectedVersion,
         _reason: cleanText(body.reason, 500),

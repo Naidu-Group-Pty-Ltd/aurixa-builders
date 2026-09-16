@@ -28,6 +28,7 @@ import {
   FORWARDED_REQUEST_HEADERS,
   FORWARDED_RESPONSE_HEADERS,
   resolveProxiedFunction,
+  trustedClientIpFromPlatform,
 } from '../_shared/fnProxyPolicy.pure.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -66,6 +67,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // either header — neither is on the forwarded list.
   headers.set('apikey', anonKey);
   headers.set('authorization', `Bearer ${anonKey}`);
+
+  // The end user's address, attached the same way and for the same reason: it
+  // must be the platform's view, not the caller's claim. Before this, no
+  // client-IP header crossed the proxy at all, so every per-IP rate limit
+  // behind it shared ONE bucket for the entire product — 30 sign-in attempts
+  // per 15 minutes network-wide, and five password resets per hour. One
+  // person exhausting either locked out everyone else.
+  const clientIp = trustedClientIpFromPlatform(req.headers);
+  if (clientIp) headers.set('x-real-ip', clientIp);
 
   // Vercel parses a JSON body before we see it; re-serialising is faithful
   // because every portal call is application/json by construction.

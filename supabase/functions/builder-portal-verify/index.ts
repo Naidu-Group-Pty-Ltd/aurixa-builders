@@ -23,6 +23,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0';
 import { createCorsHeaders, createClearBuilderSessionCookie } from '../_shared/auth.ts';
 import { csrfDenied, enforceCsrf } from '../_shared/csrfGuard.ts';
+import { readBoundedJson, DEFAULT_MAX_BODY_BYTES } from '../_shared/validate.ts';
 import { hashSessionToken } from '../_shared/sessionHash.ts';
 import {
   resolveBuilderSession, builderGovernanceError, builderPermissionMatrix,
@@ -50,8 +51,13 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
 
+    // Bounded BEFORE the session is resolved below, so an unauthenticated
+    // caller cannot make this isolate buffer a body of any size it likes. An
+    // over-limit body throws like a malformed one and lands in the same catch.
     let body: Record<string, unknown> = {};
-    try { body = await req.json(); } catch { /* a bare restore call has no body */ }
+    try {
+      body = await readBoundedJson(req, DEFAULT_MAX_BODY_BYTES);
+    } catch { /* a bare restore call has no body */ }
     const action = typeof body?.action === 'string' ? body.action : null;
 
     if (action && MUTATING_ACTIONS.has(action)) {

@@ -53,6 +53,26 @@ import {
  */
 const GOOGLE_CIRCUIT_SCOPE = 'google_street_view';
 
+/**
+ * WHAT REACHES THE LOG MUST NOT CARRY THE CREDENTIAL.
+ *
+ * Google's REST API takes its credential as a `key` search parameter, so every
+ * call below has the live `GOOGLE_MAPS_API_KEY` in its URL — that is the shape
+ * of the request and it is not ours to change. What IS ours is what gets
+ * written down: Deno embeds the FULL request URL in the `TypeError` it throws
+ * when a request never completes, so a DNS failure, a TLS failure or a reset
+ * connection would put the key itself into the function logs, where it outlives
+ * the incident and is readable by everyone with log access.
+ *
+ * So the message is scrubbed on its way to the log, never the request. The
+ * value stops at the next `&`, `#`, whitespace or closing bracket, because the
+ * URL arrives parenthesised inside a larger sentence and the rest of that
+ * sentence is the diagnostic we are keeping.
+ */
+function withoutApiKey(message: string): string {
+  return message.replace(/([?&])key=[^&#\s)\]"']*/gi, '$1key=REDACTED');
+}
+
 export interface EnrichableStockItem {
   id: string;
   organisation_id: string;
@@ -542,7 +562,8 @@ export async function enrichFromGoogle(
     return { stage: 'google_maps', status: 'ready', detail: product };
   } catch (error) {
     console.warn('[builderStock] google enrichment failed', {
-      item: item.id, message: String((error as { message?: string })?.message ?? error),
+      item: item.id,
+      message: withoutApiKey(String((error as { message?: string })?.message ?? error)),
     });
     return await recordStageUnavailable(
       db, item, 'google_maps', 'failed',
@@ -731,7 +752,8 @@ export async function enrichFromInternetSearch(
     };
   } catch (error) {
     console.warn('[builderStock] internet search failed', {
-      item: item.id, message: String((error as { message?: string })?.message ?? error),
+      item: item.id,
+      message: withoutApiKey(String((error as { message?: string })?.message ?? error)),
     });
     return await recordStageUnavailable(
       db, item, 'internet_search', 'failed',

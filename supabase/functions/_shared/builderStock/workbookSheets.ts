@@ -12,6 +12,7 @@
  * builder's brochure.
  */
 import { hyperlinkTargetOf, type WorkbookSheet } from './sheetHyperlinks.pure.ts';
+import { GridTooLargeError, MAX_GRID_CELLS } from './sheetGrid.pure.ts';
 
 /**
  * Every worksheet's visible values and its hyperlink targets.
@@ -32,6 +33,19 @@ export async function readWorkbookSheets(bytes: Uint8Array): Promise<WorkbookShe
     if (!sheet || !sheet['!ref']) return { name, values, links };
 
     const range = XLSX.utils.decode_range(String(sheet['!ref']));
+    /*
+     * `!ref` IS THE WORKBOOK'S OWN CLAIM ABOUT ITS SIZE, not a measurement of
+     * it. The string sits inside the file the builder uploaded, so a one-row
+     * sheet is free to declare `A1:XFD1048576` and cost seventeen billion
+     * `encode_cell` lookups before a single real value is found. The ceiling
+     * is the grid reader's own `MAX_GRID_CELLS`, refused the same way it
+     * refuses an oversized grid, because it is the same ceiling on the same
+     * shape reached through the other representation. Both callers already
+     * treat a throw from here as a source they could not read.
+     */
+    const declaredCells =
+      (range.e.r - range.s.r + 1) * (range.e.c - range.s.c + 1);
+    if (declaredCells > MAX_GRID_CELLS) throw new GridTooLargeError();
     for (let r = range.s.r; r <= range.e.r; r += 1) {
       const valueRow: (string | null)[] = [];
       const linkRow: (string | null)[] = [];

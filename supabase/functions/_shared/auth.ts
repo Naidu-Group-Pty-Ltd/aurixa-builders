@@ -11,6 +11,7 @@
 
 import { verifySupabaseJWT } from './jwt.ts';
 import { hashSessionToken, isSessionHashConfigured, computeIdleExpiry, isSessionUsable } from './sessionHash.ts';
+import { localDevOrigins } from './localDevOrigins.ts';
 
 /** Constant-time string comparison (avoids leaking a secret via timing). */
 function constantTimeEqualStr(a: string, b: string): boolean {
@@ -541,8 +542,9 @@ function credentialedOriginAllowlist(): string[] {
   // gated there; here there is nothing to gate).
   return [
     ...parseAllowedOrigins(),
-    'http://localhost:5173',
-    'http://localhost:8080',
+    // Local dev origins only when an environment explicitly opts in
+    // (`ALLOW_LOCAL_DEV_ORIGINS=true`); production never sets it.
+    ...localDevOrigins(),
     // Belt and braces: guarantees the list is never empty, so the
     // `allowedOrigins[0]` used as the deliberate mismatch below is always a
     // defined string and never `Access-Control-Allow-Origin: undefined`.

@@ -18,7 +18,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.app.json"
+    "typecheck": "tsc -p tsconfig.app.json && tsc -p tsconfig.node.json --noEmit"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.2",

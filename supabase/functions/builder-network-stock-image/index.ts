@@ -38,9 +38,44 @@ import { isMarketplaceEligible } from '../_shared/builderStock/marketplaceEligib
 import {
   servableClearanceFor, servableDerivativeFor,
 } from '../_shared/builderStock/sanitizedDerivative.pure.ts';
+import { getTrustedClientIp } from '../_shared/requestSecurity.ts';
+import { UNTRUSTED_IP_MULTIPLIER } from '../_shared/authRateLimit.ts';
 
 const SIGNED_URL_TTL_SECONDS = 3600;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * A CEILING ON A DOOR THAT ASKS FOR NOTHING.
+ *
+ * Nothing here is authenticated — the two predicates decide what is servable,
+ * not who asked — and every GET that clears the uuid check spends two
+ * service-role selects, a predicate RPC and a signed-URL mint before a single
+ * byte is served. On an unauthenticated endpoint that cost IS the exposure, so
+ * it is bounded per source address.
+ *
+ * KEYED ON AN ADDRESS THE CALLER CANNOT SET. `getTrustedClientIp` reads only
+ * the headers the edge writes and deliberately refuses `X-Forwarded-For`,
+ * which a client appends to at will — a limiter keyed on that buckets an
+ * attacker under a value they choose and enforces nothing at all. Where the
+ * platform gave us no address we believe, every such caller shares one bucket,
+ * so that bucket carries `UNTRUSTED_IP_MULTIPLIER` for the same reason the
+ * portal logins do: one shared counter must not shut a whole deployment out of
+ * its own pictures.
+ *
+ * 600 a minute is roughly ten a second from one source. A marketplace page of
+ * cards asks for each picture once and the 302 it gets back is cacheable for
+ * five minutes, so even an office behind one NAT address stays far under it,
+ * while a host trying to farm signed URLs stops immediately.
+ *
+ * AND IT FAILS CLOSED, which is the opposite of `authRateLimit.ts` and
+ * deliberate. That module degrades to a per-isolate bucket because a login
+ * that cannot reach its limiter would lock real people out of the product.
+ * Here the thing being protected is unauthenticated amplification and the cost
+ * of a denial is a card drawing no picture until the limiter answers again, so
+ * a limiter that cannot answer refuses rather than waving the request through.
+ */
+const IMAGE_RATE_LIMIT_WINDOW_SECONDS = 60;
+const IMAGE_RATE_LIMIT_PER_IP = 600;
 
 Deno.serve(async (req) => {
   const notFound = () => new Response('Not found', {
@@ -60,6 +95,30 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
+
+    // Before any of the work below, and keyed on an address the caller does
+    // not get to choose. See the constants above.
+    const trustedIp = getTrustedClientIp(req.headers);
+    const { data: withinLimit, error: limitError } = await supabase
+      .rpc('check_and_bump_rate_limit', {
+        p_key: `builder_network_stock_image:${trustedIp ?? 'untrusted'}`,
+        p_max: trustedIp
+          ? IMAGE_RATE_LIMIT_PER_IP
+          : IMAGE_RATE_LIMIT_PER_IP * UNTRUSTED_IP_MULTIPLIER,
+        p_window_seconds: IMAGE_RATE_LIMIT_WINDOW_SECONDS,
+      });
+    if (limitError || withinLimit !== true) {
+      if (limitError) {
+        console.error('[builder-network-stock-image] rate limiter unavailable', limitError.message);
+      }
+      return new Response('Too many requests', {
+        status: 429,
+        headers: {
+          'Cache-Control': 'no-store',
+          'Retry-After': String(IMAGE_RATE_LIMIT_WINDOW_SECONDS),
+        },
+      });
+    }
 
     const { data: image } = await supabase
       .from('builder_stock_item_images')

@@ -32,6 +32,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0';
 import { createCorsHeaders } from '../_shared/auth.ts';
 import { enforceCsrf, csrfDenied } from '../_shared/csrfGuard.ts';
+import { readBoundedJson, DEFAULT_MAX_BODY_BYTES } from '../_shared/validate.ts';
 import {
   resolveBuilderSession,
   builderGovernanceError,
@@ -87,7 +88,10 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
 
-    const body = await req.json().catch(() => ({} as Record<string, any>));
+    // Bounded BEFORE the session is resolved below, so an unauthenticated
+    // caller cannot make this isolate buffer a body of any size it likes.
+    const body = await readBoundedJson(req, DEFAULT_MAX_BODY_BYTES)
+      .catch(() => ({} as Record<string, any>));
     const operation = String(body.operation || '');
 
     const session = await resolveBuilderSession(supabase, req);
@@ -394,7 +398,9 @@ Deno.serve(async (req) => {
         _actor_type: 'builder_user',
         _actor_builder_user_id: me.id,
         _stage_id: stageId,
-        _construction_case_id: stageId ? null : res.record.id,
+        // Always the authorised case: the guarded command scopes its update by
+        // it, so a stage id from another case matches no row.
+        _construction_case_id: res.record.id,
         _payload: payload,
         _expected_version: expectedVersion,
         _reason: cleanText(body.reason, 500),
@@ -438,7 +444,9 @@ Deno.serve(async (req) => {
         _actor_type: 'builder_user',
         _actor_builder_user_id: me.id,
         _milestone_id: milestoneId,
-        _construction_case_id: milestoneId ? null : res.record.id,
+        // Always the authorised case: the guarded command scopes its update by
+        // it, so a milestone id from another case matches no row.
+        _construction_case_id: res.record.id,
         _construction_stage_id: cleanText(body.construction_stage_id, 64),
         _payload: payload,
         _expected_version: expectedVersion,

@@ -53,6 +53,32 @@ export const PROXIED_FUNCTIONS = [
 export type ProxiedFunction = (typeof PROXIED_FUNCTIONS)[number];
 
 /** Request headers copied from the browser to the edge function. */
+/**
+ * The client address as the PLATFORM observed it — never one the browser typed.
+ *
+ * This is deliberately NOT a forwarded header. `FORWARDED_REQUEST_HEADERS`
+ * below excludes every client-IP spelling precisely because a forwarded one is
+ * a value the caller controls; the proxy sets the trusted value itself, the
+ * same way it attaches the credential. Vercel rewrites `x-real-ip` and the
+ * first `x-forwarded-for` element at its edge, so those are the platform's
+ * view rather than the caller's.
+ *
+ * Shape is not validated here: `getTrustedClientIp` on the Edge side already
+ * refuses anything that is not a bare IPv4/IPv6 literal, and duplicating that
+ * rule in two places is how the two drift apart.
+ */
+export function trustedClientIpFromPlatform(
+  headers: Record<string, string | string[] | undefined>,
+): string | null {
+  const firstValue = (value: string | string[] | undefined): string | null => {
+    const raw = Array.isArray(value) ? value[0] : value;
+    if (typeof raw !== 'string') return null;
+    const candidate = raw.split(',')[0]?.trim() ?? '';
+    return candidate.length ? candidate : null;
+  };
+  return firstValue(headers['x-real-ip']) ?? firstValue(headers['x-forwarded-for']);
+}
+
 export const FORWARDED_REQUEST_HEADERS = [
   'content-type',
   'x-portal-request',

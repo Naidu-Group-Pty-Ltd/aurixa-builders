@@ -40,6 +40,8 @@ import { parseJsonBody } from '../_shared/validate.ts';
 import { VerifyEmailRequest, AUTH_MAX_BODY_BYTES } from '../_shared/authBodySchemas.ts';
 import { getBrandConfig } from '../_shared/brand-config.ts';
 import { meteredFetch } from '../_shared/meteredFetch.ts';
+import { enforceAuthRateLimit } from '../_shared/authRateLimit.ts';
+import { getTrustedClientIp } from '../_shared/requestSecurity.ts';
 
 const GENERIC_TOKEN_ERROR = 'Invalid or expired verification link';
 const TOKEN_EXPIRY_HOURS = 24;
@@ -65,11 +67,21 @@ Deno.serve(async (req) => {
     if (!__body.ok) return __body.response;
     const { action, token } = __body.data;
 
-    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
-    const { data: allowed } = await supabase.rpc('check_and_bump_rate_limit', {
-      p_key: `builder_verify_email:${ip}`, p_max: 30, p_window_seconds: 3600,
+    // The shared limiter: bucketed on the address the platform vouched for,
+    // never on a caller-set `X-Forwarded-For`, and degrading to a local counter
+    // instead of to no limit when the shared store is unreachable. Same budget
+    // and same response as before.
+    const rateLimit = await enforceAuthRateLimit(supabase, req, {
+      scope: 'bve', ip: { max: 30, windowSeconds: 3600 },
     });
-    if (allowed === false) return json({ error: 'Too many attempts. Try again later.' }, 429);
+    if (!rateLimit.allowed) return json({ error: 'Too many attempts. Try again later.' }, 429);
+
+    // The address recorded against an issued token, for the same reason the
+    // limiter no longer trusts one: `X-Forwarded-For` is appended to by the
+    // caller, so the column could be filled with addresses of their choosing.
+    // Only an address the platform vouched for is written; anything else is
+    // recorded honestly as unknown.
+    const ip = getTrustedClientIp(req.headers) ?? 'unknown';
 
     // ---------------------------------------------------------------- resend
     if (action === 'resend') {

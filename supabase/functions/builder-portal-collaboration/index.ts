@@ -541,7 +541,11 @@ Deno.serve(async (req) => {
       if (!payload.storage_path || !payload.file_name) {
         return json({ error: 'A file is required' }, 400);
       }
-      if (!isAcceptableStoragePath(payload.storage_path as string)) {
+      // The organisation is the session's ACTIVE one, resolved above — a path
+      // is only acceptable when it sits inside that organisation's own prefix,
+      // so a registered version can never point at another organisation's
+      // object for `document_url` to sign later.
+      if (!isAcceptableStoragePath(payload.storage_path as string, activeOrganisationId)) {
         return json({ error: 'That file location is not allowed' }, 400);
       }
 

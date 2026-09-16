@@ -26,6 +26,19 @@
 export const BUILDERS_AUDIENCE = 'https://builders.aurixasystems.com.au';
 export const BUILDERS_JWKS_PATH = '/api/public/builders/jwks';
 const JWKS_TTL_MS = 300_000;
+/**
+ * THE GRACE PERIOD HAS A CEILING.
+ *
+ * Outside the TTL, a JWKS endpoint that answers non-200 or answers rubbish used
+ * to fall back on the cached keys with no upper bound at all — so a key Mission
+ * Control had ROTATED OUT went on verifying assertions for as long as the
+ * endpoint stayed broken, which is the state an attacker who has taken a
+ * retired key would want to arrange. Twelve TTLs is one hour: long enough that
+ * trust does not flap through the outages the fallback was written for, short
+ * enough that a rotation is enforced within the hour whatever MC is doing. Past
+ * it the cache is not keys any more, and verification fails closed.
+ */
+const JWKS_MAX_STALE_MS = JWKS_TTL_MS * 12;
 const CLOCK_SKEW_SECONDS = 60;
 
 interface Jwk { kty: string; n: string; e: string; kid?: string; alg?: string }
@@ -56,6 +69,13 @@ function jwksUrl(): string | null {
   return `${base}${BUILDERS_JWKS_PATH}`;
 }
 
+/** The cached keys while they are still inside the hard bound — otherwise none. */
+function usableStaleKeys(): Jwk[] | null {
+  if (!jwksCache) return null;
+  if (Date.now() - jwksCache.fetchedAt >= JWKS_MAX_STALE_MS) return null;
+  return jwksCache.keys;
+}
+
 async function fetchJwks(force = false): Promise<Jwk[] | null> {
   const url = jwksUrl();
   if (!url) return null;
@@ -64,15 +84,17 @@ async function fetchJwks(force = false): Promise<Jwk[] | null> {
   }
   try {
     const response = await fetch(url, { headers: { Accept: 'application/json' } });
-    if (!response.ok) return jwksCache?.keys ?? null;
+    if (!response.ok) return usableStaleKeys();
     const body = await response.json().catch(() => null) as { keys?: Jwk[] } | null;
-    if (!body || !Array.isArray(body.keys)) return jwksCache?.keys ?? null;
+    if (!body || !Array.isArray(body.keys)) return usableStaleKeys();
     jwksCache = { fetchedAt: Date.now(), keys: body.keys };
     return jwksCache.keys;
   } catch {
     // A transient fetch failure keeps the previous keys inside their TTL —
-    // trust does not flap with the network.
-    return jwksCache?.keys ?? null;
+    // trust does not flap with the network. Past JWKS_MAX_STALE_MS it does not:
+    // no keys come back, and the caller refuses rather than verifying against a
+    // set nobody has been able to confirm for an hour.
+    return usableStaleKeys();
   }
 }
 

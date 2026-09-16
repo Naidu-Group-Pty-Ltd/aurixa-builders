@@ -19,6 +19,8 @@
  * does not apply.
  */
 
+import { localDevOrigins } from './localDevOrigins.ts';
+
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 /**
  * NETWORK EDITION — the network's one first-party origin.
@@ -49,8 +51,8 @@ function originAllowed(origin: string | null): boolean {
   if (!origin) return false;
   const list = [
     ...parseAllowedOrigins(),
-    'http://localhost:5173',
-    'http://localhost:8080',
+    // Opt-in only: `ALLOW_LOCAL_DEV_ORIGINS=true` in a dev/preview environment.
+    ...localDevOrigins(),
   ];
   // NETWORK EDITION: exact-origin only, with no suffix trust of any kind.
   // The prime kept a flag-gated Lovable-preview suffix; this product has no

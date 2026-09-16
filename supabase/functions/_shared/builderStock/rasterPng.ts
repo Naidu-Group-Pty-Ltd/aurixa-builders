@@ -119,6 +119,28 @@ export async function inflate(bytes: Uint8Array): Promise<Uint8Array<ArrayBuffer
 }
 
 /**
+ * A CEILING ON WHAT ONE TRANSFORM MAY HAND BACK.
+ *
+ * A deflate stream states nothing about how far it expands, and `inflate` is
+ * pointed straight at streams taken out of a builder's own PDF — so a few
+ * kilobytes of zeroes inside an admitted 25 MB document inflate to gigabytes,
+ * and the collector below would hold every byte of it before any caller got
+ * the chance to reject a thing.
+ *
+ * 64 MB is above anything legitimate in this pipeline and far below a bomb.
+ * The largest raster measured here is the Lumina brochures' 3556x2000 RGB
+ * page at 21 MB; `extract.ts` already states 40 MB (`MAX_MEDIA_TOTAL_BYTES`)
+ * as more than a 25 MB container can honestly decompress to, for exactly this
+ * threat. Sitting above both leaves the compress path — whose input is already
+ * bounded by its caller's raster — untouched, and still leaves an edge isolate
+ * room to hold the chunks and the copy made from them.
+ *
+ * Every `inflate` call site already treats a throw as "a stream we cannot read
+ * contributes nothing", so a refusal costs one picture, never the invocation.
+ */
+const MAX_PUMP_OUTPUT_BYTES = 64 * 1024 * 1024;
+
+/**
  * Push bytes through a transform and collect the result.
  *
  * Written against the stream's own writer rather than `new Blob(…).stream()`:
@@ -164,11 +186,22 @@ export async function pump(
   closed.catch(() => undefined);
 
   const chunks: Uint8Array[] = [];
+  let collected = 0;
   const reader = transform.readable.getReader();
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    if (value) chunks.push(value);
+    if (value) {
+      collected += value.length;
+      // Refused mid-stream rather than after the fact: the point of the
+      // ceiling is the bytes never being held, so the read stops here and the
+      // transform is cancelled instead of running to its own end.
+      if (collected > MAX_PUMP_OUTPUT_BYTES) {
+        await reader.cancel('output_too_large');
+        throw new Error('output exceeds MAX_PUMP_OUTPUT_BYTES');
+      }
+      chunks.push(value);
+    }
   }
   await closed;
 

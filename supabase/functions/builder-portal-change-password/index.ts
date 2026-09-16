@@ -22,6 +22,7 @@ import { validatePasswordStrength } from '../_shared/passwordValidation.ts';
 import { createCorsHeaders, createBuilderSessionCookie } from '../_shared/auth.ts';
 import { csrfDenied, enforceCsrf } from '../_shared/csrfGuard.ts';
 import { resolveBuilderSession } from '../_shared/builderPortalAuth.ts';
+import { enforceAuthRateLimit, authRateLimitedResponse } from '../_shared/authRateLimit.ts';
 import {
   auditBuilderIdentity, issueBuilderSession, revokeAllBuilderSessions,
 } from '../_shared/builderSessions.ts';
@@ -49,6 +50,20 @@ Deno.serve(async (req) => {
     const session = await resolveBuilderSession(supabase, req);
     if (!session.ok || !session.user) {
       return json({ error: session.error, code: session.code }, session.status);
+    }
+
+    // Verifying the CURRENT password is a credential test, and it was the one
+    // password-touching endpoint in this portal with no ceiling on it: anyone
+    // holding a session cookie — a borrowed or stolen device — could guess
+    // without bound. Budgeted per address and per account, like its siblings.
+    const rateLimit = await enforceAuthRateLimit(supabase, req, {
+      scope: 'bcp',
+      ip: { max: 30, windowSeconds: 900 },
+      identifier: session.user.id,
+      identifierBudget: { max: 10, windowSeconds: 900 },
+    });
+    if (!rateLimit.allowed) {
+      return authRateLimitedResponse(corsHeaders, rateLimit.retryAfterSeconds);
     }
 
     let body: Record<string, unknown> = {};

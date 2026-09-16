@@ -197,11 +197,22 @@ export const BUILDER_DOCUMENT_URL_TTL_SECONDS = 300;
  * A caller supplies a path; that path is not authority, and traversal, absolute
  * paths and any prefix but ours are rejected so an upload cannot be aimed at
  * another portal's objects.
+ *
+ * THE PREFIX ALONE WAS NOT A BOUNDARY. `documents/` is shared by every
+ * organisation on the network, so a path that cleared this check still named
+ * nothing in particular: a version registered against it is later signed by
+ * `document_url`, which would have handed one organisation a short-lived URL
+ * for another's object. The path must therefore be scoped to the organisation
+ * the caller is acting as — `documents/<organisationId>/…` — and that id comes
+ * from the server-held ACTIVE organisation on the session, never from the
+ * request body, or the check would be asking the attacker for the answer.
  */
-export function isAcceptableStoragePath(path: string | null): boolean {
-  if (!path) return false;
+export function isAcceptableStoragePath(
+  path: string | null, organisationId: string | null,
+): boolean {
+  if (!path || !organisationId) return false;
   if (path.includes('..') || path.startsWith('/')) return false;
-  return path.startsWith(BUILDER_DOCUMENT_STORAGE_PREFIX);
+  return path.startsWith(`${BUILDER_DOCUMENT_STORAGE_PREFIX}${organisationId}/`);
 }
 
 export function buildConversationPayload(body: Record<string, any>) {

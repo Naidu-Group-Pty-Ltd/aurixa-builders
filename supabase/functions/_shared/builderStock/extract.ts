@@ -20,6 +20,7 @@
  */
 import { keyRowsByHeader, parseDelimited } from './table.pure.ts';
 import { attachRowHyperlinks, hyperlinkTargetOf } from './sheetHyperlinks.pure.ts';
+import { MAX_GRID_CELLS } from './sheetGrid.pure.ts';
 import { readHtmlSource } from './htmlSource.pure.ts';
 import { readOpenDocument, readPresentation, readRichText, readStructured } from './otherFormats.pure.ts';
 import type { StockFileClassification } from './fileTypes.pure.ts';
@@ -445,6 +446,29 @@ export async function extractStockFile(
       if (result.rows.length >= MAX_ROWS) break;
       const sheet = workbook.Sheets[sheetName];
       if (!sheet) continue;
+      const range = (() => {
+        try {
+          return XLSX.utils.decode_range(String(sheet['!ref'] ?? 'A1'));
+        } catch {
+          return null;
+        }
+      })();
+      /*
+       * `!ref` IS THE WORKBOOK'S OWN CLAIM ABOUT ITS SIZE, and it arrives
+       * inside the file the builder uploaded. `sheet_to_json` below walks the
+       * DECLARED rectangle and so does the link pass after it, so a one-row
+       * sheet that declares `A1:XFD1048576` is seventeen billion cells of work
+       * and a row array per declared row before either finds a real value. The
+       * ceiling is the grid reader's own `MAX_GRID_CELLS` — the same bound on
+       * the same shape — and it is tested BEFORE anything walks the range,
+       * which is the only place testing it helps.
+       */
+      if (range && (range.e.r - range.s.r + 1) * (range.e.c - range.s.c + 1) > MAX_GRID_CELLS) {
+        throw new StockExtractionError(
+          'spreadsheet_too_large',
+          'That spreadsheet declares far more cells than it uses. Save it with just the rows you are listing and upload it again.',
+        );
+      }
       /**
        * BLANK ROWS ARE KEPT, and that is not cosmetic. A drawing is anchored
        * to an absolute sheet row; drop the blanks and every anchor below the
@@ -456,13 +480,6 @@ export async function extractStockFile(
         header: 1, raw: false, defval: null, blankrows: true,
       }) as unknown[][];
       if (!matrix.length) continue;
-      const range = (() => {
-        try {
-          return XLSX.utils.decode_range(String(sheet['!ref'] ?? 'A1'));
-        } catch {
-          return null;
-        }
-      })();
       const origin = range?.s.r ?? 0;
 
       /*

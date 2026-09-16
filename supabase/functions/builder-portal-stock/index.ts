@@ -30,6 +30,7 @@ import {
 } from '../_shared/builderStock/imageProgress.pure.ts';
 import { createCorsHeaders } from '../_shared/auth.ts';
 import { enforceCsrf, csrfDenied } from '../_shared/csrfGuard.ts';
+import { readBoundedJson, DEFAULT_MAX_BODY_BYTES } from '../_shared/validate.ts';
 import {
   resolveBuilderSession,
   builderGovernanceError,
@@ -168,7 +169,10 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
 
-    const body = await req.json().catch(() => ({} as Record<string, any>));
+    // Bounded BEFORE the session is resolved below, so an unauthenticated
+    // caller cannot make this isolate buffer a body of any size it likes.
+    const body = await readBoundedJson(req, DEFAULT_MAX_BODY_BYTES)
+      .catch(() => ({} as Record<string, any>));
     const operation = String(body.operation || '');
 
     const session = await resolveBuilderSession(supabase, req);
@@ -1729,6 +1733,14 @@ Deno.serve(async (req) => {
      * recovered document through the pipeline that already exists.
      */
     if (operation === 'refresh_brochure_links') {
+      // Same level as every other act that changes a stock list: this one
+      // inserts a recovery request and sends a webhook out of the deployment,
+      // which is not something a viewer may do. It sat under the `view` gate
+      // alone while `reprocess_source_images` and `enrich_images` — the same
+      // shape of upload-scoped re-read — have always required `edit`.
+      if (!await can('edit')) {
+        return json({ error: 'You do not have permission to manage stock', code: 'permission_denied' }, 403);
+      }
       const uploadId = String(body.upload_id || '');
       if (!uploadId) return json({ success: false, error: 'upload_id is required.' }, 400);
 

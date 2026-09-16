@@ -8,6 +8,8 @@
  * (Phase 0 NOCOPY-02).
  */
 
+import { localDevOrigins } from './localDevOrigins.ts';
+
 export const BUILDER_SESSION_COOKIE = '__Host-builder_session_token';
 export const BUILDER_PORTAL_HEADER = 'builder-portal';
 
@@ -40,20 +42,24 @@ export function extractBuilderSessionToken(headers: Headers): string | null {
  * Lovable preview); carrying them here would let a page on the PRIME's
  * origin drive the NETWORK's sessions. The network answers to exactly one
  * production origin — the browser talks to the same-origin `/fn/*` proxy,
- * which forwards the Origin header verbatim — plus local dev servers.
- * `ALLOWED_ORIGINS` extends the list per environment (e.g. a preview host)
- * without a deploy.
+ * which forwards the Origin header verbatim. `ALLOWED_ORIGINS` extends the
+ * list per environment (e.g. a preview host) without a deploy.
+ *
+ * The local dev servers used to live in this list unconditionally, so every
+ * deployed function trusted a laptop's `localhost` as much as the production
+ * site. They are now opt-in via `ALLOW_LOCAL_DEV_ORIGINS=true` — see
+ * `localDevOrigins.ts` for why that default is the safe way round.
  */
 const FALLBACK_ORIGINS = [
   'https://builders.aurixasystems.com.au',
-  'http://localhost:5173',
-  'http://localhost:8080',
 ];
 
 function allowedOrigins(): string[] {
   const configured = ((globalThis as any).Deno?.env?.get?.('ALLOWED_ORIGINS') || '')
     .split(',').map((value: string) => value.trim()).filter(Boolean);
-  return [...configured, ...FALLBACK_ORIGINS];
+  // The local dev servers are opt-in per environment
+  // (`ALLOW_LOCAL_DEV_ORIGINS=true`), not a standing production carve-out.
+  return [...configured, ...FALLBACK_ORIGINS, ...localDevOrigins()];
 }
 
 /**

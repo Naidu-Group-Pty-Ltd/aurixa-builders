@@ -313,6 +313,43 @@ Deno.serve(async (req) => {
         invite_token_hash: null, invite_token_expires_at: null,
       }).eq('id', target.id);
       if (error) throw error;
+
+      /*
+       * THE MEMBERSHIP GOES WITH THE INVITATION.
+       *
+       * `invite` grants the membership BEFORE it issues the token, so clearing
+       * the token alone left the invitee a member of this organisation holding
+       * the role it chose. That is not a dead end for them: accepting a
+       * DIFFERENT organisation's invitation later activates the same account,
+       * and this organisation is then sitting in their switcher — revoked in
+       * name only.
+       *
+       * ONLY FOR AN ACCOUNT THAT HAS NOT ACCEPTED, tested exactly as `resend`
+       * tests it. An already-active account was never invited into this seat:
+       * `invite` grants a live user their membership outright and issues no
+       * token at all, so revoking an INVITATION here must not silently remove a
+       * working colleague. Removing a member is a different act and belongs to
+       * a surface that says so.
+       *
+       * The representation is the one `builder_admin_revoke_membership` writes
+       * and `builder_memberships_revocation_stamp` requires — status, stamp and
+       * reason together — scoped to the ACTIVE organisation and this user, so
+       * no membership of theirs anywhere else is touched.
+       */
+      if (!target.invite_accepted_at && !target.password_hash) {
+        const { error: membershipError } = await supabase
+          .from('builder_organisation_memberships')
+          .update({
+            status: 'revoked',
+            revoked_at: new Date().toISOString(),
+            revoked_reason: 'invitation revoked',
+          })
+          .eq('builder_user_id', target.id)
+          .eq('organisation_id', activeOrganisationId)
+          .is('revoked_at', null);
+        if (membershipError) throw membershipError;
+      }
+
       await logInviteActivity('builder_invite_revoked', target.id);
       return json(GENERIC_OK);
     }

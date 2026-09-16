@@ -983,6 +983,271 @@ BEGIN
   END IF;
 END $proof$;`);
 
+// 4c. SECURITY PROOFS. The remediation of 17 Sep 2026 has exactly two claims a
+// catalog cannot make on its own: that the privileged surface answers only to
+// service_role, and that a child write cannot escape the parent the caller was
+// authorised for. Both are proven here by EXECUTION, against the schema a
+// fresh deployment would get, so a later migration that reopens either one
+// fails this check rather than production.
+
+proof('privileged functions answer to service_role and to nobody else', `
+DO $proof$
+DECLARE
+  v_open text; v_missing text;
+  v_denied boolean := false;
+  v_org uuid; v_project uuid; v_stage uuid;
+BEGIN
+  -- 1. Not one schema-owned function is executable by anon or authenticated.
+  --    Extension-owned functions are excluded: they are pgcrypto's and
+  --    PostgREST needs them, exactly as the migration excludes them.
+  SELECT coalesce(string_agg(sig, ', ' ORDER BY sig), '') INTO v_open
+  FROM (
+    SELECT p.oid::regprocedure::text AS sig
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid
+                       AND d.classid = 'pg_proc'::regclass AND d.deptype = 'e')
+      AND (has_function_privilege('anon', p.oid, 'EXECUTE')
+        OR has_function_privilege('authenticated', p.oid, 'EXECUTE'))
+  ) q;
+  IF v_open <> '' THEN
+    RAISE EXCEPTION 'anon or authenticated can execute %: %',
+      (SELECT count(*) FROM regexp_split_to_table(v_open, ', ')), left(v_open, 500);
+  END IF;
+
+  -- 2. ...and every one of them is still reachable by the service role the
+  --    Edge Functions actually use. A fix that locked the product out of its
+  --    own database would pass (1) and fail here.
+  SELECT coalesce(string_agg(sig, ', ' ORDER BY sig), '') INTO v_missing
+  FROM (
+    SELECT p.oid::regprocedure::text AS sig
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid
+                       AND d.classid = 'pg_proc'::regclass AND d.deptype = 'e')
+      AND NOT has_function_privilege('service_role', p.oid, 'EXECUTE')
+  ) q;
+  IF v_missing <> '' THEN
+    RAISE EXCEPTION 'service_role lost EXECUTE on: %', left(v_missing, 500);
+  END IF;
+
+  -- 3. The SECURITY DEFINER view: closed to the browser roles, open to the
+  --    service role. It reads every organisation's scan outcomes.
+  IF has_table_privilege('anon', 'public.builder_document_scan_health', 'SELECT')
+     OR has_table_privilege('authenticated', 'public.builder_document_scan_health', 'SELECT') THEN
+    RAISE EXCEPTION 'the cross-organisation scan-health view is still readable by anon/authenticated';
+  END IF;
+  IF NOT has_table_privilege('service_role', 'public.builder_document_scan_health', 'SELECT') THEN
+    RAISE EXCEPTION 'service_role can no longer read the scan-health view';
+  END IF;
+
+  -- 4. Behaviour, not just catalog. One tenant, one governed write, attempted
+  --    as anon: refused, and the row untouched.
+  INSERT INTO public.builder_organisations(legal_name, org_type, status, is_active, activated_at)
+  VALUES ('Security Proof Org', 'builder', 'active', true, now()) RETURNING id INTO v_org;
+  INSERT INTO public.builder_projects(name, builder_organisation_id)
+  VALUES ('Security Proof Project', v_org) RETURNING id INTO v_project;
+  INSERT INTO public.builder_stages(project_id, name)
+  VALUES (v_project, 'Original') RETURNING id INTO v_stage;
+
+  BEGIN
+    SET LOCAL ROLE anon;
+    PERFORM public.builder_upsert_stage(NULL, 'builder_user', NULL, v_stage, v_project,
+      jsonb_build_object('name', 'anon was here'), 1, 'security proof');
+  EXCEPTION WHEN insufficient_privilege THEN
+    v_denied := true;
+  END;
+  RESET ROLE;
+  IF NOT v_denied THEN
+    RAISE EXCEPTION 'anon executed a privileged governed command';
+  END IF;
+  IF (SELECT name FROM public.builder_stages WHERE id = v_stage) <> 'Original' THEN
+    RAISE EXCEPTION 'the refused anon call still changed the row';
+  END IF;
+
+  -- 5. ...and the legitimate caller is unaffected. This is the half that makes
+  --    the refusal above a fix rather than an outage.
+  SET LOCAL ROLE service_role;
+  PERFORM public.builder_upsert_stage(NULL, 'builder_user', NULL, v_stage, v_project,
+    jsonb_build_object('name', 'Renamed by service_role'), 1, 'security proof');
+  RESET ROLE;
+  IF (SELECT name FROM public.builder_stages WHERE id = v_stage) <> 'Renamed by service_role' THEN
+    RAISE EXCEPTION 'service_role could not perform the governed write';
+  END IF;
+
+  -- 6. A stored password is a bcrypt hash — re-checked after every migration
+  --    has applied, not only at the moment the constraint was added.
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'public.builder_portal_users'::regclass
+       AND conname = 'builder_portal_users_password_hash_is_bcrypt'
+       AND convalidated) THEN
+    RAISE EXCEPTION 'the password_hash bcrypt constraint is missing or unvalidated';
+  END IF;
+END $proof$;`);
+
+proof('a child write never escapes the parent the caller was authorised for', `
+DO $proof$
+DECLARE
+  v_org_a uuid; v_org_b uuid;
+  v_proj_a uuid; v_proj_b uuid;
+  v_stage_a uuid; v_building_a uuid; v_lot_a uuid;
+  v_txn_a uuid; v_txn_b uuid; v_case_a uuid; v_case_b uuid;
+  v_cstage_a uuid; v_milestone_a uuid;
+  v_var_a uuid; v_var_b uuid; v_approval_a uuid;
+  v_caught text;
+BEGIN
+  -- Two tenants that share nothing. Organisation B plays the attacker: it
+  -- holds a project, a construction case and a variation of its own, and
+  -- supplies them as the PARENT for a child id belonging to organisation A.
+  INSERT INTO public.builder_organisations(legal_name, org_type, status, is_active, activated_at)
+  VALUES ('Isolation Org A', 'builder', 'active', true, now()) RETURNING id INTO v_org_a;
+  INSERT INTO public.builder_organisations(legal_name, org_type, status, is_active, activated_at)
+  VALUES ('Isolation Org B', 'builder', 'active', true, now()) RETURNING id INTO v_org_b;
+
+  INSERT INTO public.builder_projects(name, builder_organisation_id)
+  VALUES ('Isolation Project A', v_org_a) RETURNING id INTO v_proj_a;
+  INSERT INTO public.builder_projects(name, builder_organisation_id)
+  VALUES ('Isolation Project B', v_org_b) RETURNING id INTO v_proj_b;
+
+  INSERT INTO public.builder_stages(project_id, name)
+  VALUES (v_proj_a, 'A stage') RETURNING id INTO v_stage_a;
+  INSERT INTO public.builder_buildings(project_id, name)
+  VALUES (v_proj_a, 'A building') RETURNING id INTO v_building_a;
+  INSERT INTO public.builder_lots(project_id, lot_number)
+  VALUES (v_proj_a, 'A-1') RETURNING id INTO v_lot_a;
+
+  INSERT INTO public.builder_transactions(project_id, organisation_id)
+  VALUES (v_proj_a, v_org_a) RETURNING id INTO v_txn_a;
+  INSERT INTO public.builder_transactions(project_id, organisation_id)
+  VALUES (v_proj_b, v_org_b) RETURNING id INTO v_txn_b;
+  INSERT INTO public.builder_construction_cases(transaction_id, project_id)
+  VALUES (v_txn_a, v_proj_a) RETURNING id INTO v_case_a;
+  INSERT INTO public.builder_construction_cases(transaction_id, project_id)
+  VALUES (v_txn_b, v_proj_b) RETURNING id INTO v_case_b;
+
+  INSERT INTO public.builder_construction_stages(construction_case_id, name, stage_key)
+  VALUES (v_case_a, 'A construction stage', 'base') RETURNING id INTO v_cstage_a;
+  INSERT INTO public.builder_construction_milestones(construction_case_id, name)
+  VALUES (v_case_a, 'A milestone') RETURNING id INTO v_milestone_a;
+
+  INSERT INTO public.builder_variations(construction_case_id, title)
+  VALUES (v_case_a, 'A variation') RETURNING id INTO v_var_a;
+  INSERT INTO public.builder_variations(construction_case_id, title)
+  VALUES (v_case_b, 'B variation') RETURNING id INTO v_var_b;
+  INSERT INTO public.builder_variation_approvals(variation_id, approver_name)
+  VALUES (v_var_a, 'A approver') RETURNING id INTO v_approval_a;
+
+  -- 1. stage under a foreign project
+  v_caught := NULL;
+  BEGIN
+    PERFORM public.builder_upsert_stage(NULL, 'builder_user', NULL, v_stage_a, v_proj_b,
+      jsonb_build_object('name', 'taken'), 1, 'isolation proof');
+  EXCEPTION WHEN others THEN v_caught := SQLERRM;
+  END;
+  IF v_caught IS NULL OR v_caught NOT LIKE '%BUILDER_STAGE_NOT_FOUND%' THEN
+    RAISE EXCEPTION 'a foreign project could reach another organisation''s stage (%)', coalesce(v_caught, 'no error at all');
+  END IF;
+  IF (SELECT name FROM public.builder_stages WHERE id = v_stage_a) <> 'A stage' THEN
+    RAISE EXCEPTION 'the refused cross-tenant stage write still landed';
+  END IF;
+
+  -- 2. building under a foreign project
+  v_caught := NULL;
+  BEGIN
+    PERFORM public.builder_upsert_building(NULL, 'builder_user', NULL, v_building_a, v_proj_b,
+      NULL, jsonb_build_object('name', 'taken'), 1, 'isolation proof');
+  EXCEPTION WHEN others THEN v_caught := SQLERRM;
+  END;
+  IF v_caught IS NULL OR v_caught NOT LIKE '%BUILDER_BUILDING_NOT_FOUND%' THEN
+    RAISE EXCEPTION 'a foreign project could reach another organisation''s building (%)', coalesce(v_caught, 'no error at all');
+  END IF;
+  IF (SELECT name FROM public.builder_buildings WHERE id = v_building_a) <> 'A building' THEN
+    RAISE EXCEPTION 'the refused cross-tenant building write still landed';
+  END IF;
+
+  -- 3. lot under a foreign project
+  v_caught := NULL;
+  BEGIN
+    PERFORM public.builder_upsert_lot(NULL, 'builder_user', NULL, v_lot_a, v_proj_b,
+      NULL, jsonb_build_object('lot_number', 'taken'), 1, 'isolation proof');
+  EXCEPTION WHEN others THEN v_caught := SQLERRM;
+  END;
+  IF v_caught IS NULL OR v_caught NOT LIKE '%BUILDER_LOT_NOT_FOUND%' THEN
+    RAISE EXCEPTION 'a foreign project could reach another organisation''s lot (%)', coalesce(v_caught, 'no error at all');
+  END IF;
+  IF (SELECT lot_number FROM public.builder_lots WHERE id = v_lot_a) <> 'A-1' THEN
+    RAISE EXCEPTION 'the refused cross-tenant lot write still landed';
+  END IF;
+
+  -- 4. construction stage under a foreign case
+  v_caught := NULL;
+  BEGIN
+    PERFORM public.builder_upsert_construction_stage(NULL, 'builder_user', NULL, v_cstage_a, v_case_b,
+      jsonb_build_object('name', 'taken'), 1, 'isolation proof');
+  EXCEPTION WHEN others THEN v_caught := SQLERRM;
+  END;
+  IF v_caught IS NULL OR v_caught NOT LIKE '%BUILDER_CONSTRUCTION_STAGE_NOT_FOUND%' THEN
+    RAISE EXCEPTION 'a foreign case could reach another organisation''s construction stage (%)', coalesce(v_caught, 'no error at all');
+  END IF;
+  IF (SELECT name FROM public.builder_construction_stages WHERE id = v_cstage_a) <> 'A construction stage' THEN
+    RAISE EXCEPTION 'the refused cross-tenant construction stage write still landed';
+  END IF;
+
+  -- 5. milestone under a foreign case
+  v_caught := NULL;
+  BEGIN
+    PERFORM public.builder_upsert_milestone(NULL, 'builder_user', NULL, v_milestone_a, v_case_b,
+      NULL, jsonb_build_object('name', 'taken'), 1, 'isolation proof');
+  EXCEPTION WHEN others THEN v_caught := SQLERRM;
+  END;
+  IF v_caught IS NULL OR v_caught NOT LIKE '%BUILDER_MILESTONE_NOT_FOUND%' THEN
+    RAISE EXCEPTION 'a foreign case could reach another organisation''s milestone (%)', coalesce(v_caught, 'no error at all');
+  END IF;
+  IF (SELECT name FROM public.builder_construction_milestones WHERE id = v_milestone_a) <> 'A milestone' THEN
+    RAISE EXCEPTION 'the refused cross-tenant milestone write still landed';
+  END IF;
+
+  -- 6. variation approval under a foreign variation
+  v_caught := NULL;
+  BEGIN
+    PERFORM public.builder_upsert_variation_approval(NULL, 'builder_user', NULL, v_approval_a, v_var_b,
+      jsonb_build_object('approver_name', 'taken'), 1, 'isolation proof');
+  EXCEPTION WHEN others THEN v_caught := SQLERRM;
+  END;
+  IF v_caught IS NULL OR v_caught NOT LIKE '%BUILDER_APPROVAL_NOT_FOUND%' THEN
+    RAISE EXCEPTION 'a foreign variation could reach another organisation''s approval (%)', coalesce(v_caught, 'no error at all');
+  END IF;
+  IF (SELECT approver_name FROM public.builder_variation_approvals WHERE id = v_approval_a) <> 'A approver' THEN
+    RAISE EXCEPTION 'the refused cross-tenant approval write still landed';
+  END IF;
+
+  -- 7. AND THE HONEST CALLER IS UNTOUCHED. Every one of the six, with the
+  --    parent it really belongs to, still writes. A predicate that refused
+  --    everything would pass 1-6 and break the product.
+  PERFORM public.builder_upsert_stage(NULL, 'builder_user', NULL, v_stage_a, v_proj_a,
+    jsonb_build_object('name', 'A stage renamed'), 1, 'isolation proof');
+  PERFORM public.builder_upsert_building(NULL, 'builder_user', NULL, v_building_a, v_proj_a,
+    NULL, jsonb_build_object('name', 'A building renamed'), 1, 'isolation proof');
+  PERFORM public.builder_upsert_lot(NULL, 'builder_user', NULL, v_lot_a, v_proj_a,
+    NULL, jsonb_build_object('lot_number', 'A-2'), 1, 'isolation proof');
+  PERFORM public.builder_upsert_construction_stage(NULL, 'builder_user', NULL, v_cstage_a, v_case_a,
+    jsonb_build_object('name', 'A construction stage renamed'), 1, 'isolation proof');
+  PERFORM public.builder_upsert_milestone(NULL, 'builder_user', NULL, v_milestone_a, v_case_a,
+    NULL, jsonb_build_object('name', 'A milestone renamed'), 1, 'isolation proof');
+  PERFORM public.builder_upsert_variation_approval(NULL, 'builder_user', NULL, v_approval_a, v_var_a,
+    jsonb_build_object('approver_name', 'A approver renamed'), 1, 'isolation proof');
+
+  IF (SELECT name FROM public.builder_stages WHERE id = v_stage_a) <> 'A stage renamed'
+     OR (SELECT name FROM public.builder_buildings WHERE id = v_building_a) <> 'A building renamed'
+     OR (SELECT lot_number FROM public.builder_lots WHERE id = v_lot_a) <> 'A-2'
+     OR (SELECT name FROM public.builder_construction_stages WHERE id = v_cstage_a) <> 'A construction stage renamed'
+     OR (SELECT name FROM public.builder_construction_milestones WHERE id = v_milestone_a) <> 'A milestone renamed'
+     OR (SELECT approver_name FROM public.builder_variation_approvals WHERE id = v_approval_a) <> 'A approver renamed' THEN
+    RAISE EXCEPTION 'the parent predicate refused a write the caller was authorised to make';
+  END IF;
+END $proof$;`);
+
 psql(['-d', 'postgres', '-c', `DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`]);
 
 if (failures.length) {
