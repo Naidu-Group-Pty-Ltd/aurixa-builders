@@ -326,11 +326,37 @@ describe('a rate limit is keyed on an address the caller cannot choose', () => {
     }
   });
 
-  it('the two audit records now carry an address the platform vouched for', () => {
+  it('the audit records now carry an address the platform vouched for', () => {
     expect(readCode(FN('builder-portal-invite')))
       .toContain('_ip_address: getPortalClientIp(req.headers)');
     expect(readCode(FN('builder-portal-verify')))
       .toContain('const ip = getPortalClientIp(req.headers);');
+    // The two shared helpers are the ones that mattered most: one fingerprints
+    // EVERY issued session, the other stamps EVERY project activity record.
+    expect(readCode('supabase/functions/_shared/builderSessions.ts'))
+      .toContain('return getPortalClientIp(req.headers);');
+    expect(readCode('supabase/functions/_shared/builderPortalAuth.ts'))
+      .toContain('_ip_address: getPortalClientIp(req.headers)');
+  });
+
+  it('nothing the edge runtime carries reads X-Forwarded-For', () => {
+    // Handlers AND shared modules — scanning only the handlers is what hid the
+    // session fingerprint and the activity-log stamp.
+    const files: string[] = [];
+    (function walk(dir: string) {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.isFile() && entry.name.endsWith('.ts')) files.push(full);
+      }
+    })(join(REPO_ROOT, 'supabase/functions'));
+    expect(files.length).toBeGreaterThan(100);
+    for (const file of files) {
+      const code = readFileSync(file, 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, ' ')
+        .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+      expect(code.toLowerCase(), file.replace(`${REPO_ROOT}/`, '')).not.toContain('x-forwarded-for');
+    }
   });
 
   it('a CI gate holds all of this, and it is actually wired in', () => {

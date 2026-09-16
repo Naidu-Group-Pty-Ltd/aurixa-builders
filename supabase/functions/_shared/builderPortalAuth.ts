@@ -16,6 +16,7 @@
  */
 import { extractBuilderSessionToken, validateBuilderPortalHeaders } from './builderSessionToken.ts';
 import { resolveBuilderSessionToken } from './builderSessions.ts';
+import { getPortalClientIp } from './requestSecurity.ts';
 
 export interface BuilderOrganisationSummary {
   organisation_id: string;
@@ -571,7 +572,10 @@ export async function logBuilderProjectActivity(
     _new_state: entry.newState ?? null,
     _reason: entry.reason ?? null,
     _metadata: entry.metadata ?? {},
-    _ip_address: req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || null,
+    // The shared path every business surface logs through. `X-Forwarded-For`
+    // is appended to by the caller, so this one line made the address on
+    // every project activity record the actor's to choose.
+    _ip_address: getPortalClientIp(req.headers),
     _user_agent: req.headers.get('user-agent') || null,
   });
 

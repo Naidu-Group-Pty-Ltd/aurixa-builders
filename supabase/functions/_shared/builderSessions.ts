@@ -18,6 +18,7 @@
  * SESSION_TOKEN_PEPPER, fails closed when unset) — never a bare SHA-256.
  */
 import { hashSessionToken, computeIdleExpiry, isSessionHashConfigured } from './sessionHash.ts';
+import { getPortalClientIp } from './requestSecurity.ts';
 
 export const BUILDER_SESSION_ABSOLUTE_HOURS = 12;
 export const BUILDER_SESSION_IDLE_MINUTES = 30;
@@ -40,8 +41,21 @@ export interface ResolvedBuilderSession {
 
 const rawToken = () => `${crypto.randomUUID()}-${crypto.randomUUID()}-${crypto.randomUUID()}`;
 
+/**
+ * THE ADDRESS A SESSION IS FINGERPRINTED WITH.
+ *
+ * This value is hashed into `_ip_hash` when a session is ISSUED, and written
+ * to the activity log when one is used. It read `X-Forwarded-For`, which the
+ * caller appends to — so the recorded origin of every session in the product
+ * was whatever the person signing in chose to type, and the log that says
+ * where an account was used from was theirs to author.
+ *
+ * Only an address the platform vouched for is used now, and none at all when
+ * there is none: a null fingerprint is honest, a forged one is worse than
+ * nothing. The name is unchanged because every caller's meaning is unchanged.
+ */
 export function requestIp(req: Request): string | null {
-  return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || null;
+  return getPortalClientIp(req.headers);
 }
 
 const fingerprint = async (kind: string, value: string | null) =>
