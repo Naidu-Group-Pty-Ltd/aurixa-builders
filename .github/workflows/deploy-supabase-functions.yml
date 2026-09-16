@@ -57,10 +57,14 @@ jobs:
           version: latest
 
       - name: deploy every function (config.toml carries verify_jwt)
+        id: deploy
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         run: |
           set -euo pipefail
+          # Recorded BEFORE the first upload so the verification step below can
+          # tell "shipped by this run" from "left over from the last one".
+          echo "started_at=$(date +%s000)" >> "$GITHUB_OUTPUT"
           failed=""
           for dir in supabase/functions/*/; do
             fn="$(basename "$dir")"
@@ -75,6 +79,17 @@ jobs:
             echo "::error::deploy failed for:$failed"
             exit 1
           fi
+
+      # The CLI's own exit code is not evidence. On 16 Sep 2026 it reported
+      # success for all 26 functions while shipping only the first one, leaving
+      # a closed security door open in production behind a green check. This
+      # step asks the Management API what is actually deployed and fails on a
+      # partial deploy — the state where production runs a mixture of builds
+      # and nobody is told.
+      - name: confirm every function actually shipped
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: node scripts/ops/verify-functions-deployed.mjs "${{ steps.deploy.outputs.started_at }}"
 
       - name: set platform configuration secrets (never vendor keys)
         env:
