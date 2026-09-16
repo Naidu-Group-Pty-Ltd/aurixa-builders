@@ -504,6 +504,13 @@ const envelope = JSON.stringify({
     stock_item_id: smokeItemId,
     status: 'selected',
     remote_client_label: 'Smoke buyer',
+    // The authorised agency disclosure, exercised over the real wire.
+    agency: {
+      name: 'Smoke Agency Group',
+      contact_name: 'Ava Smoke',
+      contact_email: 'ava@smoke.example',
+      contact_phone: '03 9000 0000',
+    },
   },
   source_version: 1,
 });
@@ -561,6 +568,35 @@ record('D: the Builder Stock List shows the selection',
   !!listed && listed.status === 'selected' && listed.workspace_label === 'Smoke Rollout Workspace'
     && listed.remote_client_label === 'Smoke buyer',
   `listed=${!!listed} workspace=${listed?.workspace_label}`);
+record('D: the Stock List row carries the agency disclosure',
+  listed?.agency_name === 'Smoke Agency Group'
+    && listed?.agency_contact?.contact_email === 'ava@smoke.example',
+  `agency=${listed?.agency_name}`);
+
+// The fan-out's surfaces, read exactly as the portal reads them: the member's
+// notifications and tasks, with the LIVE activation context resolved.
+const notificationsList = await call('builder-portal-collaboration',
+  { operation: 'list_notifications' }, session.cookie);
+const activationNotice = (notificationsList.json?.records ?? [])
+  .find((r) => r.activation?.announcement_id === announcementId);
+record('D: the activation reached Notifications with the resolved context',
+  !!activationNotice
+    && activationNotice.notification_type === 'stock_selection'
+    && !!activationNotice.activation?.property_label
+    && activationNotice.activation?.agency_name === 'Smoke Agency Group'
+    && activationNotice.activation?.contact_email === 'ava@smoke.example'
+    && activationNotice.activation?.status === 'selected',
+  `notice=${!!activationNotice} property=${activationNotice?.activation?.property_label}`);
+
+const tasksBefore = await call('builder-portal-collaboration',
+  { operation: 'my_tasks' }, session.cookie);
+const activationTask = (tasksBefore.json?.records ?? [])
+  .find((t) => t.activation?.announcement_id === announcementId);
+record('D: the activation opened a pending task assigned to the member',
+  !!activationTask && activationTask.status === 'open' && activationTask.priority === 'high'
+    && activationTask.scope_type === 'stock_item'
+    && activationTask.activation?.contact_email === 'ava@smoke.example',
+  `task=${!!activationTask} status=${activationTask?.status}`);
 
 const acknowledge = await call('builder-portal-stock',
   { operation: 'acknowledge_selection', selection_id: announcementId }, session.cookie);
@@ -585,6 +621,15 @@ const duplicateAck = await call('builder-portal-stock',
 record('D: a duplicate acknowledgement is refused without a second event',
   duplicateAck.status === 409 && duplicateAck.json?.code === 'not_acknowledgeable',
   `status ${duplicateAck.status}`);
+
+const tasksAfter = await call('builder-portal-collaboration',
+  { operation: 'my_tasks' }, session.cookie);
+const closedTask = (tasksAfter.json?.records ?? [])
+  .find((t) => t.activation?.announcement_id === announcementId);
+record('D: acknowledging completed the activation task',
+  !!closedTask && closedTask.status === 'done'
+    && closedTask.activation?.status === 'builder_acknowledged',
+  `status=${closedTask?.status} activation=${closedTask?.activation?.status}`);
 
 } catch (error) {
   record('smoke run aborted before completing every section', false,

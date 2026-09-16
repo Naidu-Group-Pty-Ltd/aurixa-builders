@@ -23,14 +23,31 @@ import {
   useBuilderCollaborationMutation, useBuilderMyTasks, useBuilderScopedTasks,
 } from '@/lib/builderQueries';
 import {
+  ActivationAgencyLine, ActivationContact, ActivationStatusBadge, ActivationStockLink,
+} from '@/components/builder-portal/StockActivation';
+import {
   TASK_PRIORITY_CLASSES, TASK_PRIORITY_LABELS, TASK_STATUS_CLASSES, TASK_STATUS_LABELS,
-  formatCollaborationDate, isTaskOverdue,
+  describeDueDate, formatCollaborationDate, isTaskOverdue,
   type BuilderScopeType, type BuilderTask, type BuilderTaskPriority, type BuilderTaskStatus,
 } from '@/lib/builderCollaboration';
 
 const PRIORITIES = Object.keys(TASK_PRIORITY_LABELS) as BuilderTaskPriority[];
 const STATUSES = Object.keys(TASK_STATUS_LABELS) as BuilderTaskStatus[];
 
+/**
+ * One task row.
+ *
+ * The old table truncated `description` to a single line, which turned a
+ * stock activation's structured brief into "Activated by: Naid…". A task that
+ * CARRIES structure now renders it: the property is the title, the agency and
+ * its contact are their own lines (mail and phone are links), and the road to
+ * the Stock List is on the row. A plain task keeps its prose, clamped to two
+ * lines instead of chopped mid-word.
+ *
+ * One status column, not two: the select IS the status — showing a chip
+ * beside a dropdown that says the same word was the redundancy, not the
+ * information.
+ */
 function TaskTable({
   tasks, onStatusChange, busy,
 }: {
@@ -44,59 +61,83 @@ function TaskTable({
         <TableHeader>
           <TableRow>
             <TableHead>Task</TableHead>
-            <TableHead>Status</TableHead>
             <TableHead className="hidden md:table-cell">Priority</TableHead>
             <TableHead className="hidden lg:table-cell">Due</TableHead>
-            {onStatusChange ? <TableHead className="text-right">Move to</TableHead> : null}
+            <TableHead className={onStatusChange ? 'w-44 text-right' : undefined}>Status</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {tasks.map((task) => (
-            <TableRow key={task.id}>
-              <TableCell>
-                <span className="flex items-center gap-2 font-medium">
-                  {task.title}
-                  {isTaskOverdue(task) ? (
-                    <AlertTriangle className="h-3.5 w-3.5 text-destructive" aria-label="Overdue" />
-                  ) : null}
-                </span>
-                <span className="block max-w-80 truncate text-xs text-muted-foreground">
-                  {task.description || 'No description'}
-                </span>
-              </TableCell>
-              <TableCell>
-                <Badge variant="outline" className={TASK_STATUS_CLASSES[task.status]}>
-                  {TASK_STATUS_LABELS[task.status]}
-                </Badge>
-              </TableCell>
-              <TableCell className="hidden md:table-cell">
-                <Badge variant="outline" className={TASK_PRIORITY_CLASSES[task.priority]}>
-                  {TASK_PRIORITY_LABELS[task.priority]}
-                </Badge>
-              </TableCell>
-              <TableCell className="hidden lg:table-cell">
-                {formatCollaborationDate(task.due_date)}
-              </TableCell>
-              {onStatusChange ? (
-                <TableCell className="text-right">
-                  <Select
-                    value={task.status}
-                    onValueChange={(next) => onStatusChange(task, next as BuilderTaskStatus)}
-                    disabled={busy}
-                  >
-                    <SelectTrigger className="ml-auto w-40" aria-label={`Change status of ${task.title}`}>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {STATUSES.map((status) => (
-                        <SelectItem key={status} value={status}>{TASK_STATUS_LABELS[status]}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+          {tasks.map((task) => {
+            const due = describeDueDate(task);
+            return (
+              <TableRow key={task.id}>
+                <TableCell className="py-3.5 align-top">
+                  <div className="min-w-0 max-w-xl space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium leading-snug">{task.title}</span>
+                      {isTaskOverdue(task) ? (
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="Overdue" />
+                      ) : null}
+                      {task.activation?.status === 'withdrawn' ? (
+                        <ActivationStatusBadge status="withdrawn" />
+                      ) : null}
+                    </div>
+                    {task.activation ? (
+                      <>
+                        <ActivationAgencyLine activation={task.activation} className="text-xs" />
+                        <ActivationContact activation={task.activation} dense />
+                        <ActivationStockLink className="pt-0.5" />
+                      </>
+                    ) : task.description ? (
+                      <p className="line-clamp-2 whitespace-pre-line text-xs leading-relaxed text-muted-foreground">
+                        {task.description}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">No description</p>
+                    )}
+                  </div>
                 </TableCell>
-              ) : null}
-            </TableRow>
-          ))}
+                <TableCell className="hidden py-3.5 align-top md:table-cell">
+                  <Badge variant="outline" className={cn('font-medium', TASK_PRIORITY_CLASSES[task.priority])}>
+                    {TASK_PRIORITY_LABELS[task.priority]}
+                  </Badge>
+                </TableCell>
+                <TableCell className="hidden py-3.5 align-top lg:table-cell">
+                  <p className="text-sm">{formatCollaborationDate(task.due_date)}</p>
+                  {due ? (
+                    <p className={cn(
+                      'mt-0.5 text-xs',
+                      due.overdue ? 'font-medium text-destructive' : 'text-muted-foreground',
+                    )}>
+                      {due.text}
+                    </p>
+                  ) : null}
+                </TableCell>
+                <TableCell className="py-3.5 text-right align-top">
+                  {onStatusChange ? (
+                    <Select
+                      value={task.status}
+                      onValueChange={(next) => onStatusChange(task, next as BuilderTaskStatus)}
+                      disabled={busy}
+                    >
+                      <SelectTrigger className="ml-auto w-40" aria-label={`Change status of ${task.title}`}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {STATUSES.map((status) => (
+                          <SelectItem key={status} value={status}>{TASK_STATUS_LABELS[status]}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Badge variant="outline" className={TASK_STATUS_CLASSES[task.status]}>
+                      {TASK_STATUS_LABELS[task.status]}
+                    </Badge>
+                  )}
+                </TableCell>
+              </TableRow>
+            );
+          })}
         </TableBody>
       </Table>
     </div>

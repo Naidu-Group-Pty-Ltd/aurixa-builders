@@ -108,6 +108,48 @@ export interface BuilderMessage {
   created_at: string;
 }
 
+/**
+ * The live stock-activation context the server resolves for a notification or
+ * task about one. This is the RECORD's current state, read at list time —
+ * property, agency, the agency's outward contact, and where the activation
+ * stands now — so the surfaces lay information out instead of truncating a
+ * stored sentence, and an acknowledgement made elsewhere reads correctly here.
+ */
+export type BuilderActivationStatus =
+  | 'selected' | 'builder_acknowledged' | 'progressed' | 'completed' | 'withdrawn';
+
+export interface BuilderStockActivation {
+  announcement_id: string;
+  task_id: string | null;
+  stock_item_id: string | null;
+  property_label: string | null;
+  status: BuilderActivationStatus;
+  acknowledged_at: string | null;
+  activated_at: string;
+  agency_name: string | null;
+  contact_name: string | null;
+  contact_email: string | null;
+  contact_phone: string | null;
+  client_reference: string | null;
+}
+
+export const ACTIVATION_STATUS_LABELS: Record<BuilderActivationStatus, string> = {
+  selected: 'Awaiting acknowledgement',
+  builder_acknowledged: 'Acknowledged',
+  progressed: 'Progressing',
+  completed: 'Completed',
+  withdrawn: 'Withdrawn by agency',
+};
+
+/** Semantic tokens only — no raw palette classes (repository style rule). */
+export const ACTIVATION_STATUS_CLASSES: Record<BuilderActivationStatus, string> = {
+  selected: 'border-warning/50 bg-warning/10 text-warning',
+  builder_acknowledged: 'border-success/50 bg-success/10 text-success',
+  progressed: 'border-primary/50 bg-primary/10 text-primary',
+  completed: 'border-success/50 bg-success/10 text-success',
+  withdrawn: 'border-border bg-muted/40 text-muted-foreground',
+};
+
 export interface BuilderTask {
   id: string;
   scope_type: BuilderScopeType;
@@ -122,6 +164,8 @@ export interface BuilderTask {
   row_version: number;
   created_at: string;
   updated_at: string;
+  /** Present on stock-activation tasks: the record's live context. */
+  activation?: BuilderStockActivation | null;
 }
 
 export interface BuilderTaskAssignment {
@@ -147,6 +191,8 @@ export interface BuilderNotification {
   entity_id: string | null;
   read_at: string | null;
   created_at: string;
+  /** Present on stock-activation notifications: the record's live context. */
+  activation?: BuilderStockActivation | null;
 }
 
 export interface BuilderUnreadCounts {
@@ -204,11 +250,16 @@ export const TASK_STATUS_CLASSES: Record<BuilderTaskStatus, string> = {
   cancelled: 'border-border text-muted-foreground',
 };
 
+/**
+ * Every chip carries a tinted background with its border, because a bare
+ * outline in an accent hue disappears against a dark card — the "High" that
+ * was invisible on the Tasks screenshot was exactly this.
+ */
 export const TASK_PRIORITY_CLASSES: Record<BuilderTaskPriority, string> = {
-  low: 'border-border text-muted-foreground',
-  normal: 'border-border text-muted-foreground',
-  high: 'border-accent/60 text-accent',
-  urgent: 'border-destructive/60 text-destructive',
+  low: 'border-border bg-muted/40 text-muted-foreground',
+  normal: 'border-border bg-muted/40 text-foreground/80',
+  high: 'border-warning/50 bg-warning/10 text-warning',
+  urgent: 'border-destructive/50 bg-destructive/10 text-destructive',
 };
 
 export const DOCUMENT_STATUS_CLASSES: Record<BuilderDocumentStatus, string> = {
@@ -228,6 +279,49 @@ export function formatCollaborationTime(value: string | null | undefined): strin
   if (!value) return '—';
   const parsed = new Date(value);
   return Number.isFinite(parsed.getTime()) ? parsed.toLocaleString('en-AU') : '—';
+}
+
+/**
+ * "12 minutes ago", because a feed is read against NOW — the absolute stamp
+ * (with its seconds) belongs in the tooltip, not the reading line. Falls back
+ * to the plain date once "ago" stops being how anyone thinks about it.
+ */
+export function formatRelativeTime(value: string | null | undefined): string {
+  if (!value) return '—';
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) return '—';
+  const seconds = Math.round((Date.now() - parsed.getTime()) / 1000);
+  if (seconds < 45) return 'Just now';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return `${days} day${days === 1 ? '' : 's'} ago`;
+  return parsed.toLocaleDateString('en-AU');
+}
+
+/**
+ * The due column answers "how soon?", not "which date?" — the date is kept,
+ * this rides under it. Overdue is the only state that shouts.
+ */
+export function describeDueDate(task: Pick<BuilderTask, 'due_date' | 'status'>): {
+  text: string; overdue: boolean;
+} | null {
+  if (!task.due_date) return null;
+  if (['done', 'cancelled'].includes(task.status)) return null;
+  const today = new Date();
+  const due = new Date(`${task.due_date}T00:00:00`);
+  if (!Number.isFinite(due.getTime())) return null;
+  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const days = Math.round((due.getTime() - startOfToday.getTime()) / 86_400_000);
+  if (days < 0) {
+    const late = Math.abs(days);
+    return { text: `${late} day${late === 1 ? '' : 's'} overdue`, overdue: true };
+  }
+  if (days === 0) return { text: 'Due today', overdue: false };
+  if (days === 1) return { text: 'Due tomorrow', overdue: false };
+  return { text: `Due in ${days} days`, overdue: false };
 }
 
 export function formatFileSize(bytes: number | null | undefined): string {

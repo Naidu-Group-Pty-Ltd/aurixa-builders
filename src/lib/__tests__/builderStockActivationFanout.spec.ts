@@ -220,6 +220,50 @@ describe('the public stock-image door serves the invariant and nothing else', ()
   });
 });
 
+describe('the surfaces render the resolved activation, never a truncated sentence', () => {
+  it('the list operations resolve the live context server-side, organisation-scoped', () => {
+    const fn = read('supabase/functions/builder-portal-collaboration/index.ts');
+    expect(fn).toContain('const loadStockActivations');
+    // The walk starts from rows the active organisation owns — twice, because
+    // the items read is scoped independently of the announcements read.
+    expect((fn.match(/\.eq\('organisation_id', activeOrganisationId\)/g) || []).length)
+      .toBeGreaterThanOrEqual(3);
+    // All three list operations attach it: notifications by announcement,
+    // both task lists by task.
+    expect(fn).toContain('activationByAnnouncement');
+    expect((fn.match(/const activationByTask = new Map/g) || []).length).toBe(2);
+    // The registry fallback keeps the agency named even on a bare event.
+    expect(fn).toContain("workspace.display_name || workspace.slug");
+  });
+
+  it('one shared presentation: live status chip, contact as links, road to the record', () => {
+    const shared = read('src/components/builder-portal/StockActivation.tsx');
+    expect(shared).toContain('ACTIVATION_STATUS_CLASSES[status]');
+    expect(shared).toContain('mailto:${email}');
+    expect(shared).toContain('tel:${phone');
+    expect(shared).toContain('to="/builder/stock"');
+
+    const notifications = read('src/pages/builder/BuilderNotifications.tsx');
+    expect(notifications).toContain('ActivationNotificationCard');
+    expect(notifications).toContain('formatRelativeTime');
+
+    const tasks = read('src/pages/builder/BuilderTasks.tsx');
+    expect(tasks).toContain('<ActivationContact activation={task.activation} dense />');
+    // Prose clamps to two lines; the old single-line chop is gone for good.
+    expect(tasks).toContain('line-clamp-2');
+    expect(tasks).not.toContain('truncate text-xs');
+    expect(tasks).toContain('describeDueDate');
+  });
+
+  it('a chip is never a bare outline that vanishes on a dark card', () => {
+    const lib = read('src/lib/builderCollaboration.ts');
+    expect(lib).toContain("high: 'border-warning/50 bg-warning/10 text-warning'");
+    expect(lib).not.toContain("'border-accent/60 text-accent'");
+    // Every activation status carries a tinted background with its border.
+    expect(lib).toMatch(/selected: 'border-warning\/50 bg-warning\/10 text-warning'/);
+  });
+});
+
 describe('what the builder reads back names the agency', () => {
   it('the announcement projection carries the disclosure', () => {
     const code = read('supabase/functions/_shared/builderStock/projection.pure.ts');

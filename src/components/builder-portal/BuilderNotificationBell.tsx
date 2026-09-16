@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils';
 import {
   useBuilderCollaborationMutation, useBuilderNotifications, useBuilderUnreadCounts,
 } from '@/lib/builderQueries';
+import { formatCollaborationTime, formatRelativeTime } from '@/lib/builderCollaboration';
 import type { BuilderNotification } from '@/lib/builderCollaboration';
 
 /**
@@ -47,8 +48,10 @@ export function BuilderNotificationBell() {
     if (!item.read_at) await markRead([item.id]);
     // Notifications carry a scope rather than a path, so the destination is the
     // Notifications page — the one surface that knows how to resolve a scope.
+    // A stock ACTIVATION is the exception: its acknowledge action lives on the
+    // Stock List, so that is where pressing it lands.
     setOpen(false);
-    navigate('/builder/notifications');
+    navigate(item.activation ? '/builder/stock' : '/builder/notifications');
   };
 
   return (
@@ -114,12 +117,32 @@ export function BuilderNotificationBell() {
                       !item.read_at && 'bg-primary/5',
                     )}
                   >
-                    <p className="text-sm font-medium">{item.title}</p>
-                    {item.body ? (
-                      <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{item.body}</p>
-                    ) : null}
-                    <time className="mt-1 block text-xs text-muted-foreground" dateTime={item.created_at}>
-                      {new Date(item.created_at).toLocaleString('en-AU')}
+    {/* An activation leads with the property; the stored sentence is
+                        the generic fallback, never the layout. */}
+                    {item.activation ? (
+                      <>
+                        <p className="text-sm font-medium">
+                          {item.activation.property_label || item.title}
+                        </p>
+                        <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">
+                          Activated by {item.activation.agency_name || 'a connected agency'}
+                          {item.activation.contact_name ? ` · ${item.activation.contact_name}` : ''}
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-sm font-medium">{item.title}</p>
+                        {item.body ? (
+                          <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{item.body}</p>
+                        ) : null}
+                      </>
+                    )}
+                    <time
+                      className="mt-1 block text-xs text-muted-foreground"
+                      dateTime={item.created_at}
+                      title={formatCollaborationTime(item.created_at)}
+                    >
+                      {formatRelativeTime(item.created_at)}
                     </time>
                     {/* Unread is carried in words too, not by the tint alone. */}
                     {!item.read_at ? <span className="sr-only"> (unread)</span> : null}

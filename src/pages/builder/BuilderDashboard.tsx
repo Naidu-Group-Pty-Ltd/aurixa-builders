@@ -93,7 +93,22 @@ export default function BuilderDashboard() {
       if (item.read_at) continue;
       if (poppedStockSelectionIds.has(item.id)) continue;
       poppedStockSelectionIds.add(item.id);
-      toast({ title: item.title, description: item.body ?? undefined });
+      // The resolved context beats the stored sentence: property first,
+      // contact second, nothing to re-read twice.
+      const activation = item.activation;
+      toast({
+        title: item.title,
+        description: activation
+          ? [
+            activation.property_label,
+            [activation.contact_name, activation.contact_email]
+              .filter(Boolean).length
+              ? `Contact ${[activation.contact_name, activation.contact_email]
+                .filter(Boolean).join(' · ')}`
+              : null,
+          ].filter(Boolean).join(' — ') || undefined
+          : item.body ?? undefined,
+      });
     }
   }, [notifications, toast]);
 

@@ -317,6 +317,108 @@ Deno.serve(async (req) => {
       return { ok: true, task, perms: scope.perms };
     };
 
+    /**
+     * Stock-activation context for the surfaces that show one.
+     *
+     * A notification is a POINTER and a task's description is prose; neither
+     * is a place to keep a copy of the record. So the list operations RESOLVE
+     * the record at read time: for every stock activation in the page, one
+     * batched walk loads the announcement, its property and (when the event
+     * carried no name) the workspace directory, and hands the browser a
+     * STRUCTURED block — property, agency, contact, live status. The UI then
+     * lays information out instead of truncating a sentence, and what it
+     * shows is the record's CURRENT state (an acknowledgement or withdrawal
+     * made elsewhere reads correctly here, which a stored string never
+     * could). Organisation-scoped like everything else: the walk starts from
+     * rows the session's active organisation owns and can reach nothing else.
+     */
+    const cleanPart = (value: unknown): string => String(value ?? '').trim();
+    const activationPropertyLabel = (item: Record<string, unknown> | undefined): string | null => {
+      if (!item) return null;
+      const lot = cleanPart(item.lot_number);
+      const address = cleanPart(item.address_line);
+      const lead = [
+        lot && !address.toLowerCase().includes('lot') ? `Lot ${lot}` : '',
+        address,
+      ].filter(Boolean).join(' ');
+      const label = [lead, cleanPart(item.suburb), cleanPart(item.state)]
+        .filter(Boolean).join(', ');
+      return label || cleanPart(item.external_reference) || null;
+    };
+
+    const loadStockActivations = async (
+      filter: { announcementIds?: string[]; taskIds?: string[] },
+    ): Promise<Array<Record<string, unknown>>> => {
+      const announcementIds = (filter.announcementIds ?? []).filter(Boolean);
+      const taskIds = (filter.taskIds ?? []).filter(Boolean);
+      if (!announcementIds.length && !taskIds.length) return [];
+
+      let query = supabase
+        .from('builder_stock_selection_announcements')
+        .select('id, stock_item_id, status, acknowledged_at, remote_client_label, agency_name, agency_contact, activation_task_id, connection_id, created_at')
+        .eq('organisation_id', activeOrganisationId);
+      query = announcementIds.length
+        ? query.in('id', announcementIds)
+        : query.in('activation_task_id', taskIds);
+      const { data: announcements } = await query;
+      if (!announcements?.length) return [];
+
+      const itemIds = Array.from(new Set(
+        announcements.map((a: any) => a.stock_item_id).filter(Boolean)));
+      const { data: items } = itemIds.length
+        ? await supabase.from('builder_stock_items')
+          .select('id, address_line, suburb, state, lot_number, external_reference')
+          .eq('organisation_id', activeOrganisationId)
+          .in('id', itemIds)
+        : { data: [] as any[] };
+      const itemById = new Map((items ?? []).map((row: any) => [row.id, row]));
+
+      // The event's own disclosure names the agency; an event without one
+      // falls back to the directory name the workspace asserted to this
+      // network — the same resolution the fan-out's text made, kept live.
+      const bareConnections = Array.from(new Set(
+        announcements.filter((a: any) => !a.agency_name)
+          .map((a: any) => a.connection_id).filter(Boolean)));
+      const labelByConnection = new Map<string, string>();
+      if (bareConnections.length) {
+        const { data: connections } = await supabase.from('workspace_connections')
+          .select('id, workspace_id').in('id', bareConnections);
+        const workspaceIds = Array.from(new Set(
+          (connections ?? []).map((c: any) => c.workspace_id).filter(Boolean)));
+        const { data: registry } = workspaceIds.length
+          ? await supabase.from('workspace_registry')
+            .select('id, slug, display_name').in('id', workspaceIds)
+          : { data: [] as any[] };
+        const registryById = new Map((registry ?? []).map((w: any) => [w.id, w]));
+        for (const connection of connections ?? []) {
+          const workspace = registryById.get(connection.workspace_id) as
+            | { display_name: string | null; slug: string } | undefined;
+          if (workspace) {
+            labelByConnection.set(
+              connection.id, workspace.display_name || workspace.slug);
+          }
+        }
+      }
+
+      return announcements.map((a: any) => {
+        const contact = (a.agency_contact ?? {}) as Record<string, unknown>;
+        return {
+          announcement_id: a.id,
+          task_id: a.activation_task_id ?? null,
+          stock_item_id: a.stock_item_id ?? null,
+          property_label: activationPropertyLabel(itemById.get(a.stock_item_id)),
+          status: a.status,
+          acknowledged_at: a.acknowledged_at ?? null,
+          activated_at: a.created_at,
+          agency_name: a.agency_name || labelByConnection.get(a.connection_id) || null,
+          contact_name: cleanPart(contact.contact_name) || null,
+          contact_email: cleanPart(contact.contact_email) || null,
+          contact_phone: cleanPart(contact.contact_phone) || null,
+          client_reference: cleanPart(a.remote_client_label) || null,
+        };
+      });
+    };
+
     const fail = (message: string, fallbackStatus = 400, fallbackError = 'The request failed') => {
       const mapped = collaborationCommandFailure(message);
       return mapped
@@ -713,7 +815,19 @@ Deno.serve(async (req) => {
         supabase.from('builder_task_assignments').select(BUILDER_TASK_ASSIGNMENT_SELECT)
           .in('task_id', ids).is('unassigned_at', null).limit(600),
       ]);
-      return json({ success: true, records: tasks || [], assignments: assignments || [] });
+      const activations = await loadStockActivations({
+        taskIds: (tasks || [])
+          .filter((task: any) => task.scope_type === 'stock_item')
+          .map((task: any) => task.id),
+      });
+      const activationByTask = new Map(activations.map((a) => [a.task_id, a]));
+      return json({
+        success: true,
+        records: (tasks || []).map((task: any) => ({
+          ...task, activation: activationByTask.get(task.id) ?? null,
+        })),
+        assignments: assignments || [],
+      });
     }
 
     if (operation === 'my_tasks') {
@@ -733,7 +847,18 @@ Deno.serve(async (req) => {
 
       const { data } = await supabase.from('builder_tasks').select(BUILDER_TASK_SELECT)
         .in('id', mine).order('due_date', { ascending: true, nullsFirst: false }).limit(300);
-      return json({ success: true, records: data || [] });
+      const activations = await loadStockActivations({
+        taskIds: (data || [])
+          .filter((task: any) => task.scope_type === 'stock_item')
+          .map((task: any) => task.id),
+      });
+      const activationByTask = new Map(activations.map((a) => [a.task_id, a]));
+      return json({
+        success: true,
+        records: (data || []).map((task: any) => ({
+          ...task, activation: activationByTask.get(task.id) ?? null,
+        })),
+      });
     }
 
     if (operation === 'upsert_task') {
@@ -823,7 +948,22 @@ Deno.serve(async (req) => {
         .select(BUILDER_NOTIFICATION_SELECT)
         .eq('builder_user_id', me.id).eq('organisation_id', activeOrganisationId)
         .order('created_at', { ascending: false }).limit(100);
-      return json({ success: true, records: data || [] });
+      const activations = await loadStockActivations({
+        announcementIds: (data || [])
+          .filter((row: any) => row.entity_kind === 'stock_selection' && row.entity_id)
+          .map((row: any) => row.entity_id),
+      });
+      const activationByAnnouncement = new Map(
+        activations.map((a) => [a.announcement_id, a]));
+      return json({
+        success: true,
+        records: (data || []).map((row: any) => ({
+          ...row,
+          activation: row.entity_kind === 'stock_selection' && row.entity_id
+            ? activationByAnnouncement.get(row.entity_id) ?? null
+            : null,
+        })),
+      });
     }
 
     if (operation === 'mark_notifications_read') {
