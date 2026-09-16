@@ -103,13 +103,11 @@ export default function BuilderLogin() {
           >
             Forgot your password?
           </Link>
-          {/* NETWORK EDITION: the portal has a second door. */}
-          <Link
-            to="/builder/register"
-            className="rounded px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            New to the network? Create an account
-          </Link>
+          {/* Invitation only: there is no public sign-up link. Access comes
+              from an organisation owner or administrator's invitation. */}
+          <p className="px-1 py-0.5 text-xs text-muted-foreground">
+            Access is by invitation from your organisation&rsquo;s administrator.
+          </p>
         </div>
       }
     >

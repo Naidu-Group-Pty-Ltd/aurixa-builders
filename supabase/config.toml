@@ -23,11 +23,14 @@ verify_jwt = false
 verify_jwt = false
 [functions.builder-portal-forgot-password]
 verify_jwt = false
-# The self-registration door and its email-verification twin (network
-# edition, plan §5): public by design, guarded by Turnstile + rate limits +
-# the enumeration-safe response shape, not by a JWT nobody holds yet.
+# builder-portal-register is a CLOSED door: the portal is invitation only and
+# this endpoint refuses every request with `registration_closed`. It stays
+# reachable without a JWT precisely so an old bookmark or a scripted probe
+# meets that explicit policy answer rather than a JWT error or a 404.
 [functions.builder-portal-register]
 verify_jwt = false
+# The email-verification twin stays public by design: the emailed link is
+# followed by someone who by definition holds no session yet.
 [functions.builder-portal-verify-email]
 verify_jwt = false
 [functions.builder-portal-reset-password]

@@ -61,32 +61,31 @@ describe('the governance chain', () => {
   });
 });
 
-describe('builder-portal-register', () => {
+describe('builder-portal-register is a CLOSED door — invitation only', () => {
   const source = readCode('supabase/functions/builder-portal-register/index.ts');
 
-  it('an ABN match creates a join REQUEST, and only the new-org path creates a membership', () => {
-    expect(source).toContain("from('builder_org_join_requests')");
-    // Exactly one membership insert in the whole function: the owner
-    // membership of a freshly created organisation. The join-request branch
-    // adds none — auto-join is the thing this function must never do.
-    const membershipInserts = source.match(/from\('builder_organisation_memberships'\)/g) ?? [];
-    expect(membershipInserts).toHaveLength(1);
+  it('refuses every request with the invitation-only policy', () => {
+    expect(source).toContain("code: 'registration_closed'");
+    // 403, a policy — not a 404 that invites guessing, not a 200 that pretends.
+    expect(source).toContain('REGISTRATION_CLOSED, 403');
   });
 
-  it('never reasons about the email DOMAIN at all', () => {
-    // Auto-join-on-domain needs the domain; the cheapest way to keep the
-    // rule is that the function never extracts one.
-    expect(source).not.toMatch(/split\(['"]@['"]\)/);
-    expect(source).not.toMatch(/emailDomain|email_domain/);
+  it('writes nothing: no user, organisation, membership, join request or token', () => {
+    // The whole exposure was that this endpoint wrote rows unauthenticated.
+    // A closed door touches none of the identity tables at all.
+    expect(source).not.toContain("from('builder_portal_users')");
+    expect(source).not.toContain("from('builder_organisations')");
+    expect(source).not.toContain("from('builder_organisation_memberships')");
+    expect(source).not.toContain("from('builder_org_join_requests')");
+    expect(source).not.toContain("from('builder_email_verification_tokens')");
+    // It never mints an onboarding checklist, because it creates no one.
+    expect(source).not.toContain("rpc('builder_ensure_onboarding_steps'");
   });
 
-  it('a self-registered organisation arrives pending verification, inactive', () => {
-    expect(source).toContain("status: 'pending_verification'");
-    expect(source).toContain('is_active: false');
-  });
-
-  it('the registrant arrives unverified', () => {
-    expect(source).toContain('email_verified_at: null');
+  it('still turns away a cross-origin probe before answering', () => {
+    // The refusal is a portal answer, so the same origin/shape guard the rest
+    // of the portal uses runs first.
+    expect(source).toContain('validateBuilderPortalRequest(req)');
   });
 });
 
@@ -110,7 +109,7 @@ describe('builder-portal-verify-email', () => {
 });
 
 describe('the doors are wired', () => {
-  it('both routes are declared PUBLIC — the emailed link needs no session', () => {
+  it('the register route is kept and public — an old link meets an honest notice, not a 404', () => {
     const app = read('src/App.tsx');
     const registerAt = app.indexOf('<Route path="register" element={<BuilderRegister />} />');
     const verifyAt = app.indexOf('<Route path="verify-email" element={<BuilderVerifyEmail />} />');
@@ -122,24 +121,23 @@ describe('the doors are wired', () => {
     expect(verifyAt).toBeLessThan(guardAt);
   });
 
-  it('the login page offers the second door', () => {
-    expect(read('src/pages/builder/BuilderLogin.tsx')).toContain('to="/builder/register"');
+  it('the register page is a closed-door notice that submits nothing', () => {
+    const page = read('src/pages/builder/BuilderRegister.tsx');
+    expect(page).toContain('Invitation only');
+    // No form, no submit, no call to the registration client helper.
+    expect(page).not.toContain('builderRegister');
+    expect(page).not.toContain('<form');
+  });
+
+  it('the login page offers NO public sign-up link', () => {
+    const login = read('src/pages/builder/BuilderLogin.tsx');
+    expect(login).not.toContain('to="/builder/register"');
+    expect(login).toContain('by invitation');
   });
 });
 
-describe('every door mints the onboarding checklist', () => {
-  it('self-registration seeds steps with the SAME rpc the invite paths use', () => {
-    const register = readCode('supabase/functions/builder-portal-register/index.ts');
-    const userInsertAt = register.indexOf("from('builder_portal_users')\n      .insert(");
-    const ensureAt = register.indexOf("rpc('builder_ensure_onboarding_steps'");
-    expect(userInsertAt).toBeGreaterThan(-1);
-    expect(ensureAt).toBeGreaterThan(userInsertAt);
-    // No duplicated step list in TypeScript: the catalogue stays in the
-    // database function, one place, both doors.
-    expect(register).not.toMatch(/profile_confirmed|organisation_confirmed|contact_confirmed|security_reviewed/);
-  });
-
-  it('the invite paths still seed through the same rpc', () => {
+describe('every account-creating door mints the onboarding checklist', () => {
+  it('the invite paths seed through the shared rpc', () => {
     expect(readCode('supabase/functions/builder-portal-invite/index.ts'))
       .toContain("rpc('builder_ensure_onboarding_steps'");
     expect(readCode('supabase/functions/builder-portal-accept-invite/index.ts'))

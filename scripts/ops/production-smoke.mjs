@@ -14,7 +14,7 @@
  *   A. governance — session restore, the 2026-08-07 agreement with its
  *      pinned hash, the acknowledgment gate refusing a partial set,
  *      acceptance, version-exact re-recognition, onboarding, dashboard;
- *   B. self-registration — the register door, the seeded onboarding steps
+ *   B. invitation-only — the closed registration door, and the invite journey
  *      (the repaired regression), the verify-email token path, then the
  *      same governed journey to the dashboard;
  *   C. the active surfaces answering without schema errors;
@@ -286,82 +286,94 @@ const dashboard = await call('builder-portal-workspace', { operation: 'workspace
 record('A: the dashboard summary loads', dashboard.status === 200 && !dashboard.json?.error,
   `status ${dashboard.status}`);
 
-// --- B. Self-registration ---------------------------------------------------
-console.log('\nB. Self-registration journey');
-const regEmail = `${MARK}-register-${RUN}@example.com`;
-const regPassword = `Reg!${RUN}!rollout9`;
+// --- B. Invitation-only account creation ------------------------------------
+// The portal is invitation only. This section proves the public registration
+// door is CLOSED and writes nothing, and that the invite → accept path is the
+// one and only way an account comes to exist.
+console.log('\nB. Invitation-only account creation');
+
+// B1. The public registration door refuses, and creates nothing.
+const strangerEmail = `${MARK}-stranger-${RUN}@example.com`;
+const strangerOrg = `Smoke Rollout Stranger ${RUN}`;
 const register = await call('builder-portal-register', {
-  email: regEmail, password: regPassword, name: 'Smoke Register',
-  organisation: { legal_name: `Smoke Rollout Register ${RUN}`, org_type: 'builder' },
+  email: strangerEmail, password: `Reg!${RUN}!rollout9`, name: 'Uninvited Stranger',
+  organisation: { legal_name: strangerOrg, org_type: 'builder' },
 });
-const registerOpen = register.status === 202 && register.json?.success === true;
-record('B: the register door accepts the application', registerOpen,
-  `status ${register.status}${register.json?.error ? ` (${register.json.error})` : ''}`,
-  { required: registerOpen || false });
+record('B: the public registration door refuses (invitation only)',
+  register.status === 403 && register.json?.code === 'registration_closed',
+  `status ${register.status} code ${register.json?.code}`);
+const strangerRows = await q('stranger wrote nothing', `
+  SELECT
+    (SELECT count(*) FROM public.builder_portal_users WHERE email = ${sqlLit(strangerEmail)}) AS users,
+    (SELECT count(*) FROM public.builder_organisations WHERE legal_name = ${sqlLit(strangerOrg)}) AS orgs`);
+record('B: the refused registration created no user and no organisation',
+  Number(strangerRows[0]?.users) === 0 && Number(strangerRows[0]?.orgs) === 0,
+  `users=${strangerRows[0]?.users} orgs=${strangerRows[0]?.orgs}`);
 
-let regUserId = null;
-if (registerOpen) {
-  const seeded = await q('registered rows', `
-    SELECT u.id AS user_id,
-      (SELECT count(*) FROM public.builder_onboarding_steps s WHERE s.builder_user_id = u.id AND s.mandatory) AS steps,
-      (SELECT count(*) FROM public.builder_email_verification_tokens t
-        WHERE t.builder_user_id = u.id AND t.consumed_at IS NULL) AS live_tokens,
-      (SELECT count(*) FROM public.builder_organisation_memberships m
-        WHERE m.builder_user_id = u.id AND m.revoked_at IS NULL) AS memberships,
-      u.email_verified_at IS NOT NULL AS verified
-    FROM public.builder_portal_users u WHERE u.email = ${sqlLit(regEmail)}`);
-  const reg = seeded[0] ?? {};
-  regUserId = reg.user_id ?? null;
-  record('B: the registered user exists, unverified, with an owner membership',
-    !!regUserId && reg.verified === false && Number(reg.memberships) === 1,
-    `verified=${reg.verified} memberships=${reg.memberships}`);
-  record('B: registration seeded the four mandatory onboarding steps',
-    Number(reg.steps) === 4, `steps=${reg.steps}`);
-  record('B: a live verification token exists for the mailbox',
-    Number(reg.live_tokens) >= 1, `tokens=${reg.live_tokens}`);
+// B2. The only way in: an owner (alpha, governed above) invites a colleague.
+const inviteEmail = `${MARK}-invited-${RUN}@example.com`;
+const invitePassword = `Invited!${RUN}!ok9`;
+const invite = await call('builder-portal-invite', {
+  action: 'invite', email: inviteEmail, name: 'Smoke Invitee', membership_role: 'member',
+}, session.cookie);
+record('B: an owner may invite a colleague', invite.status === 200 && invite.json?.success === true,
+  `status ${invite.status}${invite.json?.error ? ` (${invite.json.error})` : ''}`);
 
-  if (PEPPER && regUserId) {
-    // The mailbox click, replayed faithfully: a fresh token whose hash the
-    // runtime computes with the same pepper, consumed over HTTP.
-    const emailToken = `${randomUUID()}-${randomUUID()}`;
-    await q('insert verification token', `
-      INSERT INTO public.builder_email_verification_tokens(builder_user_id, token_hash, expires_at, requested_ip)
-      VALUES (${sqlLit(regUserId)}::uuid, ${sqlLit(hmacHex(PEPPER, emailToken))}, now() + interval '1 hour', 'smoke')`);
-    const verifyEmail = await call('builder-portal-verify-email', { token: emailToken });
-    const stamped = await q('verified?', `
-      SELECT email_verified_at IS NOT NULL AS verified FROM public.builder_portal_users
-      WHERE id = ${sqlLit(regUserId)}::uuid`);
-    record('B: the emailed token verifies the mailbox over HTTP',
-      verifyEmail.status === 200 && stamped[0]?.verified === true,
-      `status ${verifyEmail.status}`);
+const invited = await q('invited rows', `
+  SELECT u.id AS user_id, u.status, u.is_active,
+    (SELECT count(*) FROM public.builder_organisation_memberships m
+      WHERE m.builder_user_id = u.id AND m.organisation_id = ${sqlLit(alpha.orgId)}::uuid
+        AND m.revoked_at IS NULL) AS memberships,
+    (SELECT count(*) FROM public.builder_onboarding_steps s WHERE s.builder_user_id = u.id AND s.mandatory) AS steps
+  FROM public.builder_portal_users u WHERE u.email = ${sqlLit(inviteEmail)}`);
+const inv = invited[0] ?? {};
+const inviteUserId = inv.user_id ?? null;
+record('B: the invitation created an inactive, invited user in the inviter’s organisation',
+  !!inviteUserId && inv.status === 'invited' && inv.is_active === false && Number(inv.memberships) === 1,
+  `status=${inv.status} active=${inv.is_active} memberships=${inv.memberships}`);
+record('B: the invitation seeded the four mandatory onboarding steps',
+  Number(inv.steps) === 4, `steps=${inv.steps}`);
 
-    // The self-registered organisation arrives pending_verification and the
-    // portal (builder_issue_session and login alike) refuses a session until
-    // the Aurixa operator vets it. Replay that vetting decision exactly as
-    // builder-network-admin approve_organisation writes it.
-    await q('approve registered organisation', `
-      UPDATE public.builder_organisations
-         SET status = 'active', is_active = true, activated_at = COALESCE(activated_at, now())
-       WHERE legal_name = ${sqlLit(`Smoke Rollout Register ${RUN}`)}
-         AND status = 'pending_verification'`);
-    record('B: the organisation required operator vetting before any session', true,
-      'builder_issue_session refused while pending_verification; approved via the operator write',
-      { required: false });
+// B3. Accepting the invitation — the token path replayed faithfully, its hash
+// computed with the same pepper the deploy ships to the functions.
+if (PEPPER && inviteUserId) {
+  const inviteToken = `${randomUUID()}-${randomUUID()}`;
+  await q('mint invite token', `
+    UPDATE public.builder_portal_users
+       SET invite_token_hash = ${sqlLit(hmacHex(PEPPER, inviteToken))},
+           invite_token_expires_at = now() + interval '1 hour'
+     WHERE id = ${sqlLit(inviteUserId)}::uuid`);
+  const acceptInvite = await call('builder-portal-accept-invite', {
+    action: 'accept', token: inviteToken, password: invitePassword,
+  });
+  const cookie = (acceptInvite.setCookies ?? [])
+    .map((c) => c.split(';')[0])
+    .find((c) => c.startsWith('__Host-builder_session_token='));
+  record('B: accepting the invitation activates the account and issues a session',
+    acceptInvite.status === 200 && !!cookie, `status ${acceptInvite.status}`);
+  const activated = await q('activated?', `
+    SELECT is_active, email_verified_at IS NOT NULL AS verified,
+           invite_token_hash IS NULL AS token_cleared
+    FROM public.builder_portal_users WHERE id = ${sqlLit(inviteUserId)}::uuid`);
+  record('B: the accepted account is active, verified, and its invite token is spent',
+    activated[0]?.is_active === true && activated[0]?.verified === true
+      && activated[0]?.token_cleared === true,
+    `active=${activated[0]?.is_active} verified=${activated[0]?.verified} tokenCleared=${activated[0]?.token_cleared}`);
 
-    const regSession = await establishSession(
-      { email: regEmail, password: regPassword, userId: regUserId }, 'register');
+  // B4. The invited member reaches the dashboard through the governance chain.
+  if (cookie) {
     const regAccept = await call('builder-portal-verify',
-      { action: 'accept_current_terms', acknowledgements: ALL_ACKS }, regSession.cookie);
-    const regOnboard = await call('builder-portal-verify', { action: 'complete_onboarding' }, regSession.cookie);
-    const regVerify = await call('builder-portal-verify', {}, regSession.cookie);
-    record('B: the registered user reaches the dashboard through terms and onboarding',
+      { action: 'accept_current_terms', acknowledgements: ALL_ACKS }, cookie);
+    const regOnboard = await call('builder-portal-verify', { action: 'complete_onboarding' }, cookie);
+    const regVerify = await call('builder-portal-verify', {}, cookie);
+    record('B: the invited member reaches the dashboard through terms and onboarding',
       regAccept.json?.success === true && regOnboard.json?.onboarding_complete === true
         && regVerify.json?.governance === null,
       `governance=${String(regVerify.json?.governance)}`);
-  } else {
-    record('B: verify-email + governed journey', false,
-      'NETWORK_SESSION_PEPPER unavailable — token path cannot be replayed', { required: false });
   }
+} else {
+  record('B: invitation acceptance journey', false,
+    'NETWORK_SESSION_PEPPER unavailable — invite token path cannot be replayed', { required: false });
 }
 
 // --- C. Active surfaces -----------------------------------------------------
