@@ -110,9 +110,19 @@ async function cleanup(stage) {
       DELETE FROM public.workspace_registry WHERE slug LIKE '${MARK}-%';
       -- Activation-opened projects RESTRICT the organisation delete, so they
       -- go first (their access grants, parties and history CASCADE with them,
-      -- and the stock item / announcement pointers SET NULL).
+      -- and the stock item / announcement pointers SET NULL). The status
+      -- history is append-only BY TRIGGER for real records; these rows are
+      -- this run's own synthetic fixtures, so the trigger steps aside for
+      -- exactly this one statement, inside this transaction — a failure
+      -- anywhere rolls the disable back with everything else. Real project
+      -- history (real projects are never deleted by any portal path) keeps
+      -- its guarantee.
+      ALTER TABLE public.builder_project_status_history
+        DISABLE TRIGGER trg_builder_project_status_history_append_only;
       DELETE FROM public.builder_projects WHERE builder_organisation_id IN
         (SELECT id FROM public.builder_organisations WHERE legal_name LIKE 'Smoke Rollout %');
+      ALTER TABLE public.builder_project_status_history
+        ENABLE TRIGGER trg_builder_project_status_history_append_only;
       DELETE FROM public.builder_organisations WHERE legal_name LIKE 'Smoke Rollout %';
       DELETE FROM public.builder_portal_users WHERE email LIKE '${MARK}-%@example.com';
     END $$;`;

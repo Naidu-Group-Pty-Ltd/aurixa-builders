@@ -394,9 +394,16 @@ describe('an activation opens a project — the notification is an entry point, 
 
   it('the smoke cleanup removes projects before the organisation RESTRICT can bite', () => {
     const smoke = read('scripts/ops/production-smoke.mjs');
+    const disable = smoke.indexOf('DISABLE TRIGGER trg_builder_project_status_history_append_only');
     const projectDelete = smoke.indexOf('DELETE FROM public.builder_projects WHERE builder_organisation_id IN');
+    const enable = smoke.indexOf('ENABLE TRIGGER trg_builder_project_status_history_append_only');
     const orgDelete = smoke.indexOf("DELETE FROM public.builder_organisations WHERE legal_name LIKE 'Smoke Rollout %'");
-    expect(projectDelete).toBeGreaterThan(-1);
-    expect(orgDelete).toBeGreaterThan(projectDelete);
+    // The append-only history trigger steps aside ONLY around the project
+    // delete, and only for the smoke's own synthetic rows — the pair must
+    // bracket the delete inside the one transaction, ahead of the org delete.
+    expect(disable).toBeGreaterThan(-1);
+    expect(projectDelete).toBeGreaterThan(disable);
+    expect(enable).toBeGreaterThan(projectDelete);
+    expect(orgDelete).toBeGreaterThan(enable);
   });
 });
