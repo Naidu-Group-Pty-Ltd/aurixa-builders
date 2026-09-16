@@ -10,6 +10,13 @@ name: Production rollout
 #            them in the ledger, prove the remediation objects, ensure
 #            pg_cron/pg_net + the two network driver schedules, and seed the
 #            Vault entries the signed cron invoker reads.
+#   proxy-trust
+#            proves the portal proxy's client-IP handshake against the LIVE
+#            system: that the runtime holds PORTAL_PROXY_SHARED_SECRET, that a
+#            proxied call is charged to the BROWSER's address rather than the
+#            proxy's, and that a direct caller claiming someone else's address
+#            is ignored without the token. Creates no account and no business
+#            row; deletes the identifier buckets it makes.
 #   smoke    controlled end-to-end tests over the deployed portal: the
 #            governance journey, self-registration, the active surfaces,
 #            the Stock List including a live HMAC-signed selection
@@ -34,11 +41,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | smoke | recover | forensics'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, smoke, recover, forensics]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics]
 
 concurrency:
   group: production-rollout
@@ -74,6 +81,7 @@ jobs:
           set -euo pipefail
           case "${{ inputs.phase }}" in
             verify|apply|recover) node scripts/ops/production-rollout.mjs "${{ inputs.phase }}" ;;
+            proxy-trust)          node scripts/ops/verify-proxy-ip-handshake.mjs ;;
             smoke)                node scripts/ops/production-smoke.mjs ;;
             forensics)            deno run -A --config supabase/functions/deno.json scripts/ops/stock-source-forensics.ts ;;
           esac
