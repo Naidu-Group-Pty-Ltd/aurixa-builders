@@ -14,6 +14,7 @@
     "security:portal": "node scripts/portal/security-check.mjs",
     "check:verify-jwt": "node scripts/security/check-verify-jwt-declared.mjs",
     "check:schema-refs": "node scripts/security/check-runtime-schema-refs.mjs",
+    "check:rate-limit-coverage": "node scripts/security/check-auth-rate-limit-coverage.mjs",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",

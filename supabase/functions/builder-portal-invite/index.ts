@@ -39,6 +39,7 @@ import { enforceCsrf, csrfDenied } from '../_shared/csrfGuard.ts';
 import { getBrandConfig } from '../_shared/brand-config.ts';
 import { hashSessionToken } from '../_shared/sessionHash.ts';
 import { meteredFetch } from '../_shared/meteredFetch.ts';
+import { getPortalClientIp } from '../_shared/requestSecurity.ts';
 import {
   resolveBuilderSession,
   builderGovernanceError,
@@ -107,7 +108,11 @@ Deno.serve(async (req) => {
         _new_state: null,
         _reason: null,
         _metadata: { target_builder_user_id: builderUserId, ...metadata },
-        _ip_address: req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || null,
+        // The audit trail of who invited whom must not be fillable with
+        // addresses of the caller's choosing: `X-Forwarded-For` is appended
+        // to by the client. Only an address the platform vouched for is
+        // recorded; an unvouched one is recorded honestly as nothing.
+        _ip_address: getPortalClientIp(req.headers),
         _user_agent: req.headers.get('user-agent') || null,
       });
       if (error) console.error('[builder-portal-invite] activity log failed', error.message);

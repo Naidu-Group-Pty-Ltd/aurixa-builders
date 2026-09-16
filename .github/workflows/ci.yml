@@ -54,8 +54,15 @@ jobs:
         run: npm run check:schema-refs
       - name: portal security check
         run: npm run security:portal
+      - name: every credential door is budgeted, and none trusts X-Forwarded-For
+        run: npm run check:rate-limit-coverage
+      # The explicit list this replaced had drifted: `builder-network-stock-image`
+      # was added to the repository and never added here, so the one
+      # unauthenticated endpoint in the product was the one function CI did not
+      # typecheck. `typecheck:edge` globs `builder-*`, so a function cannot be
+      # added without being checked.
       - name: deno typecheck (strict, whole runtime)
-        run: npx deno check --config supabase/functions/deno.json supabase/functions/builder-portal-login/index.ts supabase/functions/builder-portal-logout/index.ts supabase/functions/builder-portal-verify/index.ts supabase/functions/builder-portal-accept-invite/index.ts supabase/functions/builder-portal-forgot-password/index.ts supabase/functions/builder-portal-reset-password/index.ts supabase/functions/builder-portal-change-password/index.ts supabase/functions/builder-portal-invite/index.ts supabase/functions/builder-portal-register/index.ts supabase/functions/builder-portal-verify-email/index.ts supabase/functions/builder-portal-projects/index.ts supabase/functions/builder-portal-inventory/index.ts supabase/functions/builder-portal-transactions/index.ts supabase/functions/builder-portal-construction/index.ts supabase/functions/builder-portal-delivery/index.ts supabase/functions/builder-portal-collaboration/index.ts supabase/functions/builder-portal-workspace/index.ts supabase/functions/builder-portal-stock/index.ts supabase/functions/builder-network-admin/index.ts supabase/functions/builder-network-connections/index.ts supabase/functions/builder-network-inbound/index.ts supabase/functions/builder-network-outbox-worker/index.ts supabase/functions/builder-document-processor/index.ts supabase/functions/builder-stock-image-settler/index.ts supabase/functions/builder-stock-link-callback/index.ts
+        run: npm run typecheck:edge
 
   frontend:
     name: frontend typecheck + specs + build

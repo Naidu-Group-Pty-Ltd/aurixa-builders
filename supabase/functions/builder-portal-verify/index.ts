@@ -30,6 +30,7 @@ import {
 } from '../_shared/builderPortalAuth.ts';
 import { auditBuilderIdentity, revokeBuilderSession, revokeAllBuilderSessions } from '../_shared/builderSessions.ts';
 import { ACKNOWLEDGEMENTS_INCOMPLETE_ERROR, readAcknowledgements } from '../_shared/portalAgreement.ts';
+import { getPortalClientIp } from '../_shared/requestSecurity.ts';
 
 const MUTATING_ACTIONS = new Set([
   'accept_current_terms', 'complete_onboarding', 'select_organisation',
@@ -89,7 +90,11 @@ Deno.serve(async (req) => {
         }, 400);
       }
 
-      const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || null;
+      // This address is hashed into the record of a BINDING agreement
+      // acceptance. `X-Forwarded-For` is appended to by the caller, so the
+      // one piece of evidence about where an acceptance came from was
+      // theirs to write. Only a vouched-for address is recorded now.
+      const ip = getPortalClientIp(req.headers);
       const userAgent = req.headers.get('user-agent');
       const { data, error } = await supabase.rpc('builder_accept_current_terms', {
         _builder_user_id: user.id,

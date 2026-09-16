@@ -41,14 +41,26 @@ export const BUILDER_ALLOWED_MIME_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Reject traversal, absolute paths and anything outside the Builder prefix.
- * A storage path is caller-supplied, so it is treated as hostile.
+ * Reject traversal, absolute paths and anything outside the acting
+ * organisation's own prefix. A storage path is caller-supplied, so it is
+ * treated as hostile.
+ *
+ * THE BARE PREFIX WAS NOT A BOUNDARY. `documents/` is shared by every
+ * organisation on the network, so a path that cleared the old check named
+ * nothing in particular — which is the finding the 17 Sep 2026 remediation
+ * closed in `builderCollaboration.ts`, the copy that is actually wired up.
+ * This one has no callers today; it is tightened to the same rule so that
+ * whoever wires it up next inherits the boundary rather than the gap. The
+ * organisation id must come from the server-held session, never the request.
  */
-export function isAcceptableBuilderStoragePath(path: string | null | undefined): boolean {
-  if (!path) return false;
+export function isAcceptableBuilderStoragePath(
+  path: string | null | undefined,
+  organisationId: string | null | undefined,
+): boolean {
+  if (!path || !organisationId) return false;
   if (path.includes('..') || path.startsWith('/') || path.includes('\\')) return false;
   if (path.length > 400) return false;
-  return path.startsWith(BUILDER_DOCUMENT_STORAGE_PREFIX);
+  return path.startsWith(`${BUILDER_DOCUMENT_STORAGE_PREFIX}${organisationId}/`);
 }
 
 /** True when the detected type is one a Builder organisation may store. */

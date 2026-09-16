@@ -14,7 +14,7 @@
  * service_role and to nobody else" and "a child write never escapes the parent
  * the caller was authorised for"), because only a real database can answer it.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -311,18 +311,40 @@ describe('a rate limit is keyed on an address the caller cannot choose', () => {
     }
   });
 
-  it('no builder function buckets or records a caller-set X-Forwarded-For', () => {
-    for (const fn of [
-      'builder-portal-accept-invite',
-      'builder-portal-verify-email',
-      'builder-portal-change-password',
-      'builder-portal-register',
-      'builder-portal-forgot-password',
-      'builder-portal-reset-password',
-      'builder-portal-login',
-    ]) {
+  it('no builder portal function buckets or records a caller-set X-Forwarded-For', () => {
+    // Every one of them, not just the credential doors. Two SESSION surfaces
+    // were writing a caller-set address into an audit record: `-invite` into
+    // the log of who invited whom, and `-verify` into the evidence of a
+    // BINDING agreement acceptance.
+    const dir = join(REPO_ROOT, 'supabase/functions');
+    const doors = readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && e.name.startsWith('builder-portal-'))
+      .map((e) => e.name);
+    expect(doors.length).toBeGreaterThanOrEqual(18);
+    for (const fn of doors) {
       expect(readCode(FN(fn)).toLowerCase(), fn).not.toContain('x-forwarded-for');
     }
+  });
+
+  it('the two audit records now carry an address the platform vouched for', () => {
+    expect(readCode(FN('builder-portal-invite')))
+      .toContain('_ip_address: getPortalClientIp(req.headers)');
+    expect(readCode(FN('builder-portal-verify')))
+      .toContain('const ip = getPortalClientIp(req.headers);');
+  });
+
+  it('a CI gate holds all of this, and it is actually wired in', () => {
+    const gate = read('scripts/security/check-auth-rate-limit-coverage.mjs');
+    expect(gate).toContain('x-forwarded-for');
+    expect(gate).toContain('enforceAuthRateLimit|beginAuthRateLimit');
+    expect(gate).toContain('check_and_bump_rate_limit|security_consume_rate_limit');
+    // A gate nobody runs is a comment. It must be a script AND a CI step.
+    expect(read('package.json')).toContain('check-auth-rate-limit-coverage.mjs');
+    expect(read('.github/workflows/ci.yml')).toContain('npm run check:rate-limit-coverage');
+    // ...and the edge typecheck must glob, not enumerate: the explicit list had
+    // already drifted past `builder-network-stock-image`.
+    expect(read('.github/workflows/ci.yml')).toContain('npm run typecheck:edge');
+    expect(read('package.json')).toContain("deno check --config supabase/functions/deno.json supabase/functions/builder-*/index.ts");
   });
 
   it('the public image door is budgeted and denies when the limiter is down', () => {

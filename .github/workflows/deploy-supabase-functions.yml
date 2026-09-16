@@ -96,6 +96,7 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SESSION_PEPPER: ${{ secrets.NETWORK_SESSION_PEPPER }}
           INTERNAL_SECRET: ${{ secrets.NETWORK_INTERNAL_SECRET }}
+          PROXY_SHARED_SECRET: ${{ secrets.PORTAL_PROXY_SHARED_SECRET }}
         run: |
           set -euo pipefail
           # Public configuration ships from source; credentials only when the
@@ -117,4 +118,13 @@ jobs:
           fi
           if [ -n "${INTERNAL_SECRET:-}" ]; then
             supabase secrets set --project-ref "$PROJECT_REF" INTERNAL_EDGE_SECRET="$INTERNAL_SECRET"
+          fi
+          # The half of the proxy handshake that lives here. The SAME value must
+          # also be set as PORTAL_PROXY_SHARED_SECRET in the Vercel project, or
+          # the runtime keeps bucketing per-IP ceilings on the proxy's own
+          # address — one ceiling shared by every browser user at once. Absent
+          # on either side the handshake simply does not happen and behaviour is
+          # unchanged, which is why setting only one side is safe but useless.
+          if [ -n "${PROXY_SHARED_SECRET:-}" ]; then
+            supabase secrets set --project-ref "$PROJECT_REF" PORTAL_PROXY_SHARED_SECRET="$PROXY_SHARED_SECRET"
           fi

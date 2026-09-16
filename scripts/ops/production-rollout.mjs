@@ -500,6 +500,16 @@ async function diagnoseImagePipelineRuntime() {
   for (const name of wanted) {
     note(`secret ${name}: ${names.has(name) ? 'PRESENT' : 'MISSING'}`);
   }
+  // The portal proxy handshake. Presence here is only HALF the answer: the
+  // same value must also sit in the Vercel project, which this cannot see. A
+  // PRESENT here with the proxy unset changes nothing — the proxy sends no
+  // address at all without it — so the line says what to check next rather
+  // than implying the ceiling is now per-person.
+  note(`secret PORTAL_PROXY_SHARED_SECRET: ${names.has('PORTAL_PROXY_SHARED_SECRET') ? 'PRESENT' : 'MISSING'}`);
+  note(names.has('PORTAL_PROXY_SHARED_SECRET')
+    ? 'per-IP ceilings: this side is configured — confirm the SAME value is set as PORTAL_PROXY_SHARED_SECRET in the Vercel project, or the ceilings are still shared across every browser user.'
+    : 'per-IP ceilings: SHARED across every browser user. Each browser call arrives through the site\'s /fn/* proxy, so the address this runtime vouches for is the proxy\'s. Set PORTAL_PROXY_SHARED_SECRET to the same value here and in the Vercel project to bucket per person.');
+
   if (names.has('BUILDER_STOCK_PDF_WORKER_URL') && names.has('BUILDER_STOCK_PDF_WORKER_TOKEN')) {
     note('pdf worker: configured — behaviour must be judged from provenance/operational events, not from here (the URL value is a secret and is not read).');
   } else {
