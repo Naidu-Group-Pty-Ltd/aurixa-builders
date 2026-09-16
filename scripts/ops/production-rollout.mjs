@@ -347,7 +347,15 @@ async function ensureDriversAndVault(vaultNames) {
     SELECT jobname, schedule, active FROM cron.job WHERE jobname LIKE 'builder-network-%' ORDER BY jobname`);
   console.log('Network cron jobs now:');
   for (const row of jobs) note(`${row.jobname}  [${row.schedule}]  active=${row.active}`);
-  if (jobs.length !== 2) fail(`expected 2 network cron jobs, found ${jobs.length}`);
+  const expectedJobs = [
+    'builder-network-inbound-apply-1min',
+    'builder-network-outbox-worker-1min',
+    'builder-network-stock-reconcile-daily',
+  ];
+  const jobNames = jobs.map((row) => row.jobname).sort();
+  if (JSON.stringify(jobNames) !== JSON.stringify(expectedJobs)) {
+    fail(`expected network cron jobs [${expectedJobs.join(', ')}], found [${jobNames.join(', ')}]`);
+  }
 
   const health = await q('cron recent runs', `
     SELECT j.jobname, d.status, left(coalesce(d.return_message, ''), 120) AS message, d.start_time

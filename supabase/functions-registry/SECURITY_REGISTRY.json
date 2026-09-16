@@ -133,6 +133,12 @@
       "owner": "builder-portal-program",
       "reviewed": true
     },
+    "builder-network-stock-image": {
+      "verify_jwt": false,
+      "exposure_class": "public-read",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
     "builder-network-outbox-worker": {
       "verify_jwt": false,
       "exposure_class": "internal-worker",

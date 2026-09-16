@@ -74,6 +74,7 @@ const EXPECTED_FUNCTIONS = [
     'builder-network-connections',
     'builder-network-inbound',
     'builder-network-outbox-worker',
+    'builder-network-stock-image',
     'builder-portal-accept-invite',
     'builder-portal-change-password',
     'builder-portal-collaboration',
