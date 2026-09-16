@@ -46,6 +46,7 @@ import {
   cleanEnum,
   cleanText,
 } from '../_shared/builderProjects.ts';
+import { STOCK_ITEM_SELECT } from '../_shared/builderStock/projection.pure.ts';
 
 Deno.serve(async (req) => {
   const corsHeaders = createCorsHeaders(req.headers.get('origin'));
@@ -127,6 +128,81 @@ Deno.serve(async (req) => {
       return { ok: true, project, perms, accessRole: access.access_role };
     };
 
+    /**
+     * The activation that opened each project, keyed by project id.
+     *
+     * A project opened by `builder_stock_activation_fanout` carries its
+     * announcement via `activation_project_id`; the announcement carries the
+     * agency's own disclosure. Both reads are pinned to the session's active
+     * organisation, so a project reachable through a developer-side grant can
+     * never leak another organisation's activation record. The agency name
+     * falls back to the directory name the workspace asserted to the network —
+     * the same resolution the fan-out and the collaboration surfaces use.
+     */
+    const loadActivationContext = async (
+      projectIds: string[],
+    ): Promise<Map<string, Record<string, unknown>>> => {
+      const byProject = new Map<string, Record<string, unknown>>();
+      const ids = projectIds.filter(Boolean);
+      if (!ids.length) return byProject;
+
+      const { data: announcements } = await supabase
+        .from('builder_stock_selection_announcements')
+        .select('id, stock_item_id, status, acknowledged_at, remote_client_label, agency_name, agency_contact, activation_task_id, activation_project_id, connection_id, created_at')
+        .eq('organisation_id', activeOrganisationId)
+        .in('activation_project_id', ids)
+        .order('created_at', { ascending: true });
+      if (!announcements?.length) return byProject;
+
+      const clean = (value: unknown): string | null => {
+        const s = String(value ?? '').trim();
+        return s.length ? s : null;
+      };
+
+      const bareConnections = Array.from(new Set(
+        announcements.filter((a: any) => !a.agency_name)
+          .map((a: any) => a.connection_id).filter(Boolean)));
+      const labelByConnection = new Map<string, string>();
+      if (bareConnections.length) {
+        const { data: connections } = await supabase.from('workspace_connections')
+          .select('id, workspace_id').in('id', bareConnections);
+        const workspaceIds = Array.from(new Set(
+          (connections ?? []).map((c: any) => c.workspace_id).filter(Boolean)));
+        const { data: registry } = workspaceIds.length
+          ? await supabase.from('workspace_registry')
+            .select('id, slug, display_name').in('id', workspaceIds)
+          : { data: [] as any[] };
+        const registryById = new Map((registry ?? []).map((w: any) => [w.id, w]));
+        for (const connection of connections ?? []) {
+          const workspace = registryById.get(connection.workspace_id) as
+            | { display_name: string | null; slug: string } | undefined;
+          if (workspace) {
+            labelByConnection.set(
+              connection.id, workspace.display_name || workspace.slug);
+          }
+        }
+      }
+
+      for (const a of announcements as any[]) {
+        const contact = (a.agency_contact ?? {}) as Record<string, unknown>;
+        byProject.set(a.activation_project_id, {
+          announcement_id: a.id,
+          task_id: a.activation_task_id ?? null,
+          project_id: a.activation_project_id,
+          stock_item_id: a.stock_item_id ?? null,
+          status: a.status,
+          acknowledged_at: a.acknowledged_at ?? null,
+          activated_at: a.created_at,
+          agency_name: a.agency_name || labelByConnection.get(a.connection_id) || null,
+          contact_name: clean(contact.contact_name),
+          contact_email: clean(contact.contact_email),
+          contact_phone: clean(contact.contact_phone),
+          client_reference: clean(a.remote_client_label),
+        });
+      }
+      return byProject;
+    };
+
     // ───────────────────────── LIST ─────────────────────────
     if (operation === 'list_projects') {
       if (!accessibleProjectIds.length) {
@@ -174,11 +250,26 @@ Deno.serve(async (req) => {
         }
       }
 
-      const records = rows.map((row: any) => ({
-        ...row,
-        developer_organisation_name: organisationMap.get(row.developer_organisation_id) ?? null,
-        builder_organisation_name: organisationMap.get(row.builder_organisation_id) ?? null,
-      }));
+      // Light activation context: enough for the list to say which agency
+      // opened a row and where the acknowledgement stands, without the
+      // contact block the detail view carries.
+      const activationByProject = await loadActivationContext(rows.map((row: any) => row.id));
+
+      const records = rows.map((row: any) => {
+        const activation = activationByProject.get(row.id) ?? null;
+        return {
+          ...row,
+          developer_organisation_name: organisationMap.get(row.developer_organisation_id) ?? null,
+          builder_organisation_name: organisationMap.get(row.builder_organisation_id) ?? null,
+          activation: activation
+            ? {
+              status: activation.status,
+              agency_name: activation.agency_name,
+              acknowledged_at: activation.acknowledged_at,
+            }
+            : null,
+        };
+      });
 
       return json({
         success: true,
@@ -217,6 +308,27 @@ Deno.serve(async (req) => {
 
       const organisationMap = new Map<string, any>((organisations || []).map((o: any) => [o.id, o]));
 
+      // The activation that opened this project, with the property record it
+      // was opened for. The stock read is organisation-pinned: the item is
+      // served only when it belongs to the organisation this session acts as.
+      const activationByProject = await loadActivationContext([project.id]);
+      const activation = activationByProject.get(project.id) ?? null;
+      if (activation) {
+        // On this surface the project IS the property, so its name is the
+        // label — the same string the fan-out named the project with.
+        activation.property_label = project.name;
+      }
+      let stockItem: Record<string, unknown> | null = null;
+      if (activation?.stock_item_id) {
+        const { data: item } = await supabase
+          .from('builder_stock_items')
+          .select(STOCK_ITEM_SELECT)
+          .eq('organisation_id', activeOrganisationId)
+          .eq('id', activation.stock_item_id)
+          .maybeSingle();
+        stockItem = item ?? null;
+      }
+
       await logBuilderProjectActivity(supabase, req, {
         builderUserId: me.id, organisationId: activeOrganisationId,
         action: 'builder_project_viewed', entityType: 'project', entityId: project.id,
@@ -232,6 +344,8 @@ Deno.serve(async (req) => {
         status_history: history || [],
         permissions: perms,
         access_role: res.accessRole,
+        activation,
+        stock_item: stockItem,
       });
     }
 

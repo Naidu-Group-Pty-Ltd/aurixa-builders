@@ -108,6 +108,11 @@ async function cleanup(stage) {
         DELETE FROM public.workspace_connections WHERE id = v_conn;
       END LOOP;
       DELETE FROM public.workspace_registry WHERE slug LIKE '${MARK}-%';
+      -- Activation-opened projects RESTRICT the organisation delete, so they
+      -- go first (their access grants, parties and history CASCADE with them,
+      -- and the stock item / announcement pointers SET NULL).
+      DELETE FROM public.builder_projects WHERE builder_organisation_id IN
+        (SELECT id FROM public.builder_organisations WHERE legal_name LIKE 'Smoke Rollout %');
       DELETE FROM public.builder_organisations WHERE legal_name LIKE 'Smoke Rollout %';
       DELETE FROM public.builder_portal_users WHERE email LIKE '${MARK}-%@example.com';
     END $$;`;
@@ -562,6 +567,37 @@ record('D: the announcement converged into the domain table',
   `status=${converged[0]?.status}`);
 const announcementId = converged[0]?.id ?? null;
 
+// The activation opened a PROJECT: the working record, granted to the team,
+// linked from the stock item — created inside the same convergence sweep.
+const projectRows = await q('activation project', `
+  SELECT a.activation_project_id AS project_id, p.status, p.name,
+         p.builder_organisation_id,
+         (SELECT count(*) FROM public.builder_project_access g
+          WHERE g.project_id = a.activation_project_id AND g.revoked_at IS NULL) AS grants,
+         (SELECT i.builder_project_id FROM public.builder_stock_items i
+          WHERE i.id = a.stock_item_id) AS linked_item_project
+  FROM public.builder_stock_selection_announcements a
+  LEFT JOIN public.builder_projects p ON p.id = a.activation_project_id
+  WHERE a.id = ${sqlLit(announcementId)}::uuid`);
+const activationProject = projectRows[0] ?? {};
+record('D: the activation opened a project granted to the team',
+  !!activationProject.project_id && activationProject.status === 'planning'
+    && activationProject.builder_organisation_id === alpha.orgId
+    && Number(activationProject.grants) >= 1
+    && activationProject.linked_item_project === activationProject.project_id,
+  `project=${activationProject.project_id ? 'opened' : 'MISSING'} status=${activationProject.status} grants=${activationProject.grants}`);
+
+const projectDetail = await call('builder-portal-projects',
+  { operation: 'get_project', project_id: activationProject.project_id }, session.cookie);
+record('D: the project record serves the property and the agency contact over HTTP',
+  projectDetail.status === 200
+    && projectDetail.json?.project?.id === activationProject.project_id
+    && projectDetail.json?.activation?.agency_name === 'Smoke Agency Group'
+    && projectDetail.json?.activation?.contact_email === 'ava@smoke.example'
+    && projectDetail.json?.activation?.status === 'selected'
+    && projectDetail.json?.stock_item?.id === smokeItemId,
+  `status ${projectDetail.status} agency=${projectDetail.json?.activation?.agency_name} item=${projectDetail.json?.stock_item?.id ? 'attached' : 'missing'}`);
+
 const selections = await call('builder-portal-stock', { operation: 'list_selections' }, session.cookie);
 const listed = (selections.json?.records ?? []).find((r) => r.remote_selection_ref === remoteRef);
 record('D: the Builder Stock List shows the selection',
@@ -585,8 +621,9 @@ record('D: the activation reached Notifications with the resolved context',
     && !!activationNotice.activation?.property_label
     && activationNotice.activation?.agency_name === 'Smoke Agency Group'
     && activationNotice.activation?.contact_email === 'ava@smoke.example'
-    && activationNotice.activation?.status === 'selected',
-  `notice=${!!activationNotice} property=${activationNotice?.activation?.property_label}`);
+    && activationNotice.activation?.status === 'selected'
+    && activationNotice.activation?.project_id === activationProject.project_id,
+  `notice=${!!activationNotice} property=${activationNotice?.activation?.property_label} project=${activationNotice?.activation?.project_id ? 'linked' : 'missing'}`);
 
 const tasksBefore = await call('builder-portal-collaboration',
   { operation: 'my_tasks' }, session.cookie);
@@ -595,8 +632,9 @@ const activationTask = (tasksBefore.json?.records ?? [])
 record('D: the activation opened a pending task assigned to the member',
   !!activationTask && activationTask.status === 'open' && activationTask.priority === 'high'
     && activationTask.scope_type === 'stock_item'
-    && activationTask.activation?.contact_email === 'ava@smoke.example',
-  `task=${!!activationTask} status=${activationTask?.status}`);
+    && activationTask.activation?.contact_email === 'ava@smoke.example'
+    && activationTask.activation?.project_id === activationProject.project_id,
+  `task=${!!activationTask} status=${activationTask?.status} project=${activationTask?.activation?.project_id ? 'linked' : 'missing'}`);
 
 const acknowledge = await call('builder-portal-stock',
   { operation: 'acknowledge_selection', selection_id: announcementId }, session.cookie);

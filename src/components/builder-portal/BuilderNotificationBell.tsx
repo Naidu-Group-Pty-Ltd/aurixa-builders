@@ -48,10 +48,17 @@ export function BuilderNotificationBell() {
     if (!item.read_at) await markRead([item.id]);
     // Notifications carry a scope rather than a path, so the destination is the
     // Notifications page — the one surface that knows how to resolve a scope.
-    // A stock ACTIVATION is the exception: its acknowledge action lives on the
-    // Stock List, so that is where pressing it lands.
+    // A stock ACTIVATION is the exception: it opened a project, and that record
+    // is where pressing it lands (the Stock List when the project is not known,
+    // for an activation from before projects existed).
     setOpen(false);
-    navigate(item.activation ? '/builder/stock' : '/builder/notifications');
+    navigate(
+      item.activation?.project_id
+        ? `/builder/projects/${item.activation.project_id}`
+        : item.activation
+          ? '/builder/stock'
+          : '/builder/notifications',
+    );
   };
 
   return (

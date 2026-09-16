@@ -2034,6 +2034,7 @@ Deno.serve(async (req) => {
           agency_name: row.agency_name ?? null,
           agency_contact: row.agency_contact ?? null,
           activation_task_id: row.activation_task_id ?? null,
+          activation_project_id: row.activation_project_id ?? null,
           announced_at: row.created_at,
           acknowledged_at: row.acknowledged_at ?? null,
           acknowledged_by_builder_user_id: row.acknowledged_by_builder_user_id ?? null,

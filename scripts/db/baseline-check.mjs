@@ -485,12 +485,12 @@ BEGIN
   END IF;
 END $proof$;`);
 
-proof('activation fans out: task assigned, member notified, idempotent, withdrawal cancels', `
+proof('activation fans out: project opened+granted, task assigned, member notified, idempotent, withdrawal cancels', `
 DO $proof$
 DECLARE
   v_org uuid; v_workspace uuid; v_connection uuid; v_item uuid;
   v_user uuid; v_second uuid; v_ref uuid := gen_random_uuid();
-  v_a record; v_task record; v_n record; v_res record;
+  v_a record; v_task record; v_n record; v_res record; v_project record;
 BEGIN
   INSERT INTO public.builder_organisations(legal_name, org_type, status, is_active, activated_at)
   VALUES ('Fanout Proof Org', 'builder', 'active', true, now()) RETURNING id INTO v_org;
@@ -550,6 +550,51 @@ BEGIN
     RAISE EXCEPTION 'the notification does not say who activated (% / %)', v_n.title, v_n.body;
   END IF;
 
+  -- THE PROJECT: the activation opened a working record — named from the
+  -- property, planning, summarised with the agency, linked both ways.
+  IF v_a.activation_project_id IS NULL THEN
+    RAISE EXCEPTION 'the activation did not open a project';
+  END IF;
+  SELECT * INTO v_project FROM public.builder_projects WHERE id = v_a.activation_project_id;
+  IF v_project.status <> 'planning' OR v_project.builder_organisation_id <> v_org
+     OR position('Lot 9 Fanout Rise' IN v_project.name) = 0 OR v_project.suburb <> 'Berwick'
+     OR v_project.state <> 'VIC' THEN
+    RAISE EXCEPTION 'the project is mis-shaped (% / % / %)', v_project.name, v_project.status, v_project.suburb;
+  END IF;
+  IF position('Fanout Realty' IN COALESCE(v_project.shared_summary, '')) = 0 THEN
+    RAISE EXCEPTION 'the project summary does not say who opened it: %', v_project.shared_summary;
+  END IF;
+  IF (SELECT builder_project_id FROM public.builder_stock_items WHERE id = v_item) IS DISTINCT FROM v_project.id THEN
+    RAISE EXCEPTION 'the stock item is not linked to the project';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.builder_project_status_history
+                 WHERE project_id = v_project.id AND to_status = 'planning'
+                   AND from_status IS NULL AND changed_by_type = 'system') THEN
+    RAISE EXCEPTION 'the project opening was not recorded in its history';
+  END IF;
+  -- Granted to every active member, with roles that follow their standing —
+  -- resolved through the SAME dispatcher the portal lists projects with.
+  IF (SELECT count(*) FROM public.builder_project_access
+      WHERE project_id = v_project.id AND revoked_at IS NULL) <> 2 THEN
+    RAISE EXCEPTION 'project access was not granted to every active member';
+  END IF;
+  IF (SELECT access_role FROM public.builder_project_access
+      WHERE project_id = v_project.id AND builder_user_id = v_user) <> 'responsible'
+     OR (SELECT access_role FROM public.builder_project_access
+         WHERE project_id = v_project.id AND builder_user_id = v_second) <> 'team_member' THEN
+    RAISE EXCEPTION 'access roles do not follow membership roles';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.builder_accessible_projects(v_user, v_org, 'projects') p
+                 WHERE p.project_id = v_project.id)
+     OR NOT EXISTS (SELECT 1 FROM public.builder_accessible_projects(v_second, v_org, 'projects') p
+                    WHERE p.project_id = v_project.id) THEN
+    RAISE EXCEPTION 'a member cannot see the project their activation opened';
+  END IF;
+  IF EXISTS (SELECT 1 FROM public.builder_accessible_projects(gen_random_uuid(), v_org, 'projects') p
+             WHERE p.project_id = v_project.id) THEN
+    RAISE EXCEPTION 'a stranger can see the activation project';
+  END IF;
+
   -- The member reaches the task through the same dispatchers the portal uses.
   IF NOT public.builder_resolve_scope_permission(v_user, 'stock_item', v_item, 'tasks', 'view') THEN
     RAISE EXCEPTION 'an active member cannot view the stock task scope';
@@ -571,7 +616,8 @@ BEGIN
   PERFORM public.builder_network_apply_inbound_events(50);
   PERFORM public.builder_stock_activation_fanout(v_a.id);
   IF (SELECT count(*) FROM public.builder_tasks WHERE scope_type = 'stock_item' AND scope_id = v_item) <> 1
-     OR (SELECT count(*) FROM public.builder_notifications WHERE source_announcement_id = v_a.id) <> 2 THEN
+     OR (SELECT count(*) FROM public.builder_notifications WHERE source_announcement_id = v_a.id) <> 2
+     OR (SELECT count(*) FROM public.builder_projects WHERE builder_organisation_id = v_org) <> 1 THEN
     RAISE EXCEPTION 'a replay duplicated the fan-out';
   END IF;
 
@@ -591,6 +637,18 @@ BEGIN
   IF v_task.status <> 'done' THEN
     RAISE EXCEPTION 'the withdrawal overwrote a completed task to %', v_task.status;
   END IF;
+  -- The project was never edited or transitioned, so the withdrawal closes
+  -- it — through the governed transition, with the reason on record.
+  SELECT * INTO v_project FROM public.builder_projects WHERE id = v_a.activation_project_id;
+  IF v_project.status <> 'cancelled' THEN
+    RAISE EXCEPTION 'withdrawal left an untouched project %', v_project.status;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.builder_project_status_history
+                 WHERE project_id = v_project.id AND to_status = 'cancelled'
+                   AND changed_by_type = 'system'
+                   AND reason LIKE 'Activation withdrawn by %') THEN
+    RAISE EXCEPTION 'the cancellation was not recorded with its reason';
+  END IF;
 
   -- And on an activation nobody acknowledged, the withdrawal cancels the
   -- pending task it opened.
@@ -601,6 +659,16 @@ BEGIN
   VALUES (v_connection, 'stock.selection.announced', 'proof:fanout:3',
           jsonb_build_object('remote_selection_ref', v_ref, 'stock_item_id', v_item, 'status', 'selected'), 3);
   PERFORM public.builder_network_apply_inbound_events(50);
+  SELECT a.* INTO v_a FROM public.builder_stock_selection_announcements a
+  WHERE a.remote_selection_ref = v_ref;
+  IF v_a.activation_project_id IS NULL THEN
+    RAISE EXCEPTION 'the second activation did not open a project';
+  END IF;
+  -- The team starts working in the record before the agency withdraws: one
+  -- write is enough to make the project theirs.
+  UPDATE public.builder_projects
+     SET builder_notes = 'site walk booked', row_version = row_version + 1
+   WHERE id = v_a.activation_project_id;
   INSERT INTO public.builder_network_inbound_events(connection_id, event_type, dedupe_key, payload, source_version)
   VALUES (v_connection, 'stock.selection.updated', 'proof:fanout:4',
           jsonb_build_object('remote_selection_ref', v_ref, 'stock_item_id', v_item, 'status', 'withdrawn'), 4);
@@ -610,6 +678,31 @@ BEGIN
   WHERE a.remote_selection_ref = v_ref;
   IF v_task.status <> 'cancelled' THEN
     RAISE EXCEPTION 'the withdrawal left the unacknowledged task %', v_task.status;
+  END IF;
+  SELECT * INTO v_project FROM public.builder_projects WHERE id = v_a.activation_project_id;
+  IF v_project.status <> 'planning' THEN
+    RAISE EXCEPTION 'withdrawal cancelled a project the team had touched (%)', v_project.status;
+  END IF;
+
+  -- An activation that reached acknowledged before projects existed still
+  -- gains its record when the fan-out visits it (the backfill path) — and
+  -- the visit sends no new alerts.
+  v_ref := gen_random_uuid();
+  INSERT INTO public.builder_stock_items(organisation_id, address_line, suburb, state)
+  VALUES (v_org, 'Lot 11 Fanout Rise', 'Berwick', 'VIC') RETURNING id INTO v_item;
+  INSERT INTO public.builder_stock_selection_announcements(
+    connection_id, stock_item_id, organisation_id, remote_selection_ref,
+    status, source_version, acknowledged_at)
+  VALUES (v_connection, v_item, v_org, v_ref, 'builder_acknowledged', 5, now())
+  RETURNING id INTO v_a;
+  PERFORM public.builder_stock_activation_fanout(v_a.id);
+  SELECT a.* INTO v_a FROM public.builder_stock_selection_announcements a WHERE a.id = v_a.id;
+  IF v_a.activation_project_id IS NULL THEN
+    RAISE EXCEPTION 'the acknowledged activation did not gain its project';
+  END IF;
+  IF v_a.activation_task_id IS NOT NULL
+     OR EXISTS (SELECT 1 FROM public.builder_notifications WHERE source_announcement_id = v_a.id) THEN
+    RAISE EXCEPTION 'ensuring the project re-alerted an acknowledged activation';
   END IF;
 END $proof$;`);
 

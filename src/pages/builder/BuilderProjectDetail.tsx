@@ -1,6 +1,7 @@
 import { FormEvent, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft, Building2, HardHat, Loader2, Save, Users } from 'lucide-react';
+import { ArrowLeft, Building2, CheckCircle2, HardHat, Home, Loader2, Save, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -14,12 +15,177 @@ import {
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { BuilderPortalShell } from '@/components/builder-portal/BuilderPortalShell';
-import { useBuilderProject, useBuilderProjectMutation } from '@/lib/builderQueries';
+import {
+  ActivationContact, ActivationStatusBadge, ActivationStockLink,
+} from '@/components/builder-portal/StockActivation';
+import { builderKeys, useBuilderProject, useBuilderProjectMutation } from '@/lib/builderQueries';
+import { useAcknowledgeStockSelection } from '@/lib/builderStockQueries';
+import {
+  formatCollaborationTime, formatRelativeTime, type BuilderStockActivation,
+} from '@/lib/builderCollaboration';
+import type { BuilderStockItem } from '@/lib/builderStock';
 import {
   ACCESS_ROLE_LABELS, PARTY_ROLE_LABELS, PROJECT_STATUS_CLASSES, PROJECT_STATUS_LABELS,
   PROJECT_TYPE_LABELS, allowedProjectTransitions, formatProjectAddress, formatProjectDate,
-  type BuilderProjectStatus,
+  type BuilderProject, type BuilderProjectStatus,
 } from '@/lib/builderProjects';
+
+/** `4.0 m²`-style noise never reaches the page: trim, localise, unit. */
+const formatMeasure = (value: number | null | undefined, unit = ''): string | null => {
+  if (value === null || value === undefined) return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  return `${parsed.toLocaleString('en-AU')}${unit}`;
+};
+
+/**
+ * The activated property, as a record — every stated fact in its own labelled
+ * row, sourced from the same Stock List projection the rest of the portal
+ * reads. Rows without a value do not render; nothing here is ever invented.
+ */
+function PropertyInformationCard({
+  project, item, activation,
+}: {
+  project: BuilderProject;
+  item: Partial<BuilderStockItem>;
+  activation: BuilderStockActivation | null;
+}) {
+  const location = [item.suburb, item.state, item.postcode]
+    .map((part) => (part ?? '').trim()).filter(Boolean).join(' ');
+  const specs = [
+    formatMeasure(item.bedrooms) ? `${formatMeasure(item.bedrooms)} bed` : null,
+    formatMeasure(item.bathrooms) ? `${formatMeasure(item.bathrooms)} bath` : null,
+    formatMeasure(item.car_spaces) ? `${formatMeasure(item.car_spaces)} car` : null,
+  ].filter(Boolean).join(' · ');
+
+  const rows: Array<{ label: string; value: string }> = [
+    { label: 'Property', value: project.name },
+    { label: 'Location', value: location || (item.address_line ?? '').trim() },
+    { label: 'Lot number', value: (item.lot_number ?? '').trim() },
+    { label: 'Development', value: (item.development_name ?? item.project_name ?? '').trim() },
+    { label: 'House type', value: (item.house_design ?? '').trim() || (item.property_type ?? '').trim() },
+    { label: 'Layout', value: specs },
+    { label: 'Building size', value: formatMeasure(item.building_size_sqm, ' m²') ?? '' },
+    { label: 'Land size', value: formatMeasure(item.land_size_sqm, ' m²') ?? '' },
+    { label: 'Price', value: (item.price_display ?? '').trim() },
+    { label: 'Expected completion', value: (item.expected_completion ?? '').trim() },
+    { label: 'Client reference', value: activation?.client_reference ?? '' },
+  ].filter((row) => row.value);
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Home className="h-4 w-4 text-primary" aria-hidden />
+          Property information
+        </CardTitle>
+        <CardDescription>
+          From your Stock List record for this property — the same source the
+          marketplace shows.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <dl className="grid gap-x-6 gap-y-2.5 text-sm sm:grid-cols-2">
+          {rows.map((row) => (
+            <div key={row.label} className="flex items-baseline justify-between gap-3 border-b border-border/40 pb-2">
+              <dt className="shrink-0 text-muted-foreground">{row.label}</dt>
+              <dd className="text-right font-medium text-foreground">{row.value}</dd>
+            </div>
+          ))}
+        </dl>
+        <ActivationStockLink className="mt-4" />
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * The activation stays connected to the agency that sent it: who activated,
+ * where the acknowledgement stands, and the person to contact — as actions.
+ * While the activation is unacknowledged the acknowledge action lives here
+ * too, because this page is now the record the notification opens.
+ */
+function ActivatedByAgencyCard({
+  projectId, activation,
+}: {
+  projectId: string;
+  activation: BuilderStockActivation;
+}) {
+  const queryClient = useQueryClient();
+  const acknowledge = useAcknowledgeStockSelection();
+
+  const acknowledgeActivation = () => {
+    acknowledge.mutate(activation.announcement_id, {
+      onSuccess: async () => {
+        await queryClient.invalidateQueries({ queryKey: builderKeys.project(projectId) });
+        toast.success('Activation acknowledged', {
+          description: `${activation.agency_name || 'The agency'} can now see your team has it.`,
+        });
+      },
+      onError: (error: any) => {
+        toast.error('Could not acknowledge', {
+          description: error?.message || 'Try again, or acknowledge from the Stock List.',
+        });
+      },
+    });
+  };
+
+  return (
+    <Card className="border-primary/30">
+      <CardHeader className="pb-3">
+        <div className="flex items-start justify-between gap-2">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Building2 className="h-4 w-4 text-primary" aria-hidden />
+            Activated by agency
+          </CardTitle>
+          <ActivationStatusBadge status={activation.status} />
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div>
+          <p className="text-sm font-semibold text-foreground">
+            {activation.agency_name || 'A connected agency'}
+          </p>
+          <time
+            className="text-xs text-muted-foreground"
+            dateTime={activation.activated_at}
+            title={formatCollaborationTime(activation.activated_at)}
+          >
+            Activated {formatRelativeTime(activation.activated_at)}
+          </time>
+        </div>
+
+        <ActivationContact activation={activation} className="flex-col items-start gap-y-1.5" />
+
+        {activation.client_reference ? (
+          <p className="text-sm">
+            <span className="text-muted-foreground">Client reference </span>
+            <span className="font-medium text-foreground">{activation.client_reference}</span>
+          </p>
+        ) : null}
+
+        {activation.status === 'selected' ? (
+          <div className="space-y-1.5 pt-1">
+            <Button size="sm" onClick={acknowledgeActivation} disabled={acknowledge.isPending}>
+              {acknowledge.isPending
+                ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+                : <CheckCircle2 className="mr-2 h-4 w-4" aria-hidden />}
+              Acknowledge activation
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              Tells {activation.agency_name || 'the agency'} your team has this
+              and closes the pending task.
+            </p>
+          </div>
+        ) : activation.acknowledged_at ? (
+          <p className="text-xs text-muted-foreground">
+            Acknowledged {formatRelativeTime(activation.acknowledged_at)}.
+          </p>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
 
 /**
  * External Builder Portal project detail. Mirrors `SolicitorMatterDetail`:
@@ -65,6 +231,7 @@ export default function BuilderProjectDetail() {
     project, parties, status_history: history, permissions,
     developer_organisation: developer, builder_organisation: builder,
     development, access_role: accessRole,
+    activation, stock_item: stockItem,
   } = query.data;
 
   const canEdit = permissions?.projects?.edit === true;
@@ -183,6 +350,17 @@ export default function BuilderProjectDetail() {
         </TabsList>
 
         <TabsContent value="overview" className="mt-4 space-y-4">
+          {activation || stockItem ? (
+            <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
+              {stockItem ? (
+                <PropertyInformationCard project={project} item={stockItem} activation={activation} />
+              ) : null}
+              {activation ? (
+                <ActivatedByAgencyCard projectId={project.id} activation={activation} />
+              ) : null}
+            </div>
+          ) : null}
+
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Project details</CardTitle>

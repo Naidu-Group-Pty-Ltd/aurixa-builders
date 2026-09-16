@@ -148,6 +148,19 @@ export default function BuilderProjects() {
                               {project.project_reference ? `${project.project_reference} · ` : ''}
                               {formatProjectAddress(project)}
                             </span>
+                            {project.activation ? (
+                              <span className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                                <span
+                                  aria-hidden
+                                  className={cn(
+                                    'inline-block h-1.5 w-1.5 rounded-full',
+                                    project.activation.status === 'selected' ? 'bg-warning' : 'bg-success',
+                                  )}
+                                />
+                                Activated by {project.activation.agency_name || 'a connected agency'}
+                                {project.activation.status === 'selected' ? ' · awaiting acknowledgement' : ''}
+                              </span>
+                            ) : null}
                           </Link>
                         </TableCell>
                         <TableCell className="hidden md:table-cell">

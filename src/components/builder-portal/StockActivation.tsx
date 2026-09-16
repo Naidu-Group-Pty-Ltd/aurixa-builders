@@ -91,7 +91,7 @@ export function ActivationContact({
   );
 }
 
-/** The road to the record — every activation surface offers the same one. */
+/** The secondary road — the property as a line of stock. */
 export function ActivationStockLink({ className }: { className?: string }) {
   return (
     <Link
@@ -102,6 +102,33 @@ export function ActivationStockLink({ className }: { className?: string }) {
       )}
     >
       Open in Stock List
+      <ArrowRight className="h-3 w-3" aria-hidden />
+    </Link>
+  );
+}
+
+/**
+ * The primary road — the project the activation opened. An activation is an
+ * entry point into a working record, not just an alert, so every surface that
+ * shows one offers the record first. Renders nothing for an activation from
+ * before projects existed (its `project_id` is null until the backfill runs).
+ */
+export function ActivationProjectLink({
+  projectId, className,
+}: {
+  projectId: string | null | undefined;
+  className?: string;
+}) {
+  if (!projectId) return null;
+  return (
+    <Link
+      to={`/builder/projects/${projectId}`}
+      className={cn(
+        'inline-flex items-center gap-1 text-xs font-semibold text-primary underline-offset-4 hover:underline',
+        className,
+      )}
+    >
+      View project
       <ArrowRight className="h-3 w-3" aria-hidden />
     </Link>
   );

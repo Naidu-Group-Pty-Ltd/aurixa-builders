@@ -24,6 +24,9 @@ import {
 import {
   BUILDER_NOTIFICATION_TYPES, BUILDER_SCOPE_TYPES,
 } from '../../../supabase/functions/_shared/builderCollaboration';
+import {
+  BUILDER_ANNOUNCEMENT_SELECT,
+} from '../../../supabase/functions/_shared/builderStock/projection.pure';
 import { NOTIFICATION_TYPE_LABELS } from '../builderCollaboration';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
@@ -275,5 +278,125 @@ describe('what the builder reads back names the agency', () => {
     expect(page).toContain('selection.agency_name || selection.workspace_label');
     expect(page).toContain('mailto:${selection.agency_contact.contact_email}');
     expect(page).toContain('Activated by an agency');
+  });
+});
+
+// ===========================================================================
+// AN ACTIVATION OPENS A PROJECT (20260917090000)
+// ===========================================================================
+const PROJECT_MIGRATION = 'supabase/migrations/20260917090000_an_activation_opens_a_project.sql';
+
+describe('an activation opens a project — the notification is an entry point, not the product', () => {
+  it('the fan-out creates, grants and links the project in the same transaction', () => {
+    const sql = read(PROJECT_MIGRATION);
+    expect(sql).toContain('INSERT INTO public.builder_projects(');
+    expect(sql).toContain('INSERT INTO public.builder_project_access(');
+    // Replays grant nothing twice.
+    expect(sql).toContain('ON CONFLICT (builder_user_id, project_id) DO NOTHING');
+    // Roles follow the member's standing in the organisation.
+    expect(sql).toContain("WHEN 'owner'         THEN 'responsible'");
+    expect(sql).toContain("WHEN 'read_only'     THEN 'read_only'");
+    // The stock item is linked only when unlinked — a manual link is
+    // somebody's decision and is never overwritten.
+    expect(sql).toContain('WHERE id = v_item.id AND builder_project_id IS NULL');
+    expect(sql).toContain('SET activation_project_id = v_project_id');
+    // The opening is on the record like any human change would be.
+    expect(sql).toContain('INSERT INTO public.builder_project_status_history(');
+  });
+
+  it('the announcement carries the pointer, and losing the project never orphans it', () => {
+    const sql = read(PROJECT_MIGRATION);
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS activation_project_id uuid');
+    expect(sql).toContain('REFERENCES public.builder_projects(id) ON DELETE SET NULL');
+  });
+
+  it('withdrawal closes only untouched work, through the governed transition', () => {
+    const sql = read(PROJECT_MIGRATION);
+    // Planning and never written to — one edit or transition keeps the record.
+    expect(sql).toContain("AND status = 'planning' AND row_version = 1");
+    expect(sql).toContain('PERFORM public.builder_transition_project(');
+    expect(sql).toContain("left('Activation withdrawn by ' || v_agency_name, 500)");
+  });
+
+  it('an acknowledged activation only ensures its project — no re-alerting', () => {
+    const sql = read(PROJECT_MIGRATION);
+    expect(sql).toContain("'builder_acknowledged', 'withdrawn')");
+    expect(sql).toContain("IF v_a.status = 'builder_acknowledged' THEN");
+  });
+
+  it('the backfill visits every live announcement and the migration proves convergence', () => {
+    const sql = read(PROJECT_MIGRATION);
+    expect(sql).toContain("WHERE a.activation_project_id IS NULL AND a.status <> 'withdrawn'");
+    expect(sql).toContain('activation project backfill visited');
+    expect(sql).toContain('still have no project');
+    // The sweep must not keep a private task-cancel path outside the fan-out.
+    expect(sql).toContain('sweep still cancels tasks inline');
+  });
+
+  it('the task now sends people to the project', () => {
+    const sql = read(PROJECT_MIGRATION);
+    expect(sql).toContain(
+      'Open the project to review the property and acknowledge the activation so the agency knows you have it.');
+  });
+
+  it('every activation read carries project_id', () => {
+    const collaboration = read('supabase/functions/builder-portal-collaboration/index.ts');
+    expect(collaboration).toContain('activation_project_id, connection_id');
+    expect(collaboration).toContain('project_id: a.activation_project_id ?? null,');
+    const stock = read('supabase/functions/builder-portal-stock/index.ts');
+    expect(stock).toContain('activation_project_id: row.activation_project_id ?? null,');
+    expect(BUILDER_ANNOUNCEMENT_SELECT).toContain('activation_project_id');
+  });
+
+  it('the projects door serves the activation and the property, organisation-pinned', () => {
+    const projects = read('supabase/functions/builder-portal-projects/index.ts');
+    expect(projects).toContain('const loadActivationContext = async (');
+    // The announcement read is pinned to the session's organisation.
+    expect(projects).toMatch(/from\('builder_stock_selection_announcements'\)[\s\S]{0,200}\.eq\('organisation_id', activeOrganisationId\)/);
+    // The property rides the SAME projection the Stock List serves.
+    expect(projects).toContain("import { STOCK_ITEM_SELECT } from '../_shared/builderStock/projection.pure.ts';");
+    expect(projects).toContain('stock_item: stockItem,');
+    expect(projects).toContain('activation,');
+    // The list carries the light context for its activation line.
+    expect(projects).toContain('agency_name: activation.agency_name,');
+  });
+
+  it('the surfaces open the project first', () => {
+    const shared = read('src/components/builder-portal/StockActivation.tsx');
+    expect(shared).toContain('export function ActivationProjectLink(');
+    expect(shared).toContain('`/builder/projects/${projectId}`');
+
+    const notifications = read('src/pages/builder/BuilderNotifications.tsx');
+    expect(notifications).toContain('View project');
+    expect(notifications).toContain('`/builder/projects/${activation.project_id}`');
+
+    const bell = read('src/components/builder-portal/BuilderNotificationBell.tsx');
+    expect(bell).toContain('`/builder/projects/${item.activation.project_id}`');
+
+    const tasks = read('src/pages/builder/BuilderTasks.tsx');
+    expect(tasks).toContain('<ActivationProjectLink projectId={task.activation.project_id} />');
+
+    const stockList = read('src/pages/builder/BuilderStockList.tsx');
+    expect(stockList).toContain('projectId={selection.activation_project_id}');
+  });
+
+  it('the project record shows the property and keeps the agency attached', () => {
+    const detail = read('src/pages/builder/BuilderProjectDetail.tsx');
+    expect(detail).toContain('function PropertyInformationCard(');
+    expect(detail).toContain('function ActivatedByAgencyCard(');
+    // Acknowledging lives on the record now, against the same announcement id
+    // the Stock List uses, and refreshes the record it changed.
+    expect(detail).toContain('acknowledge.mutate(activation.announcement_id');
+    expect(detail).toContain('builderKeys.project(projectId)');
+    const list = read('src/pages/builder/BuilderProjects.tsx');
+    expect(list).toContain('Activated by {project.activation.agency_name');
+  });
+
+  it('the smoke cleanup removes projects before the organisation RESTRICT can bite', () => {
+    const smoke = read('scripts/ops/production-smoke.mjs');
+    const projectDelete = smoke.indexOf('DELETE FROM public.builder_projects WHERE builder_organisation_id IN');
+    const orgDelete = smoke.indexOf("DELETE FROM public.builder_organisations WHERE legal_name LIKE 'Smoke Rollout %'");
+    expect(projectDelete).toBeGreaterThan(-1);
+    expect(orgDelete).toBeGreaterThan(projectDelete);
   });
 });

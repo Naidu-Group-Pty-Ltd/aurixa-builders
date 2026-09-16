@@ -26,6 +26,7 @@ import { SearchInput } from '@/components/ui/search-input';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { BuilderPortalShell } from '@/components/builder-portal/BuilderPortalShell';
+import { ActivationProjectLink } from '@/components/builder-portal/StockActivation';
 import {
   BuilderPropertyImageButton,
 } from '@/components/builder-portal/BuilderPropertyImage';
@@ -558,6 +559,10 @@ export default function BuilderStockList() {
                           ) : null}
                         </p>
                       ) : null}
+                  <ActivationProjectLink
+                    projectId={selection.activation_project_id}
+                    className="mt-1"
+                  />
                 </div>
                 <Button
                   size="sm"

@@ -23,8 +23,10 @@ import type {
 import type {
   BuilderConversation, BuilderConversationParticipant, BuilderDocument,
   BuilderDocumentGrant, BuilderDocumentVersion, BuilderMessage, BuilderNotification,
-  BuilderScopeType, BuilderTask, BuilderTaskAssignment, BuilderUnreadCounts,
+  BuilderScopeType, BuilderStockActivation, BuilderTask, BuilderTaskAssignment,
+  BuilderUnreadCounts,
 } from '@/lib/builderCollaboration';
+import type { BuilderStockItem } from '@/lib/builderStock';
 import type {
   BuilderActivityEntry, BuilderOrganisationSettings, BuilderUserPreferences,
   BuilderWorkspaceSummary,
@@ -97,6 +99,10 @@ export interface ProjectDetail {
   status_history: BuilderProjectStatusHistoryEntry[];
   permissions: Record<string, { view: boolean; edit: boolean; delete: boolean }>;
   access_role: string;
+  /** The agency activation that opened this project, when it was opened by one. */
+  activation: BuilderStockActivation | null;
+  /** The activated property, projected exactly as the Stock List serves it. */
+  stock_item: Partial<BuilderStockItem> | null;
 }
 
 export class BuilderPortalRequestError extends Error {

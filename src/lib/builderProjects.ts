@@ -4,6 +4,7 @@
  * edge side — keep the two in step, exactly as `src/lib/legalMatters.ts`
  * mirrors `_shared/legalMatters.ts`.
  */
+import type { BuilderActivationStatus } from '@/lib/builderCollaboration';
 
 export type BuilderProjectStatus =
   | 'planning' | 'pre_sales' | 'approved' | 'under_construction'
@@ -52,6 +53,16 @@ export interface BuilderProject {
   /** Joined for display by the list endpoint. */
   developer_organisation_name?: string | null;
   builder_organisation_name?: string | null;
+  /**
+   * Present when an agency activation opened this project: which agency, and
+   * where the acknowledgement stands. The full contact block rides only on
+   * the detail response.
+   */
+  activation?: {
+    status: BuilderActivationStatus;
+    agency_name: string | null;
+    acknowledged_at: string | null;
+  } | null;
 }
 
 export interface BuilderProjectParty {

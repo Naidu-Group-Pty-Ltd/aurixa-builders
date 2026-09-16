@@ -355,7 +355,7 @@ Deno.serve(async (req) => {
 
       let query = supabase
         .from('builder_stock_selection_announcements')
-        .select('id, stock_item_id, status, acknowledged_at, remote_client_label, agency_name, agency_contact, activation_task_id, connection_id, created_at')
+        .select('id, stock_item_id, status, acknowledged_at, remote_client_label, agency_name, agency_contact, activation_task_id, activation_project_id, connection_id, created_at')
         .eq('organisation_id', activeOrganisationId);
       query = announcementIds.length
         ? query.in('id', announcementIds)
@@ -405,6 +405,7 @@ Deno.serve(async (req) => {
         return {
           announcement_id: a.id,
           task_id: a.activation_task_id ?? null,
+          project_id: a.activation_project_id ?? null,
           stock_item_id: a.stock_item_id ?? null,
           property_label: activationPropertyLabel(itemById.get(a.stock_item_id)),
           status: a.status,

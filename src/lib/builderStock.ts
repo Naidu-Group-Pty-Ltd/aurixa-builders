@@ -287,6 +287,8 @@ export interface BuilderStockSelectionForBuilder {
   } | null;
   /** The pending task this activation fanned out into, when one exists. */
   activation_task_id?: string | null;
+  /** The project this activation opened — the working record to continue in. */
+  activation_project_id?: string | null;
   stock_item?: Partial<BuilderStockItem> | null;
 }
 

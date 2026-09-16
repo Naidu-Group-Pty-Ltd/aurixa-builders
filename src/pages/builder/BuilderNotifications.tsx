@@ -1,4 +1,5 @@
-import { AlertTriangle, Bell, Building2, CheckCheck, Loader2, MessageSquare, RefreshCw } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { AlertTriangle, ArrowRight, Bell, Building2, CheckCheck, Loader2, MessageSquare, RefreshCw } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -90,14 +91,22 @@ function ActivationNotificationCard({
             <ActivationStockLink />
           </div>
         </div>
-        {unread ? (
-          <Button
-            variant="ghost" size="sm" className="shrink-0"
-            onClick={onMarkRead} disabled={busy}
-          >
-            Mark read
-          </Button>
-        ) : null}
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          {/* The notification is the entry point; the project is the record. */}
+          {activation.project_id ? (
+            <Button asChild size="sm">
+              <Link to={`/builder/projects/${activation.project_id}`}>
+                View project
+                <ArrowRight className="ml-1.5 h-3.5 w-3.5" aria-hidden />
+              </Link>
+            </Button>
+          ) : null}
+          {unread ? (
+            <Button variant="ghost" size="sm" onClick={onMarkRead} disabled={busy}>
+              Mark read
+            </Button>
+          ) : null}
+        </div>
       </div>
     </li>
   );

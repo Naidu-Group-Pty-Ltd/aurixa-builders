@@ -23,7 +23,8 @@ import {
   useBuilderCollaborationMutation, useBuilderMyTasks, useBuilderScopedTasks,
 } from '@/lib/builderQueries';
 import {
-  ActivationAgencyLine, ActivationContact, ActivationStatusBadge, ActivationStockLink,
+  ActivationAgencyLine, ActivationContact, ActivationProjectLink, ActivationStatusBadge,
+  ActivationStockLink,
 } from '@/components/builder-portal/StockActivation';
 import {
   TASK_PRIORITY_CLASSES, TASK_PRIORITY_LABELS, TASK_STATUS_CLASSES, TASK_STATUS_LABELS,
@@ -86,7 +87,10 @@ function TaskTable({
                       <>
                         <ActivationAgencyLine activation={task.activation} className="text-xs" />
                         <ActivationContact activation={task.activation} dense />
-                        <ActivationStockLink className="pt-0.5" />
+                        <span className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-0.5">
+                          <ActivationProjectLink projectId={task.activation.project_id} />
+                          <ActivationStockLink />
+                        </span>
                       </>
                     ) : task.description ? (
                       <p className="line-clamp-2 whitespace-pre-line text-xs leading-relaxed text-muted-foreground">

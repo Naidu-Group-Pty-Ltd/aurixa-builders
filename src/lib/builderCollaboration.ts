@@ -121,6 +121,8 @@ export type BuilderActivationStatus =
 export interface BuilderStockActivation {
   announcement_id: string;
   task_id: string | null;
+  /** The builder_projects record this activation opened — the primary destination. */
+  project_id: string | null;
   stock_item_id: string | null;
   property_label: string | null;
   status: BuilderActivationStatus;
