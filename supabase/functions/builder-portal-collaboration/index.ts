@@ -179,6 +179,42 @@ Deno.serve(async (req) => {
       if (!scopeType || !scopeId) {
         return { ok: false, status: 400, error: 'scope_type and scope_id are required' };
       }
+
+      /*
+       * A stock item has no project to walk up to — stock is the
+       * ORGANISATION's, and the activation task the network's fan-out writes
+       * on it belongs to whoever manages that stock. So the parent gate here
+       * is the session's active organisation owning the item, and the
+       * database resolver (`builder_resolve_stock_item_permission`, tasks
+       * only) still answers the permission question — this branch decides
+       * nothing itself, exactly like the project walk it replaces. Documents
+       * and messages on a stock scope resolve to false in the database, so
+       * this branch cannot widen either.
+       */
+      if (scopeType === 'stock_item') {
+        const { data: item } = await supabase.from('builder_stock_items')
+          .select('id, organisation_id').eq('id', scopeId).maybeSingle();
+        if (!item || item.organisation_id !== activeOrganisationId) {
+          return { ok: false, status: 404, error: 'Not found' };
+        }
+        const { data: allowed, error } = await supabase.rpc('builder_resolve_scope_permission', {
+          _user_id: me.id, _scope_type: scopeType, _scope_id: scopeId,
+          _permission_key: permissionKey, _level: level,
+        });
+        if (error) throw error;
+        if (allowed !== true) {
+          return level === 'view'
+            ? { ok: false, status: 404, error: 'Not found' }
+            : { ok: false, status: 403, error: 'You do not have permission to change this' };
+        }
+        // The honest matrix for this scope: tasks, view and edit, nothing
+        // else — the same answer the resolver just gave, in matrix shape.
+        return {
+          ok: true, scopeType, scopeId,
+          perms: { tasks: { view: true, edit: true, delete: false } },
+        };
+      }
+
       const projectId = await projectIdForScope(scopeType, scopeId);
       if (!projectId) return { ok: false, status: 404, error: 'Not found' };
 

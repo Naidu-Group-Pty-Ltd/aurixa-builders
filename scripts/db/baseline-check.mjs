@@ -485,6 +485,184 @@ BEGIN
   END IF;
 END $proof$;`);
 
+proof('activation fans out: task assigned, member notified, idempotent, withdrawal cancels', `
+DO $proof$
+DECLARE
+  v_org uuid; v_workspace uuid; v_connection uuid; v_item uuid;
+  v_user uuid; v_second uuid; v_ref uuid := gen_random_uuid();
+  v_a record; v_task record; v_n record; v_res record;
+BEGIN
+  INSERT INTO public.builder_organisations(legal_name, org_type, status, is_active, activated_at)
+  VALUES ('Fanout Proof Org', 'builder', 'active', true, now()) RETURNING id INTO v_org;
+  INSERT INTO public.builder_portal_users(email, name, phone, status, is_active)
+  VALUES ('fanout-owner@example.test', 'Fanout Owner', '0400 111 222', 'active', true) RETURNING id INTO v_user;
+  INSERT INTO public.builder_portal_users(email, name, status, is_active)
+  VALUES ('fanout-second@example.test', 'Fanout Second', 'active', true) RETURNING id INTO v_second;
+  INSERT INTO public.builder_organisation_memberships(builder_user_id, organisation_id, membership_role, status)
+  VALUES (v_user, v_org, 'owner', 'active'), (v_second, v_org, 'member', 'active');
+  INSERT INTO public.workspace_registry(mc_clone_id, slug, display_name)
+  VALUES (gen_random_uuid(), 'fanout-proof', 'Fanout Realty') RETURNING id INTO v_workspace;
+  INSERT INTO public.workspace_connections(workspace_id, builder_organisation_id, state, initiated_by, accepted_at, outbound_hmac_secret)
+  VALUES (v_workspace, v_org, 'active', 'workspace', now(), repeat('e', 64)) RETURNING id INTO v_connection;
+  INSERT INTO public.builder_stock_items(organisation_id, address_line, suburb, state)
+  VALUES (v_org, 'Lot 9 Fanout Rise', 'Berwick', 'VIC') RETURNING id INTO v_item;
+
+  -- The announcement arrives carrying the agency's authorised disclosure.
+  INSERT INTO public.builder_network_inbound_events(connection_id, event_type, dedupe_key, payload, source_version)
+  VALUES (v_connection, 'stock.selection.announced', 'proof:fanout:1',
+          jsonb_build_object('remote_selection_ref', v_ref, 'stock_item_id', v_item,
+                             'status', 'selected', 'remote_client_label', 'Buyer F1',
+                             'agency', jsonb_build_object('contact_name', 'Ava Adviser',
+                               'contact_email', 'ava@fanout.example', 'contact_phone', '03 9000 0000')),
+          1);
+  PERFORM public.builder_network_apply_inbound_events(50);
+
+  SELECT * INTO v_a FROM public.builder_stock_selection_announcements
+  WHERE connection_id = v_connection AND remote_selection_ref = v_ref;
+  IF v_a.id IS NULL OR v_a.activation_task_id IS NULL THEN
+    RAISE EXCEPTION 'the activation did not fan out (announcement %, task %)', v_a.id, v_a.activation_task_id;
+  END IF;
+  IF v_a.agency_contact->>'contact_email' <> 'ava@fanout.example' THEN
+    RAISE EXCEPTION 'the agency contact did not land (%)', v_a.agency_contact;
+  END IF;
+  -- The agency name resolves from the directory when the event carries none.
+  SELECT * INTO v_task FROM public.builder_tasks WHERE id = v_a.activation_task_id;
+  IF v_task.scope_type <> 'stock_item' OR v_task.scope_id <> v_item
+     OR v_task.status <> 'open' OR v_task.priority <> 'high' THEN
+    RAISE EXCEPTION 'the task is mis-shaped (%/% % %)', v_task.scope_type, v_task.scope_id, v_task.status, v_task.priority;
+  END IF;
+  IF position('Fanout Realty' IN v_task.description) = 0
+     OR position('ava@fanout.example' IN v_task.description) = 0 THEN
+    RAISE EXCEPTION 'the task does not name the agency and its contact: %', v_task.description;
+  END IF;
+  IF (SELECT count(*) FROM public.builder_task_assignments
+      WHERE task_id = v_task.id AND unassigned_at IS NULL) <> 2 THEN
+    RAISE EXCEPTION 'the task was not assigned to every active member';
+  END IF;
+  IF (SELECT count(*) FROM public.builder_notifications
+      WHERE source_announcement_id = v_a.id AND notification_type = 'stock_selection'
+        AND entity_kind = 'stock_selection') <> 2 THEN
+    RAISE EXCEPTION 'the members were not notified';
+  END IF;
+  SELECT * INTO v_n FROM public.builder_notifications
+  WHERE source_announcement_id = v_a.id AND builder_user_id = v_user;
+  IF position('Fanout Realty' IN v_n.title) = 0 OR position('ava@fanout.example' IN v_n.body) = 0 THEN
+    RAISE EXCEPTION 'the notification does not say who activated (% / %)', v_n.title, v_n.body;
+  END IF;
+
+  -- The member reaches the task through the same dispatchers the portal uses.
+  IF NOT public.builder_resolve_scope_permission(v_user, 'stock_item', v_item, 'tasks', 'view') THEN
+    RAISE EXCEPTION 'an active member cannot view the stock task scope';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.builder_accessible_tasks(v_user, NULL, NULL) t
+                 WHERE t.task_id = v_task.id) THEN
+    RAISE EXCEPTION 'builder_accessible_tasks does not surface the activation task';
+  END IF;
+  -- And nobody outside the organisation does.
+  IF public.builder_resolve_scope_permission(gen_random_uuid(), 'stock_item', v_item, 'tasks', 'view') THEN
+    RAISE EXCEPTION 'a stranger resolved the stock task scope';
+  END IF;
+  -- Tasks only: the scope answers nothing for documents or messages.
+  IF public.builder_resolve_scope_permission(v_user, 'stock_item', v_item, 'documents', 'view') THEN
+    RAISE EXCEPTION 'the stock scope opened documents';
+  END IF;
+
+  -- Replay and a racing second fan-out create nothing new.
+  PERFORM public.builder_network_apply_inbound_events(50);
+  PERFORM public.builder_stock_activation_fanout(v_a.id);
+  IF (SELECT count(*) FROM public.builder_tasks WHERE scope_type = 'stock_item' AND scope_id = v_item) <> 1
+     OR (SELECT count(*) FROM public.builder_notifications WHERE source_announcement_id = v_a.id) <> 2 THEN
+    RAISE EXCEPTION 'a replay duplicated the fan-out';
+  END IF;
+
+  -- Withdrawal cancels the pending task it opened.
+  INSERT INTO public.builder_network_inbound_events(connection_id, event_type, dedupe_key, payload, source_version)
+  VALUES (v_connection, 'stock.selection.updated', 'proof:fanout:2',
+          jsonb_build_object('remote_selection_ref', v_ref, 'stock_item_id', v_item, 'status', 'withdrawn'), 2);
+  PERFORM public.builder_network_apply_inbound_events(50);
+  SELECT * INTO v_task FROM public.builder_tasks WHERE id = v_a.activation_task_id;
+  IF v_task.status <> 'cancelled' THEN
+    RAISE EXCEPTION 'the withdrawal left the task %', v_task.status;
+  END IF;
+END $proof$;`);
+
+proof('stock sync: projection events queue, raw row never crosses, reconcile is authoritative', `
+DO $proof$
+DECLARE
+  v_org uuid; v_workspace uuid; v_connection uuid; v_item uuid;
+  v_event record; v_payload jsonb; v_count integer;
+BEGIN
+  INSERT INTO public.builder_organisations(legal_name, trading_name, org_type, status, is_active, activated_at)
+  VALUES ('Sync Proof Org Pty Ltd', 'Sync Proof Homes', 'builder', 'active', true, now()) RETURNING id INTO v_org;
+  INSERT INTO public.workspace_registry(mc_clone_id, slug, display_name)
+  VALUES (gen_random_uuid(), 'sync-proof', 'Sync Proof Workspace') RETURNING id INTO v_workspace;
+  -- Invited first: activation is what backfills, and that transition is the
+  -- next agency's whole onboarding.
+  INSERT INTO public.workspace_connections(workspace_id, builder_organisation_id, state, initiated_by, outbound_hmac_secret)
+  VALUES (v_workspace, v_org, 'invited', 'workspace', repeat('f', 64)) RETURNING id INTO v_connection;
+
+  INSERT INTO public.builder_stock_items(
+    organisation_id, address_line, suburb, state, lifecycle_status, price,
+    source_row)
+  VALUES (v_org, 'Lot 1 Sync Parade', 'Clyde', 'VIC', 'active', 650000,
+          jsonb_build_object('house_design', 'NEX 18', 'Margin', 'NEVER-CROSSES'))
+  RETURNING id INTO v_item;
+
+  -- Nothing queued yet: the connection is not active.
+  IF EXISTS (SELECT 1 FROM public.builder_network_outbox WHERE connection_id = v_connection) THEN
+    RAISE EXCEPTION 'an invited connection received sync events';
+  END IF;
+
+  -- Activation backfills the catalogue and the reconcile, automatically.
+  UPDATE public.workspace_connections SET state = 'active', accepted_at = now(), inbound_url = 'https://clone.example/functions/v1/builder-network-inbound'
+  WHERE id = v_connection;
+  SELECT count(*) INTO v_count FROM public.builder_network_outbox
+  WHERE connection_id = v_connection AND event_type = 'stock.item.upserted';
+  IF v_count < 1 THEN RAISE EXCEPTION 'activation did not backfill the catalogue'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.builder_network_outbox
+                 WHERE connection_id = v_connection AND event_type = 'stock.catalog.reconciled') THEN
+    RAISE EXCEPTION 'activation did not queue the reconcile';
+  END IF;
+
+  -- The payload is the projection: the lifted key crosses, the raw row and
+  -- its spreadsheet column names do not.
+  SELECT payload INTO v_payload FROM public.builder_network_outbox
+  WHERE connection_id = v_connection AND event_type = 'stock.item.upserted'
+  ORDER BY created_at DESC LIMIT 1;
+  IF v_payload->>'house_design' <> 'NEX 18' THEN
+    RAISE EXCEPTION 'the lifted key did not cross (%)', v_payload->>'house_design';
+  END IF;
+  IF position('NEVER-CROSSES' IN v_payload::text) > 0 OR v_payload ? 'source_row' THEN
+    RAISE EXCEPTION 'the builder''s raw row crossed the boundary';
+  END IF;
+  IF v_payload#>>'{organisation,trading_name}' <> 'Sync Proof Homes' THEN
+    RAISE EXCEPTION 'the builder identity did not ride the event';
+  END IF;
+  IF v_payload ? 'primary_image' THEN
+    RAISE EXCEPTION 'an item with no ready builder image claimed one';
+  END IF;
+
+  -- A projection change queues an incremental event; lease churn does not.
+  SELECT count(*) INTO v_count FROM public.builder_network_outbox WHERE connection_id = v_connection;
+  UPDATE public.builder_stock_items SET image_work_claim_until = now() WHERE id = v_item;
+  IF (SELECT count(*) FROM public.builder_network_outbox WHERE connection_id = v_connection) <> v_count THEN
+    RAISE EXCEPTION 'image-work lease churn crossed the wire';
+  END IF;
+  UPDATE public.builder_stock_items SET price = 660000 WHERE id = v_item;
+  IF (SELECT count(*) FROM public.builder_network_outbox WHERE connection_id = v_connection) <> v_count + 1 THEN
+    RAISE EXCEPTION 'a price change did not sync';
+  END IF;
+
+  -- The reconcile names exactly the active catalogue.
+  PERFORM public.builder_network_enqueue_stock_reconcile(v_connection);
+  SELECT payload INTO v_payload FROM public.builder_network_outbox
+  WHERE connection_id = v_connection AND event_type = 'stock.catalog.reconciled'
+  ORDER BY created_at DESC LIMIT 1;
+  IF NOT (v_payload->'active_item_ids') @> to_jsonb(ARRAY[v_item]) THEN
+    RAISE EXCEPTION 'the reconcile does not list the active item';
+  END IF;
+END $proof$;`);
+
 proof('acknowledgement stamps the row and queues the outbound event atomically', `
 DO $proof$
 DECLARE

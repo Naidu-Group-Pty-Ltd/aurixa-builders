@@ -23,6 +23,11 @@
 
 export const BUILDER_SCOPE_TYPES = [
   'project', 'unit', 'transaction', 'construction_case',
+  // Organisation-anchored, not project-anchored: a stock activation belongs
+  // to whoever manages the organisation's stock. The database resolver
+  // answers it for TASKS only — documents and messages on a stock scope
+  // resolve to false there, so widening this list widens nothing else.
+  'stock_item',
 ] as const;
 export type BuilderScopeType = (typeof BUILDER_SCOPE_TYPES)[number];
 
@@ -47,6 +52,11 @@ export const BUILDER_TASK_PRIORITIES = ['low', 'normal', 'high', 'urgent'] as co
 export const BUILDER_NOTIFICATION_TYPES = [
   'general', 'task_assigned', 'task_due', 'message', 'defect_raised',
   'inspection_scheduled', 'status_change', 'document_added', 'variation_decision',
+  // A Command Centre adviser activated one of this organisation's stock
+  // properties. Written by the convergence sweep's fan-out, one per active
+  // member, with `entity_kind = 'stock_selection'` — the kind the Dashboard
+  // pops as a toast.
+  'stock_selection',
 ] as const;
 
 /**

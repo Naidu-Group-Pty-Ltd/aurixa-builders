@@ -27,7 +27,8 @@ export type BuilderTaskPriority = 'low' | 'normal' | 'high' | 'urgent';
 
 export type BuilderNotificationType =
   | 'general' | 'task_assigned' | 'task_due' | 'message' | 'defect_raised'
-  | 'inspection_scheduled' | 'status_change' | 'document_added' | 'variation_decision';
+  | 'inspection_scheduled' | 'status_change' | 'document_added' | 'variation_decision'
+  | 'stock_selection';
 
 export interface BuilderDocument {
   id: string;
@@ -191,6 +192,7 @@ export const NOTIFICATION_TYPE_LABELS: Record<BuilderNotificationType, string> =
   message: 'Message', defect_raised: 'Defect raised',
   inspection_scheduled: 'Inspection scheduled', status_change: 'Status change',
   document_added: 'Document added', variation_decision: 'Variation decision',
+  stock_selection: 'Property activated',
 };
 
 /** Semantic tokens only — no raw palette classes (repository style rule). */

@@ -502,10 +502,11 @@ export default function BuilderStockList() {
       {pendingSelections.length ? (
         <Card className="builder-stock-list-section builder-stock-list-selections">
           <CardHeader>
-            <CardTitle className="text-base">Selected for a buyer</CardTitle>
+            <CardTitle className="text-base">Activated by an agency</CardTitle>
             <CardDescription>
-              A connected workspace has selected these properties from your stock list.
-              Acknowledge each one to confirm you have seen it.
+              A connected agency has activated these properties from your stock list
+              for their clients. Acknowledge each one so the agency knows you have it —
+              their contact details are on the activation.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-2">
@@ -521,10 +522,42 @@ export default function BuilderStockList() {
                       : 'A property from your stock'}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Selected {new Date(selection.announced_at).toLocaleString('en-AU')}
-                    {selection.workspace_label ? ` · by ${selection.workspace_label}` : ''}
+                    Activated {new Date(selection.announced_at).toLocaleString('en-AU')}
+                    {` · by ${selection.agency_name || selection.workspace_label || 'a connected agency'}`}
                     {selection.remote_client_label ? ` · ${selection.remote_client_label}` : ''}
                   </p>
+                  {selection.agency_contact
+                    && (selection.agency_contact.contact_name
+                      || selection.agency_contact.contact_email
+                      || selection.agency_contact.contact_phone) ? (
+                        <p className="text-xs text-muted-foreground">
+                          Contact
+                          {selection.agency_contact.contact_name
+                            ? ` ${selection.agency_contact.contact_name}` : ''}
+                          {selection.agency_contact.contact_email ? (
+                            <>
+                              {' · '}
+                              <a
+                                className="underline underline-offset-2 hover:text-foreground"
+                                href={`mailto:${selection.agency_contact.contact_email}`}
+                              >
+                                {selection.agency_contact.contact_email}
+                              </a>
+                            </>
+                          ) : null}
+                          {selection.agency_contact.contact_phone ? (
+                            <>
+                              {' · '}
+                              <a
+                                className="underline underline-offset-2 hover:text-foreground"
+                                href={`tel:${selection.agency_contact.contact_phone.replace(/\s+/g, '')}`}
+                              >
+                                {selection.agency_contact.contact_phone}
+                              </a>
+                            </>
+                          ) : null}
+                        </p>
+                      ) : null}
                 </div>
                 <Button
                   size="sm"

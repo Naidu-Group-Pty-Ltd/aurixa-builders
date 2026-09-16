@@ -110,6 +110,7 @@ export const BUILDER_ANNOUNCEMENT_SELECT = `
   id, connection_id, stock_item_id, organisation_id,
   remote_selection_ref, remote_client_label, status,
   acknowledged_at, acknowledged_by_builder_user_id,
+  agency_name, agency_contact, activation_task_id,
   created_at, updated_at
 `;
 

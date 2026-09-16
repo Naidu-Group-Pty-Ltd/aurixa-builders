@@ -273,6 +273,20 @@ export interface BuilderStockSelectionForBuilder {
   acknowledged_by_builder_user_id: string | null;
   /** The announcing workspace's directory display name, when registered. */
   workspace_label?: string | null;
+  /** The activating agency's own name, as the event disclosed it. */
+  agency_name?: string | null;
+  /**
+   * The agency's outward contact for this activation — the person to call
+   * back. Only ever contact_name / contact_email / contact_phone; an
+   * authorised disclosure of the AGENCY's identity, never client PII.
+   */
+  agency_contact?: {
+    contact_name?: string | null;
+    contact_email?: string | null;
+    contact_phone?: string | null;
+  } | null;
+  /** The pending task this activation fanned out into, when one exists. */
+  activation_task_id?: string | null;
   stock_item?: Partial<BuilderStockItem> | null;
 }
 
