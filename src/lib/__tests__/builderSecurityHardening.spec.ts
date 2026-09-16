@@ -264,7 +264,7 @@ describe('a rate limit is keyed on an address the caller cannot choose', () => {
   it('the proxy sets it itself and never copies a client-supplied one', () => {
     const proxy = readCode('api/fn/[name].ts');
     const policy = readCode('api/_shared/fnProxyPolicy.pure.ts');
-    expect(proxy).toContain("headers.set('x-real-ip', clientIp)");
+    expect(proxy).toContain("headers.set('x-portal-client-ip', clientIp)");
     // The forwarded allowlist must not carry any client-IP spelling: a
     // forwarded one is the caller's claim, which is what broke the limiter.
     const forwarded = policy.slice(policy.indexOf('FORWARDED_REQUEST_HEADERS'));
@@ -272,6 +272,32 @@ describe('a rate limit is keyed on an address the caller cannot choose', () => {
     for (const spelling of ['x-real-ip', 'x-forwarded-for', 'cf-connecting-ip', 'true-client-ip']) {
       expect(list, spelling).not.toContain(spelling);
     }
+  });
+
+  it('the forwarded address is sent ONLY with the shared secret that proves it', () => {
+    const proxy = readCode('api/fn/[name].ts');
+    // No secret configured means no header at all: an unauthenticated claim
+    // about one's own address is the X-Forwarded-For hole under a new name.
+    expect(proxy).toContain('if (clientIp && proxySecret)');
+    expect(proxy).toContain("headers.set('x-portal-proxy-token', proxySecret)");
+  });
+
+  it('the runtime believes that address only when the token matches', () => {
+    const source = readCode('supabase/functions/_shared/requestSecurity.ts');
+    expect(source).toContain('export function getPortalClientIp');
+    expect(source).toContain("Deno.env.get('PORTAL_PROXY_SHARED_SECRET')");
+    expect(source).toContain('secretsMatch(presented, expected)');
+    // With no secret configured it IS getTrustedClientIp — adding it cannot
+    // make anything more permissive than it was.
+    expect(source).toContain('return getTrustedClientIp(headers);');
+    // The comparison must not short-circuit on the first differing character.
+    const compare = source.slice(source.indexOf('function secretsMatch'));
+    expect(compare.slice(0, 260)).toContain('diff |=');
+    expect(compare.slice(0, 260)).not.toContain('return false;\n    }');
+    // ...and the shared limiter is what consumes it.
+    const limiter = readCode('supabase/functions/_shared/authRateLimit.ts');
+    expect(limiter).toContain('getPortalClientIp(req.headers)');
+    expect(limiter).not.toContain('getTrustedClientIp(req.headers)');
   });
 
   it('every unauthenticated auth door is budgeted through the shared limiter', () => {

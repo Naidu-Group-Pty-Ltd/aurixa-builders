@@ -68,14 +68,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   headers.set('apikey', anonKey);
   headers.set('authorization', `Bearer ${anonKey}`);
 
-  // The end user's address, attached the same way and for the same reason: it
-  // must be the platform's view, not the caller's claim. Before this, no
-  // client-IP header crossed the proxy at all, so every per-IP rate limit
-  // behind it shared ONE bucket for the entire product — 30 sign-in attempts
-  // per 15 minutes network-wide, and five password resets per hour. One
-  // person exhausting either locked out everyone else.
+  // THE END USER'S ADDRESS, AND THE PROOF THAT IT IS OURS TO CLAIM.
+  //
+  // No client-IP header crossed this proxy before, so the edge runtime only
+  // ever saw the address IT connected from — this proxy's — and every per-IP
+  // ceiling behind it was really one ceiling shared by every browser user at
+  // once: 30 sign-in attempts per 15 minutes for the whole product, five
+  // password resets per hour, one person exhausting either for everyone.
+  //
+  // The address is the platform's view, never a header the caller typed. The
+  // token is what makes it believable: anyone may call the edge runtime
+  // directly and set a header, so `getPortalClientIp` ignores the address
+  // unless the same secret is configured there. With the variable unset — the
+  // state of the deployment as this shipped — neither header changes anything,
+  // which is why sending them is safe on its own.
   const clientIp = trustedClientIpFromPlatform(req.headers);
-  if (clientIp) headers.set('x-real-ip', clientIp);
+  const proxySecret = process.env.PORTAL_PROXY_SHARED_SECRET;
+  if (clientIp && proxySecret) {
+    headers.set('x-portal-client-ip', clientIp);
+    headers.set('x-portal-proxy-token', proxySecret);
+  }
 
   // Vercel parses a JSON body before we see it; re-serialising is faithful
   // because every portal call is application/json by construction.

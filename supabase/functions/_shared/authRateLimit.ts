@@ -56,7 +56,7 @@
  * gates it.
  */
 
-import { getTrustedClientIp } from './requestSecurity.ts';
+import { getPortalClientIp } from './requestSecurity.ts';
 
 /**
  * The Supabase client, structurally. `rpc()` returns a PostgrestFilterBuilder —
@@ -168,7 +168,11 @@ export async function consumeAuthRateLimit(
  * locking out an entire deployment whose edge stops setting the header.
  */
 export function authClientIp(req: Request): { ip: string; trusted: boolean } {
-  const trusted = getTrustedClientIp(req.headers);
+  // `getPortalClientIp` is `getTrustedClientIp` plus one case: a request the
+  // portal's own proxy forwarded, proven by a shared secret. Without that
+  // secret configured on both sides it IS `getTrustedClientIp`, so nothing
+  // here becomes more permissive by adding it.
+  const trusted = getPortalClientIp(req.headers);
   return trusted ? { ip: trusted, trusted: true } : { ip: 'untrusted', trusted: false };
 }
 

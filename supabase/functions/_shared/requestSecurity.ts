@@ -39,6 +39,57 @@ export function getTrustedClientIp(headers: Headers): string | null {
   return IPV4.test(candidate) || (candidate.includes(':') && IPV6.test(candidate)) ? candidate.toLowerCase() : null;
 }
 
+/** A bare address literal, or null. The shape rule `getTrustedClientIp` applies. */
+function asAddress(candidate: string | null): string | null {
+  if (!candidate || candidate.includes(',') || candidate.length > 45) return null;
+  return IPV4.test(candidate) || (candidate.includes(':') && IPV6.test(candidate))
+    ? candidate.toLowerCase() : null;
+}
+
+/** Length-independent comparison, so a token check leaks no prefix by timing. */
+function secretsMatch(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/**
+ * THE END USER'S ADDRESS FOR A REQUEST THAT CAME THROUGH THE PORTAL PROXY.
+ *
+ * Every browser call to a Builder Portal function goes to the site's own
+ * `/fn/*` path and is forwarded to this runtime by a Vercel function. By the
+ * time it arrives, the connecting address the platform vouches for —
+ * `cf-connecting-ip` — is THE PROXY's, not the person's. So every per-IP
+ * ceiling in the portal is really one shared ceiling for every browser user at
+ * once: one abuser exhausts it and everyone else is locked out. (Direct
+ * callers, such as the public image endpoint and the network transport, are
+ * unaffected: nothing sits between them and this runtime.)
+ *
+ * The proxy therefore forwards the address it observed. That claim is only
+ * believed when the request also carries a secret that only the proxy holds —
+ * `PORTAL_PROXY_SHARED_SECRET`, set identically on the proxy and on this
+ * runtime. Without that check the header would be exactly the
+ * `X-Forwarded-For` hole this module exists to close: anyone may call this
+ * runtime directly and set a header, so an unauthenticated claim about one's
+ * own address is worth nothing.
+ *
+ * UNTIL BOTH SIDES CARRY THE SECRET THIS CHANGES NOTHING. With the variable
+ * unset — which is the state of the deployment today — the answer is exactly
+ * `getTrustedClientIp`'s, and the shared-ceiling behaviour above is unchanged.
+ */
+export function getPortalClientIp(headers: Headers): string | null {
+  const expected = nonEmpty(Deno.env.get('PORTAL_PROXY_SHARED_SECRET'));
+  if (expected) {
+    const presented = nonEmpty(headers.get('x-portal-proxy-token'));
+    if (presented && secretsMatch(presented, expected)) {
+      const forwarded = asAddress(nonEmpty(headers.get('x-portal-client-ip')));
+      if (forwarded) return forwarded;
+    }
+  }
+  return getTrustedClientIp(headers);
+}
+
 /** Reads a body incrementally and stops before buffering more than maxBytes. */
 export async function enforceRawBodyLimit(req: Request, maxBytes: number): Promise<{ ok: true; raw: string } | { ok: false; error: Response }> {
   const contentLength = Number(req.headers.get('content-length'));

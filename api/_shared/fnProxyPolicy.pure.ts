@@ -58,10 +58,16 @@ export type ProxiedFunction = (typeof PROXIED_FUNCTIONS)[number];
  *
  * This is deliberately NOT a forwarded header. `FORWARDED_REQUEST_HEADERS`
  * below excludes every client-IP spelling precisely because a forwarded one is
- * a value the caller controls; the proxy sets the trusted value itself, the
- * same way it attaches the credential. Vercel rewrites `x-real-ip` and the
- * first `x-forwarded-for` element at its edge, so those are the platform's
- * view rather than the caller's.
+ * a value the caller controls; the proxy reads the value the PLATFORM wrote and
+ * passes that on itself, the same way it attaches the credential. Vercel
+ * rewrites `x-real-ip` and the first `x-forwarded-for` element at its own edge,
+ * so those are the platform's view rather than the caller's.
+ *
+ * The edge runtime believes this only when the request also carries the shared
+ * secret (`PORTAL_PROXY_SHARED_SECRET`) that only this proxy holds — see
+ * `getPortalClientIp`. Until that variable is set on BOTH sides the runtime
+ * keeps bucketing on its own connecting address, which is this proxy's, so the
+ * per-IP ceilings stay shared across every browser user.
  *
  * Shape is not validated here: `getTrustedClientIp` on the Edge side already
  * refuses anything that is not a bare IPv4/IPv6 literal, and duplicating that
