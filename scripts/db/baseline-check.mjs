@@ -575,14 +575,41 @@ BEGIN
     RAISE EXCEPTION 'a replay duplicated the fan-out';
   END IF;
 
-  -- Withdrawal cancels the pending task it opened.
+  -- Acknowledging is the act the task asked for, so it completes the task —
+  -- and a later withdrawal keeps that answer rather than "cancelling" work
+  -- that was done.
+  PERFORM public.builder_stock_acknowledge_announcement(v_a.id, v_org, v_user);
+  SELECT * INTO v_task FROM public.builder_tasks WHERE id = v_a.activation_task_id;
+  IF v_task.status <> 'done' OR v_task.completed_at IS NULL THEN
+    RAISE EXCEPTION 'acknowledging left its task % (completed %)', v_task.status, v_task.completed_at;
+  END IF;
   INSERT INTO public.builder_network_inbound_events(connection_id, event_type, dedupe_key, payload, source_version)
   VALUES (v_connection, 'stock.selection.updated', 'proof:fanout:2',
           jsonb_build_object('remote_selection_ref', v_ref, 'stock_item_id', v_item, 'status', 'withdrawn'), 2);
   PERFORM public.builder_network_apply_inbound_events(50);
   SELECT * INTO v_task FROM public.builder_tasks WHERE id = v_a.activation_task_id;
+  IF v_task.status <> 'done' THEN
+    RAISE EXCEPTION 'the withdrawal overwrote a completed task to %', v_task.status;
+  END IF;
+
+  -- And on an activation nobody acknowledged, the withdrawal cancels the
+  -- pending task it opened.
+  v_ref := gen_random_uuid();
+  INSERT INTO public.builder_stock_items(organisation_id, address_line, suburb, state)
+  VALUES (v_org, 'Lot 10 Fanout Rise', 'Berwick', 'VIC') RETURNING id INTO v_item;
+  INSERT INTO public.builder_network_inbound_events(connection_id, event_type, dedupe_key, payload, source_version)
+  VALUES (v_connection, 'stock.selection.announced', 'proof:fanout:3',
+          jsonb_build_object('remote_selection_ref', v_ref, 'stock_item_id', v_item, 'status', 'selected'), 3);
+  PERFORM public.builder_network_apply_inbound_events(50);
+  INSERT INTO public.builder_network_inbound_events(connection_id, event_type, dedupe_key, payload, source_version)
+  VALUES (v_connection, 'stock.selection.updated', 'proof:fanout:4',
+          jsonb_build_object('remote_selection_ref', v_ref, 'stock_item_id', v_item, 'status', 'withdrawn'), 4);
+  PERFORM public.builder_network_apply_inbound_events(50);
+  SELECT t.* INTO v_task FROM public.builder_tasks t
+  JOIN public.builder_stock_selection_announcements a ON a.activation_task_id = t.id
+  WHERE a.remote_selection_ref = v_ref;
   IF v_task.status <> 'cancelled' THEN
-    RAISE EXCEPTION 'the withdrawal left the task %', v_task.status;
+    RAISE EXCEPTION 'the withdrawal left the unacknowledged task %', v_task.status;
   END IF;
 END $proof$;`);
 
