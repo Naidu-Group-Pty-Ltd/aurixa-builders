@@ -691,6 +691,227 @@ record('D: acknowledging completed the activation task',
     && closedTask.activation?.status === 'builder_acknowledged',
   `status=${closedTask?.status} activation=${closedTask?.activation?.status}`);
 
+// --- F. Builder brochure → Cloudflare PDF worker → Aurixa verification ------
+/*
+ * WHAT THIS SECTION EXISTS TO PROVE, AND WHY NOTHING ELSE ALREADY DID.
+ *
+ * The worker itself is proven by its own canary, which drives the deployed
+ * bundle directly. What that cannot show is the half in between: that a
+ * document arriving through the PORTAL reaches Cloudflare at all — import →
+ * settlement → `runElection` → `electionRoute` → `pdfElectionClient` → the
+ * worker → back into Aurixa's verification. Section D seeds its photographs
+ * with SQL and says so in its own comment ("this suite has no builder brochure
+ * to fetch"). This is that brochure.
+ *
+ * A LINKED BROCHURE, NOT AN UPLOADED ONE, and the reason is not convenience.
+ * A PDF uploaded as a stock LIST has its rows recovered by a model
+ * (`runImport` → `modelExtract`), and no model credential is configured on
+ * this project — the upload would fail at row extraction long before any
+ * image work. A CSV row carrying a brochure URL is both the dominant
+ * production shape (linked packages are most of the live library) and the one
+ * that reaches the election without a model in the way.
+ *
+ * SIZE IS NOT WHAT SENDS IT TO THE WORKER, which is worth stating because it
+ * is easy to assume otherwise. `electionRoute` reads exactly three things —
+ * `runtimeVersion`, `endpoint`, `token` — and no byte count. With
+ * RUNTIME_VERSION past WORKER_RUNTIME_VERSION and both secrets configured,
+ * EVERY document goes to the worker. The heavy-CPU case is proven separately,
+ * at 8.6 MB, by the worker's own canary; what is proven here is the path.
+ */
+console.log('\nF. Builder brochure → Cloudflare PDF worker → Aurixa verification');
+
+const BROCHURE_CSV = 'https://raw.githubusercontent.com/Naidu-Group-Pty-Ltd/aurixa-builders'
+  + '/main/scripts/ops/fixtures/smoke-stock-brochure.csv';
+const BROCHURE_PDF = 'https://raw.githubusercontent.com/Naidu-Group-Pty-Ltd/aurixa-builders'
+  + '/main/workers/builder-stock-pdf-worker/scripts/fixtures/lot-717-enzo-brochure.pdf';
+
+/*
+ * THE LEDGER LINE BEFORE, so "a fresh row" is a difference and not a reading.
+ * `meteredFetch` writes one row per worker call with the credential that paid
+ * for it, and that row is the evidence this section turns on.
+ */
+const [fBaseline] = await q('worker usage and blast-radius baseline', `
+  SELECT now() AS started_at,
+         (SELECT count(*) FROM public.api_usage_log
+           WHERE service_name = 'builderstockpdfworker') AS worker_calls,
+         (SELECT count(*) FROM public.builder_stock_items
+           WHERE organisation_id <> ${sqlLit(alpha.orgId)}::uuid) AS non_smoke_items`);
+const workerUsageBefore = Number(fBaseline?.worker_calls ?? 0);
+
+// The document must actually be fetchable by the production importer, or a
+// failure here would look like a worker fault rather than a fixture fault.
+const brochureHead = await fetch(BROCHURE_PDF, { method: 'GET' });
+const brochureBytes = brochureHead.ok
+  ? (await brochureHead.arrayBuffer()).byteLength : 0;
+record('F: the brochure fixture is publicly retrievable by the importer',
+  brochureHead.ok && brochureBytes > 100_000,
+  `HTTP ${brochureHead.status}, ${brochureBytes} bytes`);
+
+// --- 1. Real import, through the normal portal endpoint ---------------------
+const brochureImport = await call('builder-portal-stock',
+  { operation: 'import_url', url: BROCHURE_CSV }, session.cookie);
+record('F1: the brochure stock list imports over the normal portal path',
+  brochureImport.status === 200 && !brochureImport.json?.error,
+  `status ${brochureImport.status}${brochureImport.json?.error ? ` (${brochureImport.json.error})` : ''}`);
+
+const [brochureRow] = await q('the imported brochure row', `
+  SELECT u.id AS upload_id, u.original_filename, u.byte_size,
+         it.id AS item_id, it.lifecycle_status, it.image_work_stage,
+         it.organisation_id, it.lot_number,
+         (it.source_row::text ILIKE '%lot-717-enzo-brochure.pdf%') AS row_carries_the_link
+    FROM public.builder_stock_uploads u
+    JOIN public.builder_stock_items it ON it.upload_id = u.id
+   WHERE u.organisation_id = ${sqlLit(alpha.orgId)}::uuid
+     AND u.original_filename ILIKE '%brochure%'
+     AND u.deleted_at IS NULL
+   ORDER BY it.created_at DESC LIMIT 1`);
+
+record('F1: the import created exactly one smoke property carrying the brochure link',
+  Boolean(brochureRow?.item_id) && brochureRow?.row_carries_the_link === true
+    && String(brochureRow?.lot_number) === '717',
+  `upload=${brochureRow?.upload_id} item=${brochureRow?.item_id} lot=${brochureRow?.lot_number}`);
+
+// --- 2. Claimability, through the REAL work queue ---------------------------
+/*
+ * The predicate below is `claim_builder_stock_image_work`'s own, restated
+ * against this row. It is asserted rather than assumed because the last
+ * attempt at an end-to-end proof died on exactly this: the candidate property
+ * was `archived`, which the claim excludes, so no mutation could ever have
+ * produced an election. Nothing here forces the row into the election
+ * function by hand — it has to be claimable on the queue's terms.
+ */
+record('F2: the smoke property is claimable by the real image work queue',
+  ['active', 'staged'].includes(String(brochureRow?.lifecycle_status))
+    && !['settled', 'failed'].includes(String(brochureRow?.image_work_stage))
+    && String(brochureRow?.organisation_id) === String(alpha.orgId),
+  `lifecycle=${brochureRow?.lifecycle_status} stage=${brochureRow?.image_work_stage}`);
+
+// --- 3. Drive the settlement the way the browser does -----------------------
+/*
+ * `enrich_images` is what the Stock List page calls in a loop after an import.
+ * Its phase 0 settles the builder's own source imagery, and that is the call
+ * chain that reaches the election. Driving the real endpoint is the point:
+ * invoking the settler or the election directly would prove the worker, which
+ * is already proven, and not the path.
+ */
+let settleRounds = 0;
+let lastEnrich = null;
+const settleDeadline = Date.now() + 180_000;
+while (Date.now() < settleDeadline && settleRounds < 12) {
+  settleRounds += 1;
+  lastEnrich = await call('builder-portal-stock',
+    { operation: 'enrich_images', upload_id: brochureRow?.upload_id }, session.cookie);
+  if (lastEnrich.status !== 200) break;
+  if (Number(lastEnrich.json?.source_images_outstanding ?? 0) === 0) break;
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+}
+record('F3: the portal settled the upload\'s source imagery',
+  lastEnrich?.status === 200 && Number(lastEnrich?.json?.source_images_outstanding ?? -1) === 0,
+  `rounds=${settleRounds} status=${lastEnrich?.status} outstanding=${lastEnrich?.json?.source_images_outstanding}`);
+
+// --- 4 & 10. The worker was exercised, on its own credential ----------------
+/*
+ * THE STRONGEST EVIDENCE THE ARCHITECTURE ALREADY PRODUCES. `pdfElectionClient`
+ * calls the worker through `meteredFetch` naming
+ * `BUILDER_STOCK_PDF_WORKER_TOKEN`, so a successful call writes a row whose
+ * credential, host, HTTP status and round-trip time are all recorded. An image
+ * appearing is NOT evidence of the worker — the in-process path produces one
+ * too. This row is, because only the worker call writes it.
+ */
+const [workerCall] = await q('the worker call in the ledger', `
+  SELECT id, service_name, endpoint, status, response_time_ms, created_at,
+         metadata->>'secret_name' AS secret_name,
+         metadata->>'host'        AS host,
+         metadata->>'purpose'     AS purpose,
+         metadata->>'http_status' AS http_status
+    FROM public.api_usage_log
+   WHERE service_name = 'builderstockpdfworker'
+   ORDER BY created_at DESC LIMIT 1`);
+const workerUsageAfter = Number((await q('worker usage after', `
+  SELECT count(*) AS n FROM public.api_usage_log
+   WHERE service_name = 'builderstockpdfworker'`))[0]?.n ?? 0);
+
+record('F4: a FRESH worker call was recorded against the worker credential',
+  workerUsageAfter > workerUsageBefore
+    && workerCall?.secret_name === 'BUILDER_STOCK_PDF_WORKER_TOKEN',
+  `before=${workerUsageBefore} after=${workerUsageAfter} secret=${workerCall?.secret_name}`);
+
+record('F4: the call went to builder-stock-pdf-worker on Cloudflare, and it answered 200',
+  String(workerCall?.host ?? '').includes('builder-stock-pdf-worker')
+    && String(workerCall?.host ?? '').includes('workers.dev')
+    && String(workerCall?.http_status) === '200'
+    && workerCall?.status === 'success',
+  `host=${workerCall?.host} http=${workerCall?.http_status} ${workerCall?.response_time_ms}ms`);
+
+record('F4: it was the package-cover election that made the call',
+  workerCall?.endpoint === 'builder-stock/pdf-election'
+    && workerCall?.purpose === 'package_cover_election',
+  `endpoint=${workerCall?.endpoint} purpose=${workerCall?.purpose}`);
+
+// --- 5-9. The result came back through Aurixa's own verification ------------
+const [elected] = await q('the elected image', `
+  SELECT img.id, img.source_stage, img.source_provider, img.source_reference,
+         img.verification_status, img.content_type, img.byte_size,
+         img.source_detail->>'stored_sha256' AS stored_sha256,
+         img.source_detail->>'source_sha256' AS source_sha256,
+         img.source_detail->>'page'          AS page,
+         img.source_detail->>'method'        AS method,
+         img.source_detail->'role'->>'role'  AS role,
+         it.primary_image_id = img.id        AS is_primary,
+         it.lifecycle_status
+    FROM public.builder_stock_item_images img
+    JOIN public.builder_stock_items it ON it.id = img.stock_item_id
+   WHERE it.id = ${sqlLit(brochureRow?.item_id ?? '00000000-0000-0000-0000-000000000000')}::uuid
+     AND img.source_stage = 'uploaded_document'
+   ORDER BY img.created_at DESC LIMIT 1`);
+
+record('F5: Aurixa stored an image elected out of the builder\'s own document',
+  elected?.source_stage === 'uploaded_document' && Number(elected?.byte_size) > 10_000,
+  `provider=${elected?.source_provider} ${elected?.byte_size} bytes ${elected?.content_type}`);
+
+record('F6: the image is the builder\'s own bytes — source and stored hashes agree',
+  Boolean(elected?.stored_sha256) && elected?.stored_sha256 === elected?.source_sha256,
+  `${String(elected?.stored_sha256 ?? '').slice(0, 16)}…`);
+
+record('F7: provenance names the page it was cut from',
+  String(elected?.page) === '1' && String(elected?.source_reference ?? '').includes('page1'),
+  `page=${elected?.page} ref=${elected?.source_reference}`);
+
+/*
+ * THE GATE IS STILL IN CHARGE. The worker returns evidence; what may lead a
+ * card is Aurixa's decision, and `primary_property` is the only role it will
+ * draw. A floorplan, a masterplan or a location map coming back from the same
+ * call would be stored and refused — which is the rule this asserts.
+ */
+record('F8: Aurixa\'s own rules assigned the role, and it is the one a card may draw',
+  elected?.role === 'primary_property' && elected?.is_primary === true,
+  `role=${elected?.role} primary=${elected?.is_primary}`);
+
+record('F9: the publication gate remains in control of the property',
+  ['active', 'staged'].includes(String(elected?.lifecycle_status)),
+  `lifecycle=${elected?.lifecycle_status}`);
+
+// --- 11. Nothing outside the smoke organisation moved ----------------------
+const [blast] = await q('no customer property was touched', `
+  SELECT
+    (SELECT count(*) FROM public.builder_stock_items
+      WHERE organisation_id <> ${sqlLit(alpha.orgId)}::uuid
+        AND updated_at > ${sqlLit(fBaseline?.started_at ?? '1970-01-01')}::timestamptz)
+      AS non_smoke_items_touched,
+    (SELECT count(*) FROM public.builder_stock_items
+      WHERE organisation_id <> ${sqlLit(alpha.orgId)}::uuid) AS non_smoke_items_now`);
+/*
+ * SINCE THIS SECTION BEGAN, not over a rolling window: a person using the
+ * portal during the run would move a customer row for reasons that have
+ * nothing to do with this test, and a window wide enough to be safe is also
+ * wide enough to be meaningless. The count is compared too, so a row that
+ * appeared or vanished is caught even if its timestamp did not move.
+ */
+record('F11: no property outside the smoke organisation was modified',
+  Number(blast?.non_smoke_items_touched) === 0
+    && Number(blast?.non_smoke_items_now) === Number(fBaseline?.non_smoke_items),
+  `touched=${blast?.non_smoke_items_touched} count ${fBaseline?.non_smoke_items}→${blast?.non_smoke_items_now}`);
+
 } catch (error) {
   record('smoke run aborted before completing every section', false,
     String(error?.message ?? error).slice(0, 300));
