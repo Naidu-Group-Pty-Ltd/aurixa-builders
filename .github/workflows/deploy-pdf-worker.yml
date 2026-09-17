@@ -124,21 +124,48 @@ jobs:
           printf '%s' '${{ secrets.BUILDER_STOCK_PDF_WORKER_TOKEN }}' \
             | npx --yes wrangler@4 secret put BUILDER_STOCK_PDF_WORKER_TOKEN
 
+      # IS IT ANSWERING AT ALL. Unauthenticated and cheap; it proves the
+      # deployment is reachable and speaks our protocol. It deliberately does
+      # NOT prove the token below, and the next step exists because of that.
+      - name: wait for the deployment to answer
+        run: |
+          for attempt in 1 2 3 4 5; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "${{ steps.deploy.outputs.worker_url }}/health" || true)
+            [ "$code" = "200" ] && { echo "health 200 on attempt $attempt"; break; }
+            echo "health is $code, waiting (attempt $attempt)"
+            sleep 6
+          done
+
+      # IS THE TOKEN WE JUST WROTE THE ONE IT COMPARES AGAINST.
+      #
+      # Measured in run 35204922096: the same bearer was accepted and rejected
+      # within 300 ms of itself, because this worker already held a DIFFERENT
+      # value from its 8 September deployment and a stale isolate answers 401
+      # rather than 503. `/health` cannot see that — it is unauthenticated and
+      # reports only that SOME token exists. So the gate is an authenticated
+      # `POST /v1/nope`, which the front door can only answer 404 for a caller
+      # whose token matched, and which runs no election.
+      #
+      # This does not weaken anything: a 401 the canary sees AFTER this gate
+      # has passed is a genuine defect, and the gate itself fails the run
+      # rather than proceeding if the token never becomes live.
+      - name: wait for the new bearer to be the live one
+        id: token_ready
+        working-directory: ${{ env.WORKER_DIR }}
+        env:
+          BUILDER_STOCK_PDF_WORKER_TOKEN: ${{ secrets.BUILDER_STOCK_PDF_WORKER_TOKEN }}
+        run: |
+          node scripts/await-token.mjs \
+            --url '${{ steps.deploy.outputs.worker_url }}' \
+            --streak 3 --gap-ms 2000 --timeout-ms 180000
+
       # OVER THE WIRE THIS TIME. Same checks, same fixture, the live URL.
       - name: canary the deployment
         id: canary
         working-directory: ${{ env.WORKER_DIR }}
         env:
           BUILDER_STOCK_PDF_WORKER_TOKEN: ${{ secrets.BUILDER_STOCK_PDF_WORKER_TOKEN }}
-        run: |
-          for attempt in 1 2 3 4 5; do
-            # A fresh deployment takes a few seconds to answer everywhere.
-            code=$(curl -s -o /dev/null -w '%{http_code}' "${{ steps.deploy.outputs.worker_url }}/health" || true)
-            [ "$code" = "200" ] && break
-            echo "health is $code, waiting (attempt $attempt)"
-            sleep 6
-          done
-          node scripts/canary.mjs --url '${{ steps.deploy.outputs.worker_url }}' --heavy
+        run: node scripts/canary.mjs --url '${{ steps.deploy.outputs.worker_url }}' --heavy
 
       # ONLY NOW. Until these two secrets exist the route rule answers
       # `no_capacity` and the client elects small documents in-process; the
@@ -170,5 +197,6 @@ jobs:
             echo
             echo "- worker: \`${{ steps.deploy.outputs.worker_url }}\`"
             echo "- pre-ship canary: ${{ steps.deploy.outcome }}"
+            echo "- authenticated readiness: ${{ steps.token_ready.outcome }}"
             echo "- live canary: ${{ steps.canary.outcome }}"
           } >> "$GITHUB_STEP_SUMMARY"

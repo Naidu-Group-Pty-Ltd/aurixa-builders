@@ -90,10 +90,23 @@ version bump, while an access fact retries.
 
 `.github/workflows/deploy-pdf-worker.yml`, on pushes to `main` that touch this
 directory or the shared election. It builds, canaries the bundle, deploys,
-sets the worker's half of the shared bearer, canaries the live URL, and only
+sets the worker's half of the shared bearer, **waits for that bearer to be the
+one the worker actually compares against**, canaries the live URL, and only
 then sets `BUILDER_STOCK_PDF_WORKER_URL` and `BUILDER_STOCK_PDF_WORKER_TOKEN`
 on the Supabase project. The order is the point: the moment those two secrets
 exist, every heavy brochure is routed here.
+
+The waiting step is `scripts/await-token.mjs`, and it exists because of a
+measured race. In run 35204922096 the same bearer was accepted and rejected
+within 300 ms of itself: this worker already held a *different* value for
+`BUILDER_STOCK_PDF_WORKER_TOKEN` from an earlier deployment, so an isolate
+that had not yet seen the new secret compared against the old one and answered
+**401**, not 503. `/health` cannot detect that — it is unauthenticated and
+reports only that *some* token exists — so the gate is an authenticated
+`POST /v1/nope`, which the front door can answer 404 for only if the token
+matched, and which runs no election. It requires a streak of consecutive
+acceptances and **fails the run** if the new token never goes live, so it can
+never turn a permanent 401 into a pass.
 
 Repository secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`,
 `BUILDER_STOCK_PDF_WORKER_TOKEN`, `SUPABASE_ACCESS_TOKEN`.
