@@ -12,6 +12,40 @@ The canonical plan lives in the prime:
 (rev 2), with the measured boundary in doc 44. This README deliberately does
 not restate it — two copies of a plan is how one goes stale.
 
+## The marketplace ranking
+
+Every Aurixa workspace draws the same builder stock from this network, and until
+now they drew it in `created_at DESC` order — a ranking that rewards whoever
+uploaded last, that no builder can be told, and that no operator can defend.
+
+`_shared/builderStock/builderRanking.pure.ts` scores it now, and
+`builder-ranking-recompute` publishes the answer onto every clone through the
+`rank` block on `stock.item.upserted`. The reasoning, the measurements it was
+built against and the rules that hold it are in the prime:
+`npc-property-dashbord/docs/builder-portal/47-builder-ranking.md`.
+
+What matters when touching it here:
+
+- **The scorer holds no ordering function.** The network decides what a builder
+  and a property are WORTH; each clone lays out a page from those worths. Page
+  shape folded into a score would make a builder's position depend on who else
+  is on the page with them, and then no rank could be reported or audited.
+- **Absent is never zero.** A signal with no data is `not_measured` and leaves
+  both sides of the average. Four of the thirteen signals are dormant today
+  (measured 17 Sep 2026: 1 activation, 0 completions, 0 defects, 0 warranty
+  claims), and each lights up on its own when the data exists.
+- **Merit and money never blend.** A commercial placement adds no points; it
+  selects a capped, labelled band. `builder_stock_item_ranks_disclosure` refuses
+  any promoted or pinned row that is not disclosed.
+- **An override is an act.** Pin, suppress and freeze carry an actor, a reason
+  and an expiry that defaults to 90 days. There is no `set_merit_score`
+  operation and there must never be one.
+- **Scoring runs in an edge function, not in SQL**, because `listing_quality`
+  is the share of stock passing `isDisplayableSourceImage` — six conditions, a
+  sanitised-derivative lookup and an overlay clearance — and restating that
+  predicate in SQL would be a second implementation of a judgement this
+  repository keeps in one place.
+
 ## Trust model, in one paragraph
 
 Mission Control is the trust anchor and nothing else. A workspace presents

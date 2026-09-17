@@ -1,114 +1,6 @@
 {
   "//": "security registry",
   "functions": {
-    "builder-portal-login": {
-      "verify_jwt": false,
-      "exposure_class": "public-auth",
-      "owner": "builder-portal-program",
-      "reviewed": true
-    },
-    "builder-portal-logout": {
-      "verify_jwt": false,
-      "exposure_class": "portal-authenticated",
-      "owner": "builder-portal-program",
-      "reviewed": true
-    },
-    "builder-portal-verify": {
-      "verify_jwt": false,
-      "exposure_class": "portal-authenticated",
-      "owner": "builder-portal-program",
-      "reviewed": true
-    },
-    "builder-portal-accept-invite": {
-      "verify_jwt": false,
-      "exposure_class": "public-auth",
-      "owner": "builder-portal-program",
-      "reviewed": true
-    },
-    "builder-portal-forgot-password": {
-      "verify_jwt": false,
-      "exposure_class": "public-auth",
-      "owner": "builder-portal-program",
-      "reviewed": true
-    },
-    "builder-portal-register": {
-      "verify_jwt": false,
-      "exposure_class": "public-auth",
-      "owner": "builder-portal-program",
-      "reviewed": true
-    },
-    "builder-portal-verify-email": {
-      "verify_jwt": false,
-      "exposure_class": "public-auth",
-      "owner": "builder-portal-program",
-      "reviewed": true
-    },
-    "builder-portal-reset-password": {
-      "verify_jwt": false,
-      "exposure_class": "public-auth",
-      "owner": "builder-portal-program",
-      "reviewed": true
-    },
-    "builder-portal-change-password": {
-      "verify_jwt": false,
-      "exposure_class": "portal-authenticated",
-      "owner": "builder-portal-program",
-      "reviewed": true
-    },
-    "builder-portal-invite": {
-      "verify_jwt": true,
-      "exposure_class": "portal-session",
-      "owner": "builder-portal-program",
-      "reviewed": true
-    },
-    "builder-portal-projects": {
-      "verify_jwt": false,
-      "exposure_class": "portal-authenticated",
-      "owner": "builder-portal-program",
-      "reviewed": true
-    },
-    "builder-portal-inventory": {
-      "verify_jwt": false,
-      "exposure_class": "portal-authenticated",
-      "owner": "builder-portal-program",
-      "reviewed": true
-    },
-    "builder-portal-transactions": {
-      "verify_jwt": false,
-      "exposure_class": "portal-authenticated",
-      "owner": "builder-portal-program",
-      "reviewed": true
-    },
-    "builder-portal-construction": {
-      "verify_jwt": false,
-      "exposure_class": "portal-authenticated",
-      "owner": "builder-portal-program",
-      "reviewed": true
-    },
-    "builder-portal-delivery": {
-      "verify_jwt": false,
-      "exposure_class": "portal-authenticated",
-      "owner": "builder-portal-program",
-      "reviewed": true
-    },
-    "builder-portal-collaboration": {
-      "verify_jwt": false,
-      "exposure_class": "portal-authenticated",
-      "owner": "builder-portal-program",
-      "reviewed": true
-    },
-    "builder-portal-workspace": {
-      "verify_jwt": false,
-      "exposure_class": "portal-authenticated",
-      "owner": "builder-portal-program",
-      "reviewed": true
-    },
-    "builder-portal-stock": {
-      "verify_jwt": false,
-      "exposure_class": "portal-authenticated",
-      "owner": "builder-portal-program",
-      "reviewed": true
-    },
     "builder-document-processor": {
       "verify_jwt": false,
       "exposure_class": "cron-worker",
@@ -140,6 +32,120 @@
       "reviewed": true
     },
     "builder-network-outbox-worker": {
+      "verify_jwt": false,
+      "exposure_class": "internal-worker",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-accept-invite": {
+      "verify_jwt": false,
+      "exposure_class": "public-auth",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-change-password": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-collaboration": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-construction": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-delivery": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-forgot-password": {
+      "verify_jwt": false,
+      "exposure_class": "public-auth",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-inventory": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-invite": {
+      "verify_jwt": true,
+      "exposure_class": "portal-session",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-login": {
+      "verify_jwt": false,
+      "exposure_class": "public-auth",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-logout": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-projects": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-register": {
+      "verify_jwt": false,
+      "exposure_class": "public-auth",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-reset-password": {
+      "verify_jwt": false,
+      "exposure_class": "public-auth",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-stock": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-transactions": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-verify": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-verify-email": {
+      "verify_jwt": false,
+      "exposure_class": "public-auth",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-portal-workspace": {
+      "verify_jwt": false,
+      "exposure_class": "portal-authenticated",
+      "owner": "builder-portal-program",
+      "reviewed": true
+    },
+    "builder-ranking-recompute": {
       "verify_jwt": false,
       "exposure_class": "internal-worker",
       "owner": "builder-portal-program",

@@ -93,6 +93,13 @@ const EXPECTED_FUNCTIONS = [
     'builder-portal-verify',
     'builder-portal-verify-email',
     'builder-portal-workspace',
+    // The hourly ranking run. Not a portal surface at all: driven by pg_cron
+    // through `cron_invoke_signed_function`, gated on the signed internal
+    // envelope like the outbox worker, and it holds a service-role client
+    // because it reads and scores EVERY organisation's stock. Nothing a
+    // builder does reaches it, and it writes no builder-visible record other
+    // than the ranking it publishes.
+    'builder-ranking-recompute',
     // Cron sweep behind verifyInternal; holds a service-role client and
     // crosses organisations, so it is deliberately not a portal-reachable
     // surface. Declared in config.toml and reviewed in SECURITY_REGISTRY.json,
