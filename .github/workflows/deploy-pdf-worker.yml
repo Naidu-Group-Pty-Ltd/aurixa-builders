@@ -1,0 +1,174 @@
+name: Deploy PDF election worker
+
+# Ships `builder-stock-pdf-worker` to Cloudflare, proves it over the wire, and
+# ONLY THEN points the Supabase runtime at it.
+#
+# WHY THE ORDER MATTERS. `RUNTIME_VERSION` is already past
+# `WORKER_RUNTIME_VERSION`, so the moment the two Supabase secrets exist every
+# heavy brochure is routed here. Setting them before the deployment has been
+# proven would hand live documents to an unverified worker; setting them and
+# then deploying would do the same thing with worse timing. So the canary runs
+# against the real URL, and the Supabase step is `if: success()` behind it.
+#
+# WHY THE WORKER IS BUILT BEFORE IT IS DEPLOYED. The shared election reaches
+# for `https://esm.sh/unpdf@0.12.1` at runtime, which Workers cannot do.
+# `build.mjs` rewrites that one specifier to the pinned npm package, refuses
+# the build if the two versions ever drift, and refuses it again if the bundle
+# does not contain the shared election — so a worker with its own private copy
+# of the algorithm cannot be shipped by accident.
+#
+# Required repository secrets:
+#   CLOUDFLARE_API_TOKEN            Workers Scripts: Edit, on the account below
+#   CLOUDFLARE_ACCOUNT_ID
+#   BUILDER_STOCK_PDF_WORKER_TOKEN  the shared bearer, set on BOTH ends here
+#   SUPABASE_ACCESS_TOKEN           already required by the functions workflow
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'workers/builder-stock-pdf-worker/**'
+      - 'supabase/functions/_shared/builderStock/**'
+      - '.github/workflows/deploy-pdf-worker.yml'
+  workflow_dispatch:
+    inputs:
+      configure_supabase:
+        description: 'Point the Supabase runtime at this worker once the canary passes'
+        type: boolean
+        default: true
+
+concurrency:
+  group: deploy-pdf-worker
+  cancel-in-progress: false
+
+env:
+  PROJECT_REF: htfluofznhxeumblwbww
+  WORKER_DIR: workers/builder-stock-pdf-worker
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The canary's heavy document is generated, not committed. reportlab and
+      # Pillow are what generate it.
+      - name: fixture toolchain
+        run: pip install --quiet reportlab pillow
+
+      - name: refuse to pretend
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER_TOKEN: ${{ secrets.BUILDER_STOCK_PDF_WORKER_TOKEN }}
+        run: |
+          missing=""
+          [ -n "$CF_TOKEN" ]     || missing="$missing CLOUDFLARE_API_TOKEN"
+          [ -n "$CF_ACCOUNT" ]   || missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          [ -n "$WORKER_TOKEN" ] || missing="$missing BUILDER_STOCK_PDF_WORKER_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::error::The PDF election worker is due to deploy but these repository secrets are not configured:$missing — nothing was shipped. The heavy-PDF path stays on the bounded in-process fallback until they exist."
+            exit 1
+          fi
+
+      - name: install
+        working-directory: ${{ env.WORKER_DIR }}
+        run: npm ci || npm install
+
+      - name: build the bundle
+        working-directory: ${{ env.WORKER_DIR }}
+        run: npm run build
+
+      # THE BUNDLE IS PROVEN BEFORE IT LEAVES THE RUNNER. This drives the exact
+      # artefact wrangler is about to upload — auth, routing, the lane, and a
+      # real election over a real brochure — so a broken build never reaches
+      # Cloudflare at all.
+      - name: canary the bundle before shipping it
+        working-directory: ${{ env.WORKER_DIR }}
+        env:
+          BUILDER_STOCK_PDF_WORKER_TOKEN: ${{ secrets.BUILDER_STOCK_PDF_WORKER_TOKEN }}
+        run: node scripts/canary.mjs --heavy
+
+      - name: deploy
+        id: deploy
+        working-directory: ${{ env.WORKER_DIR }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -o pipefail
+          npx --yes wrangler@4 deploy 2>&1 | tee deploy.log
+          url=$(grep -Eo 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          if [ -z "$url" ]; then
+            echo '::error::wrangler did not report a workers.dev URL, so there is nothing to canary and nothing to configure.'
+            exit 1
+          fi
+          echo "worker_url=$url" >> "$GITHUB_OUTPUT"
+          echo "deployed to $url"
+
+      # The worker refuses every request, including /health, until this exists.
+      - name: give the worker its half of the shared secret
+        working-directory: ${{ env.WORKER_DIR }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          printf '%s' '${{ secrets.BUILDER_STOCK_PDF_WORKER_TOKEN }}' \
+            | npx --yes wrangler@4 secret put BUILDER_STOCK_PDF_WORKER_TOKEN
+
+      # OVER THE WIRE THIS TIME. Same checks, same fixture, the live URL.
+      - name: canary the deployment
+        id: canary
+        working-directory: ${{ env.WORKER_DIR }}
+        env:
+          BUILDER_STOCK_PDF_WORKER_TOKEN: ${{ secrets.BUILDER_STOCK_PDF_WORKER_TOKEN }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            # A fresh deployment takes a few seconds to answer everywhere.
+            code=$(curl -s -o /dev/null -w '%{http_code}' "${{ steps.deploy.outputs.worker_url }}/health" || true)
+            [ "$code" = "200" ] && break
+            echo "health is $code, waiting (attempt $attempt)"
+            sleep 6
+          done
+          node scripts/canary.mjs --url '${{ steps.deploy.outputs.worker_url }}' --heavy
+
+      # ONLY NOW. Until these two secrets exist the route rule answers
+      # `no_capacity` and the client elects small documents in-process; the
+      # moment they exist every heavy brochure comes here.
+      - name: point the Supabase runtime at the proven worker
+        if: >-
+          success() && (github.event_name == 'push'
+          || inputs.configure_supabase)
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          if [ -z "$SUPABASE_ACCESS_TOKEN" ]; then
+            echo '::error::The worker is deployed and proven, but SUPABASE_ACCESS_TOKEN is not configured so the runtime cannot be pointed at it. The heavy-PDF path stays on the bounded in-process fallback.'
+            exit 1
+          fi
+          npx --yes supabase@latest secrets set --project-ref "$PROJECT_REF" \
+            BUILDER_STOCK_PDF_WORKER_URL='${{ steps.deploy.outputs.worker_url }}'
+          printf '%s' '${{ secrets.BUILDER_STOCK_PDF_WORKER_TOKEN }}' > /tmp/pdf-worker-token
+          npx --yes supabase@latest secrets set --project-ref "$PROJECT_REF" \
+            BUILDER_STOCK_PDF_WORKER_TOKEN="$(cat /tmp/pdf-worker-token)"
+          rm -f /tmp/pdf-worker-token
+          echo "Supabase now routes heavy PDF elections to ${{ steps.deploy.outputs.worker_url }}"
+
+      - name: say what happened
+        if: always()
+        run: |
+          {
+            echo '### PDF election worker'
+            echo
+            echo "- worker: \`${{ steps.deploy.outputs.worker_url }}\`"
+            echo "- pre-ship canary: ${{ steps.deploy.outcome }}"
+            echo "- live canary: ${{ steps.canary.outcome }}"
+          } >> "$GITHUB_STEP_SUMMARY"

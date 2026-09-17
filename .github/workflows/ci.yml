@@ -80,3 +80,32 @@ jobs:
         run: npm test
       - name: production build
         run: npm run build
+
+  pdf-worker:
+    name: pdf election worker builds and elects
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: fixture toolchain
+        run: pip install --quiet reportlab pillow
+      - name: install
+        working-directory: workers/builder-stock-pdf-worker
+        run: npm install --no-audit --no-fund
+      # `build.mjs` fails the build when the unpdf pin drifts from the URL
+      # `pdfText.ts` loads, and when the bundle does not contain the shared
+      # election — so a worker carrying its own private copy of the algorithm
+      # cannot pass this step.
+      - name: build (asserts the shared election is what got bundled)
+        working-directory: workers/builder-stock-pdf-worker
+        run: npm run build
+      # Drives the exact deployable artefact: auth, routing, the lane, and a
+      # real election over a real brochure and an 8 MB twelve-page document.
+      - name: canary the bundle
+        working-directory: workers/builder-stock-pdf-worker
+        run: node scripts/canary.mjs --heavy

@@ -1,0 +1,19 @@
+{
+  "name": "builder-stock-pdf-worker",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Runs the shared Builder Stock PDF election where there is CPU for it.",
+  "scripts": {
+    "build": "node build.mjs",
+    "deploy": "node build.mjs && wrangler deploy"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.3",
+    "wrangler": "^4.21.0"
+  },
+  "dependencies": {
+    "unpdf": "0.12.1"
+  }
+}

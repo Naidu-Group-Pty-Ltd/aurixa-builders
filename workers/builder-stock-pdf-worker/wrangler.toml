@@ -1,0 +1,32 @@
+# The heavy Builder Stock PDF election, deployed where there is CPU for it.
+#
+# `main` is the PRE-BUILT bundle, not `src/index.ts`. The shared election
+# reaches for `https://esm.sh/unpdf@0.12.1` at runtime, which Workers cannot
+# do; `build.mjs` rewrites that one specifier to the pinned npm package and
+# inlines it, and refuses to build if the two ever name different versions.
+# See its header for why the shared module is not edited instead.
+name = "builder-stock-pdf-worker"
+main = "dist/index.js"
+compatibility_date = "2026-09-08"
+workers_dev = true
+
+# 128 MB is the isolate's memory ceiling and it does not move with the plan.
+# The lane in `PdfElection` is what keeps one document resident at a time; this
+# only buys the CPU the 2,000 ms Supabase ceiling could not give. The heaviest
+# document measured in production elects in under ten seconds.
+[limits]
+cpu_ms = 120000
+
+[durable_objects]
+bindings = [
+  { name = "PDF_ELECTION", class_name = "PdfElection" },
+]
+
+# `new_classes`, not `new_sqlite_classes`: this object stores nothing. It is a
+# queue with a lifetime, and giving it storage would invite someone to use it.
+[[migrations]]
+tag = "v1"
+new_classes = ["PdfElection"]
+
+[observability]
+enabled = true

@@ -14,13 +14,21 @@ function denoNpmSpecifiers(): Plugin {
   return {
     name: "deno-npm-specifiers",
     enforce: "pre",
-    resolveId(id) {
+    async resolveId(id) {
       if (!id.startsWith("npm:")) return null;
       const bare = id.slice("npm:".length);
       // Scoped packages keep their leading @; only a trailing @version goes.
       const at = bare.lastIndexOf("@");
       const name = at > 0 ? bare.slice(0, at) : bare;
-      return this.resolve(name, undefined, { skipSelf: true });
+      const resolved = await this.resolve(name, undefined, { skipSelf: true });
+      if (resolved) return resolved;
+      /**
+       * Not installed here, and deliberately so: a shared edge module may
+       * import a package only its Deno runtime ever calls. The stub throws a
+       * named error if a test actually reaches it, so this can never turn a
+       * real dependency into a silent pass.
+       */
+      return path.resolve(__dirname, "./src/test/uninstalledDenoPackageStub.ts");
     },
   };
 }
@@ -34,6 +42,17 @@ export default defineConfig({
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
   },
   resolve: {
-    alias: [{ find: "@", replacement: path.resolve(__dirname, "./src") }],
+    alias: [
+      { find: "@", replacement: path.resolve(__dirname, "./src") },
+      /**
+       * The PDF worker's own modules import the Workers runtime base class.
+       * Aliasing it to a thin stub is what lets its auth, routing and wire
+       * shape be tested here instead of only in a deploy.
+       */
+      {
+        find: "cloudflare:workers",
+        replacement: path.resolve(__dirname, "./src/test/cloudflareWorkersStub.ts"),
+      },
+    ],
   },
 });
