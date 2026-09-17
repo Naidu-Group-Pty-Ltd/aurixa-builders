@@ -854,9 +854,11 @@ const [elected] = await q('the elected image', `
          img.verification_status, img.content_type, img.byte_size,
          img.source_detail->>'stored_sha256' AS stored_sha256,
          img.source_detail->>'source_sha256' AS source_sha256,
-         img.source_detail->>'page'          AS page,
-         img.source_detail->>'method'        AS method,
-         img.source_detail->'role'->>'role'  AS role,
+         img.source_detail->>'page'                AS page,
+         img.source_detail->>'method'              AS method,
+         img.source_detail->>'role'                AS role,
+         img.source_detail->>'role_evidence_level' AS role_evidence_level,
+         img.source_detail->>'role_evidence'       AS role_evidence,
          it.primary_image_id = img.id        AS is_primary,
          it.lifecycle_status
     FROM public.builder_stock_item_images img
@@ -886,6 +888,18 @@ record('F7: provenance names the page it was cut from',
 record('F8: Aurixa\'s own rules assigned the role, and it is the one a card may draw',
   elected?.role === 'primary_property' && elected?.is_primary === true,
   `role=${elected?.role} primary=${elected?.is_primary}`);
+
+/*
+ * AND THE ROLE IS EARNED, not defaulted. `role_evidence_level` is the strength
+ * the DOCUMENT stated the hero with — lower is stronger, 2 being a
+ * single-property package cover carrying the property's identity and its
+ * package facts. A role arriving with no level, or at the weakest level, would
+ * mean the picture leads a card on nothing the document actually said.
+ */
+record('F8: the role was earned at a stated evidence level, with the evidence recorded',
+  Number(elected?.role_evidence_level) >= 1 && Number(elected?.role_evidence_level) <= 3
+    && String(elected?.role_evidence ?? '').length > 20,
+  `level=${elected?.role_evidence_level} evidence="${String(elected?.role_evidence ?? '').slice(0, 90)}"`);
 
 record('F9: the publication gate remains in control of the property',
   ['active', 'staged'].includes(String(elected?.lifecycle_status)),
