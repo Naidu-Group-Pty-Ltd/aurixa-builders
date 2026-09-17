@@ -10,12 +10,40 @@ main = "dist/index.js"
 compatibility_date = "2026-09-08"
 workers_dev = true
 
-# 128 MB is the isolate's memory ceiling and it does not move with the plan.
-# The lane in `PdfElection` is what keeps one document resident at a time; this
-# only buys the CPU the 2,000 ms Supabase ceiling could not give. The heaviest
-# document measured in production elects in under ten seconds.
-[limits]
-cpu_ms = 120000
+# NO `[limits] cpu_ms`, AND THAT IS NOT AN OVERSIGHT.
+#
+# It was set to 120000 and Cloudflare refused the deployment outright:
+#
+#   error 100328: CPU limits are not supported for the Free plan.
+#
+# Raising the ceiling is a paid-plan control. Asking for it on this account
+# does not get a smaller ceiling — it gets NO DEPLOYMENT, which is strictly
+# worse than the default. So the key is gone and the platform default stands.
+#
+# WHAT THE DEFAULT ACTUALLY IS, AND WHY THIS COMMENT HEDGES. Cloudflare's own
+# documentation says two things that do not sit together:
+#
+#   * `durable-objects/platform/limits` gives "CPU per request: 30 seconds
+#     (default)" with NO plan split — while splitting the rows either side of
+#     it ("500 (Workers Paid) / 100 (Free)").
+#   * `workers/platform/limits` gives "CPU time per HTTP request: Workers Free
+#     10 ms", and the Durable Objects FAQ says objects "have the same per
+#     invocation CPU limits as any Workers do".
+#
+# Under the first reading the election has 30 s and finishes in half a second.
+# Under the second it has 10 ms and cannot finish at all. The isolate's
+# "flexibility" does not bridge that: it forgives a Worker that INFREQUENTLY
+# runs over, and terminates one that does so consistently.
+#
+# This is therefore settled by MEASUREMENT, not by reading. The deploy workflow
+# canaries the live URL with a real 8 MB brochure before it points Supabase at
+# anything, so the failure mode of the pessimistic reading is a red canary and
+# an unconfigured runtime — never a heavy document routed somewhere it cannot
+# be read.
+#
+# Memory is unaffected either way: 128 MB is the isolate's ceiling and it does
+# not move with the plan. The lane in `PdfElection` is what keeps one document
+# resident at a time, and it is doing that job whatever the CPU budget is.
 
 [durable_objects]
 bindings = [
