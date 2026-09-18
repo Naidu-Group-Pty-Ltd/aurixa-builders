@@ -142,12 +142,22 @@ Deno.serve(async (req) => {
       return json({ skipped: 'frozen', reason: state.frozen_reason ?? null });
     }
 
-    // ----------------------------------------------------------------- reads
+    /*
+     * ----------------------------------------------------------------- reads
+     *
+     * Every select below is ONE unbroken string literal, however long the line
+     * runs. supabase-js resolves a query's row type by parsing that literal at
+     * the type level, and `'a, ' + 'b'` widens to `string` — which it cannot
+     * parse, so the row type falls back to `GenericStringError` and collides
+     * with any concrete row interface. Wrapping these three selects across
+     * lines is what failed the edge typecheck the first time this shipped, and
+     * it fails silently for the reads typed `Record<string, any>`, because
+     * `GenericStringError[]` is assignable to those.
+     */
     const organisations = await readAllRows<Record<string, any>>(
       () => supabase
         .from('builder_organisations')
-        .select('id, status, abn, contact_email, contact_phone, established_on, '
-          + 'abn_registered_on, abn_verified_at, reputation_score, reputation_recorded_at')
+        .select('id, status, abn, contact_email, contact_phone, established_on, abn_registered_on, abn_verified_at, reputation_score, reputation_recorded_at')
         .eq('status', 'active')
         .order('id', { ascending: true }),
     );
@@ -156,10 +166,7 @@ Deno.serve(async (req) => {
     const items = await readAllRows<StockRow>(
       () => supabase
         .from('builder_stock_items')
-        .select('id, organisation_id, lifecycle_status, availability_status, price, '
-          + 'price_display, state, suburb, property_type, bedrooms, bathrooms, car_spaces, '
-          + 'land_size_sqm, building_size_sqm, address_line, postcode, expected_completion, '
-          + 'description, primary_image_id, last_seen_at, manual_stats')
+        .select('id, organisation_id, lifecycle_status, availability_status, price, price_display, state, suburb, property_type, bedrooms, bathrooms, car_spaces, land_size_sqm, building_size_sqm, address_line, postcode, expected_completion, description, primary_image_id, last_seen_at, manual_stats')
         .eq('lifecycle_status', 'active')
         .order('id', { ascending: true }),
     );
@@ -168,8 +175,7 @@ Deno.serve(async (req) => {
     const images = await readAllRows<ImageRow>(
       () => supabase
         .from('builder_stock_item_images')
-        .select('id, source_stage, verification_status, processing_status, '
-          + 'storage_path, external_url, source_detail')
+        .select('id, source_stage, verification_status, processing_status, storage_path, external_url, source_detail')
         .order('id', { ascending: true }),
     );
     if (images.failed) return abandon(supabase, asOf, 'images', images.error);
