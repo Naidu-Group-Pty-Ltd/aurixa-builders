@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   BUILDER_EMAIL_FONT,
+  BUILDER_EMAIL_HEADING,
   BUILDER_EMAIL_MONO,
   BUILDER_EMAIL_PALETTE,
   escapeHtml,
@@ -71,6 +72,24 @@ describe('the palette is the portal’s, not an approximation of it', () => {
     expect(root).toMatch(/--font-sans:\s*"Inter"/);
     expect(BUILDER_EMAIL_FONT.startsWith('Inter')).toBe(true);
     expect(BUILDER_EMAIL_MONO).toContain('ui-monospace');
+  });
+
+  it('sets headings in the serif the product sets every heading in', () => {
+    // `base.css` puts `var(--font-heading)` on h1-h6 globally, so the
+    // portal's headings are serif — a sans heading here would not be its
+    // voice. Playfair never loads (nothing declares an @font-face), so the
+    // browser and the mail client walk the same chain to Georgia.
+    expect(read('src/styles/base.css')).toMatch(
+      /h1,\s*h2,\s*h3,\s*h4,\s*h5,\s*h6\s*\{[^}]*font-family:\s*var\(--font-heading\)/,
+    );
+    expect(root).toMatch(/--font-heading:\s*"Playfair Display"/);
+    for (const face of ['Playfair Display', 'Georgia', 'serif']) {
+      expect(BUILDER_EMAIL_HEADING, face).toContain(face);
+    }
+    // And the rendered h1 actually wears it.
+    const html = renderInviteEmailHtml(CONTENT, BRAND);
+    const h1 = html.slice(html.indexOf('<h1'), html.indexOf('</h1>'));
+    expect(h1).toContain('Georgia');
   });
 
   it('loads no webfont — a mail client strips @font-face and a link is a beacon', () => {

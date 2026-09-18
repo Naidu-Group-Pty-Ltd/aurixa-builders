@@ -77,6 +77,20 @@ export const BUILDER_EMAIL_PALETTE = {
 export const BUILDER_EMAIL_FONT =
   "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif";
 
+/**
+ * `--font-heading`, which every `h1`–`h6` in the product already wears —
+ * `base.css` sets `font-family: var(--font-heading)` on all six globally, so
+ * the portal's own headings are SERIF and a sans heading here would not be
+ * the portal's voice.
+ *
+ * Playfair Display is never loaded (no `@font-face` anywhere in the product
+ * either, so a browser falls through the same chain a mail client will), and
+ * Georgia is present on effectively every client — so a reader sees the serif
+ * the token asks for rather than the sans they would have got by default.
+ */
+export const BUILDER_EMAIL_HEADING =
+  "'Playfair Display', ui-serif, Georgia, Cambria, 'Times New Roman', Times, serif";
+
 /** --font-mono, for the one place a credential is quoted. */
 export const BUILDER_EMAIL_MONO =
   "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace";
@@ -178,7 +192,7 @@ export function renderInviteEmailHtml(
              line weight, which is what makes this read as the portal. -->
         <tr><td style="padding:28px 32px 0;border-top:3px solid ${c.primary};border-radius:8px 8px 0 0;">
           <p style="margin:0 0 4px;font-family:${BUILDER_EMAIL_MONO};font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:${c.primary};">${company}</p>
-          <h1 style="margin:0 0 20px;font-size:21px;line-height:1.3;font-weight:600;color:${c.ink};">${escapeHtml(content.heading)}</h1>
+          <h1 style="margin:0 0 20px;font-family:${BUILDER_EMAIL_HEADING};font-size:23px;line-height:1.3;font-weight:600;color:${c.ink};">${escapeHtml(content.heading)}</h1>
         </td></tr>
         <tr><td style="padding:0 32px 28px;">${body}${action}${footnote}</td></tr>
         <tr><td style="padding:16px 32px 24px;border-top:1px solid ${c.rule};">
