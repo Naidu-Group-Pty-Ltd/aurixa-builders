@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   APPLICATION_WINDOW_HOURS,
+  ORIGIN_WINDOWS,
   organisationFromRequest,
   readAccessRequest,
 } from "../../../supabase/functions/_shared/builderAccessRequest.pure.ts";
@@ -183,6 +184,74 @@ describe("what makes an unattended public pipeline safe", () => {
     expect(CODE).toMatch(
       /if\s*\(\(?\s*recent[\s\S]{0,40}\)\s*\{[\s\S]{0,240}an_application_for_that_address_is_already_with_us/,
     );
+  });
+
+  it("bounds the origin as well as the address", () => {
+    // The address window bounds one MAILBOX. A script with a thousand
+    // addresses passes it a thousand times, and every pass is an
+    // organisation created and mail sent from our verified sending domain.
+    expect(ORIGIN_WINDOWS.length).toBeGreaterThan(1);
+    for (const window of ORIGIN_WINDOWS) {
+      expect(window.limit).toBeGreaterThan(0);
+      expect(window.error).toBeTruthy();
+    }
+    // Each window says which one it was, so an applicant told to come back
+    // is told whether that means in an hour or tomorrow. The handler relays
+    // the window's own code rather than one shared refusal.
+    expect(new Set(ORIGIN_WINDOWS.map((w) => w.error)).size).toBe(ORIGIN_WINDOWS.length);
+    expect(CODE).toMatch(/return json\(\{ error: window\.error \}, 429\)/);
+    // An hour and a day: a burst and a drip are different attacks.
+    expect(ORIGIN_WINDOWS.map((w) => w.hours).sort((a, b) => a - b)).toEqual([1, 24]);
+    // And the longer window has to allow MORE, or the shorter one is the
+    // only one that can ever fire and the second is decoration.
+    const [short, long] = [...ORIGIN_WINDOWS].sort((a, b) => a.hours - b.hours);
+    expect(long.limit).toBeGreaterThan(short.limit);
+  });
+
+  it("counts every origin window before it records anything", () => {
+    // A limiter that runs after the insert has already created the
+    // organisation it was meant to prevent.
+    const windowAt = CODE.indexOf("for (const window of ORIGIN_WINDOWS)");
+    const insertAt = CODE.indexOf("from('builder_access_requests')\n        .insert(");
+    expect(windowAt).toBeGreaterThan(-1);
+    expect(insertAt).toBeGreaterThan(windowAt);
+  });
+
+  it("refuses rather than waves through when the count cannot be read", () => {
+    // Everywhere else in this function a failed read degrades gracefully.
+    // Not here: this is the only control between a public form and an
+    // unbounded number of organisations, so it fails CLOSED.
+    const guard = CODE.slice(
+      CODE.indexOf("for (const window of ORIGIN_WINDOWS)"),
+      CODE.indexOf("const { data: request, error: requestError }"),
+    );
+    expect(guard).toMatch(/if\s*\(countError\)/);
+    expect(guard).toMatch(/return json\([^)]*\},\s*503\)/);
+  });
+
+  it("counts a caller with no origin rather than exempting one", () => {
+    // An upstream that stops forwarding the header must degrade to a SHARED
+    // allowance, never to no limit — a control that can be switched off by
+    // omitting a field is not a control.
+    const guard = CODE.slice(0, CODE.indexOf("for (const window of ORIGIN_WINDOWS)"));
+    expect(guard).toContain("'unattributed'");
+    expect(guard).not.toMatch(/if\s*\(!\s*origin\)\s*\{?\s*(return|continue)/);
+  });
+
+  it("stores the same origin string it counted", () => {
+    // Counting the trimmed value and storing the raw one means the limiter
+    // counts a set of rows that is not the set it is limiting, and the next
+    // attempt is the first attempt again.
+    expect(CODE).toMatch(/source_ip:\s*origin,/);
+  });
+
+  it("counts refused attempts too, so probing spends its own allowance", () => {
+    // The window reads `builder_access_requests`, and every application is
+    // recorded there BEFORE anything is attempted — so an address probing
+    // for which ABNs are registered is bounded by its own probing.
+    const guard = CODE.slice(CODE.indexOf("for (const window of ORIGIN_WINDOWS)"));
+    expect(guard.slice(0, 400)).toContain("from('builder_access_requests')");
+    expect(guard.slice(0, 400)).not.toMatch(/\.eq\('status'/);
   });
 
   it("keeps a second attempt rather than erasing it", () => {

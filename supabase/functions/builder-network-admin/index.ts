@@ -48,6 +48,7 @@ import { builderAppBaseUrl, mintBuilderInvite, INVITE_EXPIRY_HOURS } from '../_s
 import { readOrganisationConflict } from '../_shared/builderOrganisationConflict.pure.ts';
 import {
   APPLICATION_WINDOW_HOURS,
+  ORIGIN_WINDOWS,
   organisationFromRequest,
   readAccessRequest,
 } from '../_shared/builderAccessRequest.pure.ts';
@@ -388,11 +389,47 @@ Deno.serve(async (req) => {
         return json({ error: 'an_application_for_that_address_is_already_with_us' }, 429);
       }
 
+      // And a bound on the ORIGIN, because the address window bounds one
+      // mailbox and nothing else — a script with a thousand addresses passes
+      // it a thousand times, and every pass creates an organisation and
+      // sends mail from our verified domain.
+      //
+      // A caller with no usable origin is NOT exempt: they are counted
+      // together under one identity, so an upstream that stops forwarding
+      // the header degrades to a shared allowance rather than to no limit
+      // at all. That is the one shape of this control that cannot be turned
+      // off by omitting a field.
+      const origin = typeof body.source_ip === 'string' && body.source_ip.trim()
+        ? body.source_ip.trim().slice(0, 100)
+        : 'unattributed';
+      for (const window of ORIGIN_WINDOWS) {
+        const from = new Date(Date.now() - window.hours * 3600_000).toISOString();
+        const { count, error: countError } = await supabase
+          .from('builder_access_requests')
+          .select('id', { count: 'exact', head: true })
+          .eq('source_ip', origin)
+          .gte('created_at', from);
+        // A count that FAILED is not a count of zero. This is the only
+        // control standing between a public form and an unbounded number of
+        // organisations, so a database fault refuses rather than waves
+        // everything through — the opposite of how the rest of this function
+        // treats a failed read, and deliberately so.
+        if (countError) {
+          console.error('[builder-network-admin] origin window read failed', countError);
+          return json({ error: 'application_not_recorded' }, 503);
+        }
+        if ((count ?? 0) >= window.limit) return json({ error: window.error }, 429);
+      }
+
       const { data: request, error: requestError } = await supabase
         .from('builder_access_requests')
         .insert({
           ...fields,
-          source_ip: typeof body.source_ip === 'string' ? body.source_ip : null,
+          // The value the windows above counted, so the next count sees this
+          // attempt. Storing the raw header here while counting the trimmed
+          // one is how a limiter comes to count a set of rows that is not
+          // the set it is limiting.
+          source_ip: origin,
           user_agent: typeof body.user_agent === 'string' ? body.user_agent.slice(0, 500) : null,
         })
         .select('id')

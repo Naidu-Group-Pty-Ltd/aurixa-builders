@@ -35,7 +35,21 @@
  *
  * A CAPTCHA is the one control this module does NOT provide, because it needs
  * a site key and secret nobody has minted for this surface yet. Its absence
- * is why (3) is not optional.
+ * is why (3) is not optional, and why (5) exists at all.
+ *
+ *  5. ONE ADDRESS IS ONE APPLICANT; ONE ORIGIN IS A CROWD. The per-address
+ *     window bounds how often we write to one mailbox and bounds nothing
+ *     else: a script with a thousand addresses passes it a thousand times,
+ *     and every pass is an organisation created and an email sent from our
+ *     verified domain. So the ORIGIN is bounded too, over the same table,
+ *     because the table is where the rows are and a count of rows is the
+ *     only count that cannot disagree with reality.
+ *
+ *     Mission Control bounds the same caller per MINUTE before the request
+ *     travels; these two are the hour and the day, which a per-minute
+ *     limiter cannot express. The layers are deliberate — a burst and a
+ *     drip are different attacks, and the cheapest place to refuse each is
+ *     different too.
  */
 
 // @ts-ignore Deno-only import; not resolvable under Node type-checking.
@@ -43,6 +57,27 @@ import { ORG_TYPES } from './builderOrganisationInput.pure.ts';
 
 /** How long one email address has to wait before applying again. */
 export const APPLICATION_WINDOW_HOURS = 24;
+
+/**
+ * How many applications one origin may have recorded, per window.
+ *
+ * Deliberately generous against a real day and ruinous against a script. A
+ * builder's office behind one NAT address, applying for three related
+ * entities in a sitting, is a real thing and passes; six an hour from one
+ * address is not somebody filling in a form.
+ *
+ * Both are counted over `builder_access_requests`, so a REFUSED attempt is
+ * counted too. That is the point — an address probing for which ABNs are
+ * already registered spends its allowance on the probing.
+ */
+export const ORIGIN_WINDOWS: ReadonlyArray<{
+  readonly hours: number;
+  readonly limit: number;
+  readonly error: string;
+}> = [
+  { hours: 1, limit: 6, error: 'too_many_applications_from_here_just_now' },
+  { hours: 24, limit: 20, error: 'too_many_applications_from_here_today' },
+];
 
 const MAX = 200;
 const MAX_MESSAGE = 2000;
