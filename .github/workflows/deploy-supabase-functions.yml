@@ -1,6 +1,6 @@
-name: Deploy Supabase functions
+name: Deploy Supabase schema and functions
 
-# Ships the network's edge runtime to project htfluofznhxeumblwbww.
+# Ships the network's schema and edge runtime to project htfluofznhxeumblwbww.
 #
 # The prime's workflow of the same name carries the whole story of why this
 # exists (a green merge is not a deploy, and the gap is silent by
@@ -14,9 +14,23 @@ name: Deploy Supabase functions
 # the CLI reads it, and check-verify-jwt-declared.mjs in ci.yml keeps the
 # file complete.
 #
+# MIGRATIONS RUN FIRST, and they did not run at all until 18 Sep 2026. This
+# workflow shipped functions and nothing shipped schema: no job here applied a
+# migration and CI never noticed that a branch had added a table production had
+# never seen. `20260918100500_builder_access_requests.sql` merged green,
+# deployed its function, and left the database behind — the function then
+# answered every public applicant a 500 (`PGRST205`, table not in the schema
+# cache) and the first person to find out was a user filling in the form.
+#
+# The order is the fix and it is not interchangeable: a function deployed
+# against a table that does not exist yet IS that outage. Schema, then code.
+#
 # Required repository secret: SUPABASE_ACCESS_TOKEN (a personal access token
 # from supabase.com/dashboard/account/tokens with access to the
-# Naidu Group organisation).
+# Naidu Group organisation). The migration lane deliberately uses the same
+# token rather than a database password, so it needed no new secret to start
+# working — a lane that cannot run until somebody adds one is a lane that
+# stays unrun.
 
 on:
   push:
@@ -27,7 +41,9 @@ on:
     branches: [main]
     paths:
       - 'supabase/functions/**'
+      - 'supabase/migrations/**'
       - 'supabase/config.toml'
+      - 'scripts/ops/apply-migrations.mjs'
       - '.github/workflows/deploy-supabase-functions.yml'
   workflow_dispatch: {}
 
@@ -51,6 +67,13 @@ jobs:
         run: |
           echo '::error::Edge functions are due to deploy but no SUPABASE_ACCESS_TOKEN secret is configured — nothing was shipped. Add it in Settings → Secrets and variables → Actions (mint at supabase.com/dashboard/account/tokens), then re-run.'
           exit 1
+
+      # SCHEMA BEFORE CODE. A function deployed against a table that does not
+      # exist is the outage this lane was added for.
+      - name: apply pending migrations
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: node scripts/ops/apply-migrations.mjs
 
       - uses: supabase/setup-cli@v3
         with:
