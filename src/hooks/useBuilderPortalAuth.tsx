@@ -38,7 +38,10 @@ interface BuilderPortalAuthContextType {
   previousSeenAt: string | null;
   signIn: (email: string, password: string, turnstileToken?: string) => Promise<{ error?: string }>;
   signOut: () => Promise<void>;
-  acceptInvite: (token: string, password: string) => Promise<{ error?: string }>;
+  acceptInvite: (
+    token: string,
+    password: string,
+  ) => Promise<{ error?: string; pending?: { code: string; message: string } }>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<{ error?: string }>;
   acceptTerms: (acknowledgements: PortalAcknowledgementKey[]) => Promise<{ error?: string }>;
   completeOnboarding: (stepKey?: string) => Promise<{ error?: string }>;
@@ -272,6 +275,20 @@ export function BuilderPortalAuthProvider({ children }: { children: ReactNode })
     const { data, error } = await builderAcceptInvite(token, password);
     if (error || !data?.success) {
       return { error: (data as any)?.error || error?.message || 'Could not accept this invite' };
+    }
+    /*
+     * ACTIVATED WITHOUT BEING SIGNED IN. The account is live and the password
+     * is set, and the organisation is not approved yet, so the server issued
+     * no session — it answers `signed_in: false` and says why.
+     *
+     * Reading the session here would be wrong twice over: there is no cookie
+     * to read, and a failed `checkSession` would present a successful
+     * activation as a broken one, which is the shape of the defect this came
+     * from.
+     */
+    const pending = (data as any)?.pending;
+    if ((data as any)?.signed_in === false && pending) {
+      return { pending: { code: String(pending.code), message: String(pending.message) } };
     }
     await checkSession();
     return {};
