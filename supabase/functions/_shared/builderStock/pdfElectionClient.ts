@@ -31,6 +31,7 @@ import {
   PDF_ELECTION_PROTOCOL, base64ToBytes, encodeElectionContext,
 } from './pdfElectionBoundary.pure.ts';
 import type { PackageOutcome } from './packageImages.ts';
+import { TELEMETRY_PREFIX, pdfTelemetry } from './importTelemetry.pure.ts';
 
 /** Env read the way the rest of Builder Stock reads it. */
 function env(name: string): string {
@@ -112,6 +113,45 @@ export async function runElection(
 
 /** Split out so a test can drive every route without touching the environment. */
 export async function runElectionOnRoute(
+  bytes: Uint8Array,
+  readPageTexts: (bytes: Uint8Array) => Promise<
+    { ok: true; pages: string[] } | { ok: false; reason: string }>,
+  context: ElectionContext,
+  route: ElectionRoute,
+): Promise<PackageOutcome> {
+  const startedAt = Date.now();
+  const outcome = await electOnRoute(bytes, readPageTexts, context, route);
+  /*
+   * ONE LINE PER ELECTION, SAYING WHOSE ANSWER IT IS.
+   *
+   * `document_verdict` is the field the last incident turned on: an operator
+   * reading "no image" cannot otherwise tell a document that carries none from
+   * a worker we never reached. It is TRUE only for `not_identified` and a
+   * `recovered`, both of which mean the bytes were actually read — and this
+   * module cannot construct `not_identified` at all, so a true reading here is
+   * always the worker's own. Best-effort; a line is never worth an election.
+   */
+  try {
+    console.info(`${TELEMETRY_PREFIX} pdf election`, pdfTelemetry({
+      documentName: context.documentName,
+      documentUrl: context.url,
+      byteSize: bytes.length,
+      route: route.kind,
+      outcome: outcome.status,
+      documentVerdict: outcome.status !== 'unreachable',
+      role: outcome.status === 'recovered' || outcome.status === 'recovered_photograph'
+        ? String((outcome as { image?: { role?: unknown } }).image?.role ?? '') || null
+        : null,
+      durationMs: Date.now() - startedAt,
+      detail: outcome.status === 'unreachable' || outcome.status === 'not_identified'
+        ? (outcome as { detail?: string }).detail ?? null
+        : null,
+    }));
+  } catch { /* the election is the deliverable */ }
+  return outcome;
+}
+
+async function electOnRoute(
   bytes: Uint8Array,
   readPageTexts: (bytes: Uint8Array) => Promise<
     { ok: true; pages: string[] } | { ok: false; reason: string }>,

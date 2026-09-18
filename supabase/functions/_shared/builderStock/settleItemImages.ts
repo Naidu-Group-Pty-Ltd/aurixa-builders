@@ -57,6 +57,7 @@ import {
   describeSuppliedEvidence, readStoredRowEvidence,
   type SuppliedEvidenceReading,
 } from './suppliedEvidence.pure.ts';
+import { TELEMETRY_PREFIX, itemTelemetry } from './importTelemetry.pure.ts';
 import { PROVENANCE_VERSION } from './provenanceVersion.pure.ts';
 import type { ClaimedItem, ItemWorkStage } from './itemWorkClaim.ts';
 
@@ -145,6 +146,16 @@ export async function settleClaimedItem(
     itemId: item.id, stage, nextStage: stage, progressed: false,
     result: 'nothing to do', primarySet: false,
   };
+  /*
+   * HOISTED SO THE ITEM'S OWN LINE CAN CARRY IT.
+   *
+   * The evidence reading is taken deep inside one branch, and it is the single
+   * fact an operator needs about a property that is not progressing. Left
+   * where it was taken, a support question about any other stage has no answer
+   * at all — which is how five properties came to be explained days later from
+   * database state rather than from what the run said at the time.
+   */
+  let evidenceSeen: SuppliedEvidenceReading | null = null;
 
   /*
    * NAME THE PROPERTY BEFORE ASKING ANYONE TO PHOTOGRAPH IT.
@@ -353,6 +364,7 @@ export async function settleClaimedItem(
         }
       }
       if (evidence) {
+        evidenceSeen = evidence;
         console.info('[builderStock] supplied evidence routed', {
           phase: 'fallback_routing', stock_item_id: item.id,
           supplied_evidence: evidence.state, next_stage: settlement.nextStage,
@@ -388,6 +400,42 @@ export async function settleClaimedItem(
     // Never fatal. The pointer is settled again on the next claim, and by the
     // organisation-wide enforcement the old path still runs.
   }
+
+  /*
+   * ONE LINE PER ITEM PER TICK, ON EVERY PATH INCLUDING THE QUIET ONES.
+   *
+   * `lifecycle_status` is here because a staged row doing exactly the right
+   * thing and a lost row look identical from outside, and the incident this
+   * release closes was 47 properties in `staged` with nothing anywhere saying
+   * so. Best-effort; a line is never worth a settlement.
+   */
+  try {
+    console.info(`${TELEMETRY_PREFIX} stock item settled`, itemTelemetry({
+      itemId: item.id,
+      uploadId: item.pending_upload_id ?? item.upload_id,
+      lifecycle: item.lifecycle_status,
+      workStage: settlement.nextStage,
+      evidence: evidenceSeen?.state ?? null,
+      /*
+       * NAMED ONLY WHERE SOMETHING WAS ACTUALLY EXHAUSTED, and decided by the
+       * counts rather than by the word: a reading with any source retired on a
+       * fault of ours is `operational` however many others were read, because
+       * the question this answers is whether the builder may be told anything
+       * about their document at all.
+       */
+      exhaustion: evidenceSeen?.state === 'exhausted'
+        ? (evidenceSeen.operational > 0 ? 'operational' : 'inspected')
+        : null,
+      sourcesTotal: evidenceSeen?.total ?? null,
+      sourcesInspected: evidenceSeen?.inspected ?? null,
+      sourcesOperational: evidenceSeen?.operational ?? null,
+      sourcesOpen: evidenceSeen?.open ?? null,
+      hasPrimaryImage: settlement.primarySet,
+      attempts: item.image_work_attempts,
+      nextStage: settlement.nextStage,
+      detail: settlement.error ?? settlement.result,
+    }));
+  } catch { /* the settlement is the deliverable */ }
 
   return settlement;
 }

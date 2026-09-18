@@ -21,6 +21,7 @@ import type { RowLinkDiscovery } from './suppliedEvidence.pure.ts';
 import { importStockRecords } from './importStock.ts';
 import { NOTION_NO_PROPERTIES_MESSAGE } from './urlSource.pure.ts';
 import type { AnchoredAssets } from './sourceAssets.pure.ts';
+import { TELEMETRY_PREFIX, uploadTelemetry } from './importTelemetry.pure.ts';
 
 /** Wall clock allowed to the model, leaving room for the import itself. */
 const MODEL_BUDGET_MS = 90_000;
@@ -68,6 +69,16 @@ export interface RunImportInput {
    * the rows from the reading strategy instead. See `RowLinkDiscovery`.
    */
   linkDiscovery?: RowLinkDiscovery | null;
+  /**
+   * WHICH WORKSHEET THE FETCH SETTLED ON, for the record alone.
+   *
+   * Nothing in the pipeline reads it — the tab was decided in `fetchSource`
+   * and the bytes are already that tab's. It is carried purely so the one
+   * line this import writes can say which tab it read and on whose authority,
+   * because production once read a hidden worksheet, answered 200 and left
+   * nothing anywhere saying so.
+   */
+  sheetTab?: { gid: string; authority: string; tabCount: number } | null;
 }
 
 export interface RunImportFailure {
@@ -112,6 +123,41 @@ export type RunImportResult = RunImportSuccess | RunImportFailure;
  * before, and writes the failure or the success this returns.
  */
 export async function runStockImport(input: RunImportInput): Promise<RunImportResult> {
+  const result = await importOnce(input);
+  /*
+   * ONE LINE PER IMPORT, ON EVERY PATH.
+   *
+   * Written HERE rather than at each return because there are nine of them
+   * and a tenth added later would silently write nothing — which is the exact
+   * shape of the failure this record exists to end. Best-effort: a telemetry
+   * fault must never change what a builder is told.
+   */
+  try {
+    console.info(`${TELEMETRY_PREFIX} stock import`, uploadTelemetry({
+      uploadId: input.upload.id,
+      organisationId: input.organisationId,
+      sourceKind: input.sourceKind ?? 'file',
+      strategy: result.ok ? result.strategy : null,
+      byteSize: input.bytes.length,
+      sheetGid: input.sheetTab?.gid ?? null,
+      sheetAuthority: input.sheetTab?.authority ?? null,
+      sheetTabCount: input.sheetTab?.tabCount ?? null,
+      linkDiscovery: input.linkDiscovery?.state ?? null,
+      detected: result.ok ? result.summary.detected : null,
+      imported: result.ok ? result.summary.imported : null,
+      updated: result.ok ? result.summary.updated : null,
+      failed: result.ok ? result.summary.failed : null,
+      withSourceImage: result.ok ? result.summary.withSourceImage : null,
+      imageryOutstanding: result.ok ? result.summary.imageryOutstanding : null,
+      // The safe CODE, never the builder-facing sentence and never the detail:
+      // a detail is a provider's own words about a document we do not own.
+      outcome: result.ok ? 'imported' : result.code,
+    }));
+  } catch { /* a line that cannot be written is not an import failure */ }
+  return result;
+}
+
+async function importOnce(input: RunImportInput): Promise<RunImportResult> {
   const { supabase, upload, bytes, organisationId } = input;
   const sourceKind = input.sourceKind ?? 'file';
 

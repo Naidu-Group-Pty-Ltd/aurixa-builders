@@ -1158,6 +1158,8 @@ Deno.serve(async (req) => {
            */
           linkDiscovery: linkDiscoveryFromAvailability(
             fetched.hyperlinks, fetched.hyperlinkMethod),
+          // Carried for the import's own log line only — see `sheetTab`.
+          sheetTab: fetched.sheetTab ?? null,
         });
 
         /**
