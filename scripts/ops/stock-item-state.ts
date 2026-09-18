@@ -88,6 +88,16 @@ function checkedIds(raw: string[]): string[] {
 const ITEM_IDS = checkedIds(
   (Deno.args[0] || Deno.env.get('STOCK_ITEM_IDS') || DEFAULT_IDS.join(',')).split(','),
 );
+
+/*
+ * COMPACT BY DEFAULT.
+ *
+ * The full dump is every column of every related row, which is the right thing
+ * to have and the wrong thing to read: the first run printed ~2,000 lines and
+ * the four fields that decide the question were somewhere in the middle. The
+ * trace below is those fields; `VERBOSE=1` adds the dump back underneath it.
+ */
+const VERBOSE = (Deno.env.get('VERBOSE') || '') !== '';
 const inList = ITEM_IDS.map((id) => `'${id}'`).join(',');
 
 /** SELECT only. The label is logged; the statement never is. */
@@ -160,21 +170,23 @@ function heading(text: string): void {
 heading(`STOCK ITEM STATE — ${ITEM_IDS.length} item(s) on ${PROJECT_REF}`);
 console.log(`ids: ${ITEM_IDS.join(', ')}`);
 
-const columns = await sql('schema', `
+const columns = VERBOSE ? await sql('schema', `
   select table_name, column_name, data_type
     from information_schema.columns
    where table_schema = 'public'
      and table_name like 'builder_stock%'
-   order by table_name, ordinal_position`);
+   order by table_name, ordinal_position`) : [];
 
-const byTable = new Map<string, string[]>();
-for (const row of columns) {
-  const table = String(row.table_name);
-  if (!byTable.has(table)) byTable.set(table, []);
-  byTable.get(table)!.push(`${row.column_name}:${row.data_type}`);
+if (VERBOSE) {
+  const byTable = new Map<string, string[]>();
+  for (const row of columns) {
+    const table = String(row.table_name);
+    if (!byTable.has(table)) byTable.set(table, []);
+    byTable.get(table)!.push(`${row.column_name}:${row.data_type}`);
+  }
+  heading('SCHEMA (public.builder_stock*)');
+  for (const [table, cols] of byTable) console.log(`\n${table}\n  ${cols.join('\n  ')}`);
 }
-heading('SCHEMA (public.builder_stock*)');
-for (const [table, cols] of byTable) console.log(`\n${table}\n  ${cols.join('\n  ')}`);
 
 // ---------------------------------------------------------------------------
 // 2. The items themselves, whole.
@@ -183,9 +195,32 @@ const items = await sql('items', `select * from public.builder_stock_items where
 heading(`ITEMS — ${items.length} of ${ITEM_IDS.length} found`);
 const missing = ITEM_IDS.filter((id) => !items.some((row) => String(row.id) === id));
 if (missing.length) console.log(`NOT FOUND: ${missing.join(', ')}`);
+
+/*
+ * THE FIELDS THAT DECIDE THE QUESTION, on one line each.
+ *
+ * `image_work_last_result` is what the settler said when it gave the row back,
+ * and `source_provenance_result` is what was BANKED about the document — the
+ * two that separate "we looked and there is nothing" from "we stopped".
+ */
+const TRACE_FIELDS = [
+  'external_reference', 'lot_number', 'house_design', 'development_name',
+  'lifecycle_status', 'image_work_stage', 'image_work_attempts', 'image_work_failures',
+  'image_work_last_result', 'primary_image_id', 'enrichment_status',
+  'upload_id', 'pending_upload_id', 'image_runtime_version', 'source_provenance_result',
+  'created_at', 'updated_at', 'enriched_at',
+];
 for (const item of items) {
   console.log(`\n${'-'.repeat(96)}\nitem ${item.id}\n${'-'.repeat(96)}`);
-  printRow(item);
+  const present: Record<string, unknown> = {};
+  for (const field of TRACE_FIELDS) if (field in item) present[field] = item[field];
+  printRow(present);
+  if (VERBOSE) {
+    console.log('  --- every other column ---');
+    const rest: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(item)) if (!(k in present)) rest[k] = v;
+    printRow(rest, '  ');
+  }
 }
 
 if (!items.length) {
@@ -202,14 +237,39 @@ if (!items.length) {
 // or about us. `builder_stock_item_images` is what, if anything, was stored.
 // ---------------------------------------------------------------------------
 for (const [label, statement] of [
-  ['SOURCE ASSETS (branch records)',
-    `select * from public.builder_stock_source_assets
-      where stock_item_id in (${inList})
-      order by stock_item_id, kind, reference`],
-  ['STORED IMAGES',
-    `select * from public.builder_stock_item_images
-      where stock_item_id in (${inList})
-      order by stock_item_id, created_at`],
+  ['SOURCE ASSETS (branch records — what was attempted against each link)',
+    VERBOSE
+      ? `select * from public.builder_stock_source_assets
+          where stock_item_id in (${inList})
+          order by stock_item_id, kind, reference`
+      : `select stock_item_id, kind, branch_kind, column_header, reference,
+                state, state_detail, attempts, image_id, content_sha256, byte_size,
+                enumerated_at, updated_at
+           from public.builder_stock_source_assets
+          where stock_item_id in (${inList})
+          order by stock_item_id, kind, reference`],
+  ['STORED IMAGES — what was actually recovered and filed',
+    VERBOSE
+      ? `select * from public.builder_stock_item_images
+          where stock_item_id in (${inList})
+          order by stock_item_id, created_at`
+      : `select id, stock_item_id, source_stage, source_reference, source_provider,
+                source_page_url, content_type, byte_size, verification_status,
+                processing_status, position, created_at,
+                source_detail->>'role'                          as role,
+                source_detail->>'origin'                        as origin,
+                source_detail->>'source_column'                 as source_column,
+                source_detail->>'role_evidence'                 as role_evidence,
+                source_detail->>'role_evidence_level'           as role_evidence_level,
+                source_detail->>'extraction_method'             as extraction_method,
+                source_detail->>'provenance_version'            as provenance_version,
+                source_detail->>'original_sha256'               as sha256,
+                source_detail->>'marketplace_display_eligible'  as display_eligible,
+                source_detail->>'marketplace_rejection_reason'  as rejection_reason,
+                source_detail->>'marketplace_eligibility_state' as eligibility_state
+           from public.builder_stock_item_images
+          where stock_item_id in (${inList})
+          order by stock_item_id, created_at`],
 ] as Array<[string, string]>) {
   let rows: Array<Record<string, unknown>> = [];
   try {
