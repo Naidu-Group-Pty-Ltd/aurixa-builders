@@ -58,6 +58,7 @@ import {
   type SuppliedEvidenceReading,
 } from './suppliedEvidence.pure.ts';
 import { TELEMETRY_PREFIX, itemTelemetry } from './importTelemetry.pure.ts';
+import { sourceWorkUploadId } from './stockLifecycle.pure.ts';
 import { PROVENANCE_VERSION } from './provenanceVersion.pure.ts';
 import type { ClaimedItem, ItemWorkStage } from './itemWorkClaim.ts';
 
@@ -193,14 +194,22 @@ export async function settleClaimedItem(
        * source stage's business, so it moves on rather than being retried for
        * ever against a document that does not exist.
        */
-      if (!item.upload_id) {
+      /*
+       * THE UPLOAD WAITING ON THIS PROPERTY, WHICH IS NOT ALWAYS THE ONE IT
+       * SERVES. See `sourceWorkUploadId`: a matched row keeps the OLD
+       * `upload_id` until the atomic cutover, so a replacement's imagery must
+       * be settled against `pending_upload_id` or the stage re-reads a
+       * document the builder has already superseded.
+       */
+      const sourceUploadId = sourceWorkUploadId(item);
+      if (!sourceUploadId) {
         settlement.nextStage = NEXT_STAGE.source;
         settlement.result = 'no source document';
         settlement.progressed = true;
       } else {
         const repair = await repairSource(db, {
           organisationId: item.organisation_id,
-          uploadId: item.upload_id,
+          uploadId: sourceUploadId,
           deadlineAt: input.deadlineAt,
           // The whole change. Identity is still resolved over every row of the
           // document; only the WORK belongs to this property.
@@ -412,7 +421,7 @@ export async function settleClaimedItem(
   try {
     console.info(`${TELEMETRY_PREFIX} stock item settled`, itemTelemetry({
       itemId: item.id,
-      uploadId: item.pending_upload_id ?? item.upload_id,
+      uploadId: sourceWorkUploadId(item),
       lifecycle: item.lifecycle_status,
       workStage: settlement.nextStage,
       evidence: evidenceSeen?.state ?? null,
