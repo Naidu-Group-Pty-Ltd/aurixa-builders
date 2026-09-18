@@ -244,10 +244,38 @@ describe('the versions that reopen the wrongly-retired branches', () => {
     expect(read(UNIVERSAL)).toContain('set_builder_stock_source_images_target(26)');
   });
 
-  it('the missing-worker in-process election reads to the 25 MB ingest cap — the 6 MB line is gone', () => {
+  /*
+   * THERE IS NO IN-PROCESS FALLBACK LEFT TO BOUND.
+   *
+   * This test used to pin a byte bound on the missing-worker fallback, first
+   * 6 MB and then 25 MB. Both were the same mistake — a size answering "which
+   * compute runs this?" — and the second was lifted from the INGEST cap, which
+   * answers only "does Aurixa accept this source?". The fallback itself is
+   * gone now (the worker reads these documents: 13.2 MB in 2,063 ms, 11.3 MB
+   * in 1,515 ms, 20.4 MB in 1,439 ms, each a facade at `primary_property`), so
+   * what is pinned is the absence of any such number rather than its value.
+   *
+   * The behavioural half lives in `builderStockPdfWorker.spec.ts`, which
+   * drives every supported size through the real route.
+   */
+  it('no byte bound in the election client chooses a runtime', () => {
     const code = read(`${SHARED}/pdfElectionClient.ts`);
-    expect(code).toContain('IN_PROCESS_NO_CAPACITY_MAX_BYTES = 25 * 1024 * 1024');
+    expect(code).not.toContain('IN_PROCESS_NO_CAPACITY_MAX_BYTES');
     expect(code).not.toContain('= 6 * 1024 * 1024');
+    expect(code).not.toContain('= 25 * 1024 * 1024');
+    // The only size test left is the wire's own, which refuses before calling.
+    expect(code).toContain('bytes.length > MAX_DOCUMENT_BYTES');
+  });
+
+  it('a missing worker refuses rather than electing in this process', () => {
+    const code = read(`${SHARED}/pdfElectionClient.ts`);
+    const branch = code.slice(code.indexOf("route.kind === 'no_capacity'"));
+    const refusal = branch.indexOf('return unreachable(');
+    const localElection = branch.indexOf('electFromPdfBytes');
+    expect(refusal).toBeGreaterThan(-1);
+    // Either there is no local election after this branch at all, or the
+    // refusal comes first — never an election reachable from `no_capacity`.
+    expect(localElection === -1 || refusal < localElection).toBe(true);
   });
 
   it('the settler reports real failures to the completion RPC', () => {

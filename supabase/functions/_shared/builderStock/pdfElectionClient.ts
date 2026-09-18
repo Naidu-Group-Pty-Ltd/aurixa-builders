@@ -48,24 +48,36 @@ function env(name: string): string {
 const unreachable = (detail: string): PackageOutcome => ({ status: 'unreachable', detail });
 
 /**
- * The bounded in-process fallback for a MISSING worker: every document the
- * ingest cap admits. `fetchStockSource` refuses anything over 25 MB before an
- * election is ever asked for, so this bound and that cap are the same fact
- * stated twice, and no supported brochure can be refused for size alone.
+ * THE IN-PROCESS FALLBACK IS GONE, AND SIZE NO LONGER DECIDES ANYTHING HERE.
  *
- * WHY THE OLD 6 MB LINE WAS THE DEFECT AND NOT THE SAFETY. Measured
- * 2026-09-15, forensics run 34939752502, on the six live blank properties:
- * five of their row-exclusive brochures are 7.2–10.2 MB, every one elects a
- * facade from page 1 in single-digit seconds when simply allowed to read
- * (Lot 709's 7.2 MB elected in 4.4 s in-process in production earlier), and
- * the 6 MB line was the ONLY thing between those properties and their own
- * photographs. The protections that matter are unchanged and are not a size:
- * the per-isolate decode mutex and the settler's one-document-at-a-time
- * discipline bound memory; the work item's lease, bounded failure accounting
- * and the watchdog make a killed isolate a counted, retried, LOUD event —
- * never a blank card and never a silent stall.
+ * Two bounds stood in this place and both were wrong in the same way — they
+ * answered "which compute runs this document?" with a number of bytes. 6 MB
+ * starved real brochures; 25 MB (taken from the INGEST cap, which answers only
+ * "does Aurixa support this source?") admitted documents nothing had timed;
+ * a 10.5 MB line taken from two production samples was no better in kind.
+ *
+ * `runtimeVersion.pure.ts` and `pdfElectionRoute.pure.ts` have both said the
+ * rule plainly since the runtime advanced: "the election runs on the worker or
+ * it does not run at all — there is deliberately no in-process fallback,
+ * because falling back would re-run the thing measured to die". This module
+ * did the opposite, and a spec that asserted `electionRoute` answers
+ * `no_capacity` passed the whole time, because it pinned the DECISION while
+ * this file ignored it.
+ *
+ * SO THE SIZE TEST IS DELETED RATHER THAN RETUNED. A missing or unreachable
+ * worker is an operational fact: `unreachable`, retried on the item's own
+ * bounded budget, naming the two secrets that fix it — for a 1 MB document and
+ * a 24 MB one alike. The product's 25 MB limit still decides what may be
+ * uploaded (`MAX_STOCK_FILE_BYTES`, `MAX_SOURCE_BYTES`) and 32 MB is still the
+ * wire's own headroom (`MAX_DOCUMENT_BYTES`); neither is consulted to choose a
+ * runtime, and nothing in this file may grow a third number that does.
+ *
+ * PROVEN BEFORE REMOVAL, on the real documents that failed: the built worker
+ * bundle elected Lot 801's 13.2 MB brochure in 2,063 ms, Lot 809's 11.3 MB in
+ * 1,515 ms and Lot 810's 20.4 MB in 1,439 ms, each a facade render of the
+ * right house at `primary_property`. The worker reads these documents; this
+ * process never needed to.
  */
-const IN_PROCESS_NO_CAPACITY_MAX_BYTES = 25 * 1024 * 1024;
 
 /**
  * Run the election, wherever this deployment runs it.
@@ -106,37 +118,30 @@ export async function runElectionOnRoute(
   context: ElectionContext,
   route: ElectionRoute,
 ): Promise<PackageOutcome> {
+  /*
+   * BELOW THE WORKER RUNTIME ONLY — which production is not, and cannot become
+   * by accident: `RUNTIME_VERSION` is a constant past `WORKER_RUNTIME_VERSION`,
+   * so `electionRoute` cannot return this to a production caller. It exists so
+   * a deployment pinned to an older runtime keeps its old behaviour exactly.
+   */
   if (route.kind === 'in_process') {
     return await electFromPdfBytes(bytes, readPageTexts, context);
   }
   /*
-   * NO SILENT FALLBACK — but no silent STARVATION either. Under the worker
-   * runtime the in-process election is what was measured to exceed the CPU
-   * ceiling on large brochures, so it must not quietly resume as the default.
-   * What production then shipped was the opposite failure, measured
-   * 2026-09-15 on project htfluofznhxeumblwbww: NO worker secrets are
-   * configured at all, so every linked brochure answered `no_capacity`, was
-   * banked `unreachable` six times, and six live properties settled blank —
-   * a missing config expressed as "that document could not be read".
-   *
-   * So the fallback is BOUNDED and LOUD: a document small enough that the
-   * in-process election is known to finish in seconds is elected here, under
-   * the same per-isolate decode mutex and the settler's one-document-at-a-
-   * time discipline, with the missing secret named in the log every time.
-   * A larger document refuses BY NAME — the operator action is stated in the
-   * refusal, and the item's bounded failure accounting (never a blank card)
-   * carries it from there.
+   * NO FALLBACK, AT ANY SIZE. A worker this deployment has not been given is
+   * an operational fact about us, so it is `unreachable`: nothing is written
+   * down about the document, the item retries on its own bounded budget, and
+   * the refusal names the two secrets that end it. Electing here instead is
+   * precisely the CPU failure the worker exists to end, and doing it only for
+   * documents under some number of bytes is the same mistake with a smaller
+   * blast radius.
    */
   if (route.kind === 'no_capacity') {
-    if (bytes.length > 0 && bytes.length <= IN_PROCESS_NO_CAPACITY_MAX_BYTES) {
-      console.error('[builderStock] pdf election worker unconfigured '
-        + '(BUILDER_STOCK_PDF_WORKER_URL / BUILDER_STOCK_PDF_WORKER_TOKEN); '
-        + `electing ${bytes.length} bytes in-process under the bounded fallback`);
-      return await electFromPdfBytes(bytes, readPageTexts, context);
-    }
-    return unreachable(`${route.detail} — and at ${bytes.length} bytes this document is above `
-      + `the ${IN_PROCESS_NO_CAPACITY_MAX_BYTES}-byte bounded in-process fallback. Configure `
-      + 'BUILDER_STOCK_PDF_WORKER_URL and BUILDER_STOCK_PDF_WORKER_TOKEN to read it.');
+    console.error('[builderStock] pdf election worker unconfigured '
+      + '(BUILDER_STOCK_PDF_WORKER_URL / BUILDER_STOCK_PDF_WORKER_TOKEN); '
+      + `refusing ${bytes.length} bytes rather than electing in-process`);
+    return unreachable(`${route.detail} Configure BUILDER_STOCK_PDF_WORKER_URL `
+      + 'and BUILDER_STOCK_PDF_WORKER_TOKEN so this document can be read.');
   }
   return await electViaWorker(bytes, context, route.endpoint, route.token);
 }

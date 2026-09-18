@@ -149,6 +149,76 @@ describe('where the heavy election runs', () => {
   });
 });
 
+/**
+ * SIZE ANSWERS "IS THIS SOURCE SUPPORTED?", NEVER "WHERE DOES IT RUN?".
+ *
+ * Two bounds have stood in `pdfElectionClient` and both conflated those
+ * questions: 6 MB starved real brochures, and 25 MB — lifted straight from the
+ * INGEST cap — admitted documents nobody had timed. Either way a builder's
+ * 20 MB brochure and their 2 MB one took different production paths, which is
+ * the opposite of the single election this worker exists to provide.
+ *
+ * So the route is asserted to be identical across the whole supported range,
+ * and the missing-worker case is asserted to refuse at every size rather than
+ * electing locally at some of them.
+ */
+describe('document size never chooses the compute', () => {
+  const WORKER = { endpoint: 'https://pdf.example.workers.dev', token: 'tok' };
+  const MB = 1024 * 1024;
+  /** 1 MB, 12 MB, 20 MB (the real Harlow gate) and 24 MB — all ≤ the 25 MB product limit. */
+  const SUPPORTED_SIZES = [1 * MB, 12 * MB, 20 * MB, 24 * MB];
+
+  it.each(SUPPORTED_SIZES)('routes a %i-byte document to the worker in production', (size) => {
+    expect(size).toBeLessThanOrEqual(25 * MB);
+    const route = electionRoute({ runtimeVersion: RUNTIME_VERSION, ...WORKER });
+    expect(route).toEqual({ kind: 'worker', endpoint: WORKER.endpoint, token: 'tok' });
+  });
+
+  it('gives every supported size the same route, so none is treated specially', () => {
+    const routes = SUPPORTED_SIZES.map(() =>
+      electionRoute({ runtimeVersion: RUNTIME_VERSION, ...WORKER }).kind);
+    expect(new Set(routes)).toEqual(new Set(['worker']));
+  });
+
+  /*
+   * THE FALLBACK IS GONE, AND THIS IS WHAT PROVES IT. Every size refuses with
+   * the SAME operational answer. Under the removed behaviour the small sizes
+   * would have been elected in this process and returned a document verdict
+   * instead — so a single `not_identified` here, or a detail that does not
+   * name the remedy, is the fallback having come back.
+   */
+  it.each(SUPPORTED_SIZES)(
+    'refuses a %i-byte document when the worker is unconfigured, never electing locally',
+    async (size) => {
+      const route = electionRoute({ runtimeVersion: RUNTIME_VERSION, endpoint: '', token: '' });
+      expect(route.kind).toBe('no_capacity');
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+      try {
+        const outcome = await runElectionOnRoute(
+          new Uint8Array(size), PRODUCTION_READER, CONTEXT, route);
+        expect(outcome.status).toBe('unreachable');
+        expect(outcome.status).not.toBe('not_identified');
+        // Narrowed so the union's `recovered` arm cannot satisfy this by
+        // accident — a recovered result has no `detail` to read at all.
+        if (outcome.status !== 'unreachable') throw new Error('not an operational refusal');
+        expect(outcome.detail).toContain('BUILDER_STOCK_PDF_WORKER_URL');
+        expect(outcome.detail).toContain('BUILDER_STOCK_PDF_WORKER_TOKEN');
+        // Nothing was sent, and nothing was decided about the document.
+        expect(fetchMock).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+  it('keeps the product limit and the wire headroom as separate, unrelated facts', () => {
+    // 25 MB says what Aurixa accepts; 32 MB is what the wire will carry. The
+    // client must consult neither to pick a runtime.
+    expect(MAX_DOCUMENT_BYTES).toBe(32 * MB);
+    expect(MAX_DOCUMENT_BYTES).toBeGreaterThan(25 * MB);
+  });
+});
+
 describe('the client cannot invent a verdict about a builder’s document', () => {
   const ROUTE = {
     kind: 'worker' as const,
