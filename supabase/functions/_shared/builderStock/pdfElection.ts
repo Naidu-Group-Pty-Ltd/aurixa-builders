@@ -210,6 +210,47 @@ export async function electFromPdfBytes(
     }
 
     /*
+     * AND A PAGE TREE WE COULD NOT DECOMPRESS IS OURS TOO.
+     *
+     * MEASURED, 18 SEPTEMBER 2026, on the first property recovered through
+     * the corrected pipeline. Lot 801's own brochure was read, its cover page
+     * named, and its facade decoded correctly at `page1:Im0` — and the role
+     * came back `unknown` for the reason `assignPdfMediaRoles` states when
+     * page order is not authoritative: "the document's own page order could
+     * not be established, so no page can be read as this property's cover".
+     * Neither guard above fires on that shape (a cover page WAS named, and an
+     * asset WAS produced), so the election fell through and banked
+     * `not_identified` — the builder's brochure recorded, permanently, as
+     * naming no image for their property.
+     *
+     * The cause was one byte. `streamSlice` trimmed the writer's end-of-line
+     * marker off every stream, and this document's page-tree object stream
+     * ends in 0x0a, so the byte eaten was compressed data. Deno's inflate
+     * returns what it decoded anyway; workerd's refuses the stream outright —
+     * so the SAME document answered `recovered` at the edge and
+     * `not_identified` on the worker, which is where production runs it.
+     * `streamSlice` now takes `/Length`, and that specific document reads on
+     * both runtimes.
+     *
+     * This rule is the other half, and it is the one that has to survive the
+     * next damaged document: when page order could not be established AND a
+     * stream of this document went unread, the missing page tree is a fact
+     * about OUR reading, not about their brochure. `unreachable`, retried on
+     * the item's own budget, nothing written down. A document whose catalogue
+     * genuinely names no page tree still reaches the verdict below, because
+     * every stream it has was read and that IS the document speaking.
+     */
+    if (selection.coverPages.length
+      && !selection.pageOrderAuthoritative
+      && selection.objectStreamsUnread > 0) {
+      return {
+        status: 'unreachable',
+        detail: 'Part of that document\'s own structure could not be decompressed on this '
+          + 'attempt, so which of its pages is the cover could not be established.',
+      };
+    }
+
+    /*
      * AND IT SAYS WHAT THE DOCUMENT IS INSTEAD, BECAUSE THAT IS THE FIX.
      *
      * The refusal on its own is correct and useless: "this is not that
