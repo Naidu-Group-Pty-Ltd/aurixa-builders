@@ -251,10 +251,63 @@ describe('bootstrapping the first owner', () => {
     expect(code).toMatch(/builder_organisation_memberships[\s\S]{0,300}count:\s*'exact'/);
   });
 
-  it('refuses to re-mint a link for an account that already exists', () => {
-    // That would be a credential reset dressed as an invitation.
-    expect(code).toContain('that_person_already_has_an_account');
-    expect(code).toMatch(/password_hash\s*\|\|\s*\w+\.invite_accepted_at/);
+  /*
+   * This block used to assert the operation REFUSED an existing account, and
+   * that was the bug rather than the rule.
+   *
+   * `close_organisation` writes only the organisation row, so a closed
+   * organisation leaves its members' accounts and memberships standing — and
+   * with no `add_member` anywhere on this plane, refusing an established
+   * account meant anyone who had ever used the network could never be made
+   * the first owner of a new one. Close an organisation, create its
+   * replacement, and its own owner is locked out of it with no remedy named.
+   *
+   * The rule underneath was always about the CREDENTIAL: an invite link is a
+   * password reset if the person already has a password. So the link is not
+   * minted — and the ownership is still granted, which is what the portal's
+   * own invite has always done for a colleague.
+   */
+  it('never mints a credential for an account that already exists', () => {
+    // Nothing is minted at all on that branch, so nothing can be stamped.
+    expect(code).toMatch(/const minted = established \? null : await mintBuilderInvite\(\)/);
+    expect(code).toMatch(/if \(!established && minted\)[\s\S]{0,400}invite_token_hash/);
+    expect(code).toMatch(/invite_url: established \? null : minted!\.url/);
+  });
+
+  it('attaches that account as owner instead of refusing it', () => {
+    // The membership insert is NOT inside the invited-only branch.
+    expect(code).not.toContain('that_person_already_has_an_account');
+    const established = code.indexOf('const established = Boolean(');
+    const membership = code.indexOf("membership_role: 'owner'");
+    expect(established).toBeGreaterThan(-1);
+    expect(membership).toBeGreaterThan(established);
+    expect(code).toMatch(/outcome: established \? 'attached' : 'invited'/);
+  });
+
+  it('still refuses a withdrawn account, and reads that BEFORE anything else', () => {
+    // Revocation is a standing decision about the person; bootstrapping a new
+    // organisation is not a door around it.
+    expect(code).toContain('that_account_has_been_withdrawn');
+    const revoked = code.indexOf('that_account_has_been_withdrawn');
+    const established = code.indexOf('const established = Boolean(');
+    expect(revoked).toBeLessThan(established);
+  });
+
+  it('answers the same question the portal answers, the same way', () => {
+    // Two surfaces, one question. The portal grants the membership for an
+    // address that already holds an account; the network used to refuse it.
+    const portal = readCode('supabase/functions/builder-portal-invite/index.ts');
+    // It reads the same two columns...
+    expect(portal).toMatch(/invite_accepted_at \|\| \w+\.password_hash/);
+    // ...and the membership is inserted BEFORE that reading, so an
+    // established account is granted access rather than turned away. Asserted
+    // on the code's own order, not on a sentence in a comment.
+    const insert = portal.indexOf("from('builder_organisation_memberships')\n        .insert(");
+    const established = portal.search(/if \(\w+\.invite_accepted_at \|\| \w+\.password_hash\)/);
+    expect(insert, 'membership insert').toBeGreaterThan(-1);
+    expect(established, 'established branch').toBeGreaterThan(insert);
+    // And neither surface answers it with a refusal.
+    expect(portal).not.toContain('that_person_already_has_an_account');
   });
 
   it('grants owner, which the portal-side invite deliberately cannot', () => {

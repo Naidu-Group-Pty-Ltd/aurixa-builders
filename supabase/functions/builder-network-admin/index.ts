@@ -44,7 +44,12 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0';
 import { enforceRawBodyLimit } from '../_shared/requestSecurity.ts';
 import { verifyMcAssertion } from '../_shared/mcFederation.ts';
 import { hashSessionToken } from '../_shared/sessionHash.ts';
-import { mintBuilderInvite, INVITE_EXPIRY_HOURS } from '../_shared/builderInvite.ts';
+import { builderAppBaseUrl, mintBuilderInvite, INVITE_EXPIRY_HOURS } from '../_shared/builderInvite.ts';
+import { getBrandConfig } from '../_shared/brand-config.ts';
+import {
+  sendBuilderEmail,
+  type InviteEmailOutcome,
+} from '../_shared/builderInviteEmail.ts';
 import { readOrganisationInput } from '../_shared/builderOrganisationInput.pure.ts';
 
 const MAX_BODY_BYTES = 32 * 1024;
@@ -373,20 +378,43 @@ Deno.serve(async (req) => {
       // An account that already exists on the network is never re-minted
       // here: its owner has a password, and issuing an invite link for a live
       // account would be a credential reset dressed as an invitation.
+      //
+      // THAT IS A RULE ABOUT THE CREDENTIAL, NOT ABOUT THE PERSON. It used to
+      // refuse the whole operation, and since `close_organisation` touches
+      // only the organisation row — the account and its memberships survive —
+      // anyone who had ever used the network could never be made the first
+      // owner of a new one. There is no `add_member` on this plane either, so
+      // the refusal named no remedy and there was none: close an
+      // organisation, create its replacement, and its own owner is locked
+      // out of it.
+      //
+      // `builder-portal-invite` had already answered this question correctly
+      // for a colleague ("an address that already holds an account is not an
+      // error … the membership is granted"), so the network was answering one
+      // question two ways. It attaches now, exactly as the portal does: the
+      // owner membership is granted, NO token is minted, nothing about the
+      // account changes, and they reach the organisation with the password
+      // they already have.
       const { data: existingUser } = await supabase
         .from('builder_portal_users')
         .select('id, status, revoked_at, password_hash, invite_accepted_at')
         .eq('email', email)
         .maybeSingle();
-      if (existingUser && (existingUser.password_hash || existingUser.invite_accepted_at)) {
-        return json({ error: 'that_person_already_has_an_account' }, 409);
-      }
+      // Withdrawal is a standing decision about the person and this surface
+      // may not undo it — checked FIRST, so a revoked account is never read
+      // as merely established.
       if (existingUser && (existingUser.revoked_at || existingUser.status === 'revoked')) {
         return json({ error: 'that_account_has_been_withdrawn' }, 409);
       }
+      const established = Boolean(
+        existingUser && (existingUser.password_hash || existingUser.invite_accepted_at),
+      );
 
-      const minted = await mintBuilderInvite();
-      if (!minted) {
+      // An established account is never re-stamped, so nothing is minted for
+      // it at all — the 503 below is about storing an unpeppered token, and
+      // an attach stores no token.
+      const minted = established ? null : await mintBuilderInvite();
+      if (!established && !minted) {
         console.error('[builder-network-admin] hashing unavailable — refusing to store an unpeppered invite token');
         return json({ error: 'invite_service_unavailable' }, 503);
       }
@@ -405,20 +433,26 @@ Deno.serve(async (req) => {
         ownerId = created.id;
       }
 
-      const { error: inviteError } = await supabase
-        .from('builder_portal_users')
-        .update({
-          name,
-          invite_token_hash: minted.tokenHash,
-          invite_token_expires_at: minted.expiresAt.toISOString(),
-          invited_at: new Date().toISOString(),
-          status: 'invited',
-          is_active: false,
-        })
-        .eq('id', ownerId);
-      if (inviteError) {
-        console.error('[builder-network-admin] invite stamp failed', inviteError);
-        return json({ error: 'invite_failed' }, 500);
+      // Their name, their status, their password: an attach touches none of
+      // them. Re-stamping `status: 'invited'` on somebody who has already
+      // accepted would take their access away until they clicked a link
+      // nobody sent them.
+      if (!established && minted) {
+        const { error: inviteError } = await supabase
+          .from('builder_portal_users')
+          .update({
+            name,
+            invite_token_hash: minted.tokenHash,
+            invite_token_expires_at: minted.expiresAt.toISOString(),
+            invited_at: new Date().toISOString(),
+            status: 'invited',
+            is_active: false,
+          })
+          .eq('id', ownerId);
+        if (inviteError) {
+          console.error('[builder-network-admin] invite stamp failed', inviteError);
+          return json({ error: 'invite_failed' }, 500);
+        }
       }
 
       const { error: membershipError } = await supabase
@@ -436,18 +470,72 @@ Deno.serve(async (req) => {
       }
 
       await supabase.rpc('builder_ensure_onboarding_steps', { _builder_user_id: ownerId });
-      await logActivity('network_organisation_owner_invited', ownerId, organisationId, {
-        email, membership_role: 'owner',
-      });
 
-      // Returned ONCE, like the connection invite code above it. Only the
-      // hash is stored, so a lost link is re-minted rather than re-read.
+      // The send is OPTIONAL and always LAST: the membership is already
+      // granted and the token already stored, so a mail failure must never
+      // read as an invitation that was not issued. Its outcome travels back
+      // beside the link rather than instead of it.
+      let emailOutcome: InviteEmailOutcome | null = null;
+      if (body.send_email === true) {
+        const brand = await getBrandConfig();
+        const org = organisation.legal_name;
+        emailOutcome = await sendBuilderEmail({
+          to: email,
+          subject: established
+            ? `You now have access to ${org} on the ${brand.companyName} Builder Portal`
+            : `You have been invited to lead ${org} on the ${brand.companyName} Builder Portal`,
+          brand,
+          category: 'builder_network_owner_invite',
+          content: established
+            ? {
+                heading: `${org} is now yours to run`,
+                paragraphs: [
+                  `Hi ${name},`,
+                  `You have been made the owner of ${org} on the ${brand.companyName} Builder / Developer Portal.`,
+                  'Your existing sign-in still works — nothing about your account has changed. The organisation appears in the switcher next time you sign in.',
+                ],
+                action: { label: 'Open the Builder Portal', url: builderAppBaseUrl() },
+                footnote: 'As its owner you can invite your own colleagues from inside the portal.',
+              }
+            : {
+                heading: `You have been invited to lead ${org}`,
+                paragraphs: [
+                  `Hi ${name},`,
+                  `You have been invited to set up ${org} on the ${brand.companyName} Builder / Developer Portal as its owner.`,
+                  'Choose a password to activate the account, and you can then invite your own colleagues.',
+                ],
+                action: { label: 'Set your password', url: minted!.url },
+                footnote: `This link can be used once and expires in ${INVITE_EXPIRY_HOURS} hours. If it lapses, ask for another.`,
+              },
+        });
+      }
+
+      await logActivity(
+        established ? 'network_organisation_owner_attached' : 'network_organisation_owner_invited',
+        ownerId,
+        organisationId,
+        {
+          email,
+          membership_role: 'owner',
+          outcome: established ? 'attached' : 'invited',
+          email_sent: emailOutcome?.sent ?? null,
+        },
+      );
+
+      // Two outcomes, said plainly, because they hand the operator different
+      // work: an invitation leaves a one-time link that only exists in this
+      // response (the hash is all that is stored), and an attach leaves
+      // nothing to pass on because the person already has a password.
       return json({
         success: true,
-        invite_url: minted.url,
-        expires_at: minted.expiresAt.toISOString(),
-        expires_in_hours: INVITE_EXPIRY_HOURS,
+        outcome: established ? 'attached' : 'invited',
+        invite_url: established ? null : minted!.url,
+        expires_at: established ? null : minted!.expiresAt.toISOString(),
+        expires_in_hours: established ? null : INVITE_EXPIRY_HOURS,
         organisation_legal_name: organisation.legal_name,
+        email_requested: body.send_email === true,
+        email_sent: emailOutcome?.sent ?? false,
+        email_failure: emailOutcome && !emailOutcome.sent ? emailOutcome.reason : null,
       });
     }
 

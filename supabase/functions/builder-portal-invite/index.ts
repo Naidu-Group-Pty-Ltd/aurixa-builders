@@ -37,8 +37,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0';
 import { createCorsHeaders } from '../_shared/auth.ts';
 import { enforceCsrf, csrfDenied } from '../_shared/csrfGuard.ts';
 import { getBrandConfig } from '../_shared/brand-config.ts';
-import { INVITE_EXPIRY_HOURS, inviteUrlFor, mintBuilderInvite } from '../_shared/builderInvite.ts';
-import { meteredFetch } from '../_shared/meteredFetch.ts';
+import { builderAppBaseUrl, INVITE_EXPIRY_HOURS, inviteUrlFor, mintBuilderInvite } from '../_shared/builderInvite.ts';
+import { sendBuilderEmail } from '../_shared/builderInviteEmail.ts';
 import { getPortalClientIp } from '../_shared/requestSecurity.ts';
 import {
   resolveBuilderSession,
@@ -160,32 +160,27 @@ Deno.serve(async (req) => {
       const inviteUrl = inviteUrlFor(inviteToken);
       const organisationName = session.active_organisation?.legal_name || brand.companyName;
 
-      let emailSent = false;
-      const resendApiKey = Deno.env.get('RESEND_API_KEY');
-      if (resendApiKey) {
-        try {
-          const response = await meteredFetch('https://api.resend.com/emails', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${resendApiKey}` },
-            body: JSON.stringify({
-              from: brand.fromHeaderAdmin,
-              to: [target.email],
-              subject: `You have been invited to ${organisationName} on the ${brand.companyName} Builder Portal`,
-              text: `Hi ${String(target.name || 'there').replace(/[<>]/g, '')},\n\n`
-                + `${String(caller.name || 'A colleague').replace(/[<>]/g, '')} has invited you to join `
-                + `${organisationName} on the ${brand.companyName} Builder / Developer Portal.\n\n`
-                + `Set your password here: ${inviteUrl}\n\n`
-                + `This link expires in ${INVITE_EXPIRY_HOURS} hours.`,
-              tags: [{ name: 'category', value: 'builder_portal_invite' }],
-            }),
-          });
-          emailSent = response.ok;
-        } catch (error) {
-          console.error('[builder-portal-invite] email send failed', error);
-        }
-      } else {
-        console.warn('[builder-portal-invite] RESEND_API_KEY unset — invite email was not sent');
-      }
+      // One send path, one letterhead. This was a paragraph of plain text
+      // composed here; `builderInviteEmail.ts` draws it in the portal's own
+      // colours and still sends a plain part beside the HTML. Escaping moved
+      // there too, so the `[<>]` strip this used to do by hand is a property
+      // of the renderer rather than of each call site.
+      const outcome = await sendBuilderEmail({
+        to: target.email,
+        subject: `You have been invited to ${organisationName} on the ${brand.companyName} Builder Portal`,
+        brand,
+        category: 'builder_portal_invite',
+        content: {
+          heading: `You have been invited to ${organisationName}`,
+          paragraphs: [
+            `Hi ${String(target.name || 'there')},`,
+            `${String(caller.name || 'A colleague')} has invited you to join ${organisationName} on the ${brand.companyName} Builder / Developer Portal.`,
+          ],
+          action: { label: 'Set your password', url: inviteUrl },
+          footnote: `This link can be used once and expires in ${INVITE_EXPIRY_HOURS} hours.`,
+        },
+      });
+      const emailSent = outcome.sent;
 
       await logInviteActivity(
         resent ? 'builder_invite_resent' : 'builder_invite_sent',
@@ -263,29 +258,26 @@ Deno.serve(async (req) => {
         // Already active on the network: access granted, nothing to accept.
         // The notice goes to the MAILBOX, not the caller.
         const brand = await getBrandConfig();
-        const resendApiKey = Deno.env.get('RESEND_API_KEY');
         const organisationName = session.active_organisation?.legal_name || brand.companyName;
-        if (resendApiKey) {
-          try {
-            await meteredFetch('https://api.resend.com/emails', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${resendApiKey}` },
-              body: JSON.stringify({
-                from: brand.fromHeaderAdmin,
-                to: [target.email],
-                subject: `You now have access to ${organisationName} on the ${brand.companyName} Builder Portal`,
-                text: `Hi ${String(target.name || 'there').replace(/[<>]/g, '')},\n\n`
-                  + `${String(caller.name || 'A colleague').replace(/[<>]/g, '')} has added you to `
-                  + `${organisationName}. It is available from the organisation switcher next time you sign in.`,
-                tags: [{ name: 'category', value: 'builder_portal_invite' }],
-              }),
-            });
-          } catch (error) {
-            console.error('[builder-portal-invite] membership notice failed', error);
-          }
-        }
+        const notice = await sendBuilderEmail({
+          to: target.email,
+          subject: `You now have access to ${organisationName} on the ${brand.companyName} Builder Portal`,
+          brand,
+          category: 'builder_portal_invite',
+          content: {
+            heading: `You now have access to ${organisationName}`,
+            paragraphs: [
+              `Hi ${String(target.name || 'there')},`,
+              `${String(caller.name || 'A colleague')} has added you to ${organisationName} on the ${brand.companyName} Builder / Developer Portal.`,
+              'Your existing sign-in still works — nothing about your account has changed. The organisation is in the switcher next time you sign in.',
+            ],
+            action: { label: 'Open the Builder Portal', url: builderAppBaseUrl() },
+          },
+        });
         await logInviteActivity('builder_membership_granted', target.id, { membership_role: role });
-        return json({ ...GENERIC_OK, email_sent: !!resendApiKey });
+        // Was `!!resendApiKey` — which reported a send that a 403 from an
+        // unverified sender domain had refused. It reports the send now.
+        return json({ ...GENERIC_OK, email_sent: notice.sent });
       }
 
       return await issueInvite(target, false);
@@ -460,30 +452,38 @@ Deno.serve(async (req) => {
         ? await supabase.from('builder_portal_users')
           .select('email, name').eq('id', requestRow.builder_user_id).maybeSingle()
         : { data: null };
-      const resendApiKey = Deno.env.get('RESEND_API_KEY');
-      if (requester?.email && resendApiKey) {
+      if (requester?.email) {
         const brand = await getBrandConfig();
-        const appUrl = Deno.env.get('APP_BASE_URL') || 'https://builders.aurixasystems.com.au';
         const organisationName = session.active_organisation?.legal_name || brand.companyName;
-        try {
-          await meteredFetch('https://api.resend.com/emails', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${resendApiKey}` },
-            body: JSON.stringify({
-              from: brand.fromHeaderAdmin,
-              to: [requester.email],
-              subject: approve
-                ? `You have joined ${organisationName} on the ${brand.companyName} Builder Portal`
-                : `Your request to join ${organisationName}`,
-              text: approve
-                ? `Hi ${String(requester.name || 'there').replace(/[<>]/g, '')},\n\nYour request to join ${organisationName} was approved. Sign in to continue:\n\n${appUrl}/builder/login`
-                : `Hi ${String(requester.name || 'there').replace(/[<>]/g, '')},\n\nYour request to join ${organisationName} was not approved. If you believe this is a mistake, contact the organisation directly.`,
-              tags: [{ name: 'category', value: 'builder_org_join_request' }],
-            }),
-          });
-        } catch (mailError) {
-          console.error('[builder-portal-invite] decision notice failed', mailError);
-        }
+        // Third and last send in this file, on the same letterhead. Its own
+        // copy of the base URL went with it — `builderAppBaseUrl()` already
+        // reads `APP_BASE_URL` behind the same default, and two readings of
+        // one setting is how a link comes to point somewhere nobody hosts.
+        await sendBuilderEmail({
+          to: requester.email,
+          subject: approve
+            ? `You have joined ${organisationName} on the ${brand.companyName} Builder Portal`
+            : `Your request to join ${organisationName}`,
+          brand,
+          category: 'builder_org_join_request',
+          content: approve
+            ? {
+              heading: `You have joined ${organisationName}`,
+              paragraphs: [
+                `Hi ${String(requester.name || 'there')},`,
+                `Your request to join ${organisationName} was approved.`,
+              ],
+              action: { label: 'Sign in to continue', url: `${builderAppBaseUrl()}/builder/login` },
+            }
+            : {
+              heading: `Your request to join ${organisationName}`,
+              paragraphs: [
+                `Hi ${String(requester.name || 'there')},`,
+                `Your request to join ${organisationName} was not approved.`,
+                'If you believe this is a mistake, contact the organisation directly.',
+              ],
+            },
+        });
       }
 
       return json({
