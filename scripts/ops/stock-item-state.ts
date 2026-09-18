@@ -337,11 +337,29 @@ if (uploadIds.length) {
 // column header is the only thing on the row that says which is which.
 // ---------------------------------------------------------------------------
 const assets = await sql('branch summary', `
-  select stock_item_id, column_header, state, count(*) as rows
+  select stock_item_id, column_header, state, reference, state_detail,
+         attempts, updated_at
     from public.builder_stock_source_assets
    where stock_item_id in (${inList})
-   group by 1, 2, 3
-   order by 1, 2, 3`);
+   order by stock_item_id, column_header, state`);
+
+/*
+ * THE DESIGN IS NOT A COLUMN ON `builder_stock_items`.
+ *
+ * It lives in `source_row`, and reading it as a column printed `—` on every
+ * row — a statement about this script rather than about the data, and exactly
+ * the class of mistake `check-edge-column-names.mjs` exists to catch. It
+ * matters here because the design is half of the identity an election matches
+ * a brochure against.
+ */
+const identity = await sql('row identity', `
+  select id,
+         source_row->>'house_design'     as house_design,
+         source_row->>'lot_number'       as row_lot,
+         source_row->>'development_name' as row_development,
+         source_row->>'address_line'     as row_address
+    from public.builder_stock_items
+   where id in (${inList})`);
 const images = await sql('image summary', `
   select stock_item_id,
          source_detail->>'source_column' as source_column,
@@ -356,21 +374,28 @@ const images = await sql('image summary', `
 heading('TRACE — one line per property');
 for (const item of items) {
   const id = String(item.id);
-  const branches = assets.filter((a) => String(a.stock_item_id) === id)
-    .map((a) => `${safeDetail(String(a.column_header ?? 'embedded'), 40)}=${a.state}${
-      Number(a.rows) > 1 ? `x${a.rows}` : ''}`);
+  const branches = assets.filter((a) => String(a.stock_item_id) === id);
+  const row = identity.find((r) => String(r.id) === id) ?? {};
   const stored = images.filter((i) => String(i.stock_item_id) === id)
     .map((i) => `${safeDetail(String(i.source_column ?? '?'), 40)} -> role=${i.role} ${
       i.eligible === 'true' ? 'ELIGIBLE' : `INELIGIBLE(${i.rejection ?? '?'})`}`);
   console.log(`\n${item.external_reference ?? id.slice(0, 8)}  lot=${
-    item.lot_number ?? '—'}  design=${item.house_design ?? '—'}  ${
+    item.lot_number ?? '—'}  design=${row.house_design ?? '—'}  ${
     item.development_name ?? '—'}`);
   console.log(`  id         ${id}`);
   console.log(`  state      lifecycle=${item.lifecycle_status} stage=${
     item.image_work_stage} attempts=${item.image_work_attempts} primary=${
     item.primary_image_id ? 'set' : 'NONE'}`);
   console.log(`  last       ${safeDetail(String(item.image_work_last_result ?? '—'), 200)}`);
-  console.log(`  branches   ${branches.join('  |  ') || '(none enumerated)'}`);
+  if (!branches.length) console.log('  branches   (none enumerated)');
+  for (const branch of branches) {
+    console.log(`  branch     ${safeDetail(String(branch.column_header ?? 'embedded'), 44)
+      .padEnd(36)} ${String(branch.state).padEnd(10)} attempts=${branch.attempts}`);
+    console.log(`             ${safeUrl(String(branch.reference ?? ''), 110) ?? '—'}`);
+    if (branch.state_detail) {
+      console.log(`             WHY: ${safeDetail(String(branch.state_detail), 240)}`);
+    }
+  }
   for (const line of stored) console.log(`  stored     ${line}`);
   if (!stored.length) console.log('  stored     (nothing)');
 }
