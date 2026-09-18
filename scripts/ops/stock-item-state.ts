@@ -318,6 +318,28 @@ if (uploadIds.length) {
   const lineage = checkedIds([
     ...uploadIds, ...firstPass.map((r) => String(r.id ?? '')),
   ].filter(Boolean));
+  /*
+   * A SHEET URL'S QUERY IS THE ANSWER, NOT A SECRET.
+   *
+   * `safeUrl` drops every query because a signed storage URL is a bearer
+   * credential — right for a document address, and wrong for the one field
+   * that decides which WORKSHEET an import read. `gid` lives in the query, so
+   * printing these through the redactor hides exactly what is being asked.
+   * The parameter is named explicitly and every other parameter is reported by
+   * NAME only, so nothing a credential could hide in is echoed.
+   */
+  const describeSheetUrl = (raw: unknown): string => {
+    if (typeof raw !== 'string' || !raw) return '—';
+    let url: URL;
+    try { url = new URL(raw); } catch { return safeDetail(raw, 160); }
+    const gid = url.searchParams.get('gid');
+    const hash = /(?:^|[#&])gid=([0-9]+)/.exec(url.hash ?? '')?.[1] ?? null;
+    const others = [...url.searchParams.keys()].filter((k) => k !== 'gid');
+    return `${url.origin}${url.pathname}`
+      + `  gid=${gid ?? hash ?? 'ABSENT'}${gid === null && hash ? ' (in fragment)' : ''}`
+      + (others.length ? `  other params: ${others.join(', ')}` : '');
+  };
+
   const uploads = await sql('uploads', `
     select id, created_at, source_type, source_url, final_url, parse_strategy,
            records_detected, records_imported, records_updated, records_failed,
@@ -329,8 +351,29 @@ if (uploadIds.length) {
   heading(`UPLOADS — ${uploads.length} row(s)`);
   for (const row of uploads) {
     console.log('');
-    printRow(row);
+    const { source_url: src, final_url: fin, ...rest } = row;
+    printRow(rest);
+    console.log(`  source_url (gid-aware)  : ${describeSheetUrl(src)}`);
+    console.log(`  final_url  (gid-aware)  : ${describeSheetUrl(fin)}`);
   }
+
+  /*
+   * AND THE BYTES THE IMPORT ACTUALLY BANKED.
+   *
+   * `repairSourceImages` re-fetches the sheet live and falls back to this
+   * stored copy when the fetch fails, so which of the two it worked from is
+   * the difference between reading the builder's stock list and reading
+   * whatever a gid-less read serves. The size is enough to tell them apart:
+   * the hidden tab is ~1.4 KB and the stock list with its merged link columns
+   * is ~25 KB.
+   */
+  const stored = await sql('stored source bytes', `
+    select id, storage_bucket, storage_path, byte_size, file_sha256
+      from public.builder_stock_uploads
+     where id in (${lineage.map((id) => `'${id}'`).join(',')})
+     order by created_at`);
+  heading('STORED SOURCE COPY — what a fallback read would see');
+  for (const row of stored) console.log(`  ${JSON.stringify(row)}`);
 
   // How the rest of each upload fared, which is what says whether these five
   // are the exception or the rule.
