@@ -57,6 +57,12 @@ jobs:
       # 20260917090000 was held by two migrations and nothing here could see it.
       - name: every migration has its own version
         run: npm run check:migration-versions
+      # And runs after what it needs. A version is the ORDER a migration runs in,
+      # and no gate anywhere read two migrations together until this one: the
+      # fault it catches reached a merged pull request on the clone side, where a
+      # file altered a table three migrations of its own had not created yet.
+      - name: a migration runs after the objects it needs
+        run: npm run check:migration-order
       - name: portal security check
         run: npm run security:portal
       - name: every credential door is budgeted, and none trusts X-Forwarded-For
