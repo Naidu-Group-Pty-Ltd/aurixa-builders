@@ -135,8 +135,19 @@ describe('the row-linked photograph is the property’s photograph', () => {
     const code = read(`${SHARED}/packageImages.ts`);
     expect(code).toContain('linkSharedWithOtherRows');
     expect(code).toContain('also serves other rows');
+    /*
+     * THIS USED TO PIN THE NAME `branchRowCounts`, AND THE NAME WAS THE ONLY
+     * PART THAT WORKED. The map existed, the guard read it, and it was EMPTY
+     * on every run: it was filled from `raw.unmapped` off rows keyed by the
+     * builder's own headers, where no `unmapped` property exists. So this
+     * assertion passed for as long as the guard never once fired. It pins the
+     * decision now — `sharedBranchLinks.pure.ts`, which counts over records
+     * and fails closed — and `builderStockSharedLinks.spec.ts` exercises the
+     * behaviour over the real production row shape.
+     */
     const repair = read(`${SHARED}/repairSourceImages.ts`);
-    expect(repair).toContain('branchRowCounts');
+    expect(repair).toContain('countBranchLinkRows');
+    expect(repair).toContain('linkSharedWithOtherRows(branchLinkRows, packageUrl)');
   });
 
   it('unsupported URLs are recorded in evidence rather than silently dropped', () => {
