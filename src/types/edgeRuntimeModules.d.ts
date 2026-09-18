@@ -37,6 +37,18 @@ declare module 'https://esm.sh/xlsx@0.18.5' {
   export const utils: any;
 }
 
+/**
+ * Reached for the first time by `builderStockPendingUpload.spec.ts`, which
+ * imports `settleItemImages` to prove which upload the source stage settles.
+ * That module reaches `extract.ts` through the source repair, and `extract.ts`
+ * opens zips for the DOCX/ODF/XLSX readers.
+ */
+declare module 'https://esm.sh/jszip@3.10.1' {
+  const jszip: any;
+  export default jszip;
+  export const loadAsync: any;
+}
+
 declare module 'npm:@supabase/supabase-js@2.55.0' {
   export function createClient(url: string, key: string, options?: any): any;
 }

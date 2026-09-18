@@ -20,6 +20,8 @@
  * path. Slow is not an outage.
  */
 
+import { TELEMETRY_PREFIX, publicationTelemetry } from './importTelemetry.pure.ts';
+
 /** The columns a claimed property hands back. A row of `builder_stock_items`. */
 export interface ClaimedItem {
   id: string;
@@ -263,7 +265,7 @@ export async function publishUploadIfReady(
       (error as { message?: string }).message ?? 'unknown'}`);
   }
   const row = (data ?? {}) as Record<string, unknown>;
-  return {
+  const outcome: PublicationOutcome = {
     available: true,
     published: row.published === true,
     reason: typeof row.reason === 'string' ? row.reason : undefined,
@@ -272,4 +274,19 @@ export async function publishUploadIfReady(
     staged: Number(row.staged ?? 0) || 0,
     sourceOutstanding: Number(row.source_outstanding ?? 0) || 0,
   };
+  /*
+   * ONE LINE PER ATTEMPT, AND THE REFUSALS ARE THE POINT.
+   *
+   * Refusing is the normal answer — this is asked after every settled item —
+   * so a reader has to be able to see WHICH condition is holding an upload
+   * back and how the counts are moving under it. On the day, 47 properties
+   * were staged and held correctly and there was no line anywhere that said
+   * so, which is why it read as an upload that had vanished.
+   */
+  try {
+    console.info(`${TELEMETRY_PREFIX} stock publication`, publicationTelemetry({
+      uploadId, ...outcome,
+    }));
+  } catch { /* publication is the deliverable */ }
+  return outcome;
 }

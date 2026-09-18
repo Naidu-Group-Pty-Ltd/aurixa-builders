@@ -103,3 +103,39 @@ export function lifecycleForMatchedProperty(
   if (current === 'staged') return 'staged';
   return newProperty;
 }
+
+/**
+ * WHICH UPLOAD'S SOURCE THE IMAGE WORK INSPECTS.
+ *
+ * NOT THE SAME QUESTION AS WHICH UPLOAD IS SERVED, and conflating them is the
+ * defect this names. `itemWorkClaim.ts` has always stated the contract: a
+ * MATCHED row's `upload_id` is still the OLD one, because re-pointing it is
+ * step 1 of the atomic cutover itself, so until publication the id of the
+ * upload actually waiting on this property lives in `pending_upload_id` and
+ * nowhere else — "asking to publish `upload_id` on such a row asks about the
+ * dataset already on screen".
+ *
+ * The source stage asked `item.upload_id` anyway while the telemetry beside it
+ * read `pending_upload_id ?? upload_id`, so the two disagreed about which
+ * document was being settled. On a FIRST import they cannot: `pending_upload_id`
+ * is null and both resolve to the same upload, which is why the 18 September
+ * incident never exposed it — all 47 rows carried a null. On a REPLACEMENT they
+ * do, and the consequence is not cosmetic: the stage re-reads the OLD builder
+ * source, derives the OLD row's branches, and settles the replacement's imagery
+ * against a document the builder has already superseded.
+ *
+ * So the rule is spelled ONCE, here, beside the lifecycle it belongs to, and
+ * every caller that settles SOURCE work asks for it. It deliberately says
+ * nothing about what the marketplace serves: `upload_id` remains the serving
+ * supplier until `publish_builder_stock_upload` flips the rows in one
+ * statement, and nothing in this function is read by that path.
+ *
+ * `null` only where the property has no upload at all — a row with no source
+ * document, which the source stage moves past rather than retrying for ever.
+ */
+export function sourceWorkUploadId(item: {
+  upload_id?: string | null;
+  pending_upload_id?: string | null;
+}): string | null {
+  return item?.pending_upload_id ?? item?.upload_id ?? null;
+}

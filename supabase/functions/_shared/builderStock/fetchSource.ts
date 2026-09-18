@@ -43,11 +43,12 @@ const resolveDns = (hostname: string, recordType: DnsRecordType) =>
   denoDns.resolveDns(hostname, recordType);
 
 import {
-  googleSheetsReadAttempts, googleSheetsRef, resolveSheetsPayload, sentinelReadUrl,
-  type GoogleSheetsRef,
+  googleSheetsReadAttempts, googleSheetsRef, resolveSheetsPayload, resolveSheetsTab,
+  sentinelReadUrl, tabPlanNeedsProbe,
+  type GoogleSheetsRef, type SheetsTabPlan,
 } from './googleSheetsSource.pure.ts';
 import {
-  htmlViewSheetUrl, parseHtmlViewGrid,
+  htmlViewDocumentUrl, htmlViewSheetUrl, parseHtmlViewGrid, parseHtmlViewTabs,
 } from './googleSheetsHtmlGrid.pure.ts';
 import {
   matchWorksheet, mergeHyperlinkColumns, type HyperlinkAvailability, type WorkbookSheet,
@@ -70,6 +71,14 @@ export interface FetchedSource {
   hyperlinks?: HyperlinkAvailability;
   /** Which public representation surrendered the link targets, when one did. */
   hyperlinkMethod?: 'workbook_export' | 'htmlview';
+  /**
+   * For a spreadsheet source: which tab was read, and what decided it.
+   *
+   * Recorded so a wrong-tab import can be told apart from an empty one
+   * WITHOUT another production repro — the defect this closes was invisible
+   * precisely because a substituted tab reads exactly like a real one.
+   */
+  sheetTab?: { gid: string; authority: SheetsTabPlan['authority']; tabCount: number };
   /** What the server said it was. A claim, checked against the bytes later. */
   declaredContentType: string;
   /** After redirects. This is what gets recorded as `final_url`. */
@@ -137,7 +146,19 @@ async function fetchGoogleSheet(
 ): Promise<FetchedSource> {
   let lastRefusal: SourceFetchError | null = null;
 
-  for (const attempt of googleSheetsReadAttempts(ref)) {
+  /*
+   * THE TAB IS DECIDED BEFORE ANYTHING IS READ, AND DECIDED ONCE.
+   *
+   * The switcher is fetched for EVERY spreadsheet, not only the gid-less ones,
+   * because it settles both questions at once: which tab a link that named
+   * none meant, and whether a link that named one named a real tab. A plan it
+   * settles needs no sentinel probe, so this costs about what the probe it
+   * replaces cost. It is entirely best-effort — a document that will not serve
+   * its switcher falls back to the probe, exactly as before.
+   */
+  const plan = resolveSheetsTab({ ref, tabs: await fetchSheetTabs(ref) });
+
+  for (const attempt of googleSheetsReadAttempts(plan)) {
     let body: FetchedSource;
     try {
       body = await fetchOrdinaryUrl(attempt.url);
@@ -158,25 +179,36 @@ async function fetchGoogleSheet(
      * the two answers are compared. Identical means the gid did not resolve.
      */
     let sentinelBody: string | null = null;
-    if (attempt.substitutes && ref.gid !== null) {
+    if (attempt.substitutes && tabPlanNeedsProbe(plan)) {
       try {
         sentinelBody = decodeUtf8(
-          (await fetchOrdinaryUrl(sentinelReadUrl(ref, attempt))).bytes);
+          (await fetchOrdinaryUrl(sentinelReadUrl(plan, attempt))).bytes);
       } catch {
         sentinelBody = null;
       }
     }
 
     const resolved = resolveSheetsPayload({
-      ref, attempt, body: decodeUtf8(body.bytes), sentinelBody,
+      plan, attempt, body: decodeUtf8(body.bytes), sentinelBody,
     });
 
     if (resolved.ok === false) {
       if (resolved.reason === 'gid_unresolved') {
+        /*
+         * The remedy differs by what we were working from, so the sentence
+         * does too. A link that NAMED a tab named one this document will not
+         * serve; a link that named none left us guessing at gid 0 and the
+         * guess was substituted. Telling the second builder their link names a
+         * missing tab would send them looking for a fault that is not theirs.
+         */
         throw new SourceFetchError(
           'sheet_tab_not_found',
-          'That link names a tab this spreadsheet does not have. '
-            + 'Open the tab you want and copy the address again.',
+          plan.authority === 'named_unlisted'
+            ? 'That link names a tab this spreadsheet does not have. '
+              + 'Open the tab you want and copy the address again.'
+            : 'We could not work out which tab of that spreadsheet to read. '
+              + 'Open the tab holding your stock list and copy the address from '
+              + 'your browser — it will carry the tab in it.',
         );
       }
       continue;
@@ -197,7 +229,7 @@ async function fetchGoogleSheet(
      * uncertain — a workbook that will not open, a tab that cannot be
      * identified decisively, or two tabs that look alike.
      */
-    const enriched = await enrichWithHyperlinks(ref, resolved.csv);
+    const enriched = await enrichWithHyperlinks(plan, resolved.csv);
 
     return {
       bytes: new TextEncoder().encode(enriched.csv),
@@ -208,6 +240,7 @@ async function fetchGoogleSheet(
       status: body.status,
       hyperlinks: enriched.availability,
       hyperlinkMethod: enriched.method,
+      sheetTab: { gid: plan.gid, authority: plan.authority, tabCount: plan.tabs.length },
     };
   }
 
@@ -220,6 +253,22 @@ async function fetchGoogleSheet(
 }
 
 /**
+ * The document's visible tabs, or an empty list if it will not say.
+ *
+ * Never throws: a switcher that cannot be read is an absence the caller falls
+ * back from, and turning it into a fetch failure would refuse documents whose
+ * data reads perfectly well.
+ */
+async function fetchSheetTabs(ref: GoogleSheetsRef) {
+  try {
+    const page = await fetchOrdinaryUrl(htmlViewDocumentUrl(ref.spreadsheetId));
+    return parseHtmlViewTabs(decodeUtf8(page.bytes));
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Ask the workbook for the selected tab's hyperlink targets.
  *
  * Every refusal is an availability reading rather than an error: the CSV is
@@ -227,7 +276,7 @@ async function fetchGoogleSheet(
  * import proceeding while REPORTING that it saw the builder's sources.
  */
 async function enrichWithHyperlinks(
-  ref: GoogleSheetsRef,
+  plan: SheetsTabPlan,
   csv: string,
 ): Promise<{
   csv: string;
@@ -267,7 +316,7 @@ async function enrichWithHyperlinks(
     // The workbook export carries no gid — it is the WHOLE document — which is
     // exactly why the worksheet is identified by content below.
     const fetched = await fetchOrdinaryUrl(
-      `https://docs.google.com/spreadsheets/d/${ref.spreadsheetId}/export?format=xlsx`);
+      `https://docs.google.com/spreadsheets/d/${plan.spreadsheetId}/export?format=xlsx`);
     try {
       sheets = await readWorkbookSheets(fetched.bytes);
     } catch {
@@ -281,7 +330,15 @@ async function enrichWithHyperlinks(
 
   if (!sheets) {
     try {
-      const page = await fetchOrdinaryUrl(htmlViewSheetUrl(ref.spreadsheetId, ref.gid));
+      /*
+       * THE SAME TAB THE CSV CAME FROM. This used to read `ref.gid`, which was
+       * null for a gid-less link and defaulted to `0` inside
+       * `htmlViewSheetUrl` — so on the reported document the links of gid 0
+       * were matched against the rows of a hidden tab, `matchWorksheet`
+       * refused them, and every brochure was reported as unavailable. One plan
+       * now decides both reads.
+       */
+      const page = await fetchOrdinaryUrl(htmlViewSheetUrl(plan.spreadsheetId, plan.gid));
       const grid = parseHtmlViewGrid(decodeUtf8(page.bytes));
       if (grid) {
         sheets = [grid];

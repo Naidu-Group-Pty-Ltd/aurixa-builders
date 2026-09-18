@@ -175,6 +175,41 @@ export async function electFromPdfBytes(
       };
     }
     /*
+     * A DECODE THAT PRODUCED NOTHING IS NOT A DOCUMENT THAT NAMES NOTHING.
+     *
+     * MEASURED, 18 SEPTEMBER 2026. Five properties were retired `exhausted`
+     * with their own brochures banked `no_deterministic_image` — and each of
+     * those brochures elects a facade on page 1 through this same function,
+     * with the same label, design and hints the row carries. The refusal
+     * quoted page 1 accurately, which proves the text was read and the cover
+     * page was found; what did not happen was the decode. Two `CPU Time
+     * exceeded` events sit in the production log inside that window.
+     *
+     * So the two cases are told apart by what the selection looked at:
+     *
+     *   NO COVER PAGE — `coverSearchPages` named none. That is the DOCUMENT
+     *   speaking: no page of it can be this property's cover, decided from
+     *   text alone with nothing decoded. `not_identified`, banked, correct.
+     *
+     *   A COVER PAGE AND NOTHING DECODED — pages were named and the decode
+     *   returned no asset at all. That is US: a starved or failed raster
+     *   step, and banking it says the builder supplied nothing when their
+     *   brochure carries the photograph. `unreachable`, retried on the
+     *   item's own budget, nothing written down.
+     *
+     *   A COVER PAGE AND PICTURES THAT DO NOT QUALIFY — the decode worked and
+     *   the role rules refused what it found. The document spoke again.
+     *   `not_identified`.
+     */
+    if (selection.coverPages.length && !selection.assets.length) {
+      return {
+        status: 'unreachable',
+        detail: 'That document\'s cover page could not be read on this attempt, '
+          + 'so nothing was learned about the pictures it carries.',
+      };
+    }
+
+    /*
      * AND IT SAYS WHAT THE DOCUMENT IS INSTEAD, BECAUSE THAT IS THE FIX.
      *
      * The refusal on its own is correct and useless: "this is not that

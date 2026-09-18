@@ -602,11 +602,7 @@ export async function selectPdfPropertyPrimary(
      */
     identityHints?: readonly string[] | null;
   } = {},
-): Promise<{
-  assets: PdfSourceAsset[];
-  primary: PdfSourceAsset | null;
-  pageOrderAuthoritative: boolean;
-}> {
+): Promise<PdfPrimarySelection> {
   /*
    * THE WHOLE ELECTION HOLDS THE DECODE SLOT, discovery and classification
    * both — see `pdfDecodeSlot.pure.ts` for the five-way 546 this bounds. The
@@ -614,6 +610,28 @@ export async function selectPdfPropertyPrimary(
    * taken twice by one caller is a deadlock, not a bound.
    */
   return withPdfDecodeSlot(() => selectPdfPropertyPrimaryHoldingSlot(bytes, options));
+}
+
+/**
+ * WHY THE SELECTION SAYS WHICH PAGES IT LOOKED AT.
+ *
+ * A null `primary` has two opposite meanings and the caller could not tell
+ * them apart: "no page of this document can be this property's cover" is
+ * KNOWLEDGE about the document, and "a cover page was identified and nothing
+ * could be decoded from it" is a fact about US. Banking the second as the
+ * first retires a property permanently on a run that failed — which is what
+ * happened to five properties on 18 September 2026, each of whose brochures
+ * elects a facade on page 1 when the decode succeeds.
+ *
+ * `coverPages` is what `coverSearchPages` returned, so an empty list is the
+ * document's own answer and a non-empty one with no decoded asset is ours.
+ */
+export interface PdfPrimarySelection {
+  assets: PdfSourceAsset[];
+  primary: PdfSourceAsset | null;
+  /** The pages `coverSearchPages` named. Empty is the document's own answer. */
+  coverPages: number[];
+  pageOrderAuthoritative: boolean;
 }
 
 /**
@@ -636,11 +654,7 @@ export async function selectPdfPropertyPrimaryHoldingSlot(
     design?: string | null;
     identityHints?: readonly string[] | null;
   },
-): Promise<{
-  assets: PdfSourceAsset[];
-  primary: PdfSourceAsset | null;
-  pageOrderAuthoritative: boolean;
-}> {
+): Promise<PdfPrimarySelection> {
   /*
    * THE EXPENSIVE STEP IS TOLD WHERE TO LOOK.
    *
@@ -685,6 +699,8 @@ export async function selectPdfPropertyPrimaryHoldingSlot(
     return {
       assets: [],
       primary: null,
+      // The DOCUMENT's answer: no page of it can be this property's cover.
+      coverPages: [],
       pageOrderAuthoritative: pageOrderIsAuthoritative(bytes, recovered),
     };
   }
@@ -725,7 +741,10 @@ export async function selectPdfPropertyPrimaryHoldingSlot(
     return settled;
   });
 
-  return { assets, primary, pageOrderAuthoritative: found.pageOrderAuthoritative };
+  return {
+    assets, primary, coverPages: searchPages,
+    pageOrderAuthoritative: found.pageOrderAuthoritative,
+  };
 }
 
 /**

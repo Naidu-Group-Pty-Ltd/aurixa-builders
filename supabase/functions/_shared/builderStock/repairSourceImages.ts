@@ -67,6 +67,9 @@ import {
 } from './packageImages.ts';
 import { attachDocumentMedia } from './importStock.ts';
 import { designOfRecordOrRow } from './builderSuppliedImage.pure.ts';
+import {
+  countBranchLinkRows, linkSharedWithOtherRows,
+} from './sharedBranchLinks.pure.ts';
 import { anchorPdfRowsToPages, pdfAnchorPage } from './pdfRowAnchors.pure.ts';
 import { chooseAndStorePrimaryImage } from './primaryImage.ts';
 import { readAllRows } from './pagedRead.ts';
@@ -795,21 +798,18 @@ export async function repairSourceImagesForUpload(
    * own rows AND every stored row's recovered link columns, because a Google
    * Sheet's targets exist only on the stored rows.
    */
-  const branchRowCounts = new Map<string, number>();
-  const countBranchUrls = (unmapped: Record<string, string> | null | undefined) => {
-    const seen = new Set<string>();
-    for (const branch of rowSourceBranches(unmapped ?? null)) {
-      if (seen.has(branch.url)) continue;
-      seen.add(branch.url);
-      branchRowCounts.set(branch.url, (branchRowCounts.get(branch.url) ?? 0) + 1);
-    }
-  };
-  for (const raw of rows) {
-    countBranchUrls((raw as { unmapped?: Record<string, string> | null })?.unmapped ?? null);
-  }
-  for (const storedRow of storedRowByItem.values()) {
-    countBranchUrls(unmappedWithRecoveredLinks(null, storedRow));
-  }
+  const branchLinkRows = countBranchLinkRows({
+    rows,
+    storedRowByItem,
+    /*
+     * WHAT THE UPLOAD IS KNOWN TO HOLD, so a partial read cannot call a link
+     * exclusive. `existingRows` is every served-or-staged property of the
+     * ORGANISATION and is not narrowed by `onlyItemId`, so a per-item
+     * settlement still counts over the whole set — which is the property this
+     * bound exists to keep true rather than to assume.
+     */
+    expectedRows: storedRowByItem.size || null,
+  });
   /** Properties whose imagery this run actually re-fetched. The CPU bound. */
   let restored = 0;
   /** Of those, the ones that cost a whole PDF parse. The tighter bound. */
@@ -1323,7 +1323,7 @@ export async function repairSourceImagesForUpload(
            * links with the honest reason instead of taking one file as forty
            * houses.
            */
-          linkSharedWithOtherRows: (branchRowCounts.get(packageUrl) ?? 0) > 1,
+          linkSharedWithOtherRows: linkSharedWithOtherRows(branchLinkRows, packageUrl),
         },
         { fetchPackage: deps.fetchPackage, cache, readPageTexts: deps.readPageTexts },
       );

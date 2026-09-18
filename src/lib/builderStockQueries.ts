@@ -23,6 +23,7 @@ export const builderStockKeys = {
   root: () => ['builder', 'stock'] as const,
   uploads: (page: number) => ['builder', 'stock', 'uploads', page] as const,
   items: (filters: StockFilters) => ['builder', 'stock', 'items', filters] as const,
+  held: (uploadId: string) => ['builder', 'stock', 'held', uploadId] as const,
   item: (id: string) => ['builder', 'stock', 'item', id] as const,
   selections: (page: number) => ['builder', 'stock', 'selections', page] as const,
 };
@@ -97,6 +98,42 @@ export function useBuilderStockUploads(page = 1) {
         ? STOCK_WORKING_POLL_MS
         : false
     ),
+  });
+}
+
+/**
+ * THE PROPERTIES AN UNPUBLISHED UPLOAD IS WAITING ON.
+ *
+ * A stock list goes live in one cutover, the moment every property in it
+ * carries a builder-source photograph — so a single property whose documents
+ * yield none holds the whole list staged, and staged rows are invisible to
+ * `useBuilderStockItems` by design (it reads `active`, which is what the
+ * marketplace serves).
+ *
+ * That left the builder with nothing to act on. Measured 18 September 2026:
+ * 47 imported properties, five of them without a usable photograph, the page
+ * reading "0 properties on the marketplace" and "No stock has been uploaded
+ * yet" — while the server's own remedy, `attach_builder_image`, has always
+ * accepted a staged row. The capability existed and had no surface.
+ *
+ * So this is that surface, and it is deliberately NOT folded into the
+ * marketplace list: that list means "what the Command Centre sees", and a
+ * staged row is precisely what it does not. Polls while the upload is still
+ * unpublished, because the list going live is the thing the reader is
+ * waiting for.
+ */
+export function useBuilderStockHeldItems(uploadId: string | null) {
+  return useQuery({
+    queryKey: builderStockKeys.held(uploadId ?? ''),
+    enabled: !!uploadId,
+    queryFn: () => invoke<Paginated<BuilderStockItem>>({
+      operation: 'list_stock',
+      lifecycle_status: 'staged',
+      upload_id: uploadId,
+      page: 1,
+      page_size: 100,
+    }),
+    refetchInterval: STOCK_WORKING_POLL_MS,
   });
 }
 

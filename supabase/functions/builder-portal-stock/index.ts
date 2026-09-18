@@ -73,7 +73,9 @@ import {
   roleFromBuilderProperty,
 } from '../_shared/builderStock/sourceImageRole.pure.ts';
 import { validateSourceImageBytes } from '../_shared/builderStock/sourceAssets.pure.ts';
-import { PROCESSED_LIFECYCLE } from '../_shared/builderStock/stockLifecycle.pure.ts';
+import {
+  PROCESSED_LIFECYCLE, SERVED_LIFECYCLE, type StockLifecycle,
+} from '../_shared/builderStock/stockLifecycle.pure.ts';
 import { sha256Hex } from '../_shared/builderStock/rasterPng.ts';
 import { consumeRateLimit } from '../_shared/requestSecurity.ts';
 import { fetchStockSource, SourceFetchError } from '../_shared/builderStock/fetchSource.ts';
@@ -1156,6 +1158,8 @@ Deno.serve(async (req) => {
            */
           linkDiscovery: linkDiscoveryFromAvailability(
             fetched.hyperlinks, fetched.hyperlinkMethod),
+          // Carried for the import's own log line only — see `sheetTab`.
+          sheetTab: fetched.sheetTab ?? null,
         });
 
         /**
@@ -1299,11 +1303,28 @@ Deno.serve(async (req) => {
       }
 
       const uploadId = cleanText(body.upload_id, 64);
+      /*
+       * BOTH PROCESSED LIFECYCLES, WHICH IS THE ONLY SET THIS CONTROL CAN
+       * USEFULLY SERVE.
+       *
+       * "Retry image lookup" filtered `lifecycle_status = 'active'` — the
+       * published set, which by definition already has its photographs. The
+       * rows that need it are the STAGED ones an unpublished upload is
+       * waiting on, and they were the one set it could not touch. Measured
+       * 18 September 2026: 47 staged properties held an import invisible
+       * while this button answered "Nothing was waiting for images" on every
+       * press, because all 47 were staged and none was active.
+       *
+       * `PROCESSED_LIFECYCLE` is the set the image engine already works on
+       * (`stockLifecycle.pure.ts`), so this is the operator's half of the
+       * same rule: every queue, claim and repair widens, while every SERVING
+       * read stays `active` exactly as it was.
+       */
       let query = supabase
         .from('builder_stock_items')
         .select('id, organisation_id, address_line, suburb, state, postcode, development_name, project_name, lot_number, unit_number')
         .eq('organisation_id', activeOrganisationId)
-        .eq('lifecycle_status', 'active')
+        .in('lifecycle_status', PROCESSED_LIFECYCLE)
         .in('enrichment_status', ['pending', 'enriching'])
         .order('created_at', { ascending: true })
         .limit(ENRICHMENT_MAX_ITEMS);
@@ -1416,11 +1437,13 @@ Deno.serve(async (req) => {
         processed += 1;
       }
 
+      // The same set the work query above reads, or the count would report
+      // "nothing left" while staged rows were still waiting.
       let remainingQuery = supabase
         .from('builder_stock_items')
         .select('id', { count: 'exact', head: true })
         .eq('organisation_id', activeOrganisationId)
-        .eq('lifecycle_status', 'active')
+        .in('lifecycle_status', PROCESSED_LIFECYCLE)
         .in('enrichment_status', ['pending', 'enriching']);
       if (uploadId) remainingQuery = remainingQuery.eq('upload_id', uploadId);
       const { count: remaining } = await remainingQuery;
@@ -1526,11 +1549,34 @@ Deno.serve(async (req) => {
       const availability = cleanText(body.availability_status, 40);
       const uploadId = cleanText(body.upload_id, 64);
 
+      /*
+       * WHICH LIFECYCLE THIS READ SERVES, VALIDATED RATHER THAN INTERPOLATED.
+       *
+       * `active` stays the default and is what the marketplace list draws —
+       * unchanged. `staged` is what a builder needs to SEE to act on: an
+       * upload is held until every property carries a builder-source
+       * photograph, and the remedy for a property whose documents name none
+       * is the builder adding one. `attach_builder_image` has always accepted
+       * a staged row; until now nothing could list one, so the remedy existed
+       * with no way to reach it and 47 held properties read as an empty page.
+       *
+       * The value is checked against the lifecycle vocabulary instead of being
+       * passed through: an unrecognised string used to reach `.eq()` and
+       * return zero rows, which is indistinguishable from a builder with no
+       * stock.
+       */
+      const requestedLifecycle = cleanText(body.lifecycle_status, 20);
+      const lifecycle: StockLifecycle = requestedLifecycle === 'staged'
+        || requestedLifecycle === 'archived'
+        || requestedLifecycle === 'active'
+        ? requestedLifecycle
+        : SERVED_LIFECYCLE;
+
       let query = supabase
         .from('builder_stock_items')
         .select(STOCK_ITEM_SELECT, { count: 'exact' })
         .eq('organisation_id', activeOrganisationId)
-        .eq('lifecycle_status', cleanText(body.lifecycle_status, 20) || 'active');
+        .eq('lifecycle_status', lifecycle);
       if (uploadId) query = query.eq('upload_id', uploadId);
       if (availability && (STOCK_AVAILABILITY_STATUSES as readonly string[]).includes(availability)) {
         query = query.eq('availability_status', availability);
