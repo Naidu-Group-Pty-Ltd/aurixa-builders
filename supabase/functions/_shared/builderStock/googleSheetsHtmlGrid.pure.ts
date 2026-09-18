@@ -42,15 +42,79 @@
  * Pure: no IO, no clock, no network. The caller performs the fetch.
  */
 import type { WorkbookSheet } from './sheetHyperlinks.pure.ts';
+import type { SheetsTab } from './googleSheetsSource.pure.ts';
+
+export type { SheetsTab };
 
 /** The one public representation that carries link targets when export is refused. */
 export function htmlViewSheetUrl(spreadsheetId: string, gid: string | null): string {
-  // `htmlview/sheet` REQUIRES a gid (a missing one answers 400). A link that
-  // named no gid asked for the document's default tab, which is gid 0 for
-  // every sheet that has not had its original first tab deleted — and if it
-  // has, the endpoint refuses rather than substituting, which is the safe
-  // direction. The content match downstream decides either way.
+  // `htmlview/sheet` REQUIRES a gid (a missing one answers 400). Callers now
+  // hand in the tab the DATA read resolved (`SheetsTabPlan.gid`), so this and
+  // the CSV can no longer disagree about which tab "no gid" meant — the defect
+  // §"one document, two tabs" in `googleSheetsSource.pure.ts` records. The
+  // `?? '0'` remains only for a caller that genuinely has no plan, and the
+  // content match downstream still decides either way.
   return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/htmlview/sheet?gid=${gid ?? '0'}`;
+}
+
+/** Where the tab list lives. Not `htmlview/sheet`, which carries one grid. */
+export function htmlViewDocumentUrl(spreadsheetId: string): string {
+  return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/htmlview`;
+}
+
+/**
+ * THE TABS A PERSON CAN SEE, IN THE ORDER THEY SEE THEM.
+ *
+ * WHY THIS EXISTS. `gviz/tq` with no gid does not serve "the first tab" in the
+ * sense anybody means it: it serves the document's first SHEET, hidden sheets
+ * included. Measured on the reported document, 18 September 2026 — a gid-less
+ * read and a read for the impossible gid 4294967290 returned byte-identical
+ * payloads (sha256 `ddf60eeb…`), a HIDDEN "VERV AGENT PORTAL" brochure page,
+ * while the tab a person opening that link actually sees, "STOCKLIST V002",
+ * is gid 0 and holds all 47 properties. A builder pasted the address their
+ * browser showed and the import read a tab they cannot even open.
+ *
+ * `/htmlview` renders a page switcher listing exactly the VISIBLE tabs, in
+ * order, each with its gid — which is the same set, in the same order, that
+ * the browser draws along the bottom of the sheet. That is the authority this
+ * module publishes, and it is why nothing here has to guess.
+ *
+ * Deliberately tolerant: an unparseable or absent switcher returns an EMPTY
+ * list rather than throwing, because "we could not read the tabs" must reach
+ * the caller as an absence it can fall back from, never as a failed fetch.
+ */
+export function parseHtmlViewTabs(html: string): SheetsTab[] {
+  const source = String(html ?? '');
+  const tabs: SheetsTab[] = [];
+  const seen = new Set<string>();
+
+  /*
+   * The switcher is emitted as a run of `items.push({name: …, pageUrl: …,
+   * gid: "N", initialSheet: …})` calls inside an inline script. Read the pair
+   * off each call rather than the surrounding JavaScript: the name is a
+   * double-quoted string that may carry escaped quotes, and the gid is always
+   * a bare run of digits in its own quoted field.
+   */
+  for (const match of source.matchAll(
+    /items\.push\(\{\s*name:\s*"((?:[^"\\]|\\.)*)"[\s\S]{0,4000}?gid:\s*"(\d{1,20})"/g,
+  )) {
+    const gid = match[2];
+    if (seen.has(gid)) continue;
+    seen.add(gid);
+    tabs.push({ gid, name: unescapeJsString(match[1]).slice(0, 200) });
+    if (tabs.length >= 500) break;
+  }
+  return tabs;
+}
+
+/** Google escapes the switcher's strings for JavaScript, not for HTML. */
+function unescapeJsString(value: string): string {
+  return value
+    .replace(/\\x([0-9a-fA-F]{2})/g, (_, code) => String.fromCharCode(parseInt(code, 16)))
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(parseInt(code, 16)))
+    .replace(/\\(.)/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /** Hard ceilings, so a hostile or absurd grid cannot balloon memory. */

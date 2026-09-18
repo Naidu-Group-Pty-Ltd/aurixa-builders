@@ -177,22 +177,59 @@ export async function runStockImport(input: RunImportInput): Promise<RunImportRe
   // a model first, then normalised by exactly the same code.
   let rows = extraction.rows;
   let strategy = extraction.strategy;
-  if (!rows.length && extraction.visionImages.length) {
-    const modelResult = await extractStockRowsFromImages(
-      extraction.visionImages,
-      { filename: upload.original_filename, organisationName: input.organisationName },
-      { deadlineAt: Date.now() + MODEL_BUDGET_MS },
-    );
-    rows = modelResult.rows;
-    strategy = `${strategy}+model`;
-  } else if (!rows.length && extraction.text) {
-    const modelResult = await extractStockRowsFromText(
-      extraction.text,
-      { filename: upload.original_filename, organisationName: input.organisationName },
-      { deadlineAt: Date.now() + MODEL_BUDGET_MS },
-    );
-    rows = modelResult.rows;
-    strategy = `${strategy}+model`;
+  try {
+    if (!rows.length && extraction.visionImages.length) {
+      const modelResult = await extractStockRowsFromImages(
+        extraction.visionImages,
+        { filename: upload.original_filename, organisationName: input.organisationName },
+        { deadlineAt: Date.now() + MODEL_BUDGET_MS },
+      );
+      rows = modelResult.rows;
+      strategy = `${strategy}+model`;
+    } else if (!rows.length && extraction.text) {
+      const modelResult = await extractStockRowsFromText(
+        extraction.text,
+        { filename: upload.original_filename, organisationName: input.organisationName },
+        { deadlineAt: Date.now() + MODEL_BUDGET_MS },
+      );
+      rows = modelResult.rows;
+      strategy = `${strategy}+model`;
+    }
+  } catch (error) {
+    /*
+     * THE ASSISTED READER FAILING IS A FACT ABOUT US, NOT ABOUT THE DOCUMENT.
+     *
+     * `callLLM` throws when every model in the chain refuses — including the
+     * case where none is configured at all. That exception used to travel all
+     * the way out of `runStockImport` to the handler's catch-all, which wrote
+     * the upload off with "That page could not be processed." Measured
+     * 18 September 2026 on project htfluofznhxeumblwbww: three imports failed
+     * that way with `provider_not_configured` on both gateway models, and the
+     * message named the builder's page for a credential this deployment had
+     * never been given. Nothing in it was true and nothing in it was
+     * actionable.
+     *
+     * So it is a NAMED failure now, and the sentence separates the two facts:
+     * the deterministic reader did not recognise a table (which the builder
+     * can act on), and the assisted reader could not be reached (which they
+     * cannot, and must not be asked to). The underlying error travels in
+     * `detail`, which is recorded on the row and never shown.
+     */
+    return {
+      ok: false,
+      code: 'assisted_reader_unavailable',
+      message: sourceKind === 'url'
+        ? 'We could not finish reading that page. Its columns were not recognised as '
+          + 'a stock list, and the assisted reader could not be reached — our team has '
+          + 'been alerted. If the page lists one property per row, giving it column '
+          + 'headings lets it import without assistance.'
+        : 'We could not finish reading that file. Its columns were not recognised as '
+          + 'a stock list, and the assisted reader could not be reached — our team has '
+          + 'been alerted. If the file lists one property per row, giving it column '
+          + 'headings lets it import without assistance.',
+      detail: String((error as { message?: string })?.message ?? error).slice(0, 500),
+      status: 503,
+    };
   }
 
   const { error: stampError } = await supabase.from('builder_stock_uploads').update({

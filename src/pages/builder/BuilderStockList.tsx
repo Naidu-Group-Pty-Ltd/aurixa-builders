@@ -36,7 +36,7 @@ import { AU_LOCALE } from '@/lib/aml/displayDate';
 import { BuilderSchedule } from '@/components/builder-portal/ui/BuilderSchedule';
 import { useDebounce } from '@/hooks/useDebounce';
 import {
-  importBuilderStockUrl, type StockImportSummary, type StockUploadProgress, type StockUploadResult, uploadBuilderStockFile, useAcknowledgeStockSelection, useBuilderStockItems, useBuilderStockSelections, useBuilderStockUploads, useBuilderStockImageProgress, useArchiveBuilderStockItem, useDeleteBuilderStockSource, useEnrichPendingStockImages, useRecoverStockSourceImages, useRefreshBrochureLinks, useReprocessStockSource,
+  importBuilderStockUrl, type StockImportSummary, type StockUploadProgress, type StockUploadResult, uploadBuilderStockFile, useAcknowledgeStockSelection, useBuilderStockHeldItems, useBuilderStockItems, useBuilderStockSelections, useBuilderStockUploads, useBuilderStockImageProgress, useArchiveBuilderStockItem, useDeleteBuilderStockSource, useEnrichPendingStockImages, useRecoverStockSourceImages, useRefreshBrochureLinks, useReprocessStockSource,
   useSetBuilderStockAvailability, builderStockImageUrl,
 } from '@/lib/builderStockQueries';
 import {
@@ -54,7 +54,7 @@ import {
   describeSourceDeletion,
 } from '../../../supabase/functions/_shared/builderStock/sourceDeletion.pure';
 import {
-  countArrivingUploads, countWorkingImages, stockImageProgress,
+  countArrivingUploads, countWorkingImages, stockImageProgress, FAILED_WORK_STAGE,
   STOCK_IMAGE_PROGRESS_BADGE, STOCK_IMAGE_PROGRESS_DETAIL, STOCK_IMAGE_PROGRESS_LABEL,
 } from '../../../supabase/functions/_shared/builderStock/imageProgress.pure';
 import './BuilderStockList.css';
@@ -187,6 +187,28 @@ export default function BuilderStockList() {
   const photosReady = progressRecord ? Number(progressRecord.photos_ready ?? 0) : null;
   const photosTotal = progressRecord ? Number(progressRecord.total ?? 0) : null;
   const photosFailed = progressRecord ? Number(progressRecord.failed ?? 0) : 0;
+  /*
+   * THE UPLOAD THAT IS BEING HELD, AND THE PROPERTIES HOLDING IT.
+   *
+   * An unpublished upload with properties in it is a list that has imported
+   * and not gone live. Its staged rows are the only place a builder can act,
+   * so they are fetched whenever such an upload exists — and only then.
+   */
+  const heldUploadId = progressRecord && !progressRecord.published
+    && Number(progressRecord.total) > 0
+    ? progressRecord.upload_id
+    : null;
+  const heldItemsQuery = useBuilderStockHeldItems(heldUploadId);
+  const heldItems = heldItemsQuery.data?.records ?? [];
+  /*
+   * The ones a picture would actually release. A property whose imagery the
+   * engine has given up on (`failed`) blocks the cutover even where a
+   * fallback left it a `primary_image_id`, because the invariant counts a
+   * READY BUILDER-SOURCE primary and nothing else — so both are offered, and
+   * a property still being worked on is left alone rather than asked for.
+   */
+  const heldWithoutPhoto = heldItems.filter(
+    (item) => !item.primary_image_id || item.image_work_stage === FAILED_WORK_STAGE);
   const uploads = uploadsQuery.data?.records ?? [];
   const selections = selectionsQuery.data?.records ?? [];
 
@@ -648,6 +670,141 @@ export default function BuilderStockList() {
           </div>
         </CardHeader>
         <CardContent className="builder-stock-list-workspace-content">
+          {/*
+            WORK IN FLIGHT, SAID ONCE AT THE TOP.
+
+            Reading it off the rows rather than asking the server for a
+            second opinion, so the banner and the badges can never
+            disagree. It disappears by itself: the list re-reads while this
+            is above zero and the count comes down as the engine settles
+            each property, so nobody is told to wait on a screen that never
+            changes — and nobody has to reload to find out it is done.
+          */}
+          {workingImages > 0 || arrivingUploads > 0 ? (
+            <div
+              role="status"
+              className="builder-stock-list-processing mb-5 flex items-start gap-3 rounded-xl border border-border/70 px-4 py-3"
+            >
+              <Loader2
+                className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-muted-foreground motion-reduce:animate-none"
+                aria-hidden
+              />
+              <div className="min-w-0 text-sm">
+                <p className="font-medium">
+                  {photosTotal !== null && photosTotal > 0 && workingImages > 0
+                    ? `Processing property photos — ${photosReady} of ${photosTotal} ready`
+                    : workingImages > 0
+                      ? workingImages === 1
+                        ? 'Finding a picture for 1 property'
+                        : `Finding pictures for ${workingImages} properties`
+                      : 'Bringing in your stock list'}
+                </p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {workingImages > 0
+                    ? 'Their photos are being read from your stock list now. '
+                    : null}
+                  {arrivingUploads > 0
+                    ? 'A stock list is still being processed, so more properties '
+                      + 'will appear here as it finishes. '
+                    : null}
+                  This runs on its own and finishes without you — the list
+                  updates as each one lands, so there is no need to upload the
+                  file again.
+                </p>
+              </div>
+            </div>
+          ) : null}
+
+          {/*
+            THE HONEST FAILURE LINE. Photos the pipeline has exhausted are
+            a different fact from photos still coming, and hiding them
+            inside the spinner was how six blank cards sat unexplained for
+            half an hour. No jargon, no re-upload ask: support already has
+            it, and "Add picture" always works.
+
+            AND IT USED TO END "The rest of your list is unaffected",
+            WHICH WAS FALSE. A stock list publishes in ONE cutover once
+            every property carries a builder-source photograph, so the
+            properties that cannot get one hold the entire list staged —
+            measured 18 September 2026, five of 47 properties kept the
+            other 42 invisible while this line told the builder they were
+            fine. The sentence now says what is actually true, and the
+            section below gives them the properties to act on.
+          */}
+          {photosFailed > 0 ? (
+            <div
+              role="status"
+              className="builder-stock-list-processing mb-5 flex items-start gap-3 rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3"
+            >
+              <AlertTriangle
+                className="mt-0.5 h-4 w-4 shrink-0 text-destructive"
+                aria-hidden
+              />
+              <div className="min-w-0 text-sm">
+                <p className="font-medium">
+                  {photosFailed === 1
+                    ? 'One property’s photo needs attention'
+                    : `${photosFailed} properties’ photos need attention`}
+                </p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Their photos could not be read from the stock list and our
+                  team has been alerted. A stock list goes live once every
+                  property in it has a photo, so these are holding the rest
+                  of the list back — adding a picture to each one below
+                  releases it.
+                </p>
+              </div>
+            </div>
+          ) : null}
+
+          {/*
+            WAITING TO GO LIVE — the properties holding the cutover, and
+            the only screen on which they can be reached.
+
+            DELIBERATELY NOT FOLDED INTO THE LIST BELOW. That list is
+            headed "what the Command Centre sees", and a staged property
+            is exactly what it does not see; merging them would make the
+            marketplace count wrong to fix a visibility problem. These are
+            drawn with the same `StockPlate`, so the picture treatment,
+            the identity and the "Add picture" control are the one
+            implementation rather than a second copy that can drift.
+          */}
+          {heldWithoutPhoto.length > 0 ? (
+            <section
+              aria-labelledby="builder-stock-held-heading"
+              className="mb-6"
+            >
+              <h3
+                id="builder-stock-held-heading"
+                className="text-sm font-medium"
+              >
+                {heldWithoutPhoto.length === 1
+                  ? 'One property is waiting to go live'
+                  : `${heldWithoutPhoto.length} properties are waiting to go live`}
+              </h3>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Your stock list publishes in one go, once every property in
+                it has a photo. These are the ones still without one — add a
+                picture to each and the whole list goes live.
+              </p>
+              <ul className="bd-plate-list builder-stock-list-plates mt-3">
+                {heldWithoutPhoto.map((item) => (
+                  <StockPlate
+                    key={item.id}
+                    item={item}
+                    saving={setAvailabilityMutation.isPending}
+                    onAvailabilityChange={(next) => {
+                      setAvailabilityMutation.mutate(
+                        { stockItemId: item.id, availability: next },
+                      );
+                    }}
+                    onRemoved={() => { void heldItemsQuery.refetch(); }}
+                  />
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
           {itemsQuery.isLoading ? (
             <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
@@ -660,96 +817,36 @@ export default function BuilderStockList() {
           ) : !records.length ? (
             <div className="py-12 text-center">
               <Boxes className="mx-auto h-10 w-10 text-muted-foreground/50" aria-hidden />
+              {/*
+                "NO STOCK HAS BEEN UPLOADED YET" IS A CLAIM ABOUT THE UPLOAD,
+                AND THIS BRANCH ONLY KNOWS ABOUT THE MARKETPLACE.
+
+                A list that imported 47 properties and is holding them all for
+                a photograph has nothing `active` to draw, so it landed here
+                and told the builder they had uploaded nothing — while the
+                sources table three inches above listed the file, its time and
+                "0 new · 47 updated". Where properties are being held, the
+                section above has already named them and this says what it
+                actually knows.
+              */}
               <p className="mt-3 text-sm font-medium">
                 {debounced || availability !== 'all' || uploadFilter !== 'all'
                   ? 'No stock matches those filters'
-                  : 'No stock has been uploaded yet'}
+                  : heldItems.length
+                    ? 'Nothing is on the marketplace yet'
+                    : 'No stock has been uploaded yet'}
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
                 {debounced || availability !== 'all' || uploadFilter !== 'all'
                   ? 'Clear the filters to see everything you have uploaded.'
-                  : 'Upload a spreadsheet, CSV, Word document, PDF or photograph of your schedule.'}
+                  : heldItems.length
+                    ? 'Your stock list has imported and goes live once every property '
+                      + 'in it has a photo.'
+                    : 'Upload a spreadsheet, CSV, Word document, PDF or photograph of your schedule.'}
               </p>
             </div>
           ) : (
             <>
-              {/*
-                WORK IN FLIGHT, SAID ONCE AT THE TOP.
-
-                Reading it off the rows rather than asking the server for a
-                second opinion, so the banner and the badges can never
-                disagree. It disappears by itself: the list re-reads while this
-                is above zero and the count comes down as the engine settles
-                each property, so nobody is told to wait on a screen that never
-                changes — and nobody has to reload to find out it is done.
-              */}
-              {workingImages > 0 || arrivingUploads > 0 ? (
-                <div
-                  role="status"
-                  className="builder-stock-list-processing mb-5 flex items-start gap-3 rounded-xl border border-border/70 px-4 py-3"
-                >
-                  <Loader2
-                    className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-muted-foreground motion-reduce:animate-none"
-                    aria-hidden
-                  />
-                  <div className="min-w-0 text-sm">
-                    <p className="font-medium">
-                      {photosTotal !== null && photosTotal > 0 && workingImages > 0
-                        ? `Processing property photos — ${photosReady} of ${photosTotal} ready`
-                        : workingImages > 0
-                          ? workingImages === 1
-                            ? 'Finding a picture for 1 property'
-                            : `Finding pictures for ${workingImages} properties`
-                          : 'Bringing in your stock list'}
-                    </p>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      {workingImages > 0
-                        ? 'Their photos are being read from your stock list now. '
-                        : null}
-                      {arrivingUploads > 0
-                        ? 'A stock list is still being processed, so more properties '
-                          + 'will appear here as it finishes. '
-                        : null}
-                      This runs on its own and finishes without you — the list
-                      updates as each one lands, so there is no need to upload the
-                      file again.
-                    </p>
-                  </div>
-                </div>
-              ) : null}
-
-              {/*
-                THE HONEST FAILURE LINE. Photos the pipeline has exhausted are
-                a different fact from photos still coming, and hiding them
-                inside the spinner was how six blank cards sat unexplained for
-                half an hour. No jargon, no re-upload ask: support already has
-                it, and "Add picture" always works.
-              */}
-              {photosFailed > 0 ? (
-                <div
-                  role="status"
-                  className="builder-stock-list-processing mb-5 flex items-start gap-3 rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3"
-                >
-                  <AlertTriangle
-                    className="mt-0.5 h-4 w-4 shrink-0 text-destructive"
-                    aria-hidden
-                  />
-                  <div className="min-w-0 text-sm">
-                    <p className="font-medium">
-                      {photosFailed === 1
-                        ? 'One property’s photo needs attention'
-                        : `${photosFailed} properties’ photos need attention`}
-                    </p>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      Their photos could not be processed from the stock list and
-                      our team has been alerted. The rest of your list is
-                      unaffected. You can also add a picture to any property
-                      yourself with {'“'}Add picture{'”'}.
-                    </p>
-                  </div>
-                </div>
-              ) : null}
-
               {/*
                 ONE PRESENTATION. THE PLATE SHEET.
 

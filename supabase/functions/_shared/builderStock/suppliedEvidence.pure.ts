@@ -363,15 +363,27 @@ export function readSuppliedEvidence(
   let operational = 0;
   let open = 0;
   let inFlight = 0;
+  /*
+   * Branches that DID hand over an image which the role and eligibility gates
+   * then declined — a masterplan, a location map, an agency lockup. They are
+   * `inspected` like any other finished branch (no fault occurred, and there
+   * is nothing to come back for), but they are the difference between "your
+   * documents carry no picture" and "your documents carry only plans", and
+   * the exhausted sentence below used to assert the first for both.
+   */
+  let recoveredButUnused = 0;
   const failing: string[] = [];
 
   for (const branch of branches) {
-    const verdict = classifyBranchRecord(
-      input.stored, branch,
-      branchQuestion(
-        branch, input.provenanceVersion, input.sourceAnchor, input.runtimeVersion));
-    if (verdict === 'inspected') inspected += 1;
-    else if (verdict === 'operational') { operational += 1; failing.push(branch.column); }
+    const question = branchQuestion(
+      branch, input.provenanceVersion, input.sourceAnchor, input.runtimeVersion);
+    const verdict = classifyBranchRecord(input.stored, branch, question);
+    if (verdict === 'inspected') {
+      inspected += 1;
+      const record = branchRecord(input.stored, branch.url) as
+        { result?: unknown } | null;
+      if (record?.result === BRANCH_IMAGE_RECOVERED) recoveredButUnused += 1;
+    } else if (verdict === 'operational') { operational += 1; failing.push(branch.column); }
     else if (verdict === 'in_flight') inFlight += 1;
     else open += 1;
   }
@@ -409,8 +421,18 @@ export function readSuppliedEvidence(
   }
   return {
     state: 'exhausted', total: branches.length, inspected, operational, open,
-    detail: `all ${branches.length} builder sources were read and none names an image `
-      + 'for this property',
+    /*
+     * SAY WHICH KIND OF NOTHING IT WAS. We reach `exhausted` with every branch
+     * read and no photograph accepted — but that happens two ways, and telling
+     * a builder their documents "name no image" when one of them handed over a
+     * masterplan is a sentence they cannot act on and cannot recognise.
+     */
+    detail: recoveredButUnused
+      ? `all ${branches.length} builder sources were read; ${recoveredButUnused} `
+        + `named an image that is not a photograph of this property (a plan, a map `
+        + `or other collateral) and the rest name none`
+      : `all ${branches.length} builder sources were read and none names an image `
+        + 'for this property',
   };
 }
 
