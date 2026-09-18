@@ -40,38 +40,6 @@ export const ELECTION_CONTEXT_HEADER = 'x-election-context';
 export const MAX_DOCUMENT_BYTES = 32 * 1024 * 1024;
 
 /**
- * The largest document the Edge may elect IN-PROCESS when the worker is
- * missing — the bounded fallback's bound.
- *
- * IT IS A MEASUREMENT, NOT A POLICY, which is the whole point of it living
- * here beside the wire limits rather than inside the client. Two production
- * readings fix it:
- *
- *   ELECTS: 7.2–10.2 MB, every one returning a facade from page 1 in
- *   single-digit seconds (2026-09-15, forensics run 34939752502; Lot 709's
- *   7.2 MB elected in 4.4 s in-process).
- *
- *   KILLED: 11.33, 13.20, 13.20, 13.21 and 20.42 MB, all `CPU Time exceeded`
- *   against a 2,000 ms limit (2026-09-18, project htfluofznhxeumblwbww) — on
- *   five properties whose brochures each hold a clean 1280x720 or 1920x1080
- *   facade render, so nothing was learned by the five kills.
- *
- * 10.5 MB is the only line between those two sets. It must stay above the
- * largest measured success and below the smallest measured kill; a spec
- * asserts exactly that, so moving it needs a new measurement rather than an
- * opinion. Above it the election answers `unreachable` — operational,
- * retried, and naming the two secrets that would let the document be read
- * properly — instead of spending an item's whole budget dying.
- */
-export const IN_PROCESS_NO_CAPACITY_MAX_BYTES = Math.floor(10.5 * 1024 * 1024);
-
-/** The largest document measured to elect in-process without a CPU kill. */
-export const MEASURED_IN_PROCESS_ELECTED_BYTES = Math.floor(10.2 * 1024 * 1024);
-
-/** The smallest document measured to be CPU-killed electing in-process. */
-export const MEASURED_IN_PROCESS_KILLED_BYTES = Math.floor(11.33 * 1024 * 1024);
-
-/**
  * How long the Edge waits for an answer.
  *
  * Inside `RECOVERY_DEADLINE_MS` (75 s) on purpose, so the branch deadline is

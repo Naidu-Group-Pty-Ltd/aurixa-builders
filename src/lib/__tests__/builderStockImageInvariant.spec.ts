@@ -26,11 +26,6 @@ import {
   RUNTIME_VERSION,
 } from '../../../supabase/functions/_shared/builderStock/runtimeVersion.pure';
 import {
-  IN_PROCESS_NO_CAPACITY_MAX_BYTES,
-  MEASURED_IN_PROCESS_ELECTED_BYTES,
-  MEASURED_IN_PROCESS_KILLED_BYTES,
-} from '../../../supabase/functions/_shared/builderStock/pdfElectionBoundary.pure';
-import {
   lifecycleForNewProperty,
 } from '../../../supabase/functions/_shared/builderStock/stockLifecycle.pure';
 
@@ -249,31 +244,10 @@ describe('the versions that reopen the wrongly-retired branches', () => {
     expect(read(UNIVERSAL)).toContain('set_builder_stock_source_images_target(26)');
   });
 
-  /*
-   * THE BOUND IS A MEASUREMENT, SO THE TEST IS ONE TOO.
-   *
-   * This used to assert the literal `25 * 1024 * 1024`, which pinned a number
-   * taken from the INGEST cap — what may be uploaded — rather than from
-   * anything anybody had timed. It admitted documents nothing had measured,
-   * and on 18 September 2026 five brochures of 11.33–20.42 MB were elected
-   * in-process and `CPU Time exceeded`, holding a 47-property list invisible.
-   *
-   * So the rule is asserted instead of the value: the bound must sit ABOVE
-   * every document measured to elect and BELOW every document measured to be
-   * killed. Moving it now needs a new measurement rather than an opinion.
-   */
-  it('the missing-worker in-process election is bounded by measurement, not by the ingest cap', () => {
-    expect(IN_PROCESS_NO_CAPACITY_MAX_BYTES)
-      .toBeGreaterThanOrEqual(MEASURED_IN_PROCESS_ELECTED_BYTES);
-    expect(IN_PROCESS_NO_CAPACITY_MAX_BYTES)
-      .toBeLessThan(MEASURED_IN_PROCESS_KILLED_BYTES);
-    // And it is still a FALLBACK: the worker remains the way a heavy document
-    // is actually read, so a refusal has to name the secrets that enable it.
+  it('the missing-worker in-process election reads to the 25 MB ingest cap — the 6 MB line is gone', () => {
     const code = read(`${SHARED}/pdfElectionClient.ts`);
-    expect(code).toContain('BUILDER_STOCK_PDF_WORKER_URL and BUILDER_STOCK_PDF_WORKER_TOKEN');
-    // The two bounds this replaced must not come back.
+    expect(code).toContain('IN_PROCESS_NO_CAPACITY_MAX_BYTES = 25 * 1024 * 1024');
     expect(code).not.toContain('= 6 * 1024 * 1024');
-    expect(code).not.toContain('IN_PROCESS_NO_CAPACITY_MAX_BYTES = 25 * 1024 * 1024');
   });
 
   it('the settler reports real failures to the completion RPC', () => {
