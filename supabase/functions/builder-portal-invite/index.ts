@@ -37,7 +37,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0';
 import { createCorsHeaders } from '../_shared/auth.ts';
 import { enforceCsrf, csrfDenied } from '../_shared/csrfGuard.ts';
 import { getBrandConfig } from '../_shared/brand-config.ts';
-import { hashSessionToken } from '../_shared/sessionHash.ts';
+import { INVITE_EXPIRY_HOURS, inviteUrlFor, mintBuilderInvite } from '../_shared/builderInvite.ts';
 import { meteredFetch } from '../_shared/meteredFetch.ts';
 import { getPortalClientIp } from '../_shared/requestSecurity.ts';
 import {
@@ -45,7 +45,6 @@ import {
   builderGovernanceError,
 } from '../_shared/builderPortalAuth.ts';
 
-const INVITE_EXPIRY_HOURS = 72;
 
 /** Roles an owner or administrator may hand out. Never 'owner' — see header. */
 const INVITABLE_ROLES = new Set(['administrator', 'manager', 'member', 'read_only']);
@@ -138,13 +137,12 @@ Deno.serve(async (req) => {
     };
 
     const issueInvite = async (target: { id: string; email: string; name: string | null }, resent: boolean) => {
-      const inviteToken = `${crypto.randomUUID()}-${crypto.randomUUID()}`;
-      const inviteTokenHash = await hashSessionToken(inviteToken);
-      if (!inviteTokenHash) {
+      const minted = await mintBuilderInvite();
+      if (!minted) {
         console.error('[builder-portal-invite] hashing unavailable — refusing to store an unpeppered invite token');
         return json({ error: 'Invite service unavailable' }, 503);
       }
-      const expiresAt = new Date(Date.now() + INVITE_EXPIRY_HOURS * 3_600_000);
+      const { token: inviteToken, tokenHash: inviteTokenHash, expiresAt } = minted;
 
       const { error: updateError } = await supabase.from('builder_portal_users').update({
         invite_token_hash: inviteTokenHash,
@@ -159,8 +157,7 @@ Deno.serve(async (req) => {
       await supabase.rpc('builder_ensure_onboarding_steps', { _builder_user_id: target.id });
 
       const brand = await getBrandConfig();
-      const appUrl = Deno.env.get('APP_BASE_URL') || 'https://builders.aurixasystems.com.au';
-      const inviteUrl = `${appUrl}/builder/accept-invite?token=${encodeURIComponent(inviteToken)}`;
+      const inviteUrl = inviteUrlFor(inviteToken);
       const organisationName = session.active_organisation?.legal_name || brand.companyName;
 
       let emailSent = false;

@@ -148,7 +148,33 @@ describe('builder-network-admin, at the source', () => {
       const head = chunk.slice(0, 40);
       expect(head.includes('.select(')).toBe(true);
     }
-    expect(source).not.toContain("builder_organisation_memberships");
+  });
+
+  it('touches memberships only to bootstrap an organisation that has none', () => {
+    // This assertion used to be `not.toContain('builder_organisation_memberships')`
+    // — an absolute ban standing in for the real rule, which is that the
+    // operator must not decide membership in somebody ELSE'S organisation.
+    //
+    // `invite_organisation_owner` needs that table: it counts members to
+    // REFUSE when any exist, and seeds the first owner when none do. An
+    // organisation with zero members has nobody to decide for it, and
+    // somebody has to seed it. So the ban is replaced by the narrower rule
+    // it was proxying for, which is checked here rather than assumed.
+    const uses = source.split("from('builder_organisation_memberships')").slice(1);
+    expect(uses.length).toBe(2);
+
+    // Every use is inside the bootstrap operation, after its guard.
+    const bootstrap = source.indexOf("operation === 'invite_organisation_owner'");
+    expect(bootstrap).toBeGreaterThan(-1);
+    const guard = source.indexOf('organisation_already_has_members');
+    expect(guard).toBeGreaterThan(bootstrap);
+    const insert = source.indexOf("membership_role: 'owner'");
+    expect(insert).toBeGreaterThan(guard);
+
+    // And the count that guards it is a real count, not a hopeful read.
+    expect(source).toMatch(/builder_organisation_memberships'\)[\s\S]{0,200}count:\s*'exact',\s*head:\s*true/);
+    // Nothing anywhere updates or deletes a membership.
+    expect(source).not.toMatch(/builder_organisation_memberships'\)[\s\S]{0,120}\.(update|delete)\(/);
   });
 
   it('a closed organisation is terminal', () => {
