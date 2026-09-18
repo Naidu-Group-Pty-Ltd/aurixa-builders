@@ -326,4 +326,53 @@ if (uploadIds.length) {
   for (const row of cohort) console.log(`  ${JSON.stringify(row)}`);
 }
 
+// ---------------------------------------------------------------------------
+// 5. One line per property.
+//
+// THE WHOLE TRACE ON ONE ROW, because this is the view that is read again
+// after every recovery tick and a full dump cannot be compared tick to tick.
+// Branches are printed as `column=state`, in the order they were enumerated,
+// because WHICH COLUMN a stored image came from is the question these five
+// turned on: a facade and a siting diagram are different pictures and the
+// column header is the only thing on the row that says which is which.
+// ---------------------------------------------------------------------------
+const assets = await sql('branch summary', `
+  select stock_item_id, column_header, state, count(*) as rows
+    from public.builder_stock_source_assets
+   where stock_item_id in (${inList})
+   group by 1, 2, 3
+   order by 1, 2, 3`);
+const images = await sql('image summary', `
+  select stock_item_id,
+         source_detail->>'source_column' as source_column,
+         source_detail->>'role'          as role,
+         source_detail->>'marketplace_display_eligible' as eligible,
+         source_detail->>'marketplace_rejection_reason' as rejection,
+         processing_status, byte_size
+    from public.builder_stock_item_images
+   where stock_item_id in (${inList})
+   order by stock_item_id, created_at`);
+
+heading('TRACE — one line per property');
+for (const item of items) {
+  const id = String(item.id);
+  const branches = assets.filter((a) => String(a.stock_item_id) === id)
+    .map((a) => `${safeDetail(String(a.column_header ?? 'embedded'), 40)}=${a.state}${
+      Number(a.rows) > 1 ? `x${a.rows}` : ''}`);
+  const stored = images.filter((i) => String(i.stock_item_id) === id)
+    .map((i) => `${safeDetail(String(i.source_column ?? '?'), 40)} -> role=${i.role} ${
+      i.eligible === 'true' ? 'ELIGIBLE' : `INELIGIBLE(${i.rejection ?? '?'})`}`);
+  console.log(`\n${item.external_reference ?? id.slice(0, 8)}  lot=${
+    item.lot_number ?? '—'}  design=${item.house_design ?? '—'}  ${
+    item.development_name ?? '—'}`);
+  console.log(`  id         ${id}`);
+  console.log(`  state      lifecycle=${item.lifecycle_status} stage=${
+    item.image_work_stage} attempts=${item.image_work_attempts} primary=${
+    item.primary_image_id ? 'set' : 'NONE'}`);
+  console.log(`  last       ${safeDetail(String(item.image_work_last_result ?? '—'), 200)}`);
+  console.log(`  branches   ${branches.join('  |  ') || '(none enumerated)'}`);
+  for (const line of stored) console.log(`  stored     ${line}`);
+  if (!stored.length) console.log('  stored     (nothing)');
+}
+
 console.log('\nRead-only run complete. Nothing was written.');
