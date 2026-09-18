@@ -128,15 +128,25 @@ if (!doomed.length) {
   Deno.exit(0);
 }
 
+/*
+ * DEDUPED BY (item, key). The manifest holds one row per UPLOAD, so a branch
+ * that survived a replacement matches its predicate once per upload and the
+ * same key arrives twice. `#-` would no-op the second time, but a recovery
+ * whose printed plan lists an act twice is a recovery nobody can check.
+ */
 const byItem = new Map<string, string[]>();
+const seen = new Set<string>();
 for (const row of doomed) {
   const id = String(row.id);
+  const key = String(row.key);
+  if (seen.has(`${id}|${key}`)) continue;
+  seen.add(`${id}|${key}`);
   console.log(`${id}`);
-  console.log(`  remove  ${String(row.key)}`);
+  console.log(`  remove  ${key}`);
   console.log(`          result=${row.result} exhaustion=${row.exhaustion ?? '—'}`);
   console.log(`          ${row.reason}`);
   if (!byItem.has(id)) byItem.set(id, []);
-  byItem.get(id)!.push(String(row.key));
+  byItem.get(id)!.push(key);
 }
 
 /*
