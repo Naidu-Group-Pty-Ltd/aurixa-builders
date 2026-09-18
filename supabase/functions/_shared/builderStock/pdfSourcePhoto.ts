@@ -153,6 +153,21 @@ async function collectDrawnImages(
   return out;
 }
 
+export interface RecoveredObjects {
+  /** `objectNumber -> header`, for the objects the streams gave up. */
+  objects: Map<number, string>;
+  /**
+   * How many of this document's object streams could NOT be read.
+   *
+   * Reported rather than swallowed because it is the difference between a
+   * document that says nothing and a document we did not finish reading, and
+   * `electFromPdfBytes` banks a permanent verdict on that distinction. A
+   * stream still contributes nothing when it fails — a partially readable PDF
+   * is worth reading — but the caller is now told it was partial.
+   */
+  unreadStreams: number;
+}
+
 /**
  * The objects a document hides inside compressed object streams.
  *
@@ -165,13 +180,14 @@ async function collectDrawnImages(
  */
 export async function recoverCompressedObjects(
   bytes: Uint8Array,
-): Promise<Map<number, string>> {
+): Promise<RecoveredObjects> {
   const recovered = new Map<number, string>();
+  let unreadStreams = 0;
   let slices: ReturnType<typeof objectStreamSlices>;
   try {
     slices = objectStreamSlices(bytes);
   } catch {
-    return recovered;
+    return { objects: recovered, unreadStreams };
   }
 
   for (const slice of slices) {
@@ -180,6 +196,7 @@ export async function recoverCompressedObjects(
     try {
       text = new TextDecoder('latin1').decode(slice.flate ? await inflate(raw) : raw);
     } catch {
+      unreadStreams += 1;
       continue;
     }
     /*
@@ -200,7 +217,7 @@ export async function recoverCompressedObjects(
       recovered.set(number, header);
     }
   }
-  return recovered;
+  return { objects: recovered, unreadStreams };
 }
 
 /**
@@ -339,7 +356,7 @@ export async function extractExactSourcePhotoFromPdf(
   bytes: Uint8Array,
   options: { maxPages?: number } = {},
 ): Promise<PdfPhoto | null> {
-  const recovered = await recoverCompressedObjects(bytes);
+  const { objects: recovered } = await recoverCompressedObjects(bytes);
   const limit = Math.max(1, Math.min(options.maxPages ?? MAX_PAGES_SEARCHED, MAX_PAGES_SEARCHED));
   for (let index = 0; index < limit; index++) {
     const photo = await extractPdfPagePhoto(bytes, index, recovered);
@@ -360,7 +377,7 @@ export async function extractPdfPhotosByPage(
   bytes: Uint8Array,
   options: { maxPages?: number } = {},
 ): Promise<Array<{ page: number; photo: PdfPhoto }>> {
-  const recovered = await recoverCompressedObjects(bytes);
+  const { objects: recovered } = await recoverCompressedObjects(bytes);
   const limit = Math.max(1, Math.min(options.maxPages ?? MAX_PAGES_SEARCHED, MAX_PAGES_SEARCHED));
   const out: Array<{ page: number; photo: PdfPhoto }> = [];
   for (let index = 0; index < limit; index++) {
@@ -632,6 +649,15 @@ export interface PdfPrimarySelection {
   /** The pages `coverSearchPages` named. Empty is the document's own answer. */
   coverPages: number[];
   pageOrderAuthoritative: boolean;
+  /**
+   * Object streams that could not be inflated.
+   *
+   * Carried up to the election because `pageOrderAuthoritative: false` has two
+   * opposite causes and the caller cannot otherwise tell them apart: a
+   * document whose catalogue genuinely names no page tree, and one whose page
+   * tree sits in a stream we failed to read. The second is ours.
+   */
+  objectStreamsUnread: number;
 }
 
 /**
@@ -701,7 +727,8 @@ export async function selectPdfPropertyPrimaryHoldingSlot(
       primary: null,
       // The DOCUMENT's answer: no page of it can be this property's cover.
       coverPages: [],
-      pageOrderAuthoritative: pageOrderIsAuthoritative(bytes, recovered),
+      pageOrderAuthoritative: pageOrderIsAuthoritative(bytes, recovered.objects),
+      objectStreamsUnread: recovered.unreadStreams,
     };
   }
   const found = await discoverPdfSourceAssetsHoldingSlot(bytes, {
@@ -744,7 +771,16 @@ export async function selectPdfPropertyPrimaryHoldingSlot(
   return {
     assets, primary, coverPages: searchPages,
     pageOrderAuthoritative: found.pageOrderAuthoritative,
+    objectStreamsUnread: found.objectStreamsUnread,
   };
+}
+
+/** What `discoverPdfSourceAssets` read out of one document. */
+export interface PdfSourceDiscovery {
+  assets: PdfSourceAsset[];
+  pageOrderAuthoritative: boolean;
+  /** Object streams this document carries that could not be inflated. */
+  objectStreamsUnread: number;
 }
 
 /**
@@ -773,7 +809,7 @@ export async function discoverPdfSourceAssets(
      */
     pages?: readonly number[];
   } = {},
-): Promise<{ assets: PdfSourceAsset[]; pageOrderAuthoritative: boolean }> {
+): Promise<PdfSourceDiscovery> {
   // Same bound as the election: one document's buffers at a time per isolate.
   return withPdfDecodeSlot(() => discoverPdfSourceAssetsHoldingSlot(bytes, options));
 }
@@ -784,11 +820,11 @@ async function discoverPdfSourceAssetsHoldingSlot(
     maxPages?: number;
     pages?: readonly number[];
   } = {},
-): Promise<{ assets: PdfSourceAsset[]; pageOrderAuthoritative: boolean }> {
+): Promise<PdfSourceDiscovery> {
   const recovered = await recoverCompressedObjects(bytes);
-  const authoritative = pageOrderIsAuthoritative(bytes, recovered);
+  const authoritative = pageOrderIsAuthoritative(bytes, recovered.objects);
   const limit = Math.max(1, Math.min(options.maxPages ?? MAX_PAGES_SEARCHED, MAX_PAGES_SEARCHED));
-  const { kept } = await discoverCandidates(bytes, recovered, limit);
+  const { kept } = await discoverCandidates(bytes, recovered.objects, limit);
   const only = options.pages?.length ? new Set(options.pages) : null;
 
   const assets: PdfSourceAsset[] = [];
@@ -835,7 +871,7 @@ async function discoverPdfSourceAssetsHoldingSlot(
     const page = index + 1;
     if (only && !only.has(page)) continue;
     if (pagesWithAssets.has(page)) continue;
-    const cut = await extractPdfPagePhoto(bytes, index, recovered);
+    const cut = await extractPdfPagePhoto(bytes, index, recovered.objects);
     if (!cut || cut.provenance.method !== 'page_crop') continue;
     assets.push({
       page,
@@ -856,5 +892,9 @@ async function discoverPdfSourceAssetsHoldingSlot(
     });
   }
 
-  return { assets, pageOrderAuthoritative: authoritative };
+  return {
+    assets,
+    pageOrderAuthoritative: authoritative,
+    objectStreamsUnread: recovered.unreadStreams,
+  };
 }

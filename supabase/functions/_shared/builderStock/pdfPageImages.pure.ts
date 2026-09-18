@@ -418,6 +418,53 @@ function mediaBoxOf(page: PdfObject, objects: Map<number, PdfObject>): Rect | nu
   return null;
 }
 
+/**
+ * `/Length`, and ONLY where the dictionary states it as a number itself.
+ *
+ * A stream may declare its length indirectly (`/Length 12 0 R`), which is a
+ * pointer to an object this scanner would have to resolve; that is not a
+ * length and must never be read as one — `/Length 12 0 R` says twelve of
+ * nothing. Absent or indirect, the caller falls back to locating `endstream`.
+ */
+function declaredStreamLength(header: string): number | null {
+  const match = /\/Length\s+(\d{1,10})\b/.exec(header);
+  if (!match) return null;
+  const rest = header.slice(match.index + match[0].length);
+  if (/^\s+\d{1,5}\s+R\b/.test(rest)) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/**
+ * The bytes of one object's stream.
+ *
+ * THE DECLARED LENGTH DECIDES, AND TRIMMING NEWLINES DOES NOT.
+ *
+ * MEASURED, 18 SEPTEMBER 2026, on the live Lot 801 Harlow brochure. This
+ * used to find `endstream` and then walk backwards over every trailing
+ * `\n`/`\r` to undo the writer's end-of-line marker. The marker really is
+ * there — PDF 32000-1 §7.3.8.1 puts an EOL between the data and `endstream` —
+ * but a Flate stream is BINARY, so its own last byte is 0x0a or 0x0d about
+ * twice in every 256 streams, and the loop cannot tell the two apart. On that
+ * document the object stream at byte 2440 declares `/Length 93`, its final
+ * compressed byte IS 0x0a, and the walk ate it: 92 bytes handed to inflate.
+ *
+ * WHY ONE BYTE MATTERED. Deno's `DecompressionStream` returns what it decoded
+ * before the truncation — all 134 bytes — and workerd's refuses the whole
+ * stream (`Called close() on a decompression stream with incomplete data`).
+ * So the SAME document read by the SAME code answered differently on the two
+ * runtimes this election runs on, and the two objects that stream carried
+ * were object 288, `<</Count 6/Kids[...]/Type/Pages>>` — the document's own
+ * page tree root. Without it `pageOrderIsAuthoritative` is false, every page
+ * is refused as a cover, and the property's correctly decoded facade came
+ * back `role: unknown`. See `electFromPdfBytes` for the verdict that banked.
+ *
+ * `/Length` is exact and the fallback is a guess, so the declared length is
+ * taken wherever it is consistent with the `endstream` actually found — the
+ * gap between them may only be the 0-2 byte EOL the specification allows.
+ * A dictionary whose `/Length` disagrees with the document's own bytes is a
+ * damaged one, and there the scan still decides exactly as it always did.
+ */
 function streamSlice(
   object: PdfObject,
   bytes: Uint8Array,
@@ -425,15 +472,24 @@ function streamSlice(
   const streamMatch = /stream\r?\n/.exec(object.header);
   if (!streamMatch) return null;
   const start = object.start + streamMatch.index + streamMatch[0].length;
+  const flate = /\/FlateDecode\b/.test(object.header);
 
   const window = Math.max(start, object.end - 64);
   const tail = decoder.decode(bytes.subarray(window, object.end));
   const endstream = tail.lastIndexOf('endstream');
-  let end = endstream < 0 ? object.end : window + endstream;
+  const marker = endstream < 0 ? object.end : window + endstream;
+
+  const declared = declaredStreamLength(object.header);
+  if (declared !== null) {
+    const end = start + declared;
+    if (end > start && end <= marker && marker - end <= 2) return { start, end, flate };
+  }
+
+  let end = marker;
   while (end > start && (bytes[end - 1] === 0x0a || bytes[end - 1] === 0x0d)) end -= 1;
   if (end <= start) return null;
 
-  return { start, end, flate: /\/FlateDecode\b/.test(object.header) };
+  return { start, end, flate };
 }
 
 const COMPONENTS_BY_COLOUR_SPACE: Record<string, number> = {
