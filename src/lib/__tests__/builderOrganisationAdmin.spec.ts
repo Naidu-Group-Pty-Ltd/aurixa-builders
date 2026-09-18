@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  AU_STATES,
   DESCRIPTIVE_COLUMNS,
   ORG_TYPES,
   readOrganisationInput,
@@ -49,7 +50,7 @@ describe('creating an organisation', () => {
 
   it('normalises an ABN written with spaces, and lowercases the email', () => {
     const result = readOrganisationInput(
-      { legal_name: 'X', abn: ' 12 345 678 901 ', contact_email: ' Owner@Example.COM ' },
+      { legal_name: 'X', org_type: 'builder', abn: ' 12 345 678 901 ', contact_email: ' Owner@Example.COM ' },
       'create',
     );
     expect(result.ok).toBe(true);
@@ -60,9 +61,108 @@ describe('creating an organisation', () => {
   });
 
   it('refuses a contact address that is not an email', () => {
-    const result = readOrganisationInput({ legal_name: 'X', contact_email: 'not-an-email' }, 'create');
+    const result = readOrganisationInput({ legal_name: 'X', org_type: 'builder', contact_email: 'not-an-email' }, 'create');
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toBe('contact_email_is_not_an_email');
+  });
+});
+
+/**
+ * Every shape rule the COLUMN holds, refused here with the field's own name.
+ *
+ * The rules are read out of the migration rather than restated, so this suite
+ * fails if the table gains a constraint the validator does not enforce —
+ * which is exactly how six of eight realistic console inputs came to reach
+ * Postgres and return an unattributed 500.
+ */
+describe('the column rules are enforced before the database sees them', () => {
+  const migration = read('supabase/migrations/00000000000000_network_baseline.sql');
+  const table = migration.slice(
+    migration.indexOf('CREATE TABLE public.builder_organisations '),
+    migration.indexOf('CREATE TABLE public.builder_organisations ') + 4000,
+  );
+  const complete = (over: Record<string, unknown> = {}) => ({
+    legal_name: 'Bright Homes Pty Ltd',
+    org_type: 'builder',
+    ...over,
+  });
+
+  it('requires a type, because the column is NOT NULL with no default', () => {
+    expect(table).toMatch(/org_type text NOT NULL/);
+    expect(table).not.toMatch(/org_type text NOT NULL DEFAULT/);
+    for (const absent of [{}, { org_type: '' }, { org_type: '   ' }]) {
+      const result = readOrganisationInput({ legal_name: 'X', ...absent }, 'create');
+      expect(result.ok, JSON.stringify(absent)).toBe(false);
+      if (!result.ok) expect(result.error).toBe('an_organisation_type_is_required');
+    }
+  });
+
+  it('never lets an edit clear the type', () => {
+    const result = readOrganisationInput({ org_type: '' }, 'update');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toBe('an_organisation_type_is_required');
+  });
+
+  it('holds an ABN to eleven digits and an ACN to nine', () => {
+    expect(table).toContain("abn ~ '^[0-9]{11}$'");
+    expect(table).toContain("acn ~ '^[0-9]{9}$'");
+    for (const [field, bad, error] of [
+      ['abn', '123', 'abn_must_be_11_digits'],
+      ['abn', '123456789012', 'abn_must_be_11_digits'],
+      ['abn', 'not-a-number', 'abn_must_be_11_digits'],
+      ['acn', 'abc', 'acn_must_be_9_digits'],
+      ['acn', '12345678', 'acn_must_be_9_digits'],
+    ] as const) {
+      const result = readOrganisationInput(complete({ [field]: bad }), 'create');
+      expect(result.ok, `${field}=${bad}`).toBe(false);
+      if (!result.ok) expect(result.error).toBe(error);
+    }
+    // Spacing is the operator's, not a different number.
+    const ok = readOrganisationInput(complete({ abn: '12 345 678 901', acn: '123-456-789' }), 'create');
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      expect(ok.patch.abn).toBe('12345678901');
+      expect(ok.patch.acn).toBe('123456789');
+    }
+  });
+
+  it('holds a postcode to four digits', () => {
+    expect(table).toContain("postcode ~ '^[0-9]{4}$'");
+    for (const bad of ['312', '30000', 'VIC']) {
+      const result = readOrganisationInput(complete({ postcode: bad }), 'create');
+      expect(result.ok, bad).toBe(false);
+      if (!result.ok) expect(result.error).toBe('postcode_must_be_4_digits');
+    }
+    expect(readOrganisationInput(complete({ postcode: '3000' }), 'create').ok).toBe(true);
+  });
+
+  it('takes the eight states the column takes, and refuses rather than corrects', () => {
+    for (const state of AU_STATES) {
+      expect(table, state).toContain(`'${state}'::text`);
+      expect(readOrganisationInput(complete({ state }), 'create').ok, state).toBe(true);
+    }
+    // `vic` is plainly meant and is still refused: upper-casing one spelling
+    // while guessing at `Victoria` is a console deciding what was said.
+    for (const bad of ['vic', 'Victoria', 'NZ']) {
+      const result = readOrganisationInput(complete({ state: bad }), 'create');
+      expect(result.ok, bad).toBe(false);
+      if (!result.ok) expect(result.error).toBe('state_is_not_an_australian_state');
+    }
+  });
+
+  it('leaves every one of those columns nullable-by-blank', () => {
+    // A blank box is "not stated", which each column accepts as NULL. Only
+    // the two the table makes NOT NULL are required.
+    const result = readOrganisationInput(
+      complete({ abn: '', acn: '', postcode: '', state: '', contact_email: '' }),
+      'create',
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      for (const column of ['abn', 'acn', 'postcode', 'state', 'contact_email'] as const) {
+        expect(result.patch[column], column).toBeNull();
+      }
+    }
   });
 });
 
@@ -99,6 +199,7 @@ describe('the lifecycle columns are not writable here', () => {
     const result = readOrganisationInput(
       {
         legal_name: 'X',
+        org_type: 'builder',
         status: 'active',
         is_active: true,
         activated_at: '2026-01-01T00:00:00Z',
