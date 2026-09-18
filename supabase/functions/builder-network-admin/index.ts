@@ -11,7 +11,9 @@
  * vetting (approve / suspend / reinstate — the lifecycle of the
  * `pending_verification` state registration mints), the workspace
  * DIRECTORY (MC → network per §6: registry upserts and connection
- * minting), and read-only visibility. What deliberately does NOT:
+ * minting), the MARKETPLACE RANKING's manual instruments (pin, suppress,
+ * freeze, commercial placement — never the score itself), and read-only
+ * visibility. What deliberately does NOT:
  *
  *  * Join requests are DECIDED BY ORGANISATION OWNERS — the operator sees
  *    the queue and cannot decide it. A platform that decides membership in
@@ -475,6 +477,256 @@ Deno.serve(async (req) => {
         actor_side: 'platform',
         detail: { mc_operator: operator },
       });
+      return json({ success: true });
+    }
+
+
+    // ================================================================ ranking
+    /*
+     * MISSION CONTROL'S HAND ON THE MARKETPLACE.
+     *
+     * The ranking is computed from evidence and published to every clone, and
+     * these four operations are the only way a person changes it. They are
+     * deliberately NOT a way to edit a score: a pin, a suppression and a freeze
+     * sit BESIDE the computed answer rather than overwriting it, so the score
+     * stays a true statement about the builder and the intervention stays
+     * legible as an intervention for as long as the row exists.
+     *
+     * There is no `set_merit_score`, and there must never be one. An operator
+     * who could type a merit score could tell a builder a number that no
+     * evidence produced, and every explanation this feature offers — the
+     * signal breakdown, the confidence, the list of what could not be measured
+     * — would become decoration over a hand-entered figure.
+     */
+
+    if (operation === 'ranking_overview') {
+      const [{ data: state }, { data: snapshots }, { data: overrides }, { data: placements }] =
+        await Promise.all([
+          supabase.from('builder_ranking_state').select('*').eq('id', true).maybeSingle(),
+          supabase.from('builder_ranking_snapshots')
+            .select('organisation_id, merit_score, confidence, measured_score, band, computed_at, ranking_version')
+            .order('merit_score', { ascending: false }),
+          supabase.from('builder_ranking_overrides')
+            .select('id, organisation_id, kind, position, reason, created_by, created_at, expires_at')
+            .is('revoked_at', null),
+          supabase.from('builder_commercial_placements')
+            .select('id, organisation_id, tier, priority, starts_at, ends_at, note, created_by')
+            .is('revoked_at', null),
+        ]);
+
+      // Names, so an operator is never asked to act on a uuid.
+      const ids = [...new Set((snapshots ?? []).map((row) => row.organisation_id))];
+      const { data: organisations } = ids.length
+        ? await supabase.from('builder_organisations')
+          .select('id, legal_name, trading_name, status').in('id', ids)
+        : { data: [] as Record<string, unknown>[] };
+
+      const liveStock = await supabase
+        .from('builder_stock_items')
+        .select('organisation_id')
+        .eq('lifecycle_status', 'active');
+      const stockCount = new Map<string, number>();
+      for (const row of liveStock.data ?? []) {
+        stockCount.set(row.organisation_id, (stockCount.get(row.organisation_id) ?? 0) + 1);
+      }
+
+      return json({
+        state: state ?? null,
+        builders: (snapshots ?? []).map((row) => {
+          const org = (organisations ?? []).find((o) => o.id === row.organisation_id);
+          return {
+            ...row,
+            legal_name: org?.legal_name ?? null,
+            trading_name: org?.trading_name ?? null,
+            status: org?.status ?? null,
+            live_stock: stockCount.get(row.organisation_id) ?? 0,
+            override: (overrides ?? []).find((o) => o.organisation_id === row.organisation_id) ?? null,
+            placement: (placements ?? []).find((p) => p.organisation_id === row.organisation_id) ?? null,
+          };
+        }),
+      });
+    }
+
+    if (operation === 'ranking_explain') {
+      const organisationId = String(body.organisation_id || '');
+      if (!organisationId) return json({ error: 'organisation_id_is_required' }, 400);
+      const { data: snapshot } = await supabase
+        .from('builder_ranking_snapshots')
+        .select('*')
+        .eq('organisation_id', organisationId)
+        .maybeSingle();
+      if (!snapshot) return json({ error: 'not_yet_ranked' }, 404);
+      return json({ snapshot });
+    }
+
+    if (operation === 'ranking_set_override') {
+      const organisationId = String(body.organisation_id || '');
+      const kind = String(body.kind || '');
+      const reason = String(body.reason || '').trim();
+      if (!organisationId) return json({ error: 'organisation_id_is_required' }, 400);
+      if (kind !== 'pin' && kind !== 'suppress') return json({ error: 'kind_must_be_pin_or_suppress' }, 400);
+      // The same floor the column enforces, said here so the operator gets a
+      // sentence rather than a constraint violation.
+      if (reason.length < 10) return json({ error: 'reason_must_be_written' }, 400);
+
+      const position = kind === 'pin' ? Number(body.position) : null;
+      if (kind === 'pin' && (!Number.isInteger(position) || (position as number) < 1 || (position as number) > 500)) {
+        return json({ error: 'position_must_be_between_1_and_500' }, 400);
+      }
+
+      /*
+       * An expiry is the default and a standing override has to be ASKED for.
+       * `expires_at: null` in the body is that ask, and it is distinguished
+       * from the field being absent — omitting it takes the column's ninety-day
+       * default, which is the behaviour that stops a forgotten pin shaping the
+       * marketplace for a year.
+       */
+      const explicitExpiry = Object.prototype.hasOwnProperty.call(body, 'expires_at');
+      const expiresAt = explicitExpiry ? body.expires_at : undefined;
+      if (explicitExpiry && expiresAt !== null && Number.isNaN(Date.parse(String(expiresAt)))) {
+        return json({ error: 'expires_at_must_be_a_timestamp_or_null' }, 400);
+      }
+
+      // One live override of each kind per builder: replace rather than stack,
+      // and keep the one being replaced as history.
+      await supabase.from('builder_ranking_overrides')
+        .update({
+          revoked_at: new Date().toISOString(),
+          revoked_by: operator,
+          revoked_reason: 'replaced by a newer override',
+        })
+        .eq('organisation_id', organisationId)
+        .eq('kind', kind)
+        .is('revoked_at', null);
+
+      const row: Record<string, unknown> = {
+        organisation_id: organisationId,
+        kind,
+        position: kind === 'pin' ? position : null,
+        reason,
+        created_by: operator,
+      };
+      if (explicitExpiry) row.expires_at = expiresAt;
+
+      const { data: created, error } = await supabase
+        .from('builder_ranking_overrides')
+        .insert(row)
+        .select('id, organisation_id, kind, position, reason, created_at, expires_at')
+        .maybeSingle();
+      if (error) {
+        console.error('[builder-network-admin] override insert failed', error.message);
+        return json({ error: 'override_not_recorded' }, 400);
+      }
+
+      await logActivity('builder_ranking_override_set', created?.id ?? null, organisationId, {
+        kind, position: created?.position ?? null, expires_at: created?.expires_at ?? null,
+      });
+      return json({ success: true, override: created });
+    }
+
+    if (operation === 'ranking_clear_override') {
+      const organisationId = String(body.organisation_id || '');
+      const kind = String(body.kind || '');
+      if (!organisationId) return json({ error: 'organisation_id_is_required' }, 400);
+      if (kind !== 'pin' && kind !== 'suppress') return json({ error: 'kind_must_be_pin_or_suppress' }, 400);
+
+      // Revoked, never deleted. A register of who moved the marketplace and
+      // why is the whole reason the table exists.
+      const { data: cleared } = await supabase
+        .from('builder_ranking_overrides')
+        .update({
+          revoked_at: new Date().toISOString(),
+          revoked_by: operator,
+          revoked_reason: typeof body.reason === 'string' ? body.reason : null,
+        })
+        .eq('organisation_id', organisationId)
+        .eq('kind', kind)
+        .is('revoked_at', null)
+        .select('id')
+        .maybeSingle();
+      if (!cleared) return json({ error: 'no_live_override_of_that_kind' }, 404);
+
+      await logActivity('builder_ranking_override_cleared', cleared.id, organisationId, { kind });
+      return json({ success: true });
+    }
+
+    if (operation === 'ranking_set_freeze') {
+      const frozen = body.frozen === true;
+      const reason = String(body.reason || '').trim();
+      if (frozen && reason.length < 10) return json({ error: 'reason_must_be_written' }, 400);
+
+      /*
+       * FREEZING HOLDS THE PUBLISHED ORDER STILL. It does not fall back to a
+       * default ordering and it does not clear anything: a marketplace that
+       * reshuffles the moment something goes wrong is a second incident on top
+       * of the first. Recompute reads this before it writes, so a freeze takes
+       * effect at the next run rather than needing the scheduler stopped.
+       */
+      const { error } = await supabase.from('builder_ranking_state').update({
+        frozen,
+        frozen_reason: frozen ? reason : null,
+        frozen_by: frozen ? operator : null,
+        frozen_at: frozen ? new Date().toISOString() : null,
+      }).eq('id', true);
+      if (error) {
+        console.error('[builder-network-admin] freeze failed', error.message);
+        return json({ error: 'freeze_not_recorded' }, 400);
+      }
+
+      await logActivity(frozen ? 'builder_ranking_frozen' : 'builder_ranking_unfrozen', null, null, {});
+      return json({ success: true, frozen });
+    }
+
+    if (operation === 'ranking_set_placement') {
+      const organisationId = String(body.organisation_id || '');
+      const tier = String(body.tier || '');
+      if (!organisationId) return json({ error: 'organisation_id_is_required' }, 400);
+      if (!['partner', 'premium', 'featured'].includes(tier)) {
+        return json({ error: 'tier_must_be_partner_premium_or_featured' }, 400);
+      }
+      const priority = Number.isInteger(Number(body.priority)) ? Number(body.priority) : 100;
+      if (priority < 1 || priority > 1000) return json({ error: 'priority_must_be_between_1_and_1000' }, 400);
+
+      await supabase.from('builder_commercial_placements')
+        .update({ revoked_at: new Date().toISOString(), revoked_by: operator })
+        .eq('organisation_id', organisationId)
+        .is('revoked_at', null);
+
+      const { data: created, error } = await supabase
+        .from('builder_commercial_placements')
+        .insert({
+          organisation_id: organisationId,
+          tier,
+          priority,
+          ends_at: body.ends_at ?? null,
+          note: typeof body.note === 'string' ? body.note : null,
+          created_by: operator,
+        })
+        .select('id, organisation_id, tier, priority, starts_at, ends_at')
+        .maybeSingle();
+      if (error) {
+        console.error('[builder-network-admin] placement insert failed', error.message);
+        return json({ error: 'placement_not_recorded' }, 400);
+      }
+
+      await logActivity('builder_commercial_placement_set', created?.id ?? null, organisationId, {
+        tier, priority, ends_at: created?.ends_at ?? null,
+      });
+      return json({ success: true, placement: created });
+    }
+
+    if (operation === 'ranking_clear_placement') {
+      const organisationId = String(body.organisation_id || '');
+      if (!organisationId) return json({ error: 'organisation_id_is_required' }, 400);
+      const { data: cleared } = await supabase
+        .from('builder_commercial_placements')
+        .update({ revoked_at: new Date().toISOString(), revoked_by: operator })
+        .eq('organisation_id', organisationId)
+        .is('revoked_at', null)
+        .select('id')
+        .maybeSingle();
+      if (!cleared) return json({ error: 'no_live_placement' }, 404);
+      await logActivity('builder_commercial_placement_cleared', cleared.id, organisationId, {});
       return json({ success: true });
     }
 
