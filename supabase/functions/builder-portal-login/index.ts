@@ -32,9 +32,12 @@ import { validateBuilderPortalRequest } from '../_shared/builderSessionToken.ts'
 import {
   auditBuilderIdentity, GENERIC_AUTH_ERROR, issueBuilderSession,
 } from '../_shared/builderSessions.ts';
-import { listAccessibleOrganisations } from '../_shared/builderPortalAuth.ts';
 import {
-  readAccessDenial, readAccountState, readLockout, type MembershipRow,
+  explainNoAccessibleOrganisation,
+  listAccessibleOrganisations,
+} from '../_shared/builderPortalAuth.ts';
+import {
+  readAccountState, readLockout,
 } from '../_shared/builderAccessDenial.pure.ts';
 import { authRateLimitedResponse, enforceAuthRateLimit } from '../_shared/authRateLimit.ts';
 import { parseJsonBody } from '../_shared/validate.ts';
@@ -183,19 +186,11 @@ Deno.serve(async (req) => {
     // already made, never a second opinion about access.
     const organisations = await listAccessibleOrganisations(supabase, portalUser.id);
     if (!organisations.length) {
-      const { data: rows } = await supabase
-        .from('builder_organisation_memberships')
-        .select('status, revoked_at, valid_from, valid_until, builder_organisations!inner(status, legal_name)')
-        .eq('builder_user_id', portalUser.id);
-      const memberships: MembershipRow[] = (rows ?? []).map((row: any) => ({
-        status: row.status ?? null,
-        revoked_at: row.revoked_at ?? null,
-        valid_from: row.valid_from ?? null,
-        valid_until: row.valid_until ?? null,
-        organisation_status: row.builder_organisations?.status ?? null,
-        organisation_legal_name: row.builder_organisations?.legal_name ?? null,
-      }));
-      return deny(readAccessDenial(memberships, now));
+      // Moved into `explainNoAccessibleOrganisation` rather than copied:
+      // `builder-portal-accept-invite` reaches the same state and used to
+      // answer it with a 500, because the explanation lived here and nothing
+      // shared it.
+      return deny(await explainNoAccessibleOrganisation(supabase, portalUser.id, now));
     }
     await supabase.from('builder_portal_users').update({
       last_login_at: new Date().toISOString(),

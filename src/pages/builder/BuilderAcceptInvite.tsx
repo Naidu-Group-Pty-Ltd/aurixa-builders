@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { Loader2, ShieldCheck } from 'lucide-react';
+import { CheckCircle2, Loader2, ShieldCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
@@ -23,6 +23,35 @@ interface InviteDetails {
  * form appears, and validated again on submission — this page rendering a form
  * is never what authorises activation. Every rejection reason renders the same
  * message, matching the single generic error the server returns.
+ *
+ * ## Activation and sign-in are two acts, and the second one may lawfully fail
+ *
+ * MEASURED 18 SEPTEMBER 2026. An invite is legitimately issued ahead of the
+ * organisation going live — that is the whole point of the approval flow, and
+ * `builder-portal-accept-invite` says so in its own header. The organisation
+ * gate applies at LOGIN, not at activation. But the function then asked for a
+ * session unconditionally, `builder_issue_session` refused
+ * (`P0001 BUILDER_SESSION_NOT_PERMITTED`) because
+ * `builder_accessible_organisations` returns nothing while the organisation is
+ * `pending_activation`, and the whole request answered **500 Internal server
+ * error** — AFTER the activation UPDATE had already committed.
+ *
+ * So the worst reading was the one the applicant got: the password WAS set,
+ * the invite WAS spent, and the screen said the server had broken. Re-trying
+ * the link then failed as a spent token, which reads as a second, unrelated
+ * fault.
+ *
+ * Two rules follow, and this page carries the second.
+ *
+ *  * **Activation succeeding is not sign-in succeeding.** The server now
+ *    returns `signed_in: false` with the reason rather than throwing, so the
+ *    act that completed is reported as completed.
+ *
+ *  * **A completed act is never rendered as a failure.** `pending` is drawn as
+ *    a SUCCESS state — the account is ready, and what remains is somebody
+ *    else's approval, not anything the applicant can do or did wrong. Routing
+ *    to `/builder` here would bounce off the same gate and land them on the
+ *    login page with no explanation at all.
  */
 export default function BuilderAcceptInvite() {
   const [searchParams] = useSearchParams();
@@ -36,6 +65,7 @@ export default function BuilderAcceptInvite() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [pending, setPending] = useState<{ code: string; message: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -76,10 +106,49 @@ export default function BuilderAcceptInvite() {
       setError(result.error);
       return;
     }
-    // Activation signs the user in, so the gate takes over from here and routes
+
+    if (result.pending) {
+      // The account is live and the password is set; the organisation is not
+      // approved yet, so there is no session to route with. Say so here rather
+      // than navigating into a gate that would answer with a login page.
+      setPending(result.pending);
+      return;
+    }
+
+    // Activation signed the user in, so the gate takes over from here and routes
     // them to terms or onboarding as required.
     navigate('/builder', { replace: true });
   };
+
+  if (pending) {
+    return (
+      <BuilderAuthShell
+        title="Your account is ready"
+        footer={
+          <Link to="/builder/login" className="text-primary underline-offset-4 hover:underline">
+            Go to sign in
+          </Link>
+        }
+      >
+        <div className="space-y-4">
+          <div className="flex items-start gap-3 rounded-lg border border-border/60 bg-muted/40 px-4 py-3 text-sm">
+            <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-primary" aria-hidden />
+            <div className="space-y-1">
+              <p className="font-medium text-foreground">
+                Your password is set and your invitation is complete.
+              </p>
+              <p className="text-muted-foreground">{pending.message}</p>
+            </div>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            You do not need this invitation link again, and nothing further is needed from you.
+            Sign in with {invite?.email ?? 'your email address'} once you hear that the registration
+            has been approved.
+          </p>
+        </div>
+      </BuilderAuthShell>
+    );
+  }
 
   if (checking) {
     return (

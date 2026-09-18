@@ -17,6 +17,11 @@
 import { extractBuilderSessionToken, validateBuilderPortalHeaders } from './builderSessionToken.ts';
 import { resolveBuilderSessionToken } from './builderSessions.ts';
 import { getPortalClientIp } from './requestSecurity.ts';
+import {
+  readAccessDenial,
+  type AccessDenialReading,
+  type MembershipRow,
+} from './builderAccessDenial.pure.ts';
 
 export interface BuilderOrganisationSummary {
   organisation_id: string;
@@ -229,6 +234,43 @@ export async function resolveBuilderSession(
       has_completed_mandatory_onboarding: mandatoryComplete,
     },
   };
+}
+
+/**
+ * Why `listAccessibleOrganisations` came back empty, in the reader's words.
+ *
+ * Both paths that mint a session reach this state and only one of them used
+ * to handle it. `builder-portal-login` read the memberships and explained the
+ * refusal; `builder-portal-accept-invite` activated the account and then
+ * called `builder_issue_session` regardless, which raises
+ * `BUILDER_SESSION_NOT_PERMITTED` and reached the applicant as **Internal
+ * server error** — measured in production on 18 Sep 2026, on the first real
+ * builder to accept an invitation.
+ *
+ * That is why this lives here rather than inline in the login handler: one
+ * implementation, so a second caller cannot forget the explanation exists.
+ *
+ * It EXPLAINS a refusal `builder_accessible_organisations` has already made.
+ * It never decides access and is never consulted on the allow path.
+ */
+export async function explainNoAccessibleOrganisation(
+  supabase: any,
+  userId: string,
+  now: Date,
+): Promise<AccessDenialReading> {
+  const { data: rows } = await supabase
+    .from('builder_organisation_memberships')
+    .select('status, revoked_at, valid_from, valid_until, builder_organisations!inner(status, legal_name)')
+    .eq('builder_user_id', userId);
+  const memberships: MembershipRow[] = (rows ?? []).map((row: any) => ({
+    status: row.status ?? null,
+    revoked_at: row.revoked_at ?? null,
+    valid_from: row.valid_from ?? null,
+    valid_until: row.valid_until ?? null,
+    organisation_status: row.builder_organisations?.status ?? null,
+    organisation_legal_name: row.builder_organisations?.legal_name ?? null,
+  }));
+  return readAccessDenial(memberships, now);
 }
 
 /**
