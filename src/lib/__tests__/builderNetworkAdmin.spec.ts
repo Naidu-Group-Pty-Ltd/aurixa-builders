@@ -139,6 +139,19 @@ describe('verifyMcAssertion', () => {
 describe('builder-network-admin, at the source', () => {
   const source = readCode('supabase/functions/builder-network-admin/index.ts');
 
+  /**
+   * One operation's body, so an assertion about it cannot be satisfied by
+   * another operation twenty lines away. Comment-stripped, because `source`
+   * is: a rule about what the handler DOES must not be met by prose saying
+   * it does.
+   */
+  const operationBody = (operation: string): string => {
+    const start = source.indexOf(`operation === '${operation}'`);
+    expect(start, operation).toBeGreaterThan(-1);
+    const next = source.indexOf("if (operation === '", start + 1);
+    return source.slice(start, next === -1 ? source.length : next);
+  };
+
   it('sees the join-request queue and cannot decide it', () => {
     // Owners decide membership. The admin surface reads the table and never
     // writes it — no update, no insert, no decided_at.
@@ -150,29 +163,48 @@ describe('builder-network-admin, at the source', () => {
     }
   });
 
-  it('touches memberships only to bootstrap an organisation that has none', () => {
+  it('touches memberships only to seed an organisation that has none', () => {
     // This assertion used to be `not.toContain('builder_organisation_memberships')`
-    // — an absolute ban standing in for the real rule, which is that the
-    // operator must not decide membership in somebody ELSE'S organisation.
+    // — an absolute ban standing in for the real rule, which is that nothing
+    // here may decide membership in somebody ELSE'S organisation.
     //
-    // `invite_organisation_owner` needs that table: it counts members to
-    // REFUSE when any exist, and seeds the first owner when none do. An
-    // organisation with zero members has nobody to decide for it, and
-    // somebody has to seed it. So the ban is replaced by the narrower rule
-    // it was proxying for, which is checked here rather than assumed.
-    const uses = source.split("from('builder_organisation_memberships')").slice(1);
-    expect(uses.length).toBe(2);
+    // It then became a COUNT of the uses, which is the same proxy one step
+    // removed: adding the access-request pipeline made it read 3 where it
+    // expected 2, and the honest answer was never a different number. Both
+    // callers do the same lawful thing — seed the first owner of an
+    // organisation that has nobody in it — and that is what is checked.
+    //
+    //   `invite_organisation_owner` counts members and REFUSES when any
+    //   exist, then seeds.
+    //   `submit_access_request` seeds into the organisation IT JUST CREATED
+    //   a few lines above, which by construction has none.
+    //
+    // Anything else touching this table is an operator deciding somebody
+    // else's membership, so every use has to sit inside one of those two.
+    const bootstrap = operationBody("invite_organisation_owner");
+    const application = operationBody("submit_access_request");
 
-    // Every use is inside the bootstrap operation, after its guard.
-    const bootstrap = source.indexOf("operation === 'invite_organisation_owner'");
-    expect(bootstrap).toBeGreaterThan(-1);
-    const guard = source.indexOf('organisation_already_has_members');
-    expect(guard).toBeGreaterThan(bootstrap);
-    const insert = source.indexOf("membership_role: 'owner'");
-    expect(insert).toBeGreaterThan(guard);
+    const uses = source.split("from('builder_organisation_memberships')").length - 1;
+    const accounted =
+      (bootstrap.split("from('builder_organisation_memberships')").length - 1) +
+      (application.split("from('builder_organisation_memberships')").length - 1);
+    expect(accounted).toBe(uses);
 
+    // The bootstrap refuses before it seeds.
+    const guard = bootstrap.indexOf('organisation_already_has_members');
+    expect(guard).toBeGreaterThan(-1);
+    expect(bootstrap.indexOf("membership_role: 'owner'")).toBeGreaterThan(guard);
     // And the count that guards it is a real count, not a hopeful read.
-    expect(source).toMatch(/builder_organisation_memberships'\)[\s\S]{0,200}count:\s*'exact',\s*head:\s*true/);
+    expect(bootstrap).toMatch(
+      /builder_organisation_memberships'\)[\s\S]{0,200}count:\s*'exact',\s*head:\s*true/,
+    );
+
+    // The application seeds only into the organisation it created itself.
+    const created = application.indexOf("from('builder_organisations')");
+    expect(created).toBeGreaterThan(-1);
+    expect(application.indexOf("from('builder_organisation_memberships')")).toBeGreaterThan(created);
+    expect(application).toMatch(/organisation_id: organisation\.id/);
+
     // Nothing anywhere updates or deletes a membership.
     expect(source).not.toMatch(/builder_organisation_memberships'\)[\s\S]{0,120}\.(update|delete)\(/);
   });
