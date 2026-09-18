@@ -251,9 +251,14 @@ describe('the versions that reopen the wrongly-retired branches', () => {
    * 6 MB and then 25 MB. Both were the same mistake — a size answering "which
    * compute runs this?" — and the second was lifted from the INGEST cap, which
    * answers only "does Aurixa accept this source?". The fallback itself is
-   * gone now (the worker reads these documents: 13.2 MB in 2,063 ms, 11.3 MB
-   * in 1,515 ms, 20.4 MB in 1,439 ms, each a facade at `primary_property`), so
+   * gone now (the worker reads these documents: 13.2 MB in 1,884 ms, 11.3 MB
+   * in 1,308 ms, 20.4 MB in 1,311 ms, each a facade at `primary_property`), so
    * what is pinned is the absence of any such number rather than its value.
+   *
+   * It is NOT the fix for the five wrongly-retired properties: the worker was
+   * deployed and the runtime pointed at it before that import ran, so no
+   * in-process election was reachable on it. Pinning the absence of a bound
+   * is worth doing on its own terms.
    *
    * The behavioural half lives in `builderStockPdfWorker.spec.ts`, which
    * drives every supported size through the real route.

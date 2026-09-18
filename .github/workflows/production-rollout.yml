@@ -31,6 +31,15 @@ name: Production rollout
 #            carry (resolving Drive's virus-scan interstitial), censuses each
 #            PDF page-by-page with the pipeline's own readers, and replays the
 #            pipeline's own recovery/election per branch. Writes nothing.
+#   item-state
+#            read-only: the exact stored state of named stock items — the rows
+#            themselves, their branch records, their stored images and the
+#            uploads either side of the cutover. Answers "what does the
+#            database say happened to these rows", which is the question that
+#            comes before what their documents contain. Runs SELECT only, and
+#            refuses any statement that is not one. Writes nothing.
+#            Ids come from the `items` input, defaulting to the five the
+#            18 September import retired.
 #
 # Secrets used (never printed; SQL text is never logged):
 #   SUPABASE_ACCESS_TOKEN   Management API (same token the deploy uses)
@@ -41,11 +50,16 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state]
+      items:
+        description: 'item-state only: comma-separated stock item ids (blank = the five reported)'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: production-rollout
@@ -60,7 +74,7 @@ jobs:
         with:
           node-version: 22
       - uses: denoland/setup-deno@v2
-        if: ${{ inputs.phase == 'forensics' }}
+        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' }}
         with:
           deno-version: v2.x
 
@@ -77,6 +91,12 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           NETWORK_INTERNAL_SECRET: ${{ secrets.NETWORK_INTERNAL_SECRET }}
           NETWORK_SESSION_PEPPER: ${{ secrets.NETWORK_SESSION_PEPPER }}
+          # Through the ENVIRONMENT, never interpolated into the script below:
+          # a dispatch input in a `run:` body is shell injection, and this one
+          # is a list a person types. The script validates every id as a uuid
+          # before it reaches a statement, which is the second half of the same
+          # rule.
+          STOCK_ITEM_IDS: ${{ inputs.items }}
         run: |
           set -euo pipefail
           case "${{ inputs.phase }}" in
@@ -84,4 +104,5 @@ jobs:
             proxy-trust)          node scripts/ops/verify-proxy-ip-handshake.mjs ;;
             smoke)                node scripts/ops/production-smoke.mjs ;;
             forensics)            deno run -A --config supabase/functions/deno.json scripts/ops/stock-source-forensics.ts ;;
+            item-state)           deno run -A --config supabase/functions/deno.json scripts/ops/stock-item-state.ts ;;
           esac

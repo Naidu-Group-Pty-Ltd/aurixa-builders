@@ -73,11 +73,20 @@ const unreachable = (detail: string): PackageOutcome => ({ status: 'unreachable'
  * wire's own headroom (`MAX_DOCUMENT_BYTES`); neither is consulted to choose a
  * runtime, and nothing in this file may grow a third number that does.
  *
- * PROVEN BEFORE REMOVAL, on the real documents that failed: the built worker
- * bundle elected Lot 801's 13.2 MB brochure in 2,063 ms, Lot 809's 11.3 MB in
- * 1,515 ms and Lot 810's 20.4 MB in 1,439 ms, each a facade render of the
- * right house at `primary_property`. The worker reads these documents; this
- * process never needed to.
+ * PROVEN BEFORE REMOVAL, on the three brochures carried by the five stock
+ * items that were wrongly retired: the built worker bundle elected Lot 801's
+ * 13.2 MB in 1,884 ms, Lot 809's 11.3 MB in 1,308 ms and Lot 810's 20.4 MB in
+ * 1,311 ms, each a facade render of the right house at `primary_property`.
+ * The worker reads these documents; this process never needed to.
+ *
+ * WHAT THIS REMOVAL IS NOT. It is not the fix for those five items, and this
+ * comment must never be read as one. The worker was deployed at 02:55:28Z on
+ * 18 September and the Supabase runtime was pointed at it at 02:55:56Z, both
+ * BEFORE the import that retired them — so `electionRoute` answered `worker`
+ * for that run and no in-process election was reachable. The bound removed
+ * here was wrong in kind and would have bitten a deployment that lost its
+ * worker secrets; it is not what happened here. The first incorrect
+ * transition on those five rows is a separate, open question.
  */
 
 /**

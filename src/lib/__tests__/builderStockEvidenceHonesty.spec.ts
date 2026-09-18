@@ -8,11 +8,25 @@
  * sources were read and none names an image for this property" — and moved to
  * the terminal `failed` stage, which holds the whole list staged and
  * invisible. Their brochures were then downloaded and opened by hand: every
- * one carries a clean facade render on page 1 (1280x720 or 1920x1080). What
- * had actually happened is that those five brochures are 11.33–20.42 MB, were
- * elected IN-PROCESS under a bound taken from the ingest cap rather than from
- * any measurement, and the isolate was CPU-killed. Nothing was learned, and
- * the system wrote down that the builder had supplied nothing.
+ * one carries a clean facade render on page 1 (1280x720 or 1920x1080).
+ *
+ * SO THE VERDICT WAS FALSE, AND THAT IS WHAT THESE PIN. Whatever retired
+ * those five, it was not a document with no photograph in it — the documents
+ * have one. An `exhausted` that a builder's own file contradicts is the
+ * failure this file exists to make impossible, and it is a property of the
+ * classifier rather than of any one cause upstream of it.
+ *
+ * WHY THIS HEADER NO LONGER NAMES A CAUSE. It used to state that those five
+ * brochures (11.33–20.42 MB) had been elected in-process under a bound taken
+ * from the ingest cap and CPU-killed in the isolate. That attribution is
+ * DISPROVEN and must not be restated: the PDF worker was deployed at
+ * 02:55:28Z on 18 September and the Supabase runtime was pointed at it at
+ * 02:55:56Z — both before the failing import — and all three of those
+ * documents elect a correct facade at `primary_property` through the
+ * deployed bundle in 1.3–1.9 s. In-process CPU kills are real and are
+ * recorded elsewhere; they are not what happened to these five. The actual
+ * first incorrect transition is under investigation and this header will
+ * name it when it is proven, not before.
  *
  * `exhausted` and `operational` are the two words that must never be
  * confused: one is a statement about a document, the other about us. Only the
@@ -110,10 +124,13 @@ const evidenceFor = (
 describe('the two words are never confused', () => {
   it('one operational branch withholds the verdict, however many were read', () => {
     /*
-     * This is the case the five properties were in: the brochure could not be
-     * read, the other three were. A single fault of ours is enough to refuse
-     * to call the row exhausted — because we have not in fact seen everything
-     * the builder supplied.
+     * A single fault of ours is enough to refuse to call the row exhausted,
+     * because we have not in fact seen everything the builder supplied.
+     *
+     * Deliberately NOT asserted to be the shape the five reported properties
+     * were in: what their branch records actually hold has not been read yet,
+     * and a test comment that names an unverified production cause is how a
+     * disproven diagnosis outlives its correction.
      */
     const reading = evidenceFor({
       [BROCHURE]: operationalRecord(BROCHURE),
