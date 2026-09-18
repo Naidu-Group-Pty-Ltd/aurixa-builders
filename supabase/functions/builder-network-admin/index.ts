@@ -45,6 +45,13 @@ import { enforceRawBodyLimit } from '../_shared/requestSecurity.ts';
 import { verifyMcAssertion } from '../_shared/mcFederation.ts';
 import { hashSessionToken } from '../_shared/sessionHash.ts';
 import { builderAppBaseUrl, mintBuilderInvite, INVITE_EXPIRY_HOURS } from '../_shared/builderInvite.ts';
+import { readOrganisationConflict } from '../_shared/builderOrganisationConflict.pure.ts';
+import {
+  APPLICATION_WINDOW_HOURS,
+  ORIGIN_WINDOWS,
+  organisationFromRequest,
+  readAccessRequest,
+} from '../_shared/builderAccessRequest.pure.ts';
 import { getBrandConfig } from '../_shared/brand-config.ts';
 import {
   sendBuilderEmail,
@@ -267,6 +274,13 @@ Deno.serve(async (req) => {
           .select('id, legal_name, trading_name, org_type, abn, state, status, is_active, activated_at, suspended_at, suspension_reason, contact_email, created_at')
           .single();
         if (error || !created) {
+          // A unique index is the only authority on what is already taken, so
+          // the collision is read from its own error rather than pre-checked —
+          // a SELECT-then-INSERT would be a race. 409, because the row is
+          // refused by something already in the table rather than by anything
+          // wrong with this request's own shape.
+          const conflict = readOrganisationConflict(error);
+          if (conflict) return json({ error: conflict.error, field: conflict.field }, 409);
           console.error('[builder-network-admin] organisation create failed', error);
           return json({ error: 'create_failed' }, 500);
         }
@@ -296,6 +310,8 @@ Deno.serve(async (req) => {
         .select('id, legal_name, trading_name, org_type, abn, state, status, is_active, activated_at, suspended_at, suspension_reason, contact_email, created_at')
         .maybeSingle();
       if (updateError || !updated) {
+        const conflict = readOrganisationConflict(updateError);
+        if (conflict) return json({ error: conflict.error, field: conflict.field }, 409);
         console.error('[builder-network-admin] organisation update failed', updateError);
         return json({ error: 'update_failed' }, 500);
       }
@@ -337,6 +353,285 @@ Deno.serve(async (req) => {
     }
 
     // ----------------------------------------------------- bootstrap an owner
+    // ------------------------------------------------ builder lead applies
+    /*
+     * The automated intake: one submission becomes an organisation and an
+     * invitation, with nobody in between.
+     *
+     * It is federation-gated like everything else here — Mission Control's
+     * public application page calls it server-side, so the NETWORK gains no
+     * public door and the applicant's browser never speaks to it. That also
+     * keeps the abuse controls in one place: MC sees the real client, this
+     * sees a signed assertion.
+     *
+     * The order is load-bearing. The application is recorded FIRST and
+     * updated with whatever happens next, so a failure half way through
+     * leaves evidence rather than nothing — an unattended pipeline whose
+     * failures are invisible is one nobody can debug from the outside, which
+     * is precisely the position an operator was in this morning.
+     */
+    if (operation === 'submit_access_request') {
+      const read = readAccessRequest(body);
+      if (!read.ok) return json({ error: read.error }, 400);
+      const fields = read.fields;
+
+      // One application per address per window. Without this the same
+      // mailbox could be applied for repeatedly and each attempt would mail
+      // it. Read at submit rather than enforced by a unique index, because a
+      // second attempt is evidence worth keeping.
+      const since = new Date(Date.now() - APPLICATION_WINDOW_HOURS * 3600_000).toISOString();
+      const { count: recent } = await supabase
+        .from('builder_access_requests')
+        .select('id', { count: 'exact', head: true })
+        .eq('contact_email', fields.contact_email)
+        .gte('created_at', since);
+      if ((recent ?? 0) > 0) {
+        return json({ error: 'an_application_for_that_address_is_already_with_us' }, 429);
+      }
+
+      // And a bound on the ORIGIN, because the address window bounds one
+      // mailbox and nothing else — a script with a thousand addresses passes
+      // it a thousand times, and every pass creates an organisation and
+      // sends mail from our verified domain.
+      //
+      // A caller with no usable origin is NOT exempt: they are counted
+      // together under one identity, so an upstream that stops forwarding
+      // the header degrades to a shared allowance rather than to no limit
+      // at all. That is the one shape of this control that cannot be turned
+      // off by omitting a field.
+      const origin = typeof body.source_ip === 'string' && body.source_ip.trim()
+        ? body.source_ip.trim().slice(0, 100)
+        : 'unattributed';
+      for (const window of ORIGIN_WINDOWS) {
+        const from = new Date(Date.now() - window.hours * 3600_000).toISOString();
+        const { count, error: countError } = await supabase
+          .from('builder_access_requests')
+          .select('id', { count: 'exact', head: true })
+          .eq('source_ip', origin)
+          .gte('created_at', from);
+        // A count that FAILED is not a count of zero. This is the only
+        // control standing between a public form and an unbounded number of
+        // organisations, so a database fault refuses rather than waves
+        // everything through — the opposite of how the rest of this function
+        // treats a failed read, and deliberately so.
+        if (countError) {
+          console.error('[builder-network-admin] origin window read failed', countError);
+          return json({ error: 'application_not_recorded' }, 503);
+        }
+        if ((count ?? 0) >= window.limit) return json({ error: window.error }, 429);
+      }
+
+      const { data: request, error: requestError } = await supabase
+        .from('builder_access_requests')
+        .insert({
+          ...fields,
+          // The value the windows above counted, so the next count sees this
+          // attempt. Storing the raw header here while counting the trimmed
+          // one is how a limiter comes to count a set of rows that is not
+          // the set it is limiting.
+          source_ip: origin,
+          user_agent: typeof body.user_agent === 'string' ? body.user_agent.slice(0, 500) : null,
+        })
+        .select('id')
+        .single();
+      if (requestError || !request) {
+        console.error('[builder-network-admin] access request record failed', requestError);
+        return json({ error: 'application_not_recorded' }, 500);
+      }
+
+      /** Close the application off, whatever happened. */
+      const settle = async (
+        status: 'provisioned' | 'attached' | 'refused',
+        detail: string,
+        extra: Record<string, unknown> = {},
+      ) => {
+        await supabase
+          .from('builder_access_requests')
+          .update({ status, outcome_detail: detail, ...extra })
+          .eq('id', request.id);
+      };
+
+      const { data: organisation, error: organisationError } = await supabase
+        .from('builder_organisations')
+        .insert({
+          ...organisationFromRequest(fields),
+          status: 'pending_activation',
+          is_active: false,
+        })
+        .select('id, legal_name')
+        .single();
+      if (organisationError || !organisation) {
+        // An application that collides with an organisation that already
+        // exists is REFUSED and recorded — never merged into it. Editing a
+        // live builder's details from an unauthenticated form is the one
+        // thing this pipeline must not do.
+        const conflict = readOrganisationConflict(organisationError);
+        const detail = conflict?.error ?? 'organisation_not_created';
+        await settle('refused', detail);
+        console.error('[builder-network-admin] access request org create failed', organisationError);
+        return json({ error: detail, request_id: request.id }, conflict ? 409 : 500);
+      }
+
+      // The owner. Reuses the same rules the operator console's bootstrap
+      // answers to: an established account is ATTACHED and never re-minted,
+      // a withdrawn one is refused, and the organisation is brand new so
+      // there is nobody to displace.
+      const { data: existingUser } = await supabase
+        .from('builder_portal_users')
+        .select('id, status, revoked_at, password_hash, invite_accepted_at')
+        .eq('email', fields.contact_email)
+        .maybeSingle();
+      if (existingUser && (existingUser.revoked_at || existingUser.status === 'revoked')) {
+        await settle('refused', 'that_account_has_been_withdrawn', {
+          organisation_id: organisation.id,
+        });
+        return json({ error: 'that_account_has_been_withdrawn', request_id: request.id }, 409);
+      }
+      const established = Boolean(
+        existingUser && (existingUser.password_hash || existingUser.invite_accepted_at),
+      );
+
+      const minted = established ? null : await mintBuilderInvite();
+      if (!established && !minted) {
+        await settle('refused', 'invite_service_unavailable', { organisation_id: organisation.id });
+        return json({ error: 'invite_service_unavailable', request_id: request.id }, 503);
+      }
+
+      let ownerId = existingUser?.id ?? null;
+      if (!ownerId) {
+        const { data: created, error: createError } = await supabase
+          .from('builder_portal_users')
+          .insert({
+            email: fields.contact_email,
+            name: fields.contact_name,
+            status: 'invited',
+            is_active: false,
+          })
+          .select('id')
+          .single();
+        if (createError || !created) {
+          await settle('refused', 'owner_not_created', { organisation_id: organisation.id });
+          console.error('[builder-network-admin] access request owner create failed', createError);
+          return json({ error: 'owner_not_created', request_id: request.id }, 500);
+        }
+        ownerId = created.id;
+      }
+
+      if (!established && minted) {
+        const { error: stampError } = await supabase
+          .from('builder_portal_users')
+          .update({
+            name: fields.contact_name,
+            invite_token_hash: minted.tokenHash,
+            invite_token_expires_at: minted.expiresAt.toISOString(),
+            invited_at: new Date().toISOString(),
+            status: 'invited',
+            is_active: false,
+          })
+          .eq('id', ownerId);
+        if (stampError) {
+          await settle('refused', 'invite_not_issued', {
+            organisation_id: organisation.id,
+            builder_user_id: ownerId,
+          });
+          console.error('[builder-network-admin] access request invite stamp failed', stampError);
+          return json({ error: 'invite_not_issued', request_id: request.id }, 500);
+        }
+      }
+
+      const { error: membershipError } = await supabase
+        .from('builder_organisation_memberships')
+        .insert({
+          builder_user_id: ownerId,
+          organisation_id: organisation.id,
+          membership_role: 'owner',
+          is_primary: true,
+          status: 'active',
+        });
+      if (membershipError && String(membershipError.code) !== '23505') {
+        await settle('refused', 'owner_not_attached', {
+          organisation_id: organisation.id,
+          builder_user_id: ownerId,
+        });
+        console.error('[builder-network-admin] access request membership failed', membershipError);
+        return json({ error: 'owner_not_attached', request_id: request.id }, 500);
+      }
+
+      await supabase.rpc('builder_ensure_onboarding_steps', { _builder_user_id: ownerId });
+
+      // The send is the last thing and cannot unwind any of it. "We created
+      // the organisation but could not write to you" is a state an operator
+      // must be able to see, which is why the outcome is stored rather than
+      // only returned.
+      const brand = await getBrandConfig();
+      const org = organisation.legal_name;
+      const emailOutcome = await sendBuilderEmail({
+        to: fields.contact_email,
+        subject: established
+          ? `You now have access to ${org} on the ${brand.companyName} Builder Portal`
+          : `Your ${brand.companyName} Builder Portal access is ready`,
+        brand,
+        category: 'builder_network_access_request',
+        content: established
+          ? {
+            heading: `${org} is now yours to run`,
+            paragraphs: [
+              `Hi ${fields.contact_name},`,
+              `Thank you for applying. ${org} has been set up on the ${brand.companyName} Builder / Developer Portal and you are its owner.`,
+              'You already have an account, so your existing sign-in still works — the organisation appears in the switcher next time you sign in.',
+            ],
+            action: { label: 'Open the Builder Portal', url: builderAppBaseUrl() },
+            footnote: 'Your listing is reviewed before it appears in the marketplace; we will be in touch.',
+          }
+          : {
+            heading: `Welcome to the ${brand.companyName} Builder Portal`,
+            paragraphs: [
+              `Hi ${fields.contact_name},`,
+              `Thank you for applying. ${org} has been set up on the ${brand.companyName} Builder / Developer Portal and you are its owner.`,
+              'Choose a password to activate your account, and you can then invite your colleagues.',
+            ],
+            action: { label: 'Set your password', url: minted!.url },
+            footnote:
+              `This link can be used once and expires in ${INVITE_EXPIRY_HOURS} hours. Your listing is reviewed before it appears in the marketplace; we will be in touch.`,
+          },
+      });
+
+      await settle(established ? 'attached' : 'provisioned', established ? 'attached' : 'provisioned', {
+        organisation_id: organisation.id,
+        builder_user_id: ownerId,
+        invite_sent: emailOutcome.sent,
+      });
+      await logActivity('network_access_request_provisioned', ownerId, organisation.id, {
+        request_id: request.id,
+        email: fields.contact_email,
+        outcome: established ? 'attached' : 'provisioned',
+        email_sent: emailOutcome.sent,
+      });
+
+      // The invite URL is NOT returned. This answers a public page, and the
+      // link is the credential — it goes to the mailbox that asked for it and
+      // nowhere else. An operator who needs to hand it over re-mints it from
+      // the console, which is an authenticated act.
+      return json({
+        success: true,
+        request_id: request.id,
+        outcome: established ? 'attached' : 'provisioned',
+        organisation_legal_name: organisation.legal_name,
+        email_sent: emailOutcome.sent,
+        email_failure: emailOutcome.sent ? null : emailOutcome.reason,
+      });
+    }
+
+    if (operation === 'list_access_requests') {
+      const { data, error } = await supabase
+        .from('builder_access_requests')
+        .select('id, legal_name, trading_name, org_type, abn, contact_name, contact_email, contact_phone, website, suburb, state, postcode, message, status, outcome_detail, organisation_id, invite_sent, created_at')
+        .order('created_at', { ascending: false })
+        .limit(200);
+      if (error) return json({ error: 'read_failed' }, 500);
+      return json({ access_requests: data ?? [] });
+    }
+
     if (operation === 'invite_organisation_owner') {
       const organisationId = String(body.organisation_id || '');
       if (!organisationId) return json({ error: 'organisation_id is required' }, 400);
