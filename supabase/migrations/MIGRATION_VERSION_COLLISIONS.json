@@ -1,0 +1,18 @@
+{
+  "//": [
+    "Frozen migration-version collisions. A version records ONE ledger row, so a",
+    "second file carrying it can never be told apart from applied — it is skipped",
+    "in silence, for ever.",
+    "",
+    "This baseline is EMPTY and should stay that way. It is not an exemption list:",
+    "the gate fails when a listed group changes, so freezing a collision only",
+    "preserves a known one rather than permitting new ones.",
+    "",
+    "Ported from the clone repositories on 18 Sep 2026, after this repository's CI",
+    "passed green while carrying a real collision: 20260917090000 was held by both",
+    "`an_activation_opens_a_project` and `capture_stock_sync_producer`. Nothing",
+    "here could see it."
+  ],
+  "not_a_migration": [],
+  "collisions": []
+}

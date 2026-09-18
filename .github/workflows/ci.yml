@@ -52,6 +52,11 @@ jobs:
         run: npm run check:verify-jwt
       - name: runtime references no removed schema objects
         run: npm run check:schema-refs
+      # A version records ONE ledger row, so a second file carrying it can never
+      # be told apart from applied. This repository shipped that defect green:
+      # 20260917090000 was held by two migrations and nothing here could see it.
+      - name: every migration has its own version
+        run: npm run check:migration-versions
       - name: portal security check
         run: npm run security:portal
       - name: every credential door is budgeted, and none trusts X-Forwarded-For
