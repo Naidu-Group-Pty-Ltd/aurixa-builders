@@ -82,8 +82,12 @@ export default function BuilderLogin() {
     setSubmitting(false);
 
     if (result.error) {
-      // The server returns one generic string for every credential failure, so
-      // this surface cannot be used to discover which accounts exist.
+      // Rendered verbatim. Before the password is verified the server returns
+      // one generic string for every failure, so this surface still cannot be
+      // used to discover which accounts exist. AFTER it verifies, the refusal
+      // is allowed to say what it is about — a suspended organisation used to
+      // read as "Invalid email or password", which sent its builders to reset
+      // a password that was never wrong.
       setError(result.error);
       setTurnstileToken(null);
       return;

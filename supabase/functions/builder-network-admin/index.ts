@@ -20,8 +20,19 @@
  *    somebody else's organisation has re-grown the agency-administers-
  *    builder shape the extraction exists to end.
  *  * `closed` is terminal for an organisation. Suspension is the
- *    reversible instrument; closing is an end-of-life act that gets its
- *    own ceremony when it exists at all.
+ *    reversible instrument; closing is an end-of-life act, and
+ *    `close_organisation` is the ceremony it was promised: a reason it will
+ *    not proceed without, and no route back. Nothing here DELETES an
+ *    organisation — the network's record of who was on it is not an
+ *    operator's to destroy.
+ *  * `create_organisation` and `update_organisation` write DESCRIPTION only.
+ *    The lifecycle columns move under their own verbs, which set the whole
+ *    consistent group the table's CHECK constraints demand; an edit form
+ *    that could also set `status` would be a second way to move a lifecycle.
+ *  * `invite_organisation_owner` bootstraps a brand-new organisation's FIRST
+ *    member and refuses once one exists — which is how the rule above it
+ *    survives. An operator seeding an empty organisation is not deciding
+ *    membership in somebody else's; once there is an owner, they invite.
  *  * A REVOKED connection is never revived — reconnection is a NEW row
  *    with a NEW invite code, so the audit history stays whole.
  *
@@ -33,6 +44,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0';
 import { enforceRawBodyLimit } from '../_shared/requestSecurity.ts';
 import { verifyMcAssertion } from '../_shared/mcFederation.ts';
 import { hashSessionToken } from '../_shared/sessionHash.ts';
+import { mintBuilderInvite, INVITE_EXPIRY_HOURS } from '../_shared/builderInvite.ts';
+import { readOrganisationInput } from '../_shared/builderOrganisationInput.pure.ts';
 
 const MAX_BODY_BYTES = 32 * 1024;
 const INVITE_CODE_EXPIRY_DAYS = 14;
@@ -231,6 +244,211 @@ Deno.serve(async (req) => {
       if (!updated) return json({ error: 'reinstate_failed' }, 409);
       await logActivity('network_organisation_reinstated', organisation.id, organisation.id);
       return json({ success: true, status: 'active' });
+    }
+
+    // --------------------------------------------- organisation description
+    if (operation === 'create_organisation' || operation === 'update_organisation') {
+      const creating = operation === 'create_organisation';
+      const input = readOrganisationInput(body, creating ? 'create' : 'update');
+      if (!input.ok) return json({ error: input.error }, 400);
+
+      if (creating) {
+        // Born unapproved, exactly as a self-serve registration is: an
+        // operator creating the row is not the same act as vetting it, and
+        // `approve_organisation` remains the only way to `active`.
+        const { data: created, error } = await supabase
+          .from('builder_organisations')
+          .insert({ ...input.patch, status: 'pending_activation', is_active: false })
+          .select('id, legal_name, trading_name, org_type, abn, state, status, is_active, activated_at, suspended_at, suspension_reason, contact_email, created_at')
+          .single();
+        if (error || !created) {
+          console.error('[builder-network-admin] organisation create failed', error);
+          return json({ error: 'create_failed' }, 500);
+        }
+        await logActivity('network_organisation_created', created.id, created.id, {
+          legal_name: created.legal_name,
+        });
+        return json({ success: true, organisation: created });
+      }
+
+      const organisationId = String(body.organisation_id || '');
+      if (!organisationId) return json({ error: 'organisation_id is required' }, 400);
+      const { data: existing } = await supabase
+        .from('builder_organisations')
+        .select('id, status')
+        .eq('id', organisationId)
+        .maybeSingle();
+      if (!existing) return json({ error: 'organisation_not_found' }, 404);
+      if (existing.status === 'closed') {
+        return json({ error: 'a_closed_organisation_is_terminal' }, 409);
+      }
+
+      const { data: updated, error: updateError } = await supabase
+        .from('builder_organisations')
+        .update(input.patch)
+        .eq('id', organisationId)
+        .neq('status', 'closed')
+        .select('id, legal_name, trading_name, org_type, abn, state, status, is_active, activated_at, suspended_at, suspension_reason, contact_email, created_at')
+        .maybeSingle();
+      if (updateError || !updated) {
+        console.error('[builder-network-admin] organisation update failed', updateError);
+        return json({ error: 'update_failed' }, 500);
+      }
+      await logActivity('network_organisation_updated', updated.id, updated.id, {
+        fields: Object.keys(input.patch),
+      });
+      return json({ success: true, organisation: updated });
+    }
+
+    // ------------------------------------------------ organisation end of life
+    if (operation === 'close_organisation') {
+      const organisationId = String(body.organisation_id || '');
+      if (!organisationId) return json({ error: 'organisation_id is required' }, 400);
+      const reason = String(body.reason || '').trim();
+      if (!reason) return json({ error: 'a_reason_is_required' }, 400);
+
+      const { data: organisation } = await supabase
+        .from('builder_organisations')
+        .select('id, legal_name, status')
+        .eq('id', organisationId)
+        .maybeSingle();
+      if (!organisation) return json({ error: 'organisation_not_found' }, 404);
+      if (organisation.status === 'closed') return json({ success: true, already_closed: true });
+
+      // `is_active` false is not optional: `status_active_agree` refuses the
+      // row otherwise. Members lose access on their next request because
+      // `builder_accessible_organisations` requires an active organisation —
+      // nothing has to hunt down their sessions.
+      const { data: updated } = await supabase
+        .from('builder_organisations')
+        .update({ status: 'closed', is_active: false })
+        .eq('id', organisation.id)
+        .neq('status', 'closed')
+        .select('id')
+        .maybeSingle();
+      if (!updated) return json({ error: 'close_failed' }, 409);
+      await logActivity('network_organisation_closed', organisation.id, organisation.id, { reason });
+      return json({ success: true, status: 'closed' });
+    }
+
+    // ----------------------------------------------------- bootstrap an owner
+    if (operation === 'invite_organisation_owner') {
+      const organisationId = String(body.organisation_id || '');
+      if (!organisationId) return json({ error: 'organisation_id is required' }, 400);
+      const email = String(body.email || '').trim().toLowerCase();
+      if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+        return json({ error: 'a_valid_email_is_required' }, 400);
+      }
+      const name = String(body.name || '').trim();
+      if (!name) return json({ error: 'a_name_is_required' }, 400);
+
+      const { data: organisation } = await supabase
+        .from('builder_organisations')
+        .select('id, legal_name, status')
+        .eq('id', organisationId)
+        .maybeSingle();
+      if (!organisation) return json({ error: 'organisation_not_found' }, 404);
+      if (organisation.status === 'closed') {
+        return json({ error: 'a_closed_organisation_is_terminal' }, 409);
+      }
+
+      // THE BOUNDARY. Seeding an empty organisation is bootstrap; adding a
+      // person to one that already has members is administering somebody
+      // else's organisation, which this plane does not do (module header).
+      //
+      // Read-then-write, so two operators racing on the SAME new organisation
+      // could both pass. Left as it is deliberately: the window is one
+      // operator console against an organisation created seconds earlier, and
+      // the worst outcome is two owners on a row that has never been used —
+      // which an owner can fix. A lock here would be ceremony against a fault
+      // nobody can produce.
+      const { count: memberCount } = await supabase
+        .from('builder_organisation_memberships')
+        .select('id', { count: 'exact', head: true })
+        .eq('organisation_id', organisationId);
+      if ((memberCount ?? 0) > 0) {
+        return json({ error: 'organisation_already_has_members' }, 409);
+      }
+
+      // An account that already exists on the network is never re-minted
+      // here: its owner has a password, and issuing an invite link for a live
+      // account would be a credential reset dressed as an invitation.
+      const { data: existingUser } = await supabase
+        .from('builder_portal_users')
+        .select('id, status, revoked_at, password_hash, invite_accepted_at')
+        .eq('email', email)
+        .maybeSingle();
+      if (existingUser && (existingUser.password_hash || existingUser.invite_accepted_at)) {
+        return json({ error: 'that_person_already_has_an_account' }, 409);
+      }
+      if (existingUser && (existingUser.revoked_at || existingUser.status === 'revoked')) {
+        return json({ error: 'that_account_has_been_withdrawn' }, 409);
+      }
+
+      const minted = await mintBuilderInvite();
+      if (!minted) {
+        console.error('[builder-network-admin] hashing unavailable — refusing to store an unpeppered invite token');
+        return json({ error: 'invite_service_unavailable' }, 503);
+      }
+
+      let ownerId = existingUser?.id ?? null;
+      if (!ownerId) {
+        const { data: created, error: createError } = await supabase
+          .from('builder_portal_users')
+          .insert({ email, name, status: 'invited', is_active: false })
+          .select('id')
+          .single();
+        if (createError || !created) {
+          console.error('[builder-network-admin] owner create failed', createError);
+          return json({ error: 'invite_failed' }, 500);
+        }
+        ownerId = created.id;
+      }
+
+      const { error: inviteError } = await supabase
+        .from('builder_portal_users')
+        .update({
+          name,
+          invite_token_hash: minted.tokenHash,
+          invite_token_expires_at: minted.expiresAt.toISOString(),
+          invited_at: new Date().toISOString(),
+          status: 'invited',
+          is_active: false,
+        })
+        .eq('id', ownerId);
+      if (inviteError) {
+        console.error('[builder-network-admin] invite stamp failed', inviteError);
+        return json({ error: 'invite_failed' }, 500);
+      }
+
+      const { error: membershipError } = await supabase
+        .from('builder_organisation_memberships')
+        .insert({
+          builder_user_id: ownerId,
+          organisation_id: organisationId,
+          membership_role: 'owner',
+          is_primary: true,
+          status: 'active',
+        });
+      if (membershipError && String(membershipError.code) !== '23505') {
+        console.error('[builder-network-admin] owner membership failed', membershipError);
+        return json({ error: 'invite_failed' }, 500);
+      }
+
+      await supabase.rpc('builder_ensure_onboarding_steps', { _builder_user_id: ownerId });
+      await logActivity('network_organisation_owner_invited', ownerId, organisationId, {
+        email, membership_role: 'owner',
+      });
+
+      // Returned ONCE, like the connection invite code above it. Only the
+      // hash is stored, so a lost link is re-minted rather than re-read.
+      return json({
+        success: true,
+        invite_url: minted.url,
+        expires_at: minted.expiresAt.toISOString(),
+        expires_in_hours: INVITE_EXPIRY_HOURS,
+        organisation_legal_name: organisation.legal_name,
+      });
     }
 
     // ------------------------------------------------------------- directory

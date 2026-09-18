@@ -13,6 +13,15 @@
  *     without credentials. Here the password is verified first; account state is
  *     only evaluated once the caller has proven who they are.
  *
+ *     That line is also what lets a refusal past it be SPECIFIC. It was not,
+ *     originally: a suspended organisation answered "Invalid email or
+ *     password", so its builders reset a password that was never wrong and
+ *     were told the same thing again. An attacker without the password never
+ *     reaches those branches, so naming the reason there is observable only to
+ *     the person whose organisation it is. `builderAccessDenial.pure.ts` holds
+ *     the wording; a state it cannot name still falls back to the generic
+ *     answer, because a confident wrong sentence is worse than a vague one.
+ *
  *  3. No raw session token is returned in JSON. It exists only in the
  *     Set-Cookie header.
  */
@@ -24,6 +33,9 @@ import {
   auditBuilderIdentity, GENERIC_AUTH_ERROR, issueBuilderSession,
 } from '../_shared/builderSessions.ts';
 import { listAccessibleOrganisations } from '../_shared/builderPortalAuth.ts';
+import {
+  readAccessDenial, readAccountState, readLockout, type MembershipRow,
+} from '../_shared/builderAccessDenial.pure.ts';
 import { authRateLimitedResponse, enforceAuthRateLimit } from '../_shared/authRateLimit.ts';
 import { parseJsonBody } from '../_shared/validate.ts';
 import { PortalLoginRequest, AUTH_MAX_BODY_BYTES } from '../_shared/authBodySchemas.ts';
@@ -152,19 +164,39 @@ Deno.serve(async (req) => {
       return json({ error: GENERIC_AUTH_ERROR }, 401);
     }
 
-    // --- Credentials proven. Only now is account state evaluated. ---
+    // --- Credentials proven. Only now is account state evaluated, and only
+    // now may a refusal say what it is about. `code` travels beside the
+    // message for logs and tests; the portal renders the message. ---
+    const now = new Date();
+    const deny = (reading: { code: string; message: string }) =>
+      json({ error: reading.message || GENERIC_AUTH_ERROR, code: reading.message ? reading.code : 'generic' }, 401);
 
-    if (portalUser.locked_until && new Date(portalUser.locked_until) > new Date()) {
-      return json({ error: GENERIC_AUTH_ERROR }, 401);
-    }
-    if (!portalUser.is_active || portalUser.status !== 'active' || portalUser.revoked_at) {
-      return json({ error: GENERIC_AUTH_ERROR }, 401);
-    }
+    const lockout = readLockout(portalUser.locked_until, now);
+    if (lockout) return deny(lockout);
 
-    // An active membership of an active organisation is required. Same generic
-    // error, so a builder cannot probe organisation state either.
+    const accountState = readAccountState(portalUser);
+    if (accountState) return deny(accountState);
+
+    // An active membership of an active organisation is required. When there
+    // is none, the reason is read from the memberships themselves — this is
+    // an EXPLANATION of the refusal `builder_accessible_organisations` has
+    // already made, never a second opinion about access.
     const organisations = await listAccessibleOrganisations(supabase, portalUser.id);
-    if (!organisations.length) return json({ error: GENERIC_AUTH_ERROR }, 401);
+    if (!organisations.length) {
+      const { data: rows } = await supabase
+        .from('builder_organisation_memberships')
+        .select('status, revoked_at, valid_from, valid_until, builder_organisations!inner(status, legal_name)')
+        .eq('builder_user_id', portalUser.id);
+      const memberships: MembershipRow[] = (rows ?? []).map((row: any) => ({
+        status: row.status ?? null,
+        revoked_at: row.revoked_at ?? null,
+        valid_from: row.valid_from ?? null,
+        valid_until: row.valid_until ?? null,
+        organisation_status: row.builder_organisations?.status ?? null,
+        organisation_legal_name: row.builder_organisations?.legal_name ?? null,
+      }));
+      return deny(readAccessDenial(memberships, now));
+    }
     await supabase.from('builder_portal_users').update({
       last_login_at: new Date().toISOString(),
       failed_login_attempts: 0,
