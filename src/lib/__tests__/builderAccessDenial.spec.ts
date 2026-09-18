@@ -156,14 +156,41 @@ describe('where this may be consulted', () => {
     // whole basis on which this module is allowed to be specific.
     // Compare CALL SITES, not mentions: the import sits at the top of the
     // file, above everything, so a naive indexOf would always "fail".
+    //
+    // `readAccessDenial` itself is no longer called here. It moved behind
+    // `explainNoAccessibleOrganisation`, which reads the memberships and
+    // applies it — one implementation, because activation needs the same
+    // sentence and two copies is how two surfaces come to disagree. This
+    // follows the call rather than pinning the old name.
     const body = code.replace(/^import[\s\S]*?from\s*'[^']*';\s*$/gm, ' ');
     const verified = body.indexOf('passwordValid');
-    for (const call of ['readAccessDenial(', 'readAccountState(', 'readLockout(']) {
+    for (const call of [
+      'explainNoAccessibleOrganisation(',
+      'readAccountState(',
+      'readLockout(',
+    ]) {
       const consulted = body.indexOf(call);
       expect(consulted, call).toBeGreaterThan(-1);
       expect(consulted, call).toBeGreaterThan(verified);
     }
     expect(verified).toBeGreaterThan(-1);
+  });
+
+  it('is applied in exactly one place, so both surfaces say the same thing', () => {
+    // The login route and the activation route must not each carry their own
+    // membership query and their own reading of it.
+    const helper = read('supabase/functions/_shared/builderPortalAuth.ts');
+    expect(helper).toContain('readAccessDenial(');
+    for (const caller of [
+      'supabase/functions/builder-portal-login/index.ts',
+      'supabase/functions/builder-portal-accept-invite/index.ts',
+    ]) {
+      const source = read(caller)
+        .replace(/\/\*[\s\S]*?\*\//g, ' ')
+        .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+      expect(source, caller).toContain('explainNoAccessibleOrganisation(');
+      expect(source, caller).not.toContain('readAccessDenial(');
+    }
   });
 
   it('never decides access, only explains a refusal already made', () => {

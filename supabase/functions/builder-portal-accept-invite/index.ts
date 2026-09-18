@@ -27,12 +27,32 @@ import { createCorsHeaders, createBuilderSessionCookie } from '../_shared/auth.t
 import { hashSessionToken } from '../_shared/sessionHash.ts';
 import { validateBuilderPortalRequest } from '../_shared/builderSessionToken.ts';
 import { auditBuilderIdentity, issueBuilderSession } from '../_shared/builderSessions.ts';
-import { listAccessibleOrganisations } from '../_shared/builderPortalAuth.ts';
+import {
+  explainNoAccessibleOrganisation,
+  listAccessibleOrganisations,
+} from '../_shared/builderPortalAuth.ts';
 import { parseJsonBody } from '../_shared/validate.ts';
 import { AcceptInviteRequest, AUTH_MAX_BODY_BYTES } from '../_shared/authBodySchemas.ts';
 import { enforceAuthRateLimit } from '../_shared/authRateLimit.ts';
 
 const GENERIC_INVITE_ERROR = 'Invalid or expired invite link';
+
+/**
+ * What to say when the activation succeeded and the refusal cannot be named.
+ *
+ * `readAccessDenial` deliberately answers `unknown` with an EMPTY message for
+ * a shape it cannot classify — saying nothing new is always safe, saying
+ * something untrue is not. `builder-portal-login` falls back to its generic
+ * refusal there; this path has no generic refusal to fall back to, because
+ * nothing was refused: the account is active. An empty string would render as
+ * a blank explanation, which reads as a broken page.
+ *
+ * So the fallback states only what is certainly true and sends the reader to
+ * the one surface that CAN answer authoritatively.
+ */
+const PENDING_FALLBACK =
+  'Your account is active and your password is set. Sign in to continue — if the workspace ' +
+  'is not open yet, the sign-in page will say why.';
 
 Deno.serve(async (req) => {
   const corsHeaders = createCorsHeaders(req.headers.get('origin'));
@@ -166,6 +186,57 @@ Deno.serve(async (req) => {
     // `builder_accessible_organisations` can return anything. It is the
     // authoritative post-activation list and the one the session is scoped to.
     const accessibleOrganisations = await listAccessibleOrganisations(supabase, portalUser.id);
+
+    /*
+     * ACTIVATED, AND NOT YET ALLOWED IN. These are different facts and this
+     * function used to conflate them.
+     *
+     * `listInvitedOrganisations` above deliberately counts a membership of an
+     * organisation that is still `pending_activation` — its own comment says
+     * the invite is legitimately issued ahead of the organisation going live
+     * and "the organisation gate applies at login". The code then issued a
+     * session unconditionally, and `builder_issue_session` applies exactly
+     * that gate: it requires an accessible organisation and raises
+     * `BUILDER_SESSION_NOT_PERMITTED` when there is none.
+     *
+     * So the two halves of this handler contradicted each other, and the
+     * throw was caught by the outer `catch` and reported as **Internal server
+     * error** — measured in production on 18 Sep 2026, on the first real
+     * builder to accept an invitation into an organisation awaiting approval.
+     *
+     * The rule that makes the repair the right one: AN ACT THAT HAS ALREADY
+     * COMMITTED MUST NEVER BE REPORTED AS A FAILURE. The update above has
+     * happened — the password is set, the invite is spent, the account is
+     * active — so a 500 tells somebody nothing happened when everything did,
+     * and sends them back to a link that now answers `already_active`.
+     *
+     * `builder-portal-login` has answered this correctly since the access
+     * denial work; it reads the memberships and explains the refusal rather
+     * than guessing. This asks the same shared explainer, so the sentence a
+     * builder meets here is the one they meet at sign-in.
+     */
+    if (!accessibleOrganisations.length) {
+      const denial = await explainNoAccessibleOrganisation(supabase, portalUser.id, new Date());
+      await auditBuilderIdentity(supabase, req, {
+        userId: portalUser.id, organisationId: null,
+        action: 'builder_invite_accepted', sessionId: null,
+        newState: { status: 'active', signed_in: false, reason: denial.code },
+      });
+      return json({
+        success: true,
+        // The account IS active and the password IS set. Naming both stops a
+        // reader — or a future caller — treating this as a failed activation.
+        activated: true,
+        signed_in: false,
+        pending: { code: denial.code, message: denial.message || PENDING_FALLBACK },
+        user: {
+          id: updatedUser.id,
+          email: updatedUser.email,
+          name: updatedUser.name,
+        },
+      });
+    }
+
     const autoSelected = accessibleOrganisations.find((organisation) => organisation.is_primary)
       ?? (accessibleOrganisations.length === 1 ? accessibleOrganisations[0] : null);
 
@@ -188,6 +259,8 @@ Deno.serve(async (req) => {
 
     return json({
       success: true,
+      activated: true,
+      signed_in: true,
       user: {
         id: updatedUser.id,
         email: updatedUser.email,
