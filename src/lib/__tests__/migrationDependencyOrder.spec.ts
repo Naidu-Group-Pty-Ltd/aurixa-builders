@@ -21,7 +21,7 @@ import {
 } from "../../../scripts/lib/migrationDependencyOrder.mjs";
 
 const reqs = (sql: string) => extractRequirements(stripUnresolved(sql));
-const forms = (sql: string) => reqs(sql).map((r: { form: string; object?: string; name: string }) => `${r.form}:${r.name}`);
+const forms = (sql: string) => reqs(sql).map((r) => `${r.form}:${r.name}`);
 
 describe("what is not SQL the planner resolves is removed first", () => {
   it("keeps every offset, so a reported line is the line in the file", () => {
@@ -125,7 +125,7 @@ describe("the forms Postgres resolves at the statement", () => {
 describe("creations and drops are a timeline, not a set", () => {
   it("records both, in the order they appear", () => {
     const e = extractEvents(stripUnresolved("drop table if exists t; create table t (a int);"));
-    expect(e.map((x: { kind: string }) => x.kind)).toEqual(["drop", "create"]);
+    expect(e.map((x) => x.kind)).toEqual(["drop", "create"]);
   });
 
   it("reads `create or replace view` as a creation", () => {
