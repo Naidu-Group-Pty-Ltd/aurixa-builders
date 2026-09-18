@@ -301,9 +301,30 @@ const uploadIds = checkedIds([
 ].filter(Boolean));
 
 if (uploadIds.length) {
-  const uploads = await sql('uploads', `
-    select * from public.builder_stock_uploads
+  /*
+   * AND THE UPLOADS THIS ONE REPLACED.
+   *
+   * A branch verdict is written under the upload that was current when the
+   * work ran, and a replacement upload re-enumerates the same branches as new
+   * rows. Reading only the current upload therefore shows a manifest whose
+   * verdicts were reached against a DIFFERENT parse of the builder's list —
+   * which is exactly the confusion these five rows turned on.
+   */
+  const firstPass = await sql('replaced uploads', `
+    select distinct jsonb_array_elements_text(replaces_upload_ids) as id
+      from public.builder_stock_uploads
      where id in (${uploadIds.map((id) => `'${id}'`).join(',')})
+       and replaces_upload_ids is not null`);
+  const lineage = checkedIds([
+    ...uploadIds, ...firstPass.map((r) => String(r.id ?? '')),
+  ].filter(Boolean));
+  const uploads = await sql('uploads', `
+    select id, created_at, source_type, source_url, final_url, parse_strategy,
+           records_detected, records_imported, records_updated, records_failed,
+           status, error_code, source_manifest_state, image_failure_state,
+           published_at, replaces_upload_ids, publication_blocked_reason
+      from public.builder_stock_uploads
+     where id in (${lineage.map((id) => `'${id}'`).join(',')})
      order by created_at`);
   heading(`UPLOADS — ${uploads.length} row(s)`);
   for (const row of uploads) {
@@ -390,7 +411,8 @@ for (const item of items) {
   if (!branches.length) console.log('  branches   (none enumerated)');
   for (const branch of branches) {
     console.log(`  branch     ${safeDetail(String(branch.column_header ?? 'embedded'), 44)
-      .padEnd(36)} ${String(branch.state).padEnd(10)} attempts=${branch.attempts}`);
+      .padEnd(36)} ${String(branch.state).padEnd(10)} attempts=${branch.attempts
+      }  enumerated=${branch.enumerated_at} updated=${branch.updated_at}`);
     console.log(`             ${safeUrl(String(branch.reference ?? ''), 110) ?? '—'}`);
     if (branch.state_detail) {
       console.log(`             WHY: ${safeDetail(String(branch.state_detail), 240)}`);
