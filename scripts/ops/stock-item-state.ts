@@ -311,7 +311,7 @@ if (uploadIds.length) {
    * which is exactly the confusion these five rows turned on.
    */
   const firstPass = await sql('replaced uploads', `
-    select distinct jsonb_array_elements_text(replaces_upload_ids) as id
+    select distinct unnest(replaces_upload_ids)::text as id
       from public.builder_stock_uploads
      where id in (${uploadIds.map((id) => `'${id}'`).join(',')})
        and replaces_upload_ids is not null`);
@@ -420,6 +420,17 @@ for (const item of items) {
   }
   for (const line of stored) console.log(`  stored     ${line}`);
   if (!stored.length) console.log('  stored     (nothing)');
+  /*
+   * THE BANKED VERDICTS, WHOLE.
+   *
+   * `readItemSuppliedEvidence` does not read the manifest at all — it reads
+   * `source_row` and THIS column. So whatever is in here is what the settler
+   * believes about every branch, and `negativeProvenanceStillStands` keeps an
+   * entry standing until the provenance version moves. It is the artefact that
+   * decides an `exhausted`, and it is printed in full for that reason.
+   */
+  const banked = item.source_provenance_result;
+  console.log(`  banked     ${banked ? show(banked, 0) : '(none)'}`);
 }
 
 console.log('\nRead-only run complete. Nothing was written.');
