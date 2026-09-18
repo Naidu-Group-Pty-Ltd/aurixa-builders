@@ -197,6 +197,22 @@ describe('the builder can reach the properties that are holding their list', () 
     expect(code).toContain(".in('lifecycle_status', PROCESSED_LIFECYCLE)");
   });
 
+  /*
+   * ARCHIVED IS WITHDRAWN STOCK, AND REMEDIATION MUST NOT REACH IT.
+   *
+   * A builder archives a property to take it off the market. Retrying its
+   * imagery would spend work on a row nobody can see, and — worse — a row the
+   * revival path re-stages on its own terms when a new list re-supplies it.
+   * The exclusion is a property of the constant rather than of any call site,
+   * so it is asserted here once and holds at all four `.in()` filters.
+   */
+  it('archived stock is never reached by retry or by the image engine', () => {
+    expect(PROCESSED_LIFECYCLE).not.toContain('archived');
+    expect([...PROCESSED_LIFECYCLE].sort()).toEqual(['active', 'staged']);
+    const code = fn();
+    expect(code).not.toContain(".in('lifecycle_status', ['active', 'staged', 'archived']");
+  });
+
   it('the stock read validates the lifecycle it is asked for, and can serve staged', () => {
     const code = fn();
     // An unrecognised string used to reach `.eq()` and return zero rows,
