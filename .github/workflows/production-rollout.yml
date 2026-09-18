@@ -40,6 +40,14 @@ name: Production rollout
 #            refuses any statement that is not one. Writes nothing.
 #            Ids come from the `items` input, defaulting to the five the
 #            18 September import retired.
+#   item-reopen
+#            the narrowest recovery for a property the two 18 September defects
+#            retired: removes ONLY the banked branch verdicts that match those
+#            two signatures — a recovery whose image is not marketplace
+#            eligible, and the row's own `Brochure URL` banked as naming no
+#            image — and resets the work state. Writes no image, sets no
+#            primary, settles nothing, publishes nothing, never touches
+#            `lifecycle_status`. DRY RUN unless `apply` is true; idempotent.
 #
 # Secrets used (never printed; SQL text is never logged):
 #   SUPABASE_ACCESS_TOKEN   Management API (same token the deploy uses)
@@ -50,16 +58,21 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen]
       items:
-        description: 'item-state only: comma-separated stock item ids (blank = the five reported)'
+        description: 'item-state / item-reopen: comma-separated stock item ids (blank = the default set)'
         required: false
         default: ''
         type: string
+      apply:
+        description: 'item-reopen only: false is a dry run that writes nothing'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: production-rollout
@@ -74,7 +87,7 @@ jobs:
         with:
           node-version: 22
       - uses: denoland/setup-deno@v2
-        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' }}
+        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' }}
         with:
           deno-version: v2.x
 
@@ -97,6 +110,7 @@ jobs:
           # before it reaches a statement, which is the second half of the same
           # rule.
           STOCK_ITEM_IDS: ${{ inputs.items }}
+          APPLY: ${{ inputs.apply }}
         run: |
           set -euo pipefail
           case "${{ inputs.phase }}" in
@@ -105,4 +119,5 @@ jobs:
             smoke)                node scripts/ops/production-smoke.mjs ;;
             forensics)            deno run -A --config supabase/functions/deno.json scripts/ops/stock-source-forensics.ts ;;
             item-state)           deno run -A --config supabase/functions/deno.json scripts/ops/stock-item-state.ts ;;
+            item-reopen)          deno run -A --config supabase/functions/deno.json scripts/ops/stock-item-reopen.ts ;;
           esac
