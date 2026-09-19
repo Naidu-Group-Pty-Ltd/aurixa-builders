@@ -557,30 +557,59 @@ record('D2: the picture is accepted for that property and no other',
  * every-minute tick would do the same — and the poll is what proves the
  * requeue happened, because nothing above touched `primary_image_id`.
  */
+/*
+ * THE SUPPLIED IMAGE IS READ AS ITSELF, not through `primary_image_id`.
+ *
+ * The first version of this joined the image via the item's primary pointer,
+ * so when the pointer stayed null every downstream assertion reported empty
+ * strings — which cannot tell "the picture was refused" from "the picture was
+ * never considered". A check that cannot distinguish its own failure modes is
+ * not a check. The row is therefore read by the path it was stored under.
+ */
 await q('dispatch the image workers', 'SELECT public.builder_stock_kick_image_work(NULL)');
 let settledRow = null;
 for (let attempt = 0; attempt < 30; attempt++) {
   const rows = await q(`remedy settle poll ${attempt}`, `
     SELECT i.primary_image_id, i.image_work_stage, i.enrichment_status,
-           im.source_provider, im.storage_path,
+           coalesce(i.image_work_last_result, '') AS last_result,
+           im.id AS image_id, im.source_stage, im.verification_status,
+           im.processing_status, im.source_provider,
+           (im.upload_id IS NOT DISTINCT FROM i.upload_id) AS upload_matches,
+           (im.organisation_id = i.organisation_id) AS org_matches,
+           coalesce(im.source_detail ->> 'role', '') AS role,
+           coalesce(im.source_detail ->> 'role_evidence_level', '') AS level,
+           coalesce(im.source_detail ->> 'marketplace_eligibility_state', '') AS elig_state,
            coalesce(im.source_detail ->> 'marketplace_display_eligible', '') AS eligible,
-           coalesce(im.source_detail ->> 'role_evidence_level', '') AS level
+           coalesce(im.source_detail ->> 'marketplace_eligibility_version', '') AS elig_version
       FROM public.builder_stock_items i
-      LEFT JOIN public.builder_stock_item_images im ON im.id = i.primary_image_id
+      LEFT JOIN public.builder_stock_item_images im
+        ON im.stock_item_id = i.id AND im.storage_path = ${sqlLit(storagePath ?? '')}
      WHERE i.id = ${sqlLit(remedyItemId)}::uuid`);
   settledRow = rows[0] ?? null;
   if (settledRow?.primary_image_id && settledRow?.image_work_stage === 'settled') break;
   await new Promise((resolve) => { setTimeout(resolve, 4000); });
 }
+record('D2: the supplied picture is stored where the sweeps look for it',
+  !!settledRow?.image_id && settledRow?.source_stage === 'uploaded_document'
+    && settledRow?.verification_status === 'source_supplied'
+    && settledRow?.processing_status === 'ready'
+    && String(settledRow?.org_matches) !== 'false',
+  `image=${settledRow?.image_id ? 'stored' : 'MISSING'} stage=${settledRow?.source_stage}`
+  + ` verification=${settledRow?.verification_status} processing=${settledRow?.processing_status}`
+  + ` org_matches=${settledRow?.org_matches} upload_matches=${settledRow?.upload_matches}`);
+record('D2: it carries the builder\'s own level-1 role, so the sweeps will judge it',
+  settledRow?.role === 'primary_property',
+  `role=${settledRow?.role} evidence_level=${settledRow?.level}`);
+record('D2: the eligibility sweep reached it and passed it',
+  String(settledRow?.eligible) === 'true',
+  `eligible=${settledRow?.eligible} state=${settledRow?.elig_state} version=${settledRow?.elig_version}`);
 record('D2: the ordinary pipeline promotes it to the card — nothing here set it',
-  !!settledRow?.primary_image_id && settledRow?.storage_path === storagePath,
+  !!settledRow?.primary_image_id && settledRow?.primary_image_id === settledRow?.image_id,
   `primary=${settledRow?.primary_image_id ? 'set' : 'null'} provider=${settledRow?.source_provider}`);
 record('D2: and the property settles rather than staying in the ladder',
   settledRow?.image_work_stage === 'settled' && settledRow?.enrichment_status === 'complete',
-  `stage=${settledRow?.image_work_stage} enrichment=${settledRow?.enrichment_status}`);
-record('D2: the builder\'s own picture is marketplace eligible',
-  String(settledRow?.eligible) === 'true',
-  `eligible=${settledRow?.eligible} evidence_level=${settledRow?.level}`);
+  `stage=${settledRow?.image_work_stage} enrichment=${settledRow?.enrichment_status}`
+  + ` last=${String(settledRow?.last_result).slice(0, 90)}`);
 
 /*
  * READINESS IS A COUNT THE BUILDER READS, so it is asserted as one: the same
