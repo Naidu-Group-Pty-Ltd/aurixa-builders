@@ -40,6 +40,18 @@ name: Production rollout
 #            refuses any statement that is not one. Writes nothing.
 #            Ids come from the `items` input, defaulting to the five the
 #            18 September import retired.
+#   stock-collateral-reprocess
+#            sends every ACTIVE property whose card is led by a picture from a
+#            column the builder's own heading declares to be estate or plan
+#            collateral back to `source`, so the corrected pipeline reads the
+#            brochure it never opened. Selected BY THE RULE
+#            (`columnDeclaration.pure.ts`, imported rather than restated) and
+#            never by a list of ids. Writes only the image work state: no
+#            image, no primary, no lifecycle, no publication, and it deletes
+#            nothing. DRY RUN unless `apply` is true; idempotent.
+#            MUST RUN AFTER the functions carrying the rule are deployed — the
+#            old code still counts a masterplan as a ready image and would
+#            re-settle every row this resets.
 #   item-reopen
 #            the narrowest recovery for a property the two 18 September defects
 #            retired: removes ONLY the banked branch verdicts that match those
@@ -58,11 +70,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess]
       items:
         description: 'item-state / item-reopen: comma-separated stock item ids (blank = the default set)'
         required: false
@@ -93,7 +105,7 @@ jobs:
         with:
           node-version: 22
       - uses: denoland/setup-deno@v2
-        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' }}
+        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' || inputs.phase == 'stock-collateral-reprocess' }}
         with:
           deno-version: v2.x
 
@@ -127,4 +139,6 @@ jobs:
             forensics)            deno run -A --config supabase/functions/deno.json scripts/ops/stock-source-forensics.ts ;;
             item-state)           deno run -A --config supabase/functions/deno.json scripts/ops/stock-item-state.ts ;;
             item-reopen)          deno run -A --config supabase/functions/deno.json scripts/ops/stock-item-reopen.ts ;;
+            stock-collateral-reprocess)
+                                  deno run -A --config supabase/functions/deno.json scripts/ops/stock-collateral-reprocess.ts ;;
           esac
