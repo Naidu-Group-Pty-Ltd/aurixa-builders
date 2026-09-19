@@ -31,7 +31,8 @@ import {
   comparePrimaryEvidence, isPrimaryRole, readStoredEvidenceLevel, readStoredRole,
 } from './sourceImageRole.pure.ts';
 import {
-  isMarketplaceEligible, needsEligibilityAssessment, readMarketplaceState, sweepWillJudge,
+  isMarketplaceEligible, needsEligibilityAssessment, readMarketplaceState,
+  servableStoredImage, sweepWillJudge,
 } from './marketplaceEligibility.pure.ts';
 import {
   servableClearanceFor, servableDerivativeFor, type SanitizedDerivative,
@@ -84,37 +85,32 @@ export function isDisplayableSourceImage(image: DisplayableImage): boolean {
     && image.processing_status === 'ready'
     && !!(image.storage_path || image.external_url)
     && isPrimaryRole(readStoredRole(image.source_detail))
-    // And the sixth: the source designating it is not the same as it being a
-    // picture to draw. A facade under a "$25,000 Rebate" ribbon passes all
-    // five above. See `marketplaceEligibility.pure.ts`.
-    //
-    // OR THE SAME PHOTOGRAPH WITH THE RIBBON TAKEN OFF. A servable derivative
-    // is that image's own pixels with the laid-over graphic removed and the
-    // result re-measured by the same classifier that refused the original — so
-    // it satisfies the display rule rather than bypassing it. It is NOT another
-    // image: the record names the exact original by id and by SHA-256, and a
-    // row whose object has since changed stops resolving one. See
-    // `sanitizedDerivative.pure.ts`.
-    //
-    // OR THE SAME PHOTOGRAPH WITH NOTHING WRONG WITH IT. A clearance is the
-    // precise inspection's finding that the coarse classifier convicted this
-    // picture for a feature of the HOUSE — Lot 537 Kirramingly's white garage
-    // door — and that there is no promotional treatment on it at all. It
-    // serves the ORIGINAL, unaltered, because nothing needed changing. See
-    // `overlayClearance.pure.ts`.
-    && (isMarketplaceEligible(image.source_detail)
-      || !!servableDerivativeFor(image.source_detail)
-      || !!servableClearanceFor(image.source_detail))
-    // And the seventh: the column the builder filed it under does not say it
-    // is something other than the house. Measured 19 September 2026 — 13 of
-    // 46 live cards led with a picture out of `Siting / Masterplan URL`,
-    // `Estate Brochure / Location Map URL` or `Stage Plan / PlanOfSub URL`,
-    // every one of which passes the six conditions above, because not one of
-    // them asks what the picture is OF. Read here as well as refused at the
-    // branch, so a row stored before the rule existed cannot lead a card and
-    // no backfill decides which pictures a marketplace draws. See
-    // `columnDeclaration.pure.ts`.
-    && storedColumnMaySupplyPrimaryImage(image.source_detail);
+    /*
+     * AND WHETHER A CARD WOULD ACTUALLY DRAW IT, which is four more questions
+     * and ONE CALL.
+     *
+     *   the source designating it is not the same as it being a picture to
+     *   draw — a facade under a "$25,000 Rebate" ribbon passes all five above
+     *   (`marketplaceEligibility.pure.ts`);
+     *   or the same photograph with the ribbon taken off — a derivative of
+     *   THESE pixels, named by id and SHA-256 and re-measured by the same
+     *   classifier, never a substitute picture (`sanitizedDerivative.pure.ts`);
+     *   or the same photograph with nothing wrong with it — a clearance, the
+     *   precise inspection's finding that the coarse classifier convicted this
+     *   picture for a feature of the HOUSE, Lot 537 Kirramingly's white garage
+     *   door (`overlayClearance.pure.ts`);
+     *   and the column the builder filed it under does not say it is something
+     *   other than the house (`columnDeclaration.pure.ts`).
+     *
+     * IT IS A CALL BECAUSE IT WAS THREE COPIES. This gate,
+     * `hasReadySourceImage` and an inline block in `settleItemImages` each
+     * asked "is there a servable builder image" in their own words, and the
+     * fourth question reached only this one — so a masterplan was refused
+     * here and counted as a finished search there, which is exactly the
+     * thirteen properties the column rule exists for. See
+     * `servableStoredImage`.
+     */
+    && servableStoredImage(image);
 }
 
 /**

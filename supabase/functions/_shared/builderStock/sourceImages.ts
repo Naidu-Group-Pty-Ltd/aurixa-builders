@@ -30,7 +30,7 @@ import {
   type SourceImageAsset,
 } from './sourceAssets.pure.ts';
 import { eligibilityDetailFor } from './assessSourceImage.ts';
-import { isMarketplaceEligible } from './marketplaceEligibility.pure.ts';
+import { isMarketplaceEligible, servableStoredImage } from './marketplaceEligibility.pure.ts';
 import { roleDetail } from './sourceImageRole.pure.ts';
 import {
   sanitizationCarryForward, servableClearanceFor, servableDerivativeFor,
@@ -724,14 +724,16 @@ export async function hasReadySourceImage(
    * carrying a servable derivative or clearance. Anything else keeps the
    * property's own package worth reading.
    */
-  return (data ?? []).some((row: any) => {
-    if (!(row.storage_path || row.external_url)) return false;
-    const detail = (row.source_detail ?? {}) as Record<string, unknown>;
-    if (Number(detail.provenance_version ?? 0) < minimumProvenanceVersion) return false;
-    return isMarketplaceEligible(detail)
-      || !!servableDerivativeFor(detail)
-      || !!servableClearanceFor(detail);
-  });
+  /*
+   * AND THE COLUMN THE BUILDER FILED IT UNDER — added 19 September 2026, by
+   * reading `servableStoredImage` rather than by adding a fourth condition
+   * here. This predicate and `isDisplayableSourceImage` disagreed about
+   * exactly the thirteen properties the column rule exists for: a masterplan
+   * is `marketplace_display_eligible`, so this answered YES and the repair
+   * skipped the property's own brochure. Three copies of one question is how
+   * two of them come to be wrong.
+   */
+  return (data ?? []).some((row: any) => servableStoredImage(row, minimumProvenanceVersion));
 }
 
 /**

@@ -47,7 +47,7 @@ import {
   settleImageSanitization, type RepairBudget,
 } from './settleImageSanitization.ts';
 import { chooseAndStorePrimaryImage } from './primaryImage.ts';
-import { isMarketplaceEligible } from './marketplaceEligibility.pure.ts';
+import { isMarketplaceEligible, servableStoredImage } from './marketplaceEligibility.pure.ts';
 import {
   servableClearanceFor, servableDerivativeFor,
 } from './sanitizedDerivative.pure.ts';
@@ -615,14 +615,16 @@ async function readItemSuppliedEvidence(
         .eq('source_stage', 'uploaded_document')
         .eq('processing_status', 'ready')
         .limit(20);
+      /*
+       * AND THE THIRD COPY BECAME A CALL — 19 September 2026. This block, and
+       * `hasReadySourceImage`, and `isDisplayableSourceImage`, each asked "is
+       * there a servable builder image" in their own words, and the column
+       * rule reached only one of them. `servableStoredImage` is the one
+       * predicate now; the stage, verification and processing status stay in
+       * the query above where each caller establishes them differently.
+       */
       builderImageAccepted = !suppliedError && Array.isArray(supplied)
-        && supplied.some((row: any) => {
-          if (!(row.storage_path || row.external_url)) return false;
-          const detail = (row.source_detail ?? {}) as Record<string, unknown>;
-          return isMarketplaceEligible(detail)
-            || !!servableDerivativeFor(detail)
-            || !!servableClearanceFor(detail);
-        });
+        && supplied.some((row: any) => servableStoredImage(row));
     } catch {
       builderImageAccepted = false;
     }

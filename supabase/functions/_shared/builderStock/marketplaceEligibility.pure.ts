@@ -56,6 +56,10 @@
 import { isPrimaryRole, readStoredRole } from './sourceImageRole.pure.ts';
 import { sanitizationSettled, storedOriginalSha } from './sanitizedDerivative.pure.ts';
 import { readRepairRegion } from './repairRegion.pure.ts';
+import { storedColumnMaySupplyPrimaryImage } from './columnDeclaration.pure.ts';
+import {
+  servableClearanceFor, servableDerivativeFor,
+} from './sanitizedDerivative.pure.ts';
 
 /**
  * Bumped when the decision would change for bytes already assessed.
@@ -310,6 +314,50 @@ export function isMarketplaceEligible(
   sourceDetail: Record<string, unknown> | null | undefined,
 ): boolean {
   return readMarketplaceState(sourceDetail) === 'eligible';
+}
+
+/**
+ * WOULD A CARD ACTUALLY DRAW THIS STORED ROW?
+ *
+ * THERE WERE THREE COPIES OF THIS AND ONLY ONE OF THEM HAD THE COLUMN RULE,
+ * which is why it is a function. `isDisplayableSourceImage`,
+ * `hasReadySourceImage` and an inline block in `settleItemImages` each asked
+ * "is there a servable builder image" their own way, and the first two
+ * disagree about exactly the properties that matter: a masterplan filed under
+ * `Siting / Masterplan URL` is `marketplace_display_eligible`, so
+ * `hasReadySourceImage` answered YES and the repair skipped the property's own
+ * brochure — the very brochure the column rule exists to send it back for.
+ * The reprocess would have been a no-op on all thirteen.
+ *
+ * It is the same shape as the defect those two comments already record from
+ * 15 September: `ready` is not `displayable`, and a stored picture ends a
+ * search only when the card would actually serve it. This adds the fourth
+ * reason a card would not, and puts all four in one place so the next one is
+ * added once.
+ *
+ * WHAT IT DOES NOT ASK is the stage, the verification and the processing
+ * status. Every caller establishes those differently — two of them in a
+ * PostgREST filter — and folding them in here would make the predicate a
+ * different question depending on who asked it.
+ */
+export function servableStoredImage(
+  row: {
+    storage_path?: string | null;
+    external_url?: string | null;
+    source_detail?: Record<string, unknown> | null;
+  },
+  /** Only count a row whose origin is recorded to at least this standard. */
+  minimumProvenanceVersion = 0,
+): boolean {
+  if (!(row.storage_path || row.external_url)) return false;
+  const detail = (row.source_detail ?? {}) as Record<string, unknown>;
+  if (Number(detail.provenance_version ?? 0) < minimumProvenanceVersion) return false;
+  // What the builder's own column heading says the picture IS. A masterplan
+  // passes every other test here.
+  if (!storedColumnMaySupplyPrimaryImage(detail)) return false;
+  return isMarketplaceEligible(detail)
+    || !!servableDerivativeFor(detail)
+    || !!servableClearanceFor(detail);
 }
 
 /**
