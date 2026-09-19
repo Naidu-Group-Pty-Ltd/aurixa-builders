@@ -45,6 +45,13 @@ function env(name: string): string {
   }
 }
 
+/** The role's own name, whether it arrives as a record or already as one. */
+function roleName(role: unknown): string | null {
+  if (typeof role === 'string') return role.trim() || null;
+  const named = (role as { role?: unknown } | null | undefined)?.role;
+  return typeof named === 'string' ? named.trim() || null : null;
+}
+
 /** Everything this module can produce on its own. Never `not_identified`. */
 const unreachable = (detail: string): PackageOutcome => ({ status: 'unreachable', detail });
 
@@ -148,8 +155,19 @@ export async function runElectionOnRoute(
       route: route.kind,
       outcome: outcome.status,
       documentVerdict: outcome.status !== 'unreachable',
+      /*
+       * THE ROLE'S NAME, NOT THE ROLE OBJECT.
+       *
+       * `image.role` is a `{ role, evidenceLevel, evidence, reason }` record,
+       * so stringifying it printed `image_role: "[object Object]"` — measured
+       * on every production election of 18-19 September, in the one field an
+       * operator reads to tell a facade from an estate map. A telemetry value
+       * that says nothing is worse than an absent one, because it looks like
+       * an answer. Both shapes are read, because a caller handing a plain
+       * string is not wrong, it is just less.
+       */
       role: outcome.status === 'recovered' || outcome.status === 'recovered_photograph'
-        ? String((outcome as { image?: { role?: unknown } }).image?.role ?? '') || null
+        ? roleName((outcome as { image?: { role?: unknown } }).image?.role)
         : null,
       durationMs: Date.now() - startedAt,
       detail: outcome.status === 'unreachable' || outcome.status === 'not_identified'

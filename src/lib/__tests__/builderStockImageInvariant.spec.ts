@@ -14,7 +14,8 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  FAILED_WORK_STAGE, STOCK_IMAGE_PROGRESS_LABEL, countWorkingImages, stockImageProgress,
+  FAILED_WORK_STAGE, STOCK_IMAGE_PROGRESS_DETAIL, STOCK_IMAGE_PROGRESS_LABEL,
+  countWorkingImages, stockImageProgress,
 } from '../../../supabase/functions/_shared/builderStock/imageProgress.pure';
 import {
   classifyBranch, rowSourceBranchCandidates, rowSourceBranches,
@@ -97,13 +98,55 @@ describe('our failure is never "no photograph exists"', () => {
   });
 
   it('the terminal failed stage reads as needs-attention, never as an endless spinner', () => {
-    expect(stockImageProgress({ hasImage: false, sourceDocuments: 2, workStage: FAILED_WORK_STAGE }))
-      .toBe('attention');
+    expect(stockImageProgress({
+      hasImage: false, sourceDocuments: 2, unprocessedDocuments: 1,
+      workStage: FAILED_WORK_STAGE,
+    })).toBe('attention');
     expect(countWorkingImages([
       { hasImage: false, sourceDocuments: 2, workStage: FAILED_WORK_STAGE },
       { hasImage: false, sourceDocuments: 2, workStage: 'source' },
     ])).toBe(1);
     expect(STOCK_IMAGE_PROGRESS_LABEL.attention).toContain('attention');
+  });
+
+  /*
+   * AND A TERMINAL FAILURE SAYS WHOSE IT IS.
+   *
+   * `attention` promises that somebody here is working on it — true of a
+   * document we could not read, false of one we read fine. Lot 1037 Vanta 20
+   * attaches three documents, all three were read, and its brochure's cover
+   * names the sibling row's property; nothing in this pipeline can correct a
+   * link only the builder holds. Both readings are terminal, so neither is
+   * ever a spinner, which is what the case above pins.
+   */
+  it('a failed row whose documents were all READ asks the builder, not support', () => {
+    expect(stockImageProgress({
+      hasImage: false, sourceDocuments: 3, unprocessedDocuments: 0,
+      unreachableDocuments: 0, workStage: FAILED_WORK_STAGE,
+    })).toBe('none_found');
+    // Still terminal: the guarantee the case above exists for.
+    expect(countWorkingImages([{
+      hasImage: false, sourceDocuments: 3, unprocessedDocuments: 0,
+      unreachableDocuments: 0, workStage: FAILED_WORK_STAGE,
+    }])).toBe(0);
+    // And it names the two acts that change it, rather than apologising.
+    expect(STOCK_IMAGE_PROGRESS_DETAIL.none_found).toContain('Add a picture');
+    expect(STOCK_IMAGE_PROGRESS_DETAIL.attention).toContain('our team has');
+    expect(STOCK_IMAGE_PROGRESS_DETAIL.none_found).not.toContain('our team');
+  });
+
+  it('keeps `attention` wherever a document of ours went unread', () => {
+    // One unreachable link is the builder's, one unprocessed document is
+    // ours, and neither is "every document was read and said nothing".
+    expect(stockImageProgress({
+      hasImage: false, sourceDocuments: 3, unreachableDocuments: 1,
+      workStage: FAILED_WORK_STAGE,
+    })).toBe('attention');
+    // A failed row attaching nothing at all cannot be a finding about
+    // documents it does not have.
+    expect(stockImageProgress({
+      hasImage: false, sourceDocuments: 0, workStage: FAILED_WORK_STAGE,
+    })).toBe('attention');
   });
 });
 
