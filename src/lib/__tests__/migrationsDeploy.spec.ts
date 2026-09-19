@@ -188,4 +188,44 @@ describe("a transient platform refusal does not leave a partial deploy", () => {
     // Skipped only where the deploy never began, so there is nothing to judge.
     expect(verify).toContain("steps.deploy.outputs.started_at != ''");
   });
+
+  describe('and it gives the platform time to agree before it cries wolf', () => {
+    const verifier = read('scripts/ops/verify-functions-deployed.mjs');
+
+    it('re-asks the listing rather than believing the first stale reading', () => {
+      /*
+       * 19 SEPTEMBER 2026, RUN 35424012572. Two functions printed "Deployed
+       * Functions on project …" and the listing, read eight seconds later,
+       * still carried their previous versions. Both had shipped. A verifier
+       * with no tolerance for an eventually-consistent listing reported a
+       * correct deploy as the one state it exists to catch — and a check that
+       * cries wolf is one an operator re-runs without reading, which is how
+       * the REAL partial deploy passes unnoticed next time.
+       */
+      expect(verifier).toMatch(/SETTLE_PASSES/);
+      expect(verifier).toMatch(/eventually consistent/i);
+      // Bounded: a genuine partial deploy still fails, just later.
+      expect(verifier).toMatch(/pass <= SETTLE_PASSES/);
+    });
+
+    it('cannot wait its way to a pass', () => {
+      // The loop may only ever RE-READ. If it ever reclassified a function,
+      // or compared against anything but the deploy's own start, waiting
+      // would become a way to turn a partial deploy green.
+      const loop = verifier.slice(verifier.indexOf('for (let pass = 1'),
+        verifier.indexOf('const stamp ='));
+      expect(loop).toContain('await listFunctions()');
+      expect(loop).toMatch(/Number\(fn\.updated_at\) >= startedAt/);
+      expect(loop).toMatch(/Number\(fn\.updated_at\) < startedAt/);
+      // And it stops the moment nothing is stale, so a clean deploy pays
+      // nothing for this.
+      expect(loop).toContain('stale.length > 0');
+    });
+
+    it('still fails on a partial deploy once the window is spent', () => {
+      expect(verifier).toContain('::error::PARTIAL DEPLOY');
+      expect(verifier).toMatch(/not shipped: \$\{fn\.slug\}/);
+      expect(verifier).toMatch(/process\.exit\(1\)/);
+    });
+  });
 });
