@@ -280,6 +280,111 @@ await section('7. items whose organisation differs from their upload’s', `
   group by 1, 2
 `);
 
+// ---------------------------------------------------------------------------
+// 8. WHO DID WHAT, AND WHEN. The first pass found every item on this network
+//    `archived` and every upload `deleted_at`-stamped, which is the shape
+//    `delete_source` writes — it archives the stock a source is CURRENTLY
+//    supplying. That is a deliberate act with an actor, so the log names it
+//    rather than leaving the state to be interpreted.
+// ---------------------------------------------------------------------------
+await section('8. the portal activity log, newest first', `
+  select l.created_at,
+         l.action,
+         l.actor_type,
+         left(coalesce(u.name, '(none)'), 22)                          as actor,
+         left(coalesce(o.trading_name, o.legal_name, '(none)'), 22)    as organisation,
+         l.entity_type, l.entity_id,
+         left(coalesce(l.metadata::text, '{}'), 160)                   as metadata
+  from public.builder_portal_activity_log l
+  left join public.builder_portal_users u on u.id = l.builder_user_id
+  left join public.builder_organisations o on o.id = l.organisation_id
+  where l.action like '%stock%'
+     or l.entity_type in ('stock_upload', 'stock_item', 'stock_selection')
+  order by l.created_at desc
+  limit 60
+`);
+
+// ---------------------------------------------------------------------------
+// 9. EVERY UPLOAD IN FULL for the organisation that holds the catalogue —
+//    including the cutover columns, because a replacement list is supposed to
+//    publish in ONE act and `published_at` is what says whether it did.
+// ---------------------------------------------------------------------------
+await section('9. Mairandi Developers uploads, every state column', `
+  select up.created_at, up.id as upload_id,
+         up.status, up.source_type,
+         left(coalesce(up.original_filename, up.source_url, '(none)'), 26) as source,
+         up.records_detected as detected, up.records_imported as imported,
+         up.records_updated as updated, up.records_failed as failed,
+         up.published_at,
+         array_length(up.replaces_upload_ids, 1)                        as replaces,
+         up.processing_started_at, up.processing_completed_at,
+         up.deleted_at,
+         left(coalesce(du.name, '(not deleted)'), 22)                   as deleted_by,
+         up.error_code,
+         left(coalesce(up.error_message, ''), 60)                       as error_message
+  from public.builder_stock_uploads up
+  left join public.builder_portal_users du on du.id = up.deleted_by_builder_user_id
+  where up.organisation_id = 'dfdbff19-9402-479a-80d1-9bad70651349'
+  order by up.created_at desc
+`);
+
+// ---------------------------------------------------------------------------
+// 10. THE 47 ROWS THEMSELVES. `upload_id` is the list currently supplying a
+//     property and `first_upload_id` the one that introduced it — the pair
+//     `itemsToArchiveOnSourceDelete` reads. A row archived while its own
+//     supplying list was deleted is the designed outcome; a row archived
+//     while a LIVE list still supplies it is not.
+// ---------------------------------------------------------------------------
+await section('10. the catalogue rows, by lifecycle and supplying upload', `
+  select i.lifecycle_status,
+         i.upload_id, i.first_upload_id,
+         (i.upload_id is distinct from i.first_upload_id)      as re_supplied,
+         up.deleted_at is not null                             as supplying_upload_deleted,
+         up.status                                             as supplying_upload_status,
+         count(*)                                              as items,
+         count(i.primary_image_id)                             as with_primary,
+         min(i.updated_at)                                     as first_touched,
+         max(i.updated_at)                                     as last_touched
+  from public.builder_stock_items i
+  left join public.builder_stock_uploads up on up.id = i.upload_id
+  where i.organisation_id = 'dfdbff19-9402-479a-80d1-9bad70651349'
+  group by 1, 2, 3, 4, 5, 6
+  order by items desc
+`);
+
+// ---------------------------------------------------------------------------
+// 11. WHAT THE CLONE WAS TOLD. Archiving a property enqueues an event like
+//     any other change, so the marketplace that drew 46 cards an hour ago is
+//     downstream of whatever happened here. The outbox says what is already
+//     on its way.
+// ---------------------------------------------------------------------------
+await section('11. the outbox since the catalogue changed', `
+  select e.event_type, e.status,
+         count(*)      as events,
+         min(e.created_at) as first_queued,
+         max(e.created_at) as last_queued,
+         max(e.delivered_at) as last_delivered
+  from public.builder_network_outbox e
+  where e.created_at > now() - interval '12 hours'
+  group by 1, 2
+  order by last_queued desc
+`);
+
+// ---------------------------------------------------------------------------
+// 12. WHAT A WORKSPACE HAS ALREADY BEEN PROMISED. A selection announced
+//     against a property that has since been archived is the one place this
+//     reaches somebody outside the builder's own portal.
+// ---------------------------------------------------------------------------
+await section('12. selection announcements against the archived catalogue', `
+  select a.status, count(*) as announcements,
+         count(*) filter (where i.lifecycle_status = 'archived') as against_archived_stock,
+         max(a.created_at) as latest
+  from public.builder_stock_selection_announcements a
+  left join public.builder_stock_items i on i.id = a.stock_item_id
+  group by 1
+  order by announcements desc
+`);
+
 console.log(`\n${'='.repeat(92)}`);
 if (unanswered.length) {
   console.log(`QUESTIONS THAT COULD NOT BE READ (${unanswered.length}) — not answers of "none":`);
