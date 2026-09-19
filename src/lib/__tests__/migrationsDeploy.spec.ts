@@ -121,3 +121,71 @@ describe("the runner", () => {
     expect(runner).not.toContain("continue;");
   });
 });
+
+/**
+ * A partial deploy is the failure this lane already knows about, and the
+ * retry is what stops the platform causing one.
+ *
+ * 19 SEPTEMBER 2026. The merge that shipped `suppliedDirectly` deployed 25 of
+ * 27 functions and then answered, twice, two seconds apart:
+ *
+ *   unexpected deploy status 409:
+ *   {"message":"Function was deployed concurrently by another request,
+ *     please retry"}
+ *
+ * on `builder-portal-stock` and `builder-portal-transactions`. The platform
+ * serialises deploys per project and a 27-function loop races itself, so this
+ * is not rare and it is not ours. Production was left running a mixture of
+ * builds — the exact state the verification step below was written to catch —
+ * and that step never ran, because a failing deploy step skips the steps
+ * after it.
+ */
+describe("a transient platform refusal does not leave a partial deploy", () => {
+  const workflow = read(WORKFLOW);
+  const deployStep = workflow.slice(
+    workflow.indexOf("id: deploy"),
+    workflow.indexOf("confirm every function actually shipped"),
+  );
+
+  it("asks again when the platform says to ask again", () => {
+    // The vendor's own message ends "please retry". Not retrying it turns a
+    // two-second collision into a failed production deploy.
+    expect(deployStep).toMatch(/status 409|deployed concurrently/);
+    expect(deployStep).toContain("sleep");
+  });
+
+  it("retries on the ANSWER, never on the exit code", () => {
+    // A compile error and a rejected token are facts three attempts cannot
+    // change; retrying them costs ninety seconds and still fails. The retry
+    // is guarded by a match against what the platform actually said.
+    expect(deployStep).toMatch(/grep -qiE '[^']*409[^']*'/);
+    // And it is bounded, so a permanently-409ing platform still ends the run.
+    expect(deployStep).toMatch(/attempt" -ge \d/);
+  });
+
+  it("still fails the job when a function did not ship", () => {
+    // Retrying must never become swallowing. The loop's own failure list and
+    // its non-zero exit are untouched.
+    expect(deployStep).toContain('failed="$failed $fn"');
+    expect(deployStep).toContain("::error::deploy failed for:");
+    expect(deployStep).toMatch(/if \[ -n "\$failed" \][\s\S]{0,200}exit 1/);
+  });
+
+  it("verifies what actually shipped even when the deploy step failed", () => {
+    /*
+     * THE CASE THE CHECK WAS WRITTEN FOR IS THE CASE IT COULD NOT SEE. A
+     * failing loop skips this step, and a failing loop is exactly when
+     * production is running a mixture of builds. `always()` makes the log
+     * name which functions are on which build; the job still fails on the
+     * deploy's own exit code, so this widens the report and not the verdict.
+     */
+    const verify = workflow.slice(
+      workflow.indexOf("confirm every function actually shipped"),
+      workflow.indexOf("set platform configuration secrets"),
+    );
+    expect(verify).toContain("always()");
+    expect(verify).toContain("verify-functions-deployed.mjs");
+    // Skipped only where the deploy never began, so there is nothing to judge.
+    expect(verify).toContain("steps.deploy.outputs.started_at != ''");
+  });
+});
