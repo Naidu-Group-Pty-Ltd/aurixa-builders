@@ -58,6 +58,7 @@ import {
   storeSourceImageBytes, storeSourceImages, PROVENANCE_VERSION, type SourceImageFetcher,
 } from './sourceImages.ts';
 import { driveFileId, driveFolderId } from './drivePackage.pure.ts';
+import { suppliedDirectly } from './attachBuilderImage.ts';
 import {
   branchForAttempt, branchRecord, openBranches, rowSourceBranches,
   unmappedWithRecoveredLinks, writeBranchState, recordImageRecovered,
@@ -1630,6 +1631,14 @@ export async function repairSourceImagesForUpload(
       if (row.id === pointedNow.get(itemId)) continue;
       const reference = String(row.source_reference ?? '');
       if (proven.has(reference)) continue;
+      /*
+       * A PICTURE THE BUILDER HANDED OVER WAS NEVER DERIVED FROM ANYTHING.
+       * This loop retires images it can no longer re-derive from the
+       * builder's documents; one supplied directly is not in that population,
+       * and its absent `provenance_version` is a fact about its origin rather
+       * than about its age. See `suppliedDirectly`.
+       */
+      if (suppliedDirectly(row.source_detail as Record<string, unknown>)) continue;
       const version = Number((row.source_detail ?? {}).provenance_version ?? 0);
       if (version >= PROVENANCE_VERSION) continue;
 
@@ -1867,6 +1876,8 @@ async function repairPdfUpload(
       if (row.processing_status !== 'ready') continue;
       if (row.id === pointedRow) continue;
       if (proven.has(String(row.source_reference ?? ''))) continue;
+      // Same rule as the row path above, and for the same reason.
+      if (suppliedDirectly(row.source_detail as Record<string, unknown>)) continue;
       if (Number((row.source_detail ?? {}).provenance_version ?? 0) >= PROVENANCE_VERSION) continue;
       await demoteUnprovenSourceImage(db, {
         stockItemId: item.id,
