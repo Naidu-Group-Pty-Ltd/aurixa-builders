@@ -25,7 +25,7 @@ import {
   comparePrimaryEvidence, isPrimaryRole, readStoredEvidenceLevel, readStoredRole,
 } from '../../supabase/functions/_shared/builderStock/sourceImageRole.pure';
 import {
-  isMarketplaceEligible,
+  isMarketplaceEligible, servableStoredImage,
 } from '../../supabase/functions/_shared/builderStock/marketplaceEligibility.pure';
 import {
   servableClearanceFor,
@@ -718,13 +718,11 @@ export function isDisplayableSourceImage(image: BuilderStockImage): boolean {
     // the precise inspection's finding that the classifier convicted this
     // picture for a feature of the house rather than for a badge. That serves
     // the ORIGINAL — nothing was made and nothing was changed.
-    && (isMarketplaceEligible(image.source_detail)
-      || !!servableDerivativeFor(image.source_detail)
-      || !!servableClearanceFor(image.source_detail))
-    // And the column the builder filed it under does not declare it to be
-    // something other than the house — a siting plan, an estate map, a plan
-    // of subdivision. Mirrors the server, and both read the one rule.
-    && storedColumnMaySupplyPrimaryImage(image.source_detail);
+    // The stored verdict, the derivative, the clearance and the column the
+    // builder filed it under — four questions, one call, mirroring the
+    // server's `isDisplayableSourceImage` exactly because three separate
+    // spellings of this is what let the column rule reach only one of them.
+    && servableStoredImage(image);
 }
 
 /**
