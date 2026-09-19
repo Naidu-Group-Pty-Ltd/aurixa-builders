@@ -300,6 +300,8 @@ const uploadIds = checkedIds([
   ...items.map((item) => String(item.pending_upload_id ?? '')),
 ].filter(Boolean));
 
+let publicationLineage: string[] = [];
+
 if (uploadIds.length) {
   /*
    * AND THE UPLOADS THIS ONE REPLACED.
@@ -340,6 +342,7 @@ if (uploadIds.length) {
       + (others.length ? `  other params: ${others.join(', ')}` : '');
   };
 
+  publicationLineage = lineage;
   const uploads = await sql('uploads', `
     select id, created_at, source_type, source_url, final_url, parse_strategy,
            records_detected, records_imported, records_updated, records_failed,
@@ -355,58 +358,6 @@ if (uploadIds.length) {
     printRow(rest);
     console.log(`  source_url (gid-aware)  : ${describeSheetUrl(src)}`);
     console.log(`  final_url  (gid-aware)  : ${describeSheetUrl(fin)}`);
-  }
-
-  /*
-   * WHY IS IT NOT PUBLISHED — ASKED OF THE FUNCTION, NOT INFERRED.
-   *
-   * `publication_blocked_reason` is a SENTENCE about the photograph counts.
-   * It is not the whole predicate: `ready` also requires that no source asset
-   * is still pending and that enumeration did not fail, and neither appears in
-   * that sentence — so an upload can read "1 of 47 without a photo" while a
-   * second, unmentioned gate is holding it too, and repairing the one named
-   * would change nothing.
-   *
-   * Three times in one session this state was reasoned about from branch rows
-   * and timestamps rather than measured, and one of those readings was wrong.
-   * `builder_stock_publication_readiness` is the authority and it is one call,
-   * so it is called here, per upload in the lineage, with the two gates it
-   * does not return printed beside its answer.
-   */
-  const gateRows = await sql('publication gates', `
-    select u.id::text as upload_id,
-           r.staged, r.source_outstanding, r.missing_primary, r.failed_items,
-           r.ready, r.ready_items, r.first_publication, r.partial_ready,
-           (select count(*) from public.builder_stock_source_assets a
-             where a.upload_id = u.id and a.state = 'pending') as assets_pending,
-           (u.source_manifest_state = 'failed') as manifest_failed,
-           (select count(*) from public.builder_stock_items i
-             where i.lifecycle_status = 'active'
-               and i.upload_id = any(coalesce(u.replaces_upload_ids, '{}'))
-               and i.upload_id <> u.id) as superseded_live
-      from public.builder_stock_uploads u
-      cross join lateral public.builder_stock_publication_readiness(u.id) r
-     where u.id in (${lineage.map((id) => `'${id}'`).join(',')})
-     order by u.created_at`);
-  heading('PUBLICATION GATES — the readiness function\'s own answer, per upload');
-  for (const row of gateRows) {
-    console.log('');
-    printRow(row);
-    /*
-     * And the one line an operator actually needs: of everything `ready` and
-     * `partial_ready` require, which conditions are currently false. Derived
-     * from the columns above rather than restated, so it cannot drift from
-     * them.
-     */
-    const blocking: string[] = [];
-    if (Number(row.staged ?? 0) === 0) blocking.push('no properties in scope');
-    if (Number(row.missing_primary ?? 0) > 0) blocking.push(`${row.missing_primary} without a ready builder-source photo`);
-    if (Number(row.failed_items ?? 0) > 0) blocking.push(`${row.failed_items} failed`);
-    if (Number(row.source_outstanding ?? 0) > 0) blocking.push(`${row.source_outstanding} still reading their source`);
-    if (Number(row.assets_pending ?? 0) > 0) blocking.push(`${row.assets_pending} source asset(s) still pending`);
-    if (String(row.manifest_failed) === 'true') blocking.push('enumeration failed');
-    if (Number(row.superseded_live ?? 0) > 0) blocking.push(`replaces a LIVE list (${row.superseded_live} active row(s)) — all-or-nothing`);
-    console.log(`  holding it back         : ${blocking.length ? blocking.join('; ') : 'nothing — it should publish on the next tick'}`);
   }
 
   /*
@@ -526,6 +477,116 @@ for (const item of items) {
    */
   const banked = item.source_provenance_result;
   console.log(`  banked     ${banked ? show(banked, 0) : '(none)'}`);
+}
+
+
+/*
+ * WHY IS IT NOT PUBLISHED — ASKED OF THE FUNCTION, NOT INFERRED.
+ *
+ * `publication_blocked_reason` is a SENTENCE about the photograph counts.
+ * It is not the whole predicate: `ready` also requires that no source asset
+ * is still pending and that enumeration did not fail, and neither appears in
+ * that sentence — so an upload can read "1 of 47 without a photo" while a
+ * second, unmentioned gate is holding it too, and repairing the one named
+ * would change nothing.
+ *
+ * Three times in one session this state was reasoned about from branch rows
+ * and timestamps rather than measured, and one of those readings was wrong.
+ * `builder_stock_publication_readiness` is the authority and it is one call,
+ * so it is called here, per upload in the lineage, with the two gates it
+ * does not return printed beside its answer.
+ */
+const gateRows = await sql('publication gates', `
+  select u.id::text as upload_id,
+         r.staged, r.source_outstanding, r.missing_primary, r.failed_items,
+         r.ready, r.ready_items, r.first_publication, r.partial_ready,
+         (select count(*) from public.builder_stock_source_assets a
+           where a.upload_id = u.id and a.state = 'pending') as assets_pending,
+         (u.source_manifest_state = 'failed') as manifest_failed,
+         (select count(*) from public.builder_stock_items i
+           where i.lifecycle_status = 'active'
+             and i.upload_id = any(coalesce(u.replaces_upload_ids, '{}'))
+             and i.upload_id <> u.id) as superseded_live
+    from public.builder_stock_uploads u
+    cross join lateral public.builder_stock_publication_readiness(u.id) r
+   where u.id in (${publicationLineage.map((id) => `'${id}'`).join(',')})
+   order by u.created_at`);
+heading('PUBLICATION GATES — the readiness function\'s own answer, per upload');
+for (const row of gateRows) {
+  console.log('');
+  printRow(row);
+  /*
+   * And the one line an operator actually needs: of everything `ready` and
+   * `partial_ready` require, which conditions are currently false. Derived
+   * from the columns above rather than restated, so it cannot drift from
+   * them.
+   */
+  const blocking: string[] = [];
+  if (Number(row.staged ?? 0) === 0) blocking.push('no properties in scope');
+  if (Number(row.missing_primary ?? 0) > 0) blocking.push(`${row.missing_primary} without a ready builder-source photo`);
+  if (Number(row.failed_items ?? 0) > 0) blocking.push(`${row.failed_items} failed`);
+  if (Number(row.source_outstanding ?? 0) > 0) blocking.push(`${row.source_outstanding} still reading their source`);
+  if (Number(row.assets_pending ?? 0) > 0) blocking.push(`${row.assets_pending} source asset(s) still pending`);
+  if (String(row.manifest_failed) === 'true') blocking.push('enumeration failed');
+  if (Number(row.superseded_live ?? 0) > 0) blocking.push(`replaces a LIVE list (${row.superseded_live} active row(s)) — all-or-nothing`);
+  console.log(`  holding it back         : ${blocking.length ? blocking.join('; ') : 'nothing — it should publish on the next tick'}`);
+}
+
+
+/*
+ * AND WHETHER THOSE PENDING ROWS ARE ALREADY ANSWERED SOMEWHERE ELSE.
+ *
+ * THE HYPOTHESIS THIS SETTLES. The manifest is keyed
+ * (upload_id, stock_item_id, kind, reference). A REPLACEMENT upload
+ * re-enumerates every branch as `pending` under its OWN upload id — but the
+ * branch verdicts are banked per-URL in `source_provenance_result` at a
+ * provenance version, so the repair does not revisit a branch it has already
+ * answered. The new upload's manifest rows would then never resolve, and
+ * `assets_settled` could never be true for it: a re-imported list would be
+ * permanently unpublishable however good its photographs are.
+ *
+ * That was inferred from timestamps, which is how two readings went wrong in
+ * this investigation already. So it is counted: of this upload's pending
+ * rows, how many name a branch that a DIFFERENT upload in the lineage has
+ * already resolved? If that is most of them, the story holds; if it is zero,
+ * the pending rows are genuinely unanswered work and the story is wrong.
+ */
+const carryForward = await sql('pending rows already answered elsewhere', `
+  select p.upload_id::text as upload_id,
+         count(*) as pending_rows,
+         count(*) filter (where exists (
+           select 1 from public.builder_stock_source_assets q
+            where q.stock_item_id = p.stock_item_id
+              and q.kind = p.kind
+              and q.reference = p.reference
+              and q.upload_id <> p.upload_id
+              and q.state <> 'pending')) as answered_on_another_upload,
+         count(*) filter (where exists (
+           select 1 from public.builder_stock_source_assets q
+            where q.stock_item_id = p.stock_item_id
+              and q.kind = p.kind
+              and q.reference = p.reference
+              and q.upload_id = p.upload_id
+              and q.state <> 'pending')) as answered_on_this_upload
+    from public.builder_stock_source_assets p
+   where p.state = 'pending'
+     and p.upload_id in (${publicationLineage.map((id) => `'${id}'`).join(',')})
+   group by p.upload_id`);
+heading('PENDING MANIFEST ROWS — is the work already done under another upload?');
+for (const row of carryForward) {
+  console.log('');
+  printRow(row);
+  const pending = Number(row.pending_rows ?? 0);
+  const elsewhere = Number(row.answered_on_another_upload ?? 0);
+  const here = Number(row.answered_on_this_upload ?? 0);
+  console.log(`  reading                 : ${
+    pending === 0
+      ? 'nothing pending'
+      : elsewhere + here === 0
+        ? 'genuinely unanswered work — these branches have no verdict anywhere'
+        : `${elsewhere} of ${pending} already answered on ANOTHER upload`
+          + (here ? `, ${here} answered on this one` : '')
+          + ' — a re-enumeration wrote pending over work already done'}`);
 }
 
 console.log('\nRead-only run complete. Nothing was written.');
