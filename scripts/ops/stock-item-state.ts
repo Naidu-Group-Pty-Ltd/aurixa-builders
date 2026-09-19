@@ -821,6 +821,62 @@ if (publicationLineage.length) {
       String(row.all_eligible).padEnd(5)}  ${verdict}`);
   }
 
+
+  /*
+   * AND WHICH FILE EACH LEAD CAME OUT OF — BY ITS ADDRESS, NOT ITS NAME.
+   *
+   * THE BYTE FINGERPRINT ABOVE CANNOT SEE HALF OF THEM, and saying so is the
+   * point of this section. A picture recovered from a DOCUMENT carries
+   * `stored_sha256` in its detail, so two cards showing the same bytes match.
+   * A picture taken from a row's own image link (`filed_as_is`) carries no
+   * hash at all, and the fallback — `storage_path` — is built as
+   * `<org>/items/<stock_item_id>/source/…`, so it embeds the property and can
+   * NEVER equal another property's. Those rows are structurally incapable of
+   * matching, which reads exactly like "no two cards share a picture".
+   *
+   * The link is the fact that covers both. Two properties whose photograph
+   * came out of the SAME FILE is what `linkIsExclusiveToRow` exists to
+   * refuse, so this is also the measure of whether that guard is working —
+   * asked of the addresses actually stored on the leading images rather than
+   * of the counting function.
+   *
+   * Grouped by design too, for the same reason as the section above: several
+   * cards off one brochure is how a brochure works, and several cards off one
+   * IMAGE FILE is one picture on several houses.
+   */
+  const byFile = await sql('which file each lead came out of', `
+    with leads as (
+      select i.id,
+             nullif(i.source_row->>'house_design', '') as design,
+             coalesce(nullif(im.source_detail->>'document_url', ''),
+                      im.source_page_url, im.source_reference) as file_address,
+             coalesce(nullif(im.source_detail->>'source_column', ''), '(the row''s own cell)')
+               as source_column,
+             coalesce(im.source_detail->>'origin', '-') as origin
+        from public.builder_stock_items i
+        join public.builder_stock_item_images im on im.id = i.primary_image_id
+       where i.lifecycle_status = 'active'
+         and ${orgScope})
+    select source_column, origin,
+           count(distinct file_address) as distinct_files,
+           count(*) as cards,
+           max(per_file.cards_on_this_file) as most_cards_on_one_file,
+           max(per_file.designs_on_this_file) as most_designs_on_one_file
+      from leads
+      join lateral (
+        select count(*) as cards_on_this_file,
+               count(distinct l2.design) as designs_on_this_file
+          from leads l2 where l2.file_address = leads.file_address) as per_file on true
+     group by source_column, origin
+     order by cards desc`);
+  heading('LIVE CARDS — how many distinct FILES the 46 photographs came out of');
+  for (const row of byFile) {
+    console.log(`  ${safeDetail(String(row.source_column), 40).padEnd(42)} ${
+      String(row.cards).padStart(3)} card(s) from ${
+      String(row.distinct_files).padStart(3)} file(s)   busiest file: ${
+      String(row.most_cards_on_one_file).padStart(2)} card(s) across ${
+      String(row.most_designs_on_one_file).padStart(2)} design(s)   origin=${row.origin}`);
+  }
   /*
    * AND HOW MANY OF THE 46 ACTUALLY DRAW A PICTURE.
    *
