@@ -166,7 +166,7 @@ if (clash.length) {
 // 3. THE CLONE MUST ALREADY AGREE. See the header: a mismatch is consumed,
 //    not retried, so going first here burns the whole backfill.
 // --------------------------------------------------------------------------
-let cloneRows: Array<Record<string, unknown>>;
+let cloneRows: Array<Record<string, unknown>> = [];
 try {
   cloneRows = await query(CLONE_REF, 'clone', `
     select id::text as id, state,
@@ -178,8 +178,8 @@ try {
   refuse(`the clone could not be read (${error instanceof Error ? error.message : String(error)}). `
     + 'A check that could not be made is not a check that passed.');
 }
-if (!cloneRows!.length) refuse(`the clone holds no connection row for ${connection.id}.`);
-const cloneRow = cloneRows![0];
+if (!cloneRows.length) refuse(`the clone holds no connection row for ${connection.id}.`);
+const cloneRow = cloneRows[0];
 console.log(`\nclone connection ${cloneRow.id} state=${cloneRow.state} organisation=${cloneRow.organisation_id}`);
 if (cloneRow.state !== 'active') refuse(`the clone's connection is ${cloneRow.state}, not active.`);
 if (String(cloneRow.organisation_id) !== TARGET_ORG) {
