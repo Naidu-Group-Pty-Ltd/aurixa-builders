@@ -46,6 +46,31 @@ if (!ACCESS_TOKEN) {
 }
 
 const APPLY = Deno.args.includes('--apply') || (Deno.env.get('APPLY') || '') === 'true';
+/*
+ * WHICH SIGNATURES MAY FIRE, AND WHY A ROW EVER NEEDS ONLY ONE.
+ *
+ * MEASURED, 19 SEPTEMBER 2026. Lot 1037 Vanta 20 carries BOTH shapes at
+ * once: its masterplan is the shared-link defect's false recovery, and its
+ * brochure verdict is HONEST — that document's own cover reads
+ * `Lot 1307 Fuchsia Street`, the sibling row's property, which nothing here
+ * can correct and only the builder can. Removing an honest verdict to
+ * re-derive the same answer is not a no-op: it spends a worker election and,
+ * for the minutes it takes, tells the builder their row is still being read
+ * when the thing it needs is them.
+ *
+ * So the two signatures are selectable. `--only shared-link` reopens the
+ * false recovery alone; `--only brochure` the false verdict alone; absent,
+ * both fire exactly as before. The DEFAULT is unchanged on purpose — a
+ * narrowing nobody asked for is a narrowing nobody checked.
+ */
+const ONLY = (() => {
+  const flag = Deno.args.indexOf('--only');
+  const value = (flag >= 0 ? Deno.args[flag + 1] : Deno.env.get('ONLY') || '').trim();
+  if (!value || value === 'both') return 'both' as const;
+  if (value === 'shared-link' || value === 'brochure') return value;
+  console.error(`--only accepts 'shared-link', 'brochure' or 'both'; got ${JSON.stringify(value)}`);
+  Deno.exit(2);
+})();
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** One row only by default: the property whose history is fully reconstructed. */
@@ -110,6 +135,7 @@ const doomed = await sql('keys to remove', `
      and im.source_reference = b.value ->> 'stored_reference'
    where b.value ->> 'result' = 'image_recovered'
      and coalesce(im.source_detail ->> 'marketplace_display_eligible', '') <> 'true'
+     and ${ONLY === 'brochure' ? 'false' : 'true'}
   union all
   select b.id, b.key,
          b.value ->> 'result'     as result,
@@ -121,6 +147,7 @@ const doomed = await sql('keys to remove', `
      and a.column_header = 'Brochure URL'
      and (b.value ->> 'package_reference' = a.reference or b.key = a.reference)
    where b.value ->> 'result' = 'no_deterministic_image'
+     and ${ONLY === 'shared-link' ? 'false' : 'true'}
    order by 1, 2`);
 
 if (!doomed.length) {

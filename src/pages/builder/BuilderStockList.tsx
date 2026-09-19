@@ -209,6 +209,25 @@ export default function BuilderStockList() {
    */
   const heldWithoutPhoto = heldItems.filter(
     (item) => !item.primary_image_id || item.image_work_stage === FAILED_WORK_STAGE);
+  /*
+   * AND WHOSE FAILURE EACH ONE IS, because the banner below used to say
+   * "our team has been alerted" over all of them.
+   *
+   * That sentence is a promise that somebody here is working on it. It is
+   * true of a document we could not read and FALSE of a document we read
+   * fine — Lot 1037's brochure is the sibling row's file, and nothing in
+   * this pipeline can correct a link only the builder holds. `none_found`
+   * is `stockImageProgress`'s answer for a row read end to end, so the two
+   * are counted apart and the banner says the one that is true.
+   */
+  const heldNeedingBuilder = heldWithoutPhoto.filter((item) => stockImageProgress({
+    hasImage: !!item.primary_image_id,
+    sourceDocuments: item.source_documents ?? 0,
+    unprocessedDocuments: item.source_documents_unprocessed ?? 0,
+    unreachableDocuments: item.source_documents_unreachable ?? 0,
+    workStage: item.image_work_stage,
+  }) === 'none_found').length;
+  const heldNeedingUs = Math.max(0, photosFailed - heldNeedingBuilder);
   const uploads = uploadsQuery.data?.records ?? [];
   const selections = selectionsQuery.data?.records ?? [];
 
@@ -747,11 +766,19 @@ export default function BuilderStockList() {
                     : `${photosFailed} properties’ photos need attention`}
                 </p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  Their photos could not be read from the stock list and our
-                  team has been alerted. A stock list goes live once every
-                  property in it has a photo, so these are holding the rest
-                  of the list back — adding a picture to each one below
-                  releases it.
+                  {heldNeedingUs > 0 ? (
+                    heldNeedingBuilder > 0
+                      ? `${heldNeedingUs === 1 ? 'One' : heldNeedingUs} could not be read from the stock list and our team has been alerted. `
+                      : 'Their photos could not be read from the stock list and our team has been alerted. '
+                  ) : null}
+                  {heldNeedingBuilder > 0 ? (
+                    heldNeedingUs > 0
+                      ? `${heldNeedingBuilder === 1 ? 'The other was' : `The other ${heldNeedingBuilder} were`} read in full and the documents name no photograph of that property — those are yours to correct, and each one says what its documents contained. `
+                      : `${heldNeedingBuilder === 1 ? 'Its documents were' : 'Their documents were'} read in full and name no photograph of the property — each one below says what its documents contained. `
+                  ) : null}
+                  A stock list goes live once every property in it has a
+                  photo, so these are holding the rest of the list back —
+                  adding a picture to each one below releases it.
                 </p>
               </div>
             </div>

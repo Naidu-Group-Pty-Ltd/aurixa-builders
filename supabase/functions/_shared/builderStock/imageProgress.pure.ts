@@ -116,7 +116,34 @@ export function stockImageProgress(input: StockImageProgressInput): StockImagePr
    * put "Finding a picture…" back on a card nothing is finding a picture
    * for — the exact indefinite spinner this taxonomy exists to end.
    */
-  if (stage === FAILED_WORK_STAGE) return 'attention';
+  const unprocessed = Number(input.unprocessedDocuments ?? 0);
+  const unreachable = Number(input.unreachableDocuments ?? 0);
+  if (stage === FAILED_WORK_STAGE) {
+    /*
+     * AND WHOSE TERMINAL FAILURE IT IS, BECAUSE THE TWO ASK OPPOSITE THINGS.
+     *
+     * `attention` says "our team has been alerted", which is a promise that
+     * somebody here is working on it. That is true of a row whose documents
+     * we could not read — and FALSE of a row whose documents we read fine.
+     *
+     * MEASURED, 19 SEPTEMBER 2026. Lot 1037 Vanta 20 attaches three
+     * documents, all three were read, and its brochure's cover reads
+     * `NEX 20 — Lot 1307 Fuchsia Street` — the sibling row's file. Nothing
+     * here can fix that; only the person holding the sheet can. Telling them
+     * we are on it is how a correctable data error waits forever.
+     *
+     * The counts already say which it is: a row that attaches documents and
+     * had NONE go unprocessed or unreachable was read from end to end, so the
+     * terminal state is a finding about the documents (`none_found`, which
+     * names the two acts that change it) rather than about us. Derived from
+     * the fields the projection already carries — the server is still the
+     * only side that decides, and no mechanism reaches a screen through it.
+     */
+    if (input.sourceDocuments > 0
+      && Number.isFinite(unprocessed) && unprocessed <= 0
+      && Number.isFinite(unreachable) && unreachable <= 0) return 'none_found';
+    return 'attention';
+  }
   if (stage && stage !== SETTLED_WORK_STAGE) return 'working';
   if (input.sourceDocuments <= 0) return 'no_document';
   /*
@@ -133,9 +160,7 @@ export function stockImageProgress(input: StockImageProgressInput): StockImagePr
    * automatically would be false — an unreachable link retires on its own
    * budget and a better worker never re-chases it.
    */
-  const unprocessed = Number(input.unprocessedDocuments ?? 0);
   if (Number.isFinite(unprocessed) && unprocessed > 0) return 'unreadable';
-  const unreachable = Number(input.unreachableDocuments ?? 0);
   if (Number.isFinite(unreachable) && unreachable > 0) return 'source_unavailable';
   return 'none_found';
 }

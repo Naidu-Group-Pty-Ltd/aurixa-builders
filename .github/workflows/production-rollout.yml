@@ -73,6 +73,12 @@ on:
         required: false
         default: false
         type: boolean
+      only:
+        description: 'item-reopen only: which defect signature may fire (both = unchanged)'
+        required: false
+        default: 'both'
+        type: choice
+        options: [both, shared-link, brochure]
 
 concurrency:
   group: production-rollout
@@ -111,6 +117,7 @@ jobs:
           # rule.
           STOCK_ITEM_IDS: ${{ inputs.items }}
           APPLY: ${{ inputs.apply }}
+          ONLY: ${{ inputs.only }}
         run: |
           set -euo pipefail
           case "${{ inputs.phase }}" in
