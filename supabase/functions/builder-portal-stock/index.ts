@@ -37,11 +37,10 @@ import {
   builderCan,
   logBuilderProjectActivity,
 } from '../_shared/builderPortalAuth.ts';
-import { detectDocumentMime } from '../_shared/immutableDocuments.ts';
 import {
   MAX_STOCK_FILE_BYTES, STOCK_LIST_BUCKET, STOCK_IMAGE_BUCKET,
   STOCK_LIST_STORAGE_PREFIX, STOCK_ALLOWED_DECLARED_MIME,
-  classifyFetchedSource, classifyStockFile, isAcceptableStockStoragePath, safeObjectName,
+  classifyStockFile, isAcceptableStockStoragePath, safeObjectName,
 } from '../_shared/builderStock/fileTypes.pure.ts';
 import {
   runStockImport, type RunImportResult,
@@ -78,28 +77,16 @@ import {
 } from '../_shared/builderStock/stockLifecycle.pure.ts';
 import { sha256Hex } from '../_shared/builderStock/rasterPng.ts';
 import { consumeRateLimit } from '../_shared/requestSecurity.ts';
-import { fetchStockSource, SourceFetchError } from '../_shared/builderStock/fetchSource.ts';
 import type { HyperlinkAvailability } from '../_shared/builderStock/sheetHyperlinks.pure.ts';
 import {
   linkDiscoveryFromAvailability,
 } from '../_shared/builderStock/suppliedEvidence.pure.ts';
-import {
-  NOTION_NOT_PUBLIC_MESSAGE, normaliseStockSourceUrl, snapshotFileName,
-  stockSourceDisplayName,
-} from '../_shared/builderStock/urlSource.pure.ts';
-import {
-  assessNotionReadability, extractHtmlTitle, extractNotionGridTables, readHtmlSource,
-} from '../_shared/builderStock/htmlSource.pure.ts';
-import {
-  recoverNotionPublicContent, type NotionRecovery,
-} from '../_shared/builderStock/notionPublicContent.ts';
 import {
   itemsToArchiveOnSourceDelete,
 } from '../_shared/builderStock/sourceDeletion.pure.ts';
 import {
   enrichStockItem, type EnrichableStockItem,
 } from '../_shared/builderStock/images.ts';
-import type { AnchoredAssets } from '../_shared/builderStock/sourceAssets.pure.ts';
 import { repairSourceImagesForUpload } from '../_shared/builderStock/repairSourceImages.ts';
 import { settleMarketplaceEligibility } from '../_shared/builderStock/settleMarketplaceEligibility.ts';
 import { enforceStrictPrimaryImages } from '../_shared/builderStock/primaryImage.ts';
@@ -113,6 +100,9 @@ import {
   STOCK_ITEM_SELECT, STOCK_UPLOAD_SELECT, stockPagination,
 } from '../_shared/builderStock/projection.pure.ts';
 import { applyManualStatsToAll, parseManualStats } from '../_shared/builderStock/manualStats.pure.ts';
+import {
+  prepareLinkedStockSource,
+} from '../_shared/builderStock/linkedSource.ts';
 
 /** Signed read URLs are short-lived — a leaked link outlives nothing. */
 const IMAGE_URL_TTL_SECONDS = 300;
@@ -138,19 +128,6 @@ const SETTLEMENT_MAX_UPLOADS = 5;
 
 function cleanText(value: unknown, max = 200): string {
   return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
-}
-
-/**
- * The host of a URL, for diagnostics. The HOST and never the URL: a link a
- * builder pasted can carry a token or a signature in its query string, and a
- * log line is the wrong place for either.
- */
-function hostOf(rawUrl: string): string | null {
-  try {
-    return new URL(rawUrl).hostname;
-  } catch {
-    return null;
-  }
 }
 
 Deno.serve(async (req) => {
@@ -847,6 +824,141 @@ Deno.serve(async (req) => {
         }, 409);
       }
 
+      /*
+       * =====================================================================
+       * A LINKED SOURCE IS FETCHED AGAIN. A FILE IS RE-READ.
+       * =====================================================================
+       *
+       * These are different acts and running one of them for both is the
+       * defect this branch was extended to close. A builder who UPLOADED a
+       * file owns those bytes: the file has not changed and re-reading it is
+       * how a parser correction reaches rows that already exist. A builder
+       * who LINKED a sheet linked it precisely BECAUSE they keep editing it —
+       * so re-reading the snapshot taken on the day reports "47 updated" over
+       * an import that changed nothing, and the only route that DID import
+       * their edit was to delete the source and add it back.
+       *
+       * Deleting archives every property the source supplies. Measured on
+       * Mairandi Developers 18–19 September 2026: three deletes stamped
+       * `archived: 47`, two of them followed within 25 seconds by the same
+       * docs.google.com address being added again, and the third leaving 47
+       * live properties archived and the marketplace empty. That is not a
+       * builder removing stock; it is a builder re-importing through the only
+       * door that worked.
+       *
+       * Re-fetching keeps every row's id, so nothing is archived, no
+       * selection is lost, and the marketplace is never empty for a moment.
+       *
+       * The fetch is the SAME `prepareLinkedStockSource` the first import
+       * ran, so a re-fetch cannot be more permissive than the import that
+       * accepted the source — which matters, because the rows it writes
+       * replace ones that are live.
+       */
+      const isLinkedSource = String(upload.source_type) === 'url'
+        && typeof upload.source_url === 'string' && upload.source_url.length > 0;
+
+      if (isLinkedSource) {
+        /*
+         * PREPARED BEFORE ANYTHING IS TOUCHED. A sheet that has been unshared,
+         * moved or made private must leave the source exactly as it was — with
+         * its rows still live — and say so. Marking it `parsing` first would
+         * park a healthy list in "being read" on a fetch that never returned
+         * anything to read, and falling back to the stored snapshot would
+         * launder "we could not reach your sheet" into a second import of
+         * yesterday's copy under the word "updated".
+         */
+        const refetched = await prepareLinkedStockSource(upload.source_url);
+        if (!refetched.ok) {
+          return json({
+            error: refetched.error, code: refetched.code, upload,
+          }, refetched.status);
+        }
+
+        await markParsing(upload.id);
+        try {
+          /*
+           * The snapshot is REPLACED rather than added beside. The stored
+           * object's contract is "the bytes this source was last imported
+           * from", and after a re-fetch that is these bytes — a stale copy
+           * kept under the row would make the next re-read import the page
+           * as it was two edits ago. What the previous import did is in the
+           * activity log and in the rows themselves.
+           */
+          const storagePath =
+            `${STOCK_LIST_STORAGE_PREFIX}${activeOrganisationId}/${upload.id}/${refetched.objectName}`;
+          const { error: snapshotError } = await supabase.storage
+            .from(STOCK_LIST_BUCKET)
+            .upload(storagePath, refetched.importBytes, {
+              contentType: refetched.snapshotContentType,
+              upsert: true,
+            });
+          if (snapshotError) {
+            console.error('[builder-portal-stock] re-fetch snapshot failed', {
+              bucket: STOCK_LIST_BUCKET,
+              storage_path: storagePath,
+              status: (snapshotError as { statusCode?: string | number }).statusCode ?? null,
+              message: snapshotError.message,
+              source_host: refetched.host,
+            });
+            return await failUpload(upload.id, 'snapshot_failed',
+              'That page could not be saved for import.', snapshotError.message);
+          }
+
+          // What the source IS, now — read from this fetch and never carried
+          // over. A sheet that has been renamed, redirected or served as a
+          // different type describes itself here.
+          await supabase.from('builder_stock_uploads').update({
+            final_url: refetched.finalUrl,
+            source_title: refetched.displayName,
+            original_filename: refetched.objectName,
+            declared_content_type: refetched.declaredContentType,
+            byte_size: refetched.importBytes.length,
+            storage_bucket: STOCK_LIST_BUCKET,
+            storage_path: storagePath,
+            retrieved_at: new Date().toISOString(),
+          }).eq('id', upload.id).eq('organisation_id', activeOrganisationId);
+
+          await logBuilderProjectActivity(supabase, req, {
+            builderUserId: me.id, organisationId: activeOrganisationId,
+            action: 'builder_stock_source_refetched',
+            entityType: 'stock_upload', entityId: upload.id,
+            metadata: { host: refetched.host, notion: refetched.isNotion },
+          });
+
+          const result = await runStockImport({
+            supabase,
+            organisationId: activeOrganisationId,
+            organisationName,
+            builderUserId: me.id,
+            upload: { id: upload.id, original_filename: refetched.displayName },
+            bytes: refetched.importBytes,
+            classification: refetched.classification,
+            sourceKind: 'url',
+            isNotionSource: refetched.isNotion,
+            baseUrl: refetched.finalUrl,
+            rowAssets: refetched.rowAssets,
+            /*
+             * READ FROM THIS FETCH, never from the row's stored notice. The
+             * stored one describes what the ORIGINAL fetch could see, and a
+             * sheet whose export permissions have since been fixed would
+             * otherwise keep being stamped "we could not see the links" for
+             * ever.
+             */
+            linkDiscovery: linkDiscoveryFromAvailability(
+              refetched.hyperlinks, refetched.hyperlinkMethod),
+            sheetTab: refetched.sheetTab,
+          });
+          return await finishImport(upload.id, result, {
+            reprocessed: true, refetched: true, strategy_source: 'url',
+          }, refetched.hyperlinks, refetched.url);
+        } catch (error) {
+          console.error('[builder-portal-stock] re-fetch failed', error);
+          return await failUpload(upload.id, 'processing_failed',
+            'That source could not be read again. Please check the link and try again.',
+            (error as { message?: string })?.message);
+        }
+      }
+
       await markParsing(upload.id);
 
       try {
@@ -858,7 +970,10 @@ Deno.serve(async (req) => {
         }
 
         /*
-         * A RE-READ RUNS ON THE STORED BYTES, so what it can see of a Google
+         * A FILE'S RE-READ RUNS ON THE STORED BYTES — which for a file is the
+         * builder's own file, unchanged. (A LINKED source is re-fetched
+         * above; it used to come through here, which is the defect that
+         * branch records.) So what it can see of a Google
          * Sheet's links is exactly what the ORIGINAL fetch saw: a stored CSV
          * from a resolved fetch carries the merged URL columns in its own
          * text, and one from a refused fetch carries labels with no targets
@@ -905,182 +1020,25 @@ Deno.serve(async (req) => {
         return json({ error: 'You do not have permission to add stock', code: 'permission_denied' }, 403);
       }
 
-      const normalised = normaliseStockSourceUrl(body.url);
-      if (!normalised.ok) {
-        return json({ error: normalised.reason, code: normalised.code }, 400);
-      }
-
-      // Fetch BEFORE creating the row: a URL that cannot be read should not
-      // leave a failed source in the builder's history for every typo.
-      let fetched;
-      try {
-        fetched = await fetchStockSource(normalised.url);
-      } catch (error) {
-        if (error instanceof SourceFetchError) {
-          // A Notion page that refuses us is a permission problem the builder
-          // can fix, and deserves the wording that says so.
-          const message = normalised.isNotion
-            && ['source_forbidden', 'source_not_found'].includes(error.code)
-            ? NOTION_NOT_PUBLIC_MESSAGE
-            : error.safeMessage;
-          return json({ error: message, code: error.code }, 400);
-        }
-        console.error('[builder-portal-stock] url fetch failed', error);
-        return json({ error: 'That address could not be read.', code: 'source_unreachable' }, 400);
-      }
-
-      const head = new TextDecoder('utf-8', { fatal: false })
-        .decode(fetched.bytes.subarray(0, 1024)).trimStart().toLowerCase();
-      const looksLikeHtml = head.startsWith('<!doctype html') || head.startsWith('<html')
-        || head.startsWith('<?xml') && head.includes('xhtml');
-
-      const detection = detectDocumentMime(fetched.bytes);
-      let classification = classifyFetchedSource({
-        detectedMime: detection.mime,
-        detectionReason: detection.reason,
-        declaredContentType: fetched.declaredContentType,
-        finalUrl: fetched.finalUrl,
-        looksLikeHtml,
-      });
-      if (classification.kind === 'unsupported') {
-        // A content type we cannot read is a statement about the CONTENT. It
-        // used to answer "this Notion page is not publicly accessible", which
-        // is a claim about sharing settings that nothing here has evidence for.
-        return json({
-          error: classification.reason ?? 'That address did not return a stock list we can read.',
-          code: 'unsupported_source',
-        }, 400);
-      }
-
-      // A page title makes the history row readable; it is only available for
-      // markup, and `stockSourceDisplayName` falls back to a shortened URL.
-      let pageTitle = classification.kind === 'markup'
-        ? extractHtmlTitle(new TextDecoder('utf-8', { fatal: false }).decode(fetched.bytes))
-        : null;
-
-      /**
-       * What actually gets snapshotted and imported.
+      /*
+       * ONE IMPLEMENTATION OF "REACH THE LINK AND PREPARE IT".
        *
-       * For every source but one these ARE the fetched bytes. The exception is
-       * a published Notion page, whose HTML is a rendering shell that contains
-       * none of the page — see below.
+       * Normalisation, the fetch and its five refusals, MIME detection,
+       * classification, the Notion public-content recovery with its
+       * access-gate and missing-view findings, and the naming of the snapshot
+       * — all of it moved to `linkedSource.ts` unchanged, because
+       * `reprocess_upload` now has to do exactly this too. Two copies is how
+       * a re-fetch comes to read a Notion page differently from the import
+       * that first accepted it.
        */
-      let importBytes = fetched.bytes;
-      let snapshotContentType = fetched.declaredContentType || 'application/octet-stream';
-      let notionDiagnostics: Record<string, unknown> | null = null;
-      /**
-       * The imagery the Notion page tied to its own rows.
-       *
-       * It cannot travel in the CSV — a cover is a file reference, not a cell
-       * — so it is carried beside it, keyed by the anchor the CSV does carry.
-       */
-      let sourceRowAssets: AnchoredAssets[] = [];
-
-      // =================================================================
-      // Public Notion pages
-      //
-      // ACCESSIBILITY AND EXTRACTION ARE SEPARATE QUESTIONS, and conflating
-      // them is what made this path tell builders their published stock list
-      // was private. Accessibility is settled here, from evidence: the HTTP
-      // status (already handled above), an explicit access-gate marker in the
-      // markup, or a 401/403 from Notion's own endpoints. Nothing else may
-      // produce `notion_not_public`.
-      // =================================================================
-      if (normalised.isNotion && classification.kind === 'markup') {
-        const html = new TextDecoder('utf-8', { fatal: false }).decode(fetched.bytes);
-        const page = readHtmlSource(html, fetched.finalUrl);
-        const readability = assessNotionReadability(html, page.text);
-
-        if (readability.gated) {
-          // Evidence: the page itself said we may not read it.
-          console.warn('[builder-portal-stock] notion access gate', {
-            source_host: normalised.host,
-            final_host: hostOf(fetched.finalUrl),
-            http_status: fetched.status,
-            content_type: fetched.declaredContentType || null,
-            byte_length: fetched.bytes.length,
-            page_title: pageTitle,
-            gate_marker: readability.marker,
-          });
-          return json({ error: NOTION_NOT_PUBLIC_MESSAGE, code: 'notion_not_public' }, 400);
-        }
-
-        // No gate, and the shell carried no table. Recover the page's own
-        // content from Notion's public, unauthenticated endpoints.
-        if (!page.tables.length) {
-          let recovery: NotionRecovery | null = null;
-          try {
-            recovery = await recoverNotionPublicContent(fetched.finalUrl, html);
-          } catch (error) {
-            // A recovery that throws is a retrieval fault, never a permission
-            // finding. The import continues on the shell and reports whatever
-            // the pipeline makes of it.
-            console.error('[builder-portal-stock] notion recovery failed', {
-              source_host: normalised.host,
-              message: String((error as { message?: string })?.message ?? error),
-            });
-          }
-
-          notionDiagnostics = {
-            source_host: normalised.host,
-            final_host: hostOf(fetched.finalUrl),
-            http_status: fetched.status,
-            content_type: fetched.declaredContentType || null,
-            byte_length: fetched.bytes.length,
-            page_title: pageTitle,
-            html_tables: page.tables.length,
-            notion_grids: extractNotionGridTables(html).length,
-            readable_text_chars: readability.textLength,
-            access_gate_marker: readability.marker,
-            client_rendered_shell: readability.clientRendered,
-            recovery_ok: recovery?.ok ?? false,
-            recovery_reason: recovery && !recovery.ok ? recovery.reason : null,
-            ...(recovery?.diagnostics ?? {}),
-          };
-
-          if (recovery && !recovery.ok && recovery.reason === 'access_denied') {
-            console.warn('[builder-portal-stock] notion access denied', notionDiagnostics);
-            return json({ error: NOTION_NOT_PUBLIC_MESSAGE, code: 'notion_not_public' }, 400);
-          }
-
-          /*
-           * THE LINKED VIEW DECIDES WHICH PROPERTIES THIS LIST HOLDS, so a
-           * link naming a view the page does not have is refused rather than
-           * answered from something else. Falling through here would import
-           * the page shell — a different set of properties — and replace the
-           * builder's stock with it.
-           */
-          if (recovery && !recovery.ok && recovery.reason === 'requested_view_missing') {
-            console.warn('[builder-portal-stock] notion view not found', notionDiagnostics);
-            return json({
-              error: 'That link names a view this Notion page does not have. Open the '
-                + 'view you want to import and copy the address from your browser.',
-              code: 'notion_view_not_found',
-            }, 400);
-          }
-
-          if (recovery?.ok) {
-            // The recovered content REPLACES the shell as the snapshot, so the
-            // stored object is what was actually imported rather than a page
-            // of script tags. A table becomes CSV and goes through the
-            // delimited reader; prose stays markup for the model-assisted path.
-            if (recovery.matrix) {
-              importBytes = new TextEncoder().encode(recovery.csv);
-              classification = { kind: 'delimited', extension: 'csv' };
-              snapshotContentType = 'text/csv';
-              sourceRowAssets = recovery.assets;
-            } else {
-              importBytes = new TextEncoder().encode(recovery.text);
-              classification = { kind: 'delimited', extension: 'txt' };
-              snapshotContentType = 'text/plain';
-            }
-            pageTitle = recovery.title ?? pageTitle;
-          }
-        }
+      const prepared = await prepareLinkedStockSource(body.url);
+      if (!prepared.ok) {
+        return json({ error: prepared.error, code: prepared.code }, prepared.status);
       }
-
-      const displayName = stockSourceDisplayName(fetched.finalUrl, pageTitle);
-      const objectName = safeObjectName(snapshotFileName(fetched.finalUrl, classification.extension));
+      const {
+        importBytes, snapshotContentType, classification, displayName, objectName,
+        notionDiagnostics,
+      } = prepared;
 
       const uploadId = crypto.randomUUID();
       const storagePath = `${STOCK_LIST_STORAGE_PREFIX}${activeOrganisationId}/${uploadId}/${objectName}`;
@@ -1113,12 +1071,11 @@ Deno.serve(async (req) => {
           status: (snapshotError as { statusCode?: string | number }).statusCode ?? null,
           name: (snapshotError as { name?: string }).name ?? null,
           message: snapshotError.message,
-          declared_content_type: fetched.declaredContentType || null,
-          detected_content_type: detection.mime,
+          declared_content_type: prepared.declaredContentType,
           snapshot_content_type: snapshotContentType,
           classified_as: classification.kind,
           byte_length: importBytes.length,
-          source_host: normalised.host,
+          source_host: prepared.host,
         });
         return json({ error: 'That page could not be saved for import.', code: 'snapshot_failed' }, 502);
       }
@@ -1130,12 +1087,12 @@ Deno.serve(async (req) => {
           organisation_id: activeOrganisationId,
           uploaded_by_builder_user_id: me.id,
           source_type: 'url',
-          source_url: normalised.url,
-          final_url: fetched.finalUrl,
+          source_url: prepared.url,
+          final_url: prepared.finalUrl,
           source_title: displayName,
           retrieved_at: new Date().toISOString(),
           original_filename: objectName,
-          declared_content_type: fetched.declaredContentType || null,
+          declared_content_type: prepared.declaredContentType,
           byte_size: importBytes.length,
           storage_bucket: STOCK_LIST_BUCKET,
           storage_path: storagePath,
@@ -1153,7 +1110,7 @@ Deno.serve(async (req) => {
         builderUserId: me.id, organisationId: activeOrganisationId,
         action: 'builder_stock_url_source_added',
         entityType: 'stock_upload', entityId: uploadId,
-        metadata: { host: normalised.host, notion: normalised.isNotion },
+        metadata: { host: prepared.host, notion: prepared.isNotion },
       });
 
       try {
@@ -1166,9 +1123,9 @@ Deno.serve(async (req) => {
           bytes: importBytes,
           classification,
           sourceKind: 'url',
-          isNotionSource: normalised.isNotion,
-          baseUrl: fetched.finalUrl,
-          rowAssets: sourceRowAssets,
+          isNotionSource: prepared.isNotion,
+          baseUrl: prepared.finalUrl,
+          rowAssets: prepared.rowAssets,
           /*
            * A Google Sheet's link targets travel SEPARATELY from its proven
            * CSV, so the fetch's own reading of how that went is stamped onto
@@ -1177,9 +1134,9 @@ Deno.serve(async (req) => {
            * stamps them from the strategy that read them.
            */
           linkDiscovery: linkDiscoveryFromAvailability(
-            fetched.hyperlinks, fetched.hyperlinkMethod),
+            prepared.hyperlinks, prepared.hyperlinkMethod),
           // Carried for the import's own log line only — see `sheetTab`.
-          sheetTab: fetched.sheetTab ?? null,
+          sheetTab: prepared.sheetTab,
         });
 
         /**
@@ -1201,8 +1158,8 @@ Deno.serve(async (req) => {
         return await finishImport(uploadId, result, {
           strategy_source: 'url',
           ...(notionDiagnostics ? { notion_recovery: notionDiagnostics.recovery_ok } : {}),
-          ...(fetched.hyperlinks ? { source_hyperlinks: fetched.hyperlinks } : {}),
-        }, fetched.hyperlinks, normalised.url);
+          ...(prepared.hyperlinks ? { source_hyperlinks: prepared.hyperlinks } : {}),
+        }, prepared.hyperlinks, prepared.url);
       } catch (error) {
         console.error('[builder-portal-stock] url processing failed', error);
         return await failUpload(uploadId, 'processing_failed',

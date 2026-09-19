@@ -57,6 +57,9 @@ import {
   countArrivingUploads, countWorkingImages, stockImageProgress, FAILED_WORK_STAGE,
   STOCK_IMAGE_PROGRESS_BADGE, STOCK_IMAGE_PROGRESS_DETAIL, STOCK_IMAGE_PROGRESS_LABEL,
 } from '../../../supabase/functions/_shared/builderStock/imageProgress.pure';
+import {
+  describeRereadCounts, rereadNaming,
+} from '../../../supabase/functions/_shared/builderStock/sourceReread.pure';
 import './BuilderStockList.css';
 
 /**
@@ -359,44 +362,57 @@ export default function BuilderStockList() {
   }, [refreshLinks, toast]);
 
   /**
-   * Read this source again with today's parsers.
+   * Read this source again — from its LINK if it has one, otherwise from the
+   * stored file.
    *
    * Offered on a source that has already been read — a source still waiting
    * for its first pass has `process_upload`, which reports its own progress
    * and its own duplicate refusal, and the server refuses this one for it.
    *
-   * The confirmation says what actually changes, because this is the one
-   * control here that DOES rewrite property data: prices, sizes, designs and
-   * document links are re-read from the file. What it cannot do is lose a
-   * property or a selection — the import matches by the same identity rule it
-   * always has and updates in place.
+   * For a LINKED source this is the non-destructive re-import, and it is the
+   * whole reason the delete-and-add-again loop should never happen again:
+   * matching keeps every property's id, so nothing is archived, no selection
+   * is lost, and the marketplace is never empty for a moment. `rereadNaming`
+   * is what tells the two acts apart on the button and in the confirmation.
+   *
+   * This is the one control here that DOES rewrite property data: prices,
+   * sizes, designs and document links come back from the source. What it
+   * cannot do is lose a property or a selection — the import matches by the
+   * same identity rule it always has and updates in place.
    */
   const canReprocess = useCallback((upload: BuilderStockUpload) => (
     !['uploaded', 'failed', 'parsing'].includes(String(upload.status ?? ''))
   ), []);
 
   const reprocessStockSource = useCallback((upload: BuilderStockUpload) => {
+    /*
+     * THE SAME RULE THE BUTTON WAS DRAWN FROM. A control that says "fetch the
+     * link" and a confirmation that says "file read again" are two claims
+     * about one act, and the reader has no way to tell which is true.
+     */
+    const naming = rereadNaming(upload);
     reprocessSource.mutate(upload.id, {
       onSuccess: (response) => {
-        const summary = response.summary;
+        const counts = describeRereadCounts(response.summary);
         toast({
-          title: 'Source read again',
-          description: summary
-            ? `${summary.imported ?? 0} added, ${summary.updated ?? 0} updated. `
-              + 'Any pictures we can now reach will appear shortly.'
-            : 'Any pictures we can now reach will appear shortly.',
+          title: naming.successTitle,
+          description: counts ? `${counts} ${naming.detail}` : naming.detail,
         });
         void uploadsQuery.refetch();
+        // A re-fetch rewrites property rows, so the list beside it is stale
+        // the moment this returns — and a builder who has just been told
+        // "47 updated" over the old figures has been told nothing.
+        void itemsQuery.refetch();
       },
       onError: (error) => {
         toast({
-          title: 'That source could not be read again',
+          title: naming.failureTitle,
           description: error instanceof Error ? error.message : 'Please try again shortly.',
           variant: 'destructive',
         });
       },
     });
-  }, [reprocessSource, toast, uploadsQuery]);
+  }, [itemsQuery, reprocessSource, toast, uploadsQuery]);
 
   const recoverSourceImages = useCallback((upload: BuilderStockUpload) => {
     recoverImages.mutate(upload.id, {
@@ -485,22 +501,44 @@ export default function BuilderStockList() {
    * (`workingImages`, `arrivingUploads`) or a sentence that makes a zero
    * legible, which is the rule `BuilderSchedule` makes mandatory.
    */
+  /*
+   * AND A FIGURE IS WITHHELD WHERE THE READ FAILED, never drawn as a zero.
+   *
+   * Both of these resolved `?? records.length` / `?? uploads.length`, and
+   * both of those arrays are `[]` while a query is in flight and `[]` again
+   * when it errors — so a lost signal printed "Properties listed 0" in
+   * figure type at the head of a builder's own page, which is a statement
+   * about them. The list below already refuses to do that; the headline did
+   * not, which is the worse of the two because it is the part that is read.
+   */
   const summary = [
     {
       key: 'properties',
       label: 'Properties listed',
-      value: pagination?.total ?? records.length,
-      baseline: workingImages > 0
-        ? `${workingImages} still finding a picture`
-        : 'No imagery outstanding',
+      value: itemsQuery.isError || itemsQuery.isLoading
+        ? '—'
+        : pagination?.total ?? records.length,
+      baseline: itemsQuery.isError
+        ? 'Could not be read just now'
+        : itemsQuery.isLoading
+          ? 'Reading…'
+          : workingImages > 0
+            ? `${workingImages} still finding a picture`
+            : 'No imagery outstanding',
     },
     {
       key: 'uploads',
       label: 'Stock lists uploaded',
-      value: uploadsQuery.data?.pagination.total ?? uploads.length,
-      baseline: arrivingUploads > 0
-        ? `${arrivingUploads} still being read`
-        : 'All have been read',
+      value: uploadsQuery.isError || uploadsQuery.isLoading
+        ? '—'
+        : uploadsQuery.data?.pagination.total ?? uploads.length,
+      baseline: uploadsQuery.isError
+        ? 'Could not be read just now'
+        : uploadsQuery.isLoading
+          ? 'Reading…'
+          : arrivingUploads > 0
+            ? `${arrivingUploads} still being read`
+            : 'All have been read',
     },
     {
       key: 'selections',
@@ -1009,7 +1047,30 @@ export default function BuilderStockList() {
           </Button>
         </CardHeader>
         <CardContent>
-          {!uploads.length ? (
+          {/*
+            A READ THAT FAILED IS NOT A BUILDER WHO HAS ADDED NOTHING.
+
+            This branch was `!uploads.length` alone, and `uploads` is `[]`
+            while the query is in flight and `[]` again when it errors — so a
+            lost signal drew "No stock lists have been added yet" over a
+            builder with six of them, under a heading of their own stock. The
+            rule is this platform's oldest: `amenity_register`'s "zero rows
+            for a state never loaded is unavailable, never no schools here",
+            `useAmlAccess`'s "we could not check is not you do not have it",
+            `placesAvailability`'s "a lookup that FAILED is not a measurement
+            of zero". The list beside this one already had its error branch;
+            this one never did.
+          */}
+          {uploadsQuery.isLoading ? (
+            <p className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              Loading your stock lists…
+            </p>
+          ) : uploadsQuery.isError ? (
+            <p className="py-8 text-center text-sm text-destructive">
+              {(uploadsQuery.error as Error).message}
+            </p>
+          ) : !uploads.length ? (
             <p className="py-8 text-center text-sm text-muted-foreground">
               No stock lists have been added yet.
             </p>
@@ -1137,10 +1198,16 @@ export default function BuilderStockList() {
                           </Button>
                         ) : null}
                         {/*
-                          Read the file again with today's parsers. Shown only
-                          on a source that has already been read; the server
-                          refuses the rest, so this is a convenience rather
-                          than the control.
+                          Import this source again. A LINKED sheet is fetched
+                          from its address, so the builder's edits come in
+                          without anything being deleted; an uploaded file is
+                          re-read with the current readers. `rereadNaming`
+                          decides which of the two this row offers, and the
+                          confirmation reads from the same rule so the button
+                          cannot promise a fetch the toast then calls a
+                          re-read. Shown only on a source that has already
+                          been read; the server refuses the rest, so this is a
+                          convenience rather than the control.
                         */}
                         {canReprocess(upload) ? (
                           <Button
@@ -1148,10 +1215,13 @@ export default function BuilderStockList() {
                             size="sm"
                             disabled={reprocessSource.isPending || busy}
                             onClick={() => reprocessStockSource(upload)}
-                            aria-label={`Read ${stockSourceLabel(upload)} again`}
+                            aria-label={rereadNaming(upload)
+                              .actionFor(stockSourceLabel(upload))}
                           >
                             <RefreshCw className="h-4 w-4" aria-hidden />
-                            <span className="sr-only sm:not-sr-only sm:ml-2">Read again</span>
+                            <span className="sr-only sm:not-sr-only sm:ml-2">
+                              {rereadNaming(upload).label}
+                            </span>
                           </Button>
                         ) : null}
                         <Button

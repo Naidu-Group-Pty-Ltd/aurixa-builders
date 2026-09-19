@@ -72,6 +72,31 @@ name: Production rollout
 #            mirror can be caused at either end and neither database can see
 #            the other. Runs SELECT only and refuses any statement that is not
 #            one. Enqueues nothing, backfills nothing, delivers nothing.
+#   portal-scope-state
+#            read-only: WHOSE stock a builder's own Stock List page would draw.
+#            Every read in `builder-portal-stock` is scoped by one value — the
+#            session's active organisation — so an empty page and a full
+#            marketplace can both be correct answers about two different
+#            organisations, and the screen cannot tell you which. Prints what
+#            each organisation holds, which organisations each portal user can
+#            actually reach (through the session resolver's own function), what
+#            each live session is acting as, the two page reads replayed per
+#            user, and who uploaded each stock list beside who owns it. Runs
+#            SELECT only and refuses any statement that is not one. Grants
+#            nothing, re-points nothing, writes nothing.
+#   stock-source-restore
+#            puts back a stock list the builder deleted in order to re-import
+#            it — the exact inverse of ONE logged `builder_stock_source_deleted`
+#            and nothing more. It imports nothing, fetches nothing and creates
+#            no upload row. The photograph rule is NOT relaxed to restore a
+#            row: a property returns to `active` only where
+#            `builder_stock_photo_is_source_ready` says it holds a ready
+#            builder-source photograph, and everything else returns to `staged`,
+#            which is where publication would have left it. It refuses unless
+#            the count matches what that delete recorded (something else has
+#            touched the catalogue since), refuses if a newer undeleted upload
+#            is already supplying active stock, and asserts by re-reading.
+#            Takes `upload_id`. DRY RUN unless `apply` is true; idempotent.
 #   network-connection-remap
 #            points the live connection at the builder organisation named in
 #            `organisation_id` and backfills its active stock. It refuses
@@ -94,11 +119,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore]
       items:
         description: 'item-state / item-reopen: comma-separated stock item ids (blank = the default set)'
         required: false
@@ -109,8 +134,13 @@ on:
         required: false
         default: ''
         type: string
+      upload_id:
+        description: 'stock-source-restore: the deleted stock list to put back (uuid)'
+        required: false
+        default: ''
+        type: string
       apply:
-        description: 'item-reopen / stock-collateral-reprocess / network-connection-remap: false is a dry run that writes nothing'
+        description: 'item-reopen / stock-collateral-reprocess / network-connection-remap / stock-source-restore: false is a dry run that writes nothing'
         required: false
         default: false
         type: boolean
@@ -134,7 +164,7 @@ jobs:
         with:
           node-version: 22
       - uses: denoland/setup-deno@v2
-        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' || inputs.phase == 'stock-collateral-reprocess' || inputs.phase == 'network-sync-state' || inputs.phase == 'network-connection-remap' }}
+        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' || inputs.phase == 'stock-collateral-reprocess' || inputs.phase == 'network-sync-state' || inputs.phase == 'network-connection-remap' || inputs.phase == 'portal-scope-state' || inputs.phase == 'stock-source-restore' }}
         with:
           deno-version: v2.x
 
@@ -158,6 +188,7 @@ jobs:
           # rule.
           STOCK_ITEM_IDS: ${{ inputs.items }}
           TARGET_ORGANISATION_ID: ${{ inputs.organisation_id }}
+          RESTORE_UPLOAD_ID: ${{ inputs.upload_id }}
           APPLY: ${{ inputs.apply }}
           ONLY: ${{ inputs.only }}
         run: |
@@ -174,4 +205,6 @@ jobs:
             network-sync-state)   deno run -A --config supabase/functions/deno.json scripts/ops/network-sync-state.ts ;;
             network-connection-remap)
                                   deno run -A --config supabase/functions/deno.json scripts/ops/network-connection-remap.ts ;;
+            portal-scope-state)   deno run -A --config supabase/functions/deno.json scripts/ops/builder-portal-scope-state.ts ;;
+            stock-source-restore) deno run -A --config supabase/functions/deno.json scripts/ops/stock-source-restore.ts ;;
           esac
