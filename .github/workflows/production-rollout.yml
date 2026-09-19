@@ -60,6 +60,18 @@ name: Production rollout
 #            image — and resets the work state. Writes no image, sets no
 #            primary, settles nothing, publishes nothing, never touches
 #            `lifecycle_status`. DRY RUN unless `apply` is true; idempotent.
+#   network-sync-state
+#            read-only: THIS end of the Network -> Clone stock sync, printed in
+#            the order an event travels it — the catalogue, the connection the
+#            events are addressed to, the enqueue's own organisation join, the
+#            three producer triggers and whether they are enabled, the outbox
+#            by status, the worker's cron driver, and `net._http_response`,
+#            which is the honest signal because pg_cron reports on the SQL that
+#            QUEUED the HTTP call and never on the call. Its counterpart is
+#            `builder-network-sync-state` on `npc-property-dashbord`: a stopped
+#            mirror can be caused at either end and neither database can see
+#            the other. Runs SELECT only and refuses any statement that is not
+#            one. Enqueues nothing, backfills nothing, delivers nothing.
 #
 # Secrets used (never printed; SQL text is never logged):
 #   SUPABASE_ACCESS_TOKEN   Management API (same token the deploy uses)
@@ -70,11 +82,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state]
       items:
         description: 'item-state / item-reopen: comma-separated stock item ids (blank = the default set)'
         required: false
@@ -105,7 +117,7 @@ jobs:
         with:
           node-version: 22
       - uses: denoland/setup-deno@v2
-        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' || inputs.phase == 'stock-collateral-reprocess' }}
+        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' || inputs.phase == 'stock-collateral-reprocess' || inputs.phase == 'network-sync-state' }}
         with:
           deno-version: v2.x
 
@@ -141,4 +153,5 @@ jobs:
             item-reopen)          deno run -A --config supabase/functions/deno.json scripts/ops/stock-item-reopen.ts ;;
             stock-collateral-reprocess)
                                   deno run -A --config supabase/functions/deno.json scripts/ops/stock-collateral-reprocess.ts ;;
+            network-sync-state)   deno run -A --config supabase/functions/deno.json scripts/ops/network-sync-state.ts ;;
           esac
