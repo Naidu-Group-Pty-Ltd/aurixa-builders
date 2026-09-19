@@ -72,6 +72,18 @@ name: Production rollout
 #            mirror can be caused at either end and neither database can see
 #            the other. Runs SELECT only and refuses any statement that is not
 #            one. Enqueues nothing, backfills nothing, delivers nothing.
+#   portal-scope-state
+#            read-only: WHOSE stock a builder's own Stock List page would draw.
+#            Every read in `builder-portal-stock` is scoped by one value — the
+#            session's active organisation — so an empty page and a full
+#            marketplace can both be correct answers about two different
+#            organisations, and the screen cannot tell you which. Prints what
+#            each organisation holds, which organisations each portal user can
+#            actually reach (through the session resolver's own function), what
+#            each live session is acting as, the two page reads replayed per
+#            user, and who uploaded each stock list beside who owns it. Runs
+#            SELECT only and refuses any statement that is not one. Grants
+#            nothing, re-points nothing, writes nothing.
 #   network-connection-remap
 #            points the live connection at the builder organisation named in
 #            `organisation_id` and backfills its active stock. It refuses
@@ -94,11 +106,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state]
       items:
         description: 'item-state / item-reopen: comma-separated stock item ids (blank = the default set)'
         required: false
@@ -134,7 +146,7 @@ jobs:
         with:
           node-version: 22
       - uses: denoland/setup-deno@v2
-        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' || inputs.phase == 'stock-collateral-reprocess' || inputs.phase == 'network-sync-state' || inputs.phase == 'network-connection-remap' }}
+        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' || inputs.phase == 'stock-collateral-reprocess' || inputs.phase == 'network-sync-state' || inputs.phase == 'network-connection-remap' || inputs.phase == 'portal-scope-state' }}
         with:
           deno-version: v2.x
 
@@ -174,4 +186,5 @@ jobs:
             network-sync-state)   deno run -A --config supabase/functions/deno.json scripts/ops/network-sync-state.ts ;;
             network-connection-remap)
                                   deno run -A --config supabase/functions/deno.json scripts/ops/network-connection-remap.ts ;;
+            portal-scope-state)   deno run -A --config supabase/functions/deno.json scripts/ops/builder-portal-scope-state.ts ;;
           esac
