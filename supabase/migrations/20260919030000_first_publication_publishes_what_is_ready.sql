@@ -1366,9 +1366,24 @@ BEGIN
   -- to find, exactly as it would on the tick after a builder's picture.
   UPDATE public.builder_stock_items
      SET lifecycle_status = 'staged' WHERE id = v_late_fixed;
+  /*
+   * NAMED, NOT COUNTED. `publish_ready_builder_stock_uploads` is a GLOBAL
+   * sweep — it walks every upload in the database, including real ones — so
+   * "it published at least one" can be true because somebody else's list
+   * went live in the same call. That is the third time in this proof a check
+   * would have passed for a reason that had nothing to do with the thing it
+   * claims to test, so the assertion names THIS upload in the sweep's own
+   * report of what it cut over.
+   *
+   * (Everything this block does, including that global call, is inside the
+   * subtransaction this DO block rolls back — no upload is left published by
+   * running the proof, and the every-minute tick performs the same sweep
+   * regardless.)
+   */
   v_res := public.publish_ready_builder_stock_uploads();
-  IF (v_res->>'published')::int < 1 THEN
-    RAISE EXCEPTION 'the sweep did not reconsider a published list still holding properties (%)', v_res;
+  IF NOT (v_res->'cutovers' @> jsonb_build_array(
+            jsonb_build_object('upload_id', v_late_upload))) THEN
+    RAISE EXCEPTION 'the sweep did not reconsider THIS published list still holding properties (%)', v_res;
   END IF;
   IF (SELECT lifecycle_status FROM public.builder_stock_items WHERE id = v_late_fixed) <> 'active' THEN
     RAISE EXCEPTION 'the sweep left a repaired property staged';
