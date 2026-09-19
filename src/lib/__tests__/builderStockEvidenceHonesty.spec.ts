@@ -246,7 +246,55 @@ describe('the builder can reach the properties that are holding their list', () 
     expect(page).toContain('waiting to go live');
     // The sentence that told a builder the rest of their list was fine while
     // five properties held all 47 of them invisible.
-    expect(page).not.toContain('The rest of your list is');
+    expect(page).not.toContain('The rest of your list is unaffected');
+  });
+
+  it('it may only say the rest of the list is live where the list IS live', () => {
+    /*
+     * THIS ASSERTION USED TO BAN THE PREFIX "The rest of your list is",
+     * because the one sentence starting that way — "…is unaffected" — was
+     * false: five properties held all 47 staged and invisible.
+     *
+     * Since 19 Sep 2026 a FIRST stock list publishes the properties that
+     * earned a photograph and holds the rest, so the same prefix now
+     * introduces a sentence that is TRUE — for that case and only that case.
+     * Banning the words would have forced the page to stay silent about the
+     * thing that had just changed, so the rule is pinned instead of the
+     * string: the false sentence stays banned by name, and every claim that
+     * the rest of the list is live must be reached through `listIsLive`,
+     * which is the server's own `published` and nothing inferred.
+     */
+    const page = readCode('src/pages/builder/BuilderStockList.tsx');
+    expect(page).toContain('const listIsLive = progressRecord?.published === true');
+    for (const claim of [
+      'The rest of your list is already on the marketplace',
+      'The rest of your list is live',
+    ]) {
+      const at = page.indexOf(claim);
+      expect(at).toBeGreaterThan(-1);
+      // Each one sits inside a `listIsLive ? … : …`, so the alternative the
+      // page draws when the list is NOT live is right there beside it.
+      const guardAt = page.lastIndexOf('listIsLive', at);
+      expect(guardAt).toBeGreaterThan(-1);
+      expect(at - guardAt).toBeLessThan(400);
+    }
+  });
+
+  it('a published upload that still owes a photograph keeps its banner', () => {
+    /*
+     * The record behind the banner was chosen with `!record.published`, and a
+     * first publication makes that false while the builder still has work to
+     * do — so the upload would have dropped out of the reading entirely: no
+     * banner, no held section, no "Add picture", and a marketplace count
+     * quietly short by one with nothing saying why.
+     */
+    const page = readCode('src/pages/builder/BuilderStockList.tsx');
+    expect(page).toContain('owesAPhotograph');
+    expect(page).toContain('Number(record.photos_ready ?? 0) < Number(record.total)');
+    // The held-items fetch answers to the same question, not to `published`.
+    const heldAt = page.indexOf('const heldUploadId');
+    const heldExpr = page.slice(heldAt, heldAt + 260);
+    expect(heldExpr).toContain('owesAPhotograph(progressRecord)');
   });
 
   it('the held section survives an empty marketplace, which is when it is needed', () => {

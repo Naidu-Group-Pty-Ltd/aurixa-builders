@@ -88,11 +88,20 @@ const lit = (v) => `'${String(v).replace(/'/g, "''")}'`;
  * path does: an invariant upload, N staged items, and a durable source
  * manifest with one row-branch asset per property (plus extras to cross 40).
  */
-function stageUpload(n, { manifestAssets = n } = {}) {
-  const org = q1(`INSERT INTO public.builder_organisations(legal_name, org_type, status, is_active, activated_at)
+/**
+ * `replaces` is what makes an upload a REPLACEMENT rather than a first list,
+ * and the two publish under different rules — all-or-nothing for the first,
+ * what-is-ready for the second. Passing `org` reuses an existing builder, so
+ * a replacement can be staged against the list it supersedes.
+ */
+function stageUpload(n, { manifestAssets = n, replaces = [], org: existingOrg = null } = {}) {
+  const org = existingOrg ?? q1(`INSERT INTO public.builder_organisations(legal_name, org_type, status, is_active, activated_at)
     VALUES (${lit(`Scale Org ${n}-${Date.now()}`)}, 'builder', 'active', true, now()) RETURNING id`);
-  const upload = q1(`INSERT INTO public.builder_stock_uploads(organisation_id, original_filename, storage_path, status)
-    VALUES (${lit(org)}::uuid, ${lit(`scale-${n}.csv`)}, ${lit(`scale/${n}.csv`)}, 'enriching') RETURNING id`);
+  const replacesLiteral = replaces.length
+    ? `ARRAY[${replaces.map((id) => `${lit(id)}::uuid`).join(', ')}]`
+    : `'{}'::uuid[]`;
+  const upload = q1(`INSERT INTO public.builder_stock_uploads(organisation_id, original_filename, storage_path, status, replaces_upload_ids)
+    VALUES (${lit(org)}::uuid, ${lit(`scale-${n}.csv`)}, ${lit(`scale/${n}.csv`)}, 'enriching', ${replacesLiteral}) RETURNING id`);
   // Every new property starts STAGED — the unified first-upload gate.
   q1(`INSERT INTO public.builder_stock_items
         (organisation_id, upload_id, lifecycle_status, image_work_stage,
@@ -138,9 +147,14 @@ function settleWithSourcePhoto(org, upload, itemId) {
 }
 
 const readiness = (upload) => {
-  const [r] = q(`SELECT staged, source_outstanding, missing_primary, failed_items, ready
+  const [r] = q(`SELECT staged, source_outstanding, missing_primary, failed_items, ready,
+                        ready_items, first_publication, partial_ready
     FROM public.builder_stock_publication_readiness(${lit(upload)}::uuid)`);
-  return { staged: +r[0], sourceOutstanding: +r[1], missingPrimary: +r[2], failed: +r[3], ready: r[4] === 't' };
+  return {
+    staged: +r[0], sourceOutstanding: +r[1], missingPrimary: +r[2], failed: +r[3],
+    ready: r[4] === 't', readyItems: +r[5],
+    firstPublication: r[6] === 't', partialReady: r[7] === 't',
+  };
 };
 const publish = (upload) => JSON.parse(q1(`SELECT public.publish_builder_stock_upload(${lit(upload)}::uuid)`));
 const visible = (itemId) => q1(`SELECT public.builder_stock_item_client_visible(${lit(itemId)}::uuid)`) === 't';
@@ -211,8 +225,19 @@ for (const n of SIZES) {
   timings.push({ n, ms: Date.now() - started });
 }
 
-// --- 49-ready-1-failed is not publishable -----------------------------------
+// --- 49-ready-1-failed: what each kind of upload does with it ---------------
+//
+// UNTIL 19 SEP 2026 THIS WAS ONE CHECK, and the answer it asserted — publish
+// nothing — was right for a replacement and wrong for a first list. Measured
+// on the 18 September import: 47 properties, 46 with a builder-source
+// photograph, and ONE whose brochure names a sibling property. The builder's
+// marketplace showed zero. Forty-six correct properties were being withheld
+// to punish one incorrect one.
+//
+// So the case splits by what the upload IS. Both halves are asserted here,
+// because the value of the first half is only visible beside the second.
 {
+  // (a) A FIRST list publishes the 49 and leaves the 1 in Action Required.
   const n = 50;
   const { org, upload } = stageUpload(n);
   const items = itemsOf(upload);
@@ -223,9 +248,35 @@ for (const n of SIZES) {
       WHERE stock_item_id = ${lit(items[n - 1])}::uuid`);
   const r = readiness(upload);
   const p = publish(upload);
-  check('49 ready + 1 failed does NOT publish',
-    !r.ready && r.failed === 1 && p.published === false,
-    `ready=${r.ready}, failed=${r.failed}`);
+  const stillStaged = q1(`SELECT lifecycle_status FROM public.builder_stock_items
+    WHERE id = ${lit(items[n - 1])}::uuid`);
+  const reason = q1(`SELECT coalesce(publication_blocked_reason, '') FROM public.builder_stock_uploads
+    WHERE id = ${lit(upload)}::uuid`);
+  check('49 ready + 1 failed on a FIRST list publishes the 49 and holds the 1',
+    !r.ready && r.failed === 1 && r.readyItems === n - 1 && r.partialReady
+      && p.published === true && p.mode === 'first_publication'
+      && p.promoted === n - 1 && p.withheld === 1
+      && stillStaged === 'staged' && reason !== '',
+    `ready=${r.ready}, partial=${r.partialReady}, promoted=${p.promoted}, withheld=${p.withheld}, held=${stillStaged}`);
+
+  // (b) A REPLACEMENT for that list publishes NOTHING. Its predecessor is
+  //     live, and a partial promotion there would leave the marketplace
+  //     showing some rows of the new generation beside some of the old.
+  const { upload: replacement } = stageUpload(n, { replaces: [upload], org });
+  const replacementItems = itemsOf(replacement);
+  for (const id of replacementItems.slice(0, n - 1)) settleWithSourcePhoto(org, replacement, id);
+  q1(`UPDATE public.builder_stock_items SET image_work_stage = 'failed' WHERE id = ${lit(replacementItems[n - 1])}::uuid`);
+  q1(`UPDATE public.builder_stock_source_assets SET state = 'failed'
+      WHERE stock_item_id = ${lit(replacementItems[n - 1])}::uuid`);
+  const r2 = readiness(replacement);
+  const p2 = publish(replacement);
+  const predecessorLive = +q1(`SELECT count(*) FROM public.builder_stock_items
+    WHERE upload_id = ${lit(upload)}::uuid AND lifecycle_status = 'active'`);
+  check('49 ready + 1 failed on a REPLACEMENT still publishes nothing, and leaves the live list alone',
+    !r2.ready && !r2.partialReady && !r2.firstPublication
+      && p2.published === false && p2.reason === 'not_ready'
+      && predecessorLive === n - 1,
+    `ready=${r2.ready}, partial=${r2.partialReady}, first=${r2.firstPublication}, predecessor_live=${predecessorLive}`);
 }
 
 // --- No silent truncation: a pending asset / failed enumeration blocks -------
