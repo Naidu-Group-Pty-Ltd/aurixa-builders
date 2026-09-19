@@ -64,6 +64,45 @@ export function builderImageReference(input: { storagePath: string }): string {
 }
 
 /**
+ * Did the builder hand these bytes over directly, rather than this pipeline
+ * deriving them from a document?
+ *
+ * WHY ANYTHING NEEDS TO ASK. A directly-supplied image shares stage 1 with
+ * every image read out of a brochure — it is the builder's own picture of the
+ * builder's own property, so it belongs in the same stage — and every sweep
+ * over stage 1 therefore meets it. Most of them should treat it identically.
+ * The SOURCE REPAIR must not: its job is to re-derive images FROM the
+ * builder's documents and retire the ones it can no longer prove, and an
+ * image that was never derived from a document cannot be re-derived from one.
+ * "Could not be re-derived" is not a finding about it; it is a category error.
+ *
+ * MEASURED, 19 SEPTEMBER 2026, on a seeded organisation through the real
+ * portal path. The picture stored correctly at `processing_status: 'ready'`
+ * with `role: primary_property` at evidence level 1 — and the next settler
+ * tick demoted it to `unavailable` with "This image predates the
+ * source-provenance record and could not be re-derived from the builder's
+ * source, so it is not shown." Both demotion sites spare a row whose
+ * `provenance_version` is current, and `attachBuilderImage` has never written
+ * one, because a supplied image has no derivation to version.
+ *
+ * Everything downstream keys on `processing_status = 'ready'` — the
+ * eligibility sweep's query, `isDisplayableSourceImage`, the readiness count —
+ * so the demotion was silent and total: `eligibility: assessed 0 of 0`, no
+ * primary, and the property retired `no_evidence: this row names no source
+ * this pipeline can open`. The builder is told "Picture saved" and the card
+ * stays blank, which is exactly the outcome this module's own header says the
+ * requeue exists to prevent.
+ *
+ * `supplied_directly` was written from the first version of this module and
+ * read by nothing. It is the marker; this is the one place that names it.
+ */
+export function suppliedDirectly(
+  sourceDetail: Record<string, unknown> | null | undefined,
+): boolean {
+  return (sourceDetail ?? {}).supplied_directly === true;
+}
+
+/**
  * Write (or replace) one builder-supplied image against one property.
  *
  * Returns the row id, or null when the write failed — which the caller reports
