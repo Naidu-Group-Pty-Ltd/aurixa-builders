@@ -589,4 +589,64 @@ for (const row of carryForward) {
           + ' — a re-enumeration wrote pending over work already done'}`);
 }
 
+
+/*
+ * AND WHAT THE OTHER PENDING ROWS ARE.
+ *
+ * The carry-forward count above explains 61% of them. The rest have no
+ * verdict on any upload, and there are only two things they can be:
+ *
+ *   NEVER VISITED — the property was satisfied by an earlier branch and the
+ *   repair stopped, so this branch was never opened. Its manifest row is not
+ *   outstanding work; it only looks like it.
+ *
+ *   VISITED BUT KEYED DIFFERENTLY — the branch WAS answered and the verdict
+ *   was banked under a different spelling of the same URL, so the manifest
+ *   row was never matched. `source_provenance_result` keys carry the raw
+ *   link (`…/view?usp=drive_link`) while the manifest stores `reference`, and
+ *   if those disagree the resolution can never find its own row.
+ *
+ * The two want different repairs, so they are counted apart: exact key match,
+ * match ignoring the query string, and the state of the property that owns
+ * the row. No URL is printed — only counts.
+ */
+const pendingShape = await sql('what the pending rows are', `
+  select p.upload_id::text as upload_id,
+         count(*) as pending_rows,
+         count(*) filter (where i.image_work_stage = 'settled') as owner_settled,
+         count(*) filter (where i.image_work_stage = 'failed') as owner_failed,
+         count(*) filter (where i.image_work_stage not in ('settled','failed')) as owner_working,
+         count(*) filter (where i.primary_image_id is not null) as owner_has_primary,
+         count(*) filter (where position('?' in p.reference) > 0) as reference_carries_query,
+         count(*) filter (where coalesce(i.source_provenance_result -> 'branches', '{}'::jsonb) ? p.reference)
+           as banked_exact_key,
+         count(*) filter (where exists (
+           select 1 from jsonb_object_keys(
+             coalesce(i.source_provenance_result -> 'branches', '{}'::jsonb)) k
+            where split_part(k, '?', 1) = split_part(p.reference, '?', 1)))
+           as banked_ignoring_query
+    from public.builder_stock_source_assets p
+    join public.builder_stock_items i on i.id = p.stock_item_id
+   where p.state = 'pending'
+     and p.upload_id in (${publicationLineage.map((id) => `'${id}'`).join(',')})
+   group by p.upload_id`);
+heading('PENDING MANIFEST ROWS — never visited, or answered under another key?');
+for (const row of pendingShape) {
+  console.log('');
+  printRow(row);
+  const pending = Number(row.pending_rows ?? 0);
+  const exact = Number(row.banked_exact_key ?? 0);
+  const loose = Number(row.banked_ignoring_query ?? 0);
+  const settled = Number(row.owner_settled ?? 0);
+  console.log(`  reading                 : ${
+    pending === 0 ? 'nothing pending'
+      : loose > exact
+        ? `${loose - exact} answered under a DIFFERENT SPELLING of the same URL `
+          + '— the manifest reference and the banked key disagree'
+        : loose === 0
+          ? `none answered anywhere; ${settled} of ${pending} belong to a property that has SETTLED `
+            + '— branches never opened because an earlier one answered'
+          : `${loose} answered and matched by key`}`);
+}
+
 console.log('\nRead-only run complete. Nothing was written.');
