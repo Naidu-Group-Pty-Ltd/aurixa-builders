@@ -30,6 +30,7 @@
  * design). No secret value and no agreement text is ever printed.
  */
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { deflateSync } from 'node:zlib';
 
 const PROJECT_REF = process.env.PROJECT_REF || 'htfluofznhxeumblwbww';
 const ACCESS_TOKEN = process.env.SUPABASE_ACCESS_TOKEN || '';
@@ -440,6 +441,160 @@ record('D: a photo-less first upload stages and does NOT publish (the source-pho
   `uploads=${stagedRows[0]?.uploads} staged=${stagedRows[0]?.staged} active=${stagedRows[0]?.active}`);
 
 /*
+ * =====================================================================
+ * D2. THE MANUAL REMEDY — the act a builder is told to perform
+ * =====================================================================
+ *
+ * WHY THIS IS HERE. A property whose own documents name no photograph of it
+ * is not this pipeline's failure and cannot be fixed by it: on the 18
+ * September list, Lot 1037 links the SIBLING row's brochure twice and both
+ * covers read `Lot 1307 Fuchsia Street`. The product's answer is to tell the
+ * builder and give them "Add picture" — so that act is the one thing between
+ * a correctable data error and a stock list that never goes live, and until
+ * now nothing proved it end to end.
+ *
+ * THE REAL PATH, NOT A SHORTCUT. The seed below writes images with SQL to
+ * exercise the cutover; this drives what the browser drives —
+ * `create_builder_image`, a PUT to the signed URL it returns, then
+ * `attach_builder_image` — and then waits for the ORDINARY settler to promote
+ * the result. Nothing here sets `primary_image_id`, and that is the point: if
+ * the requeue inside `attachBuilderImage` ever stopped happening, the picture
+ * would sit in the table, correct and eligible, while the card stayed blank —
+ * the failure that module's header calls the hardest to notice.
+ */
+const remedyRows = await q('a property the builder must act on', `
+  SELECT id, primary_image_id, image_work_stage
+    FROM public.builder_stock_items
+   WHERE organisation_id = ${sqlLit(alpha.orgId)}::uuid
+     AND lifecycle_status = 'staged' AND primary_image_id IS NULL
+   ORDER BY created_at LIMIT 1`);
+const remedyItemId = remedyRows[0]?.id ?? null;
+record('D2: a staged property is waiting on the builder, with no picture on it',
+  !!remedyItemId && !remedyRows[0]?.primary_image_id,
+  remedyItemId ? `item=${String(remedyItemId).slice(0, 8)} stage=${remedyRows[0]?.image_work_stage}` : 'no staged row');
+
+/*
+ * A REAL IMAGE, BUILT RATHER THAN COMMITTED. `validateSourceImageBytes`
+ * refuses anything under 512 bytes or that does not sniff as an image, and
+ * the eligibility measure reads the PIXELS for overlay treatment — so this is
+ * a genuine 320x240 PNG with a smooth gradient and NO text on it, which is
+ * what an unannotated photograph looks like to that measure. A 1x1 placeholder
+ * would be refused, and rightly.
+ */
+function gradientPng(width = 320, height = 240) {
+  const raw = Buffer.alloc((width * 3 + 1) * height);
+  let at = 0;
+  for (let y = 0; y < height; y++) {
+    raw[at++] = 0; // filter: none
+    for (let x = 0; x < width; x++) {
+      raw[at++] = Math.round((x / (width - 1)) * 180) + 40;
+      raw[at++] = Math.round((y / (height - 1)) * 150) + 60;
+      raw[at++] = Math.round(((x + y) / (width + height - 2)) * 120) + 90;
+    }
+  }
+  const chunk = (type, data) => {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+    const crcTable = gradientPng.crcTable ??= (() => {
+      const table = new Int32Array(256);
+      for (let n = 0; n < 256; n++) {
+        let c = n;
+        for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+        table[n] = c;
+      }
+      return table;
+    })();
+    let crc = 0xffffffff;
+    for (const byte of body) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+    const crcOut = Buffer.alloc(4);
+    crcOut.writeUInt32BE((crc ^ 0xffffffff) >>> 0);
+    return Buffer.concat([length, body, crcOut]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; ihdr[9] = 2; // 8-bit, truecolour
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+const remedyImage = gradientPng();
+record('D2: the picture a builder would choose passes the stored-image floor',
+  remedyImage.length > 512 && remedyImage.subarray(1, 4).toString('latin1') === 'PNG',
+  `${remedyImage.length} bytes`);
+
+const created = await call('builder-portal-stock', {
+  operation: 'create_builder_image', filename: 'facade.png', stock_item_id: remedyItemId,
+}, session.cookie);
+const uploadUrl = created.json?.upload_url ?? null;
+const storagePath = created.json?.storage_path ?? null;
+record('D2: the portal issues an upload location for that one property',
+  created.status === 200 && !!uploadUrl && !!storagePath,
+  `status=${created.status} path=${storagePath ? 'issued' : 'none'}`);
+
+let putStatus = 0;
+if (uploadUrl) {
+  const put = await fetch(uploadUrl, {
+    method: 'PUT', headers: { 'Content-Type': 'image/png' }, body: remedyImage,
+  });
+  putStatus = put.status;
+}
+record('D2: the bytes upload to it', putStatus >= 200 && putStatus < 300, `status=${putStatus}`);
+
+const attached = await call('builder-portal-stock', {
+  operation: 'attach_builder_image', storage_path: storagePath, stock_item_id: remedyItemId,
+}, session.cookie);
+record('D2: the picture is accepted for that property and no other',
+  attached.status === 200 && attached.json?.scope === 'property'
+    && Number(attached.json?.properties) === 1,
+  `status=${attached.status} scope=${attached.json?.scope} properties=${attached.json?.properties}`);
+
+/*
+ * AND THE ORDINARY LADDER PROMOTES IT. The kick only saves wall-clock — the
+ * every-minute tick would do the same — and the poll is what proves the
+ * requeue happened, because nothing above touched `primary_image_id`.
+ */
+await q('dispatch the image workers', 'SELECT public.builder_stock_kick_image_work(NULL)');
+let settledRow = null;
+for (let attempt = 0; attempt < 30; attempt++) {
+  const rows = await q(`remedy settle poll ${attempt}`, `
+    SELECT i.primary_image_id, i.image_work_stage, i.enrichment_status,
+           im.source_provider, im.storage_path,
+           coalesce(im.source_detail ->> 'marketplace_display_eligible', '') AS eligible,
+           coalesce(im.source_detail ->> 'role_evidence_level', '') AS level
+      FROM public.builder_stock_items i
+      LEFT JOIN public.builder_stock_item_images im ON im.id = i.primary_image_id
+     WHERE i.id = ${sqlLit(remedyItemId)}::uuid`);
+  settledRow = rows[0] ?? null;
+  if (settledRow?.primary_image_id && settledRow?.image_work_stage === 'settled') break;
+  await new Promise((resolve) => { setTimeout(resolve, 4000); });
+}
+record('D2: the ordinary pipeline promotes it to the card — nothing here set it',
+  !!settledRow?.primary_image_id && settledRow?.storage_path === storagePath,
+  `primary=${settledRow?.primary_image_id ? 'set' : 'null'} provider=${settledRow?.source_provider}`);
+record('D2: and the property settles rather than staying in the ladder',
+  settledRow?.image_work_stage === 'settled' && settledRow?.enrichment_status === 'complete',
+  `stage=${settledRow?.image_work_stage} enrichment=${settledRow?.enrichment_status}`);
+record('D2: the builder\'s own picture is marketplace eligible',
+  String(settledRow?.eligible) === 'true',
+  `eligible=${settledRow?.eligible} evidence_level=${settledRow?.level}`);
+
+/*
+ * READINESS IS A COUNT THE BUILDER READS, so it is asserted as one: the same
+ * function the Stock List banner renders from, before and after.
+ */
+const readiness = await q('readiness recalculated', `
+  SELECT total, photos_ready, failed, working, blocked_reason
+    FROM public.builder_stock_image_progress(${sqlLit(alpha.orgId)}::uuid)
+   WHERE published = false LIMIT 1`);
+record('D2: readiness recalculates — one of two properties is now ready',
+  Number(readiness[0]?.photos_ready) === 1 && Number(readiness[0]?.total) === 2,
+  `${readiness[0]?.photos_ready} of ${readiness[0]?.total} ready, blocked: ${String(readiness[0]?.blocked_reason ?? '').slice(0, 80)}`);
+
+/*
  * AND THE CUTOVER, once every property carries its builder-source photograph.
  * The images are seeded here (this suite has no builder brochure to fetch);
  * what is being proven is the live gate and the live cutover — that 100%
@@ -455,8 +610,12 @@ await q('seed builder-source photographs and publish', `
   BEGIN
     SELECT id INTO v_upload FROM public.builder_stock_uploads
       WHERE organisation_id = v_org AND deleted_at IS NULL LIMIT 1;
+    -- The remedy section above already gave one property a real picture
+    -- through the builder's own path; seeding over it would erase the one
+    -- thing that proved the requeue.
     FOR v_item IN SELECT id FROM public.builder_stock_items
       WHERE organisation_id = v_org AND lifecycle_status = 'staged'
+        AND primary_image_id IS NULL
     LOOP
       /*
        * Measured-eligible and SETTLED, so the live settler does not claim these
