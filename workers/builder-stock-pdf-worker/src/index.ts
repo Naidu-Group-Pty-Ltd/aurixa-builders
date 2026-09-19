@@ -2,9 +2,14 @@
  * BUILDER STOCK — THE PDF WORKER'S FRONT DOOR.
  *
  * THREE JOBS, AND NOTHING ELSE: prove the caller holds the shared token,
- * refuse everything that is not the one endpoint, and hand the request to the
+ * refuse everything that is not the one endpoint, and hand the request to an
  * election lane. No election logic lives here; see `pdfElection.do.ts` for why
  * none lives there either.
+ *
+ * WHICH lane is `electionLane.pure.ts`'s to decide, and it decides it from the
+ * context HEADER — never from the body, which is the document itself. Each
+ * lane is serial on its own and there are `ELECTION_LANE_COUNT` of them, so an
+ * import no longer funnels every brochure through one door.
  *
  * WHAT THIS WORKER IS NEVER TOLD. The wire carries one PDF and a small
  * context — a label, how the document came to be this property's, a design,
@@ -21,8 +26,13 @@
  * worker that quietly accepted anonymous elections would be worse than one
  * that is down.
  */
-import { ELECTION_LANE, PdfElection } from './pdfElection.do.ts';
-import { PDF_ELECTION_PROTOCOL } from '../../../supabase/functions/_shared/builderStock/pdfElectionBoundary.pure.ts';
+import { PdfElection } from './pdfElection.do.ts';
+import {
+  electionLaneName, electionShardKey, laneForShardKey,
+} from './electionLane.pure.ts';
+import {
+  ELECTION_CONTEXT_HEADER, PDF_ELECTION_PROTOCOL, decodeElectionContext,
+} from '../../../supabase/functions/_shared/builderStock/pdfElectionBoundary.pure.ts';
 
 export { PdfElection };
 
@@ -97,7 +107,28 @@ export default {
       return json({ error: 'not_found' }, 404);
     }
 
-    const stub = env.PDF_ELECTION.get(env.PDF_ELECTION.idFromName(ELECTION_LANE));
+    /*
+     * THE LANE IS CHOSEN FROM THE HEADER, NEVER FROM THE BODY.
+     *
+     * The election context rides in `x-election-context` precisely so the
+     * document can be the raw body — see the boundary module's header on why
+     * base64 of a 14 MB brochure is not an option. That is what makes
+     * sharding free here: the key comes out of a small header this worker was
+     * already going to be given, and `request.body` is neither read, parsed
+     * nor cloned on the way to the lane. Reading it to choose a queue would
+     * duplicate a multi-megabyte document in the isolate with the least room
+     * for it, which is the resource this whole worker exists to protect.
+     *
+     * `decodeElectionContext` is the boundary's own decoder rather than a
+     * second parse of the same header: one implementation, so routing and the
+     * lane cannot come to disagree about what the wire said. A context it
+     * refuses routes to lane 0 and is answered by the lane exactly as before
+     * — see `laneForShardKey` for why routing holds no opinion about
+     * validity.
+     */
+    const context = decodeElectionContext(request.headers.get(ELECTION_CONTEXT_HEADER));
+    const lane = electionLaneName(laneForShardKey(electionShardKey(context)));
+    const stub = env.PDF_ELECTION.get(env.PDF_ELECTION.idFromName(lane));
     return await stub.fetch(request);
   },
 };

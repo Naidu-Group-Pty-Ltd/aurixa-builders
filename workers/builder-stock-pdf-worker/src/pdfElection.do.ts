@@ -31,15 +31,31 @@ import {
 import { electFromPdfBytes } from '../../../supabase/functions/_shared/builderStock/pdfElection.ts';
 import { readPdfPageTextResult } from '../../../supabase/functions/_shared/builderStock/pdfText.ts';
 
-/**
- * ONE LANE FOR THE WHOLE DEPLOYMENT.
+/*
+ * WHERE THE LANE NAME LIVES NOW.
  *
- * Every request is routed to the object with this name, so every election in
- * the fleet queues behind the one before it. That is deliberate and it is the
- * memory bound: a second lane would double the resident documents without
- * doubling the 128 MB an isolate gets.
+ * It used to be a constant here — `ELECTION_LANE`, one object for the whole
+ * deployment, so every election in the fleet queued behind the one before it.
+ * The fleet has `ELECTION_LANE_COUNT` lanes now and the naming moved to
+ * `electionLane.pure.ts`, which the front door imports to choose one.
+ *
+ * WHAT DID NOT CHANGE IS THE QUEUE BELOW. Sharding divides the fleet across
+ * objects; it does not make any single object concurrent. Each one is still
+ * strictly serial, one document resident at a time, for the reason the
+ * promise chain states.
+ *
+ * THE MEMORY CLAIM THAT USED TO BE HERE IS NOT RESTATED, BECAUSE IT IS NOT
+ * SETTLED. The old comment asserted that "a second lane would double the
+ * resident documents without doubling the 128 MB an isolate gets" — i.e. that
+ * lanes share one isolate's memory. Cloudflare documents 128 MB per isolate
+ * AND colocates Durable Objects, and does not say plainly which applies to
+ * two objects of one class under load. That is the same ambiguity
+ * `wrangler.toml` already records for the CPU limit, and it answered it the
+ * same way: by measurement rather than by reading. Until a canary has run
+ * concurrent elections against separate lanes and been believed, the honest
+ * statement is that the per-lane serial queue is the bound this file
+ * guarantees, and the cross-lane bound is unproven.
  */
-export const ELECTION_LANE = 'builder-stock-pdf-election';
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
   status,

@@ -60,13 +60,23 @@ async function loadBundle() {
   return await import(pathToFileURL(file).href);
 }
 
+/**
+ * The lane names the BUNDLE asked its namespace for, in call order.
+ *
+ * Exposed so the sharding can be asserted against the deployable artefact
+ * rather than against the source it was built from. Over the wire there is
+ * nothing to look at — Cloudflare does not tell a client which object served
+ * it — so the lane checks below run in bundle mode only and say so.
+ */
+const laneNames = [];
+
 async function viaBundle() {
   const mod = await loadBundle();
   const lanes = new Map();
   const env = {
     BUILDER_STOCK_PDF_WORKER_TOKEN: tokenArg,
     PDF_ELECTION: {
-      idFromName: (n) => n,
+      idFromName: (n) => { laneNames.push(n); return n; },
       get: (id) => {
         if (!lanes.has(id)) lanes.set(id, new mod.PdfElection({}, env));
         return lanes.get(id);
@@ -215,6 +225,85 @@ if (args.includes('--heavy')) {
       Number(body.image.provenance?.page) === 1, `page ${body.image.provenance?.page}`);
   }
   console.log(`\nheavy election wall-clock: ${elapsed} ms over ${bytes.length} bytes`);
+}
+
+// ---- the election lanes, through the built bundle ---------------------------
+/*
+ * THE SHARDING IS A PROPERTY OF THE ARTEFACT, NOT OF THE SOURCE. The unit
+ * tests drive `src/index.ts`; this drives `dist/index.js`, which is what
+ * wrangler uploads — so a build that dropped the lane chooser fails here
+ * before anything is deployed.
+ */
+if (!urlArg) {
+  /*
+   * THE COUNT IS READ OUT OF THE SOURCE, NOT RESTATED HERE.
+   *
+   * The same rule `build.mjs` applies to the unpdf pin: a number written in
+   * two places is a number that drifts, and a canary that still expected four
+   * lanes after the constant moved to two would pass while asserting the
+   * wrong thing — or fail for no reason but its own staleness.
+   */
+  const LANE_COUNT = (() => {
+    const src = readFileSync(resolve(here, '../src/electionLane.pure.ts'), 'utf8');
+    const match = src.match(/export const ELECTION_LANE_COUNT = (\d+);/);
+    if (!match) {
+      throw new Error('[canary] electionLane.pure.ts no longer declares '
+        + 'ELECTION_LANE_COUNT as a literal, so the lane checks below cannot be '
+        + 'kept honest against it.');
+    }
+    return Number(match[1]);
+  })();
+  const LANE_PATTERN = new RegExp(`^builder-stock-pdf-election-[0-${LANE_COUNT - 1}]$`);
+  /** The same wire context with a different document identity on it. */
+  const headerFor = (identity) => Buffer.from(
+    JSON.stringify({ ...CONTEXT, ...identity }), 'utf8').toString('base64');
+  const before = laneNames.length;
+
+  for (let n = 0; n < 24; n += 1) {
+    await call('/v1/elect', {
+      method: 'POST',
+      headers: {
+        ...auth,
+        'x-election-context': headerFor({
+          label: `Lot ${700 + n} — Enzo 10.5 Modern`,
+          url: `https://drive.google.com/uc?export=download&id=file-${n}`,
+        }),
+      },
+      body: new Uint8Array([0x25, 0x50, 0x44, 0x46]),
+    });
+  }
+
+  const asked = laneNames.slice(before);
+  check('every election asked for exactly one lane', asked.length === 24,
+    `${asked.length} names for 24 elections`);
+  check('every lane name is a number and nothing else',
+    asked.every((n) => LANE_PATTERN.test(n)),
+    [...new Set(asked)].sort().join(', '));
+  check('no lane name carries a label or a URL',
+    !asked.some((n) => n.includes('Lot ') || n.includes('drive.google.com')));
+  check(`the built bundle spreads documents across all ${LANE_COUNT} lanes`,
+    new Set(asked).size === LANE_COUNT,
+    `${new Set(asked).size} of ${LANE_COUNT} distinct lanes: ${[...new Set(asked)].sort().join(', ')}`);
+
+  // Same identity, same lane — asserted through the artefact as well.
+  const repeat = () => {
+    const at = laneNames.length;
+    return call('/v1/elect', {
+      method: 'POST',
+      headers: {
+        ...auth,
+        'x-election-context': headerFor({
+          label: 'Lot 717 — Enzo 10.5 Modern',
+          url: 'https://drive.google.com/uc?export=download&id=stable',
+        }),
+      },
+      body: new Uint8Array([0x25, 0x50, 0x44, 0x46]),
+    }).then(() => laneNames[at]);
+  };
+  const [a, b] = [await repeat(), await repeat()];
+  check('the same election always reaches the same lane', a === b, `${a} vs ${b}`);
+} else {
+  console.log('\n(lane checks are bundle-mode only: the wire does not name the object that served)');
 }
 
 const failed = checks.filter((c) => !c.ok);
