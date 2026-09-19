@@ -917,6 +917,96 @@ if (publicationLineage.length) {
   console.log(`  ${'-'.repeat(46)} ${String(totalCards).padStart(3)} card(s)  draws=${
     String(totalDrawn).padStart(3)}  blank=${String(totalCards - totalDrawn).padStart(3)}`);
 
+
+  /*
+   * AND WHAT THE ESTATE-LED PROPERTIES' OWN BROCHURE SAID.
+   *
+   * THE REMEDY TURNS ON THIS AND NOTHING ELSE. If a property leading with a
+   * siting plan or an estate map ALSO holds a photograph out of its own
+   * brochure, then the ordering picked the wrong one of two and the fix is
+   * free. If its brochure yielded nothing, the estate picture is the only
+   * image that property has, and refusing it is a decision to show a blank
+   * card — which is a commercial question and not a technical one.
+   *
+   * Arithmetic already implies the second (33 brochure images, 33 of them
+   * leading, so no other live property holds one), but an implication is not
+   * a measurement and this investigation has already paid for the difference
+   * twice. So it is asked directly, with the brochure branch's own verdict
+   * beside it — the branch record's `state` and `state_detail`, which is the
+   * pipeline's sentence about that document and never this script's.
+   */
+  const estateLed = await sql('what the estate-led properties own brochure said', `
+    with led as (
+      select i.id,
+             coalesce(nullif(im.source_detail->>'source_column', ''), '(the row''s own cell)')
+               as lead_column
+        from public.builder_stock_items i
+        join public.builder_stock_item_images im on im.id = i.primary_image_id
+       where i.lifecycle_status = 'active'
+         and ${orgScope})
+    select led.lead_column,
+           count(*) as properties,
+           count(*) filter (where exists (
+             select 1 from public.builder_stock_item_images b
+              where b.stock_item_id = led.id
+                and b.source_detail->>'source_column' ilike '%brochure%'
+                and b.source_detail->>'source_column' not ilike '%estate%')) as also_hold_a_brochure_image,
+           count(*) filter (where exists (
+             select 1 from public.builder_stock_source_assets a
+              where a.stock_item_id = led.id
+                and a.column_header ilike '%brochure%'
+                and a.column_header not ilike '%estate%'
+                and a.state = 'no_image')) as brochure_branch_answered_no_image,
+           count(*) filter (where exists (
+             select 1 from public.builder_stock_source_assets a
+              where a.stock_item_id = led.id
+                and a.column_header ilike '%brochure%'
+                and a.column_header not ilike '%estate%'
+                and a.state in ('unreadable','unsupported','failed'))) as brochure_branch_could_not_be_read,
+           count(*) filter (where not exists (
+             select 1 from public.builder_stock_source_assets a
+              where a.stock_item_id = led.id
+                and a.column_header ilike '%brochure%'
+                and a.column_header not ilike '%estate%')) as no_brochure_branch_at_all
+      from led
+     group by led.lead_column
+     order by properties desc`);
+  heading('ESTATE-LED CARDS — did the property have a brochure photograph to show instead?');
+  for (const row of estateLed) {
+    console.log(`  ${safeDetail(String(row.lead_column), 40).padEnd(42)} ${
+      String(row.properties).padStart(3)} propert${Number(row.properties) === 1 ? 'y ' : 'ies'
+      }  also hold a brochure image=${String(row.also_hold_a_brochure_image).padStart(2)
+      }  brochure said no image=${String(row.brochure_branch_answered_no_image).padStart(2)
+      }  unreadable=${String(row.brochure_branch_could_not_be_read).padStart(2)
+      }  no brochure link=${String(row.no_brochure_branch_at_all).padStart(2)}`);
+  }
+
+  /*
+   * AND WHEN, TO THE HOUR.
+   *
+   * "Why is this happening NOW" is a question about a clock, and a date is
+   * too coarse to answer it — every one of these images was stored on
+   * 18 September. The hour separates "the estate pictures arrived in the same
+   * pass as the brochure ones" from "the easy properties settled first and
+   * the hard ones fell back later", which are different stories about the
+   * same day.
+   */
+  const timeline = await sql('when each lead was stored, by hour', `
+    select to_char(date_trunc('hour', im.created_at at time zone 'UTC'), 'MM-DD HH24:00') as hour_utc,
+           count(*) filter (where im.source_detail->>'source_column' ilike 'brochure%') as brochure,
+           count(*) filter (where im.source_detail->>'source_column' not ilike 'brochure%') as other_document,
+           count(*) as leads_stored
+      from public.builder_stock_items i
+      join public.builder_stock_item_images im on im.id = i.primary_image_id
+     where i.lifecycle_status = 'active'
+       and ${orgScope}
+     group by 1
+     order by 1`);
+  heading('LIVE CARDS — the hour each leading photograph was stored (UTC)');
+  for (const row of timeline) {
+    console.log(`  ${row.hour_utc}   brochure=${String(row.brochure).padStart(3)}  other document=${
+      String(row.other_document).padStart(3)}  total=${String(row.leads_stored).padStart(3)}`);
+  }
   /*
    * AND WHEN EACH COLUMN FIRST YIELDED ANYTHING AT ALL.
    *
