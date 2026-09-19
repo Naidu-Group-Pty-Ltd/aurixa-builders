@@ -6,7 +6,7 @@
  * behind the one before it. The queue is not the problem and is NOT removed
  * here — each object below is still strictly serial, one document resident at
  * a time. What changes is that there are now `ELECTION_LANE_COUNT` of them, so
- * a six-wide import is not funnelled through a single door.
+ * an import is not funnelled through a single door.
  *
  * THE KEY IS THE ELECTION'S OWN IDENTITY: the property label and the
  * document's address, both of which ALREADY cross the wire in
@@ -36,11 +36,11 @@
  * document, read for this property. The same election always lands in the same
  * lane; two properties reading the same shared brochure do not.
  *
- * THE LANE NAME CARRIES ONLY A NUMBER. `builder-stock-pdf-election-0` through
- * `-3`. A name built from the key would put a customer's property label into
- * Cloudflare's object namespace, which is the boundary rule restated as
- * infrastructure metadata — the worker is not told which property it is
- * looking at, and neither is the platform.
+ * THE LANE NAME CARRIES ONLY A NUMBER — `builder-stock-pdf-election-0` and
+ * `-1` at the count below. A name built from the key would put a customer's
+ * property label into Cloudflare's object namespace, which is the boundary
+ * rule restated as infrastructure metadata: the worker is not told which
+ * property it is looking at, and neither is the platform.
  *
  * Pure: no IO, no clock, no crypto, no network. Synchronous on purpose — the
  * front door computes this per request and must stay cheap.
@@ -52,12 +52,27 @@ export const ELECTION_LANE_PREFIX = 'builder-stock-pdf-election';
 /**
  * How many lanes the fleet has.
  *
- * FOUR, AND THE CEILING IS MEMORY RATHER THAN APPETITE. A Durable Object gets
- * 128 MB and `MAX_DOCUMENT_BYTES` admits 32 MB, so the number of documents
- * that may be resident at once is not a free parameter. Each lane is still
- * serial, so this is four resident documents across the fleet, never more.
+ * TWO, AND THE CEILING IS MEMORY RATHER THAN APPETITE. Each lane is serial, so
+ * this is the number of documents that may be resident across the fleet at
+ * once — and `MAX_DOCUMENT_BYTES` admits 32 MB apiece.
+ *
+ * WHY TWO AND NOT MORE, ON THE FIRST ROLLOUT. The constant this replaces was
+ * one lane, and the comment that justified it asserted that lanes share an
+ * isolate's 128 MB — "a second lane would double the resident documents
+ * without doubling the 128 MB an isolate gets". That claim is not settled:
+ * Cloudflare documents 128 MB per isolate AND colocates Durable Objects,
+ * without saying which applies to two objects of one class under load. It is
+ * the same ambiguity `wrangler.toml` already records for the CPU limit, and
+ * it is answered the same way — by measurement, not by reading.
+ *
+ * Two is the smallest number that makes the sharding real while leaving the
+ * memory question cheap to be wrong about: if lanes do share 128 MB, two
+ * resident documents is a materially smaller bet than four. Raising it is
+ * this one constant, and everything that depends on it — the modulo, the
+ * bound, the lane names, every test and the canary — is derived from it
+ * rather than restated.
  */
-export const ELECTION_LANE_COUNT = 4;
+export const ELECTION_LANE_COUNT = 2;
 
 /** The object name for a lane. Only the number travels. */
 export function electionLaneName(lane: number): string {
@@ -98,13 +113,22 @@ export function electionShardKey(
  * THE FINALISER IS NOT DECORATION, and the test that asserts the spread is
  * what found that out. FNV-1a's last operation is a multiply, and the low
  * bits of a product depend only on the low bits of its inputs — so its bottom
- * two bits barely move for inputs that differ late, which is exactly what a
- * run of `Lot 700`, `Lot 701`, `Lot 702` is. Taking `% 4` of the raw hash put
- * forty consecutive lots in TWO lanes rather than four: half the fleet idle,
- * and the sharding half a rename.
+ * bits barely move for inputs that differ late, which is exactly what a run of
+ * `Lot 700`, `Lot 701`, `Lot 702` is.
+ *
+ * MEASURED over forty consecutive lots, each with its own Drive file id:
+ *
+ *   raw FNV-1a  % 2 → [0, 40]          every one of them in ONE lane
+ *   raw FNV-1a  % 4 → [0, 35, 0, 5]
+ *   with fmix32 % 2 → [21, 19]
+ *   with fmix32 % 4 → [8, 13, 13, 6]
+ *
+ * At two lanes the raw hash does not merely skew, it collapses: the sharding
+ * would be inert and the second lane would never be addressed at all. So the
+ * finaliser matters MORE at the count this ships on, not less.
  *
  * `fmix32` is MurmurHash3's finaliser, whose entire job is to push high-bit
- * entropy down into the low bits. With it the same forty lots reach all four.
+ * entropy down into the low bits.
  */
 function hashKey(value: string): number {
   let hash = 0x811c9dc5;

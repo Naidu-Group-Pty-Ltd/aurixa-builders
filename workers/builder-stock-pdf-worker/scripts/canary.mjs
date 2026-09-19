@@ -235,7 +235,25 @@ if (args.includes('--heavy')) {
  * before anything is deployed.
  */
 if (!urlArg) {
-  const LANE_PATTERN = /^builder-stock-pdf-election-[0-3]$/;
+  /*
+   * THE COUNT IS READ OUT OF THE SOURCE, NOT RESTATED HERE.
+   *
+   * The same rule `build.mjs` applies to the unpdf pin: a number written in
+   * two places is a number that drifts, and a canary that still expected four
+   * lanes after the constant moved to two would pass while asserting the
+   * wrong thing — or fail for no reason but its own staleness.
+   */
+  const LANE_COUNT = (() => {
+    const src = readFileSync(resolve(here, '../src/electionLane.pure.ts'), 'utf8');
+    const match = src.match(/export const ELECTION_LANE_COUNT = (\d+);/);
+    if (!match) {
+      throw new Error('[canary] electionLane.pure.ts no longer declares '
+        + 'ELECTION_LANE_COUNT as a literal, so the lane checks below cannot be '
+        + 'kept honest against it.');
+    }
+    return Number(match[1]);
+  })();
+  const LANE_PATTERN = new RegExp(`^builder-stock-pdf-election-[0-${LANE_COUNT - 1}]$`);
   /** The same wire context with a different document identity on it. */
   const headerFor = (identity) => Buffer.from(
     JSON.stringify({ ...CONTEXT, ...identity }), 'utf8').toString('base64');
@@ -263,8 +281,9 @@ if (!urlArg) {
     [...new Set(asked)].sort().join(', '));
   check('no lane name carries a label or a URL',
     !asked.some((n) => n.includes('Lot ') || n.includes('drive.google.com')));
-  check('the built bundle spreads documents across every lane',
-    new Set(asked).size === 4, `${new Set(asked).size} distinct lanes`);
+  check(`the built bundle spreads documents across all ${LANE_COUNT} lanes`,
+    new Set(asked).size === LANE_COUNT,
+    `${new Set(asked).size} of ${LANE_COUNT} distinct lanes: ${[...new Set(asked)].sort().join(', ')}`);
 
   // Same identity, same lane — asserted through the artefact as well.
   const repeat = () => {

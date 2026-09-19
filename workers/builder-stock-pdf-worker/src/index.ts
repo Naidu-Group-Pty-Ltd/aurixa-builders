@@ -7,9 +7,9 @@
  * none lives there either.
  *
  * WHICH lane is `electionLane.pure.ts`'s to decide, and it decides it from the
- * context HEADER — never from the body, which is the document itself. The
- * lanes are serial individually and there are four of them, so an import no
- * longer funnels every brochure through one door.
+ * context HEADER — never from the body, which is the document itself. Each
+ * lane is serial on its own and there are `ELECTION_LANE_COUNT` of them, so an
+ * import no longer funnels every brochure through one door.
  *
  * WHAT THIS WORKER IS NEVER TOLD. The wire carries one PDF and a small
  * context — a label, how the document came to be this property's, a design,
