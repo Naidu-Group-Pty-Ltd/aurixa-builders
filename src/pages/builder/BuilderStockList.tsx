@@ -180,10 +180,36 @@ export default function BuilderStockList() {
    */
   const imageProgressQuery = useBuilderStockImageProgress();
   const progressRecords = imageProgressQuery.data?.records ?? [];
+  /*
+   * PUBLISHED IS NOT THE SAME AS FINISHED, and keying on it was about to
+   * hide the very thing this banner exists for.
+   *
+   * A first stock list now publishes the properties that earned a
+   * photograph and leaves the rest staged, so `published` becomes true
+   * while a builder still has work to do. Selecting the record by
+   * `!published` would have dropped that upload entirely — no banner, no
+   * "waiting to go live" section, no "Add picture" — and the only sign
+   * anything was owed would be a marketplace count quietly short by one.
+   *
+   * What a builder is owed a reading about is a property WITHOUT A
+   * PHOTOGRAPH, published or not, so that is what selects the record.
+   */
+  const owesAPhotograph = (record: { total: unknown; photos_ready: unknown }) => (
+    Number(record.total) > 0 && Number(record.photos_ready ?? 0) < Number(record.total)
+  );
   const progressRecord = progressRecords.find(
     (record) => !record.published && Number(record.total) > 0)
+    ?? progressRecords.find(owesAPhotograph)
     ?? progressRecords.find((record) => Number(record.working) > 0)
     ?? null;
+  /*
+   * AND WHETHER THE REST OF THEIR LIST IS ALREADY ON THE MARKETPLACE, which
+   * decides what the copy below may claim. "These are holding the rest of
+   * the list back" is true of a list that has not published and false of one
+   * that has — the same class of error as the "The rest of your list is
+   * unaffected" line this page already had to correct once.
+   */
+  const listIsLive = progressRecord?.published === true;
   const photosReady = progressRecord ? Number(progressRecord.photos_ready ?? 0) : null;
   const photosTotal = progressRecord ? Number(progressRecord.total ?? 0) : null;
   const photosFailed = progressRecord ? Number(progressRecord.failed ?? 0) : 0;
@@ -194,8 +220,8 @@ export default function BuilderStockList() {
    * and not gone live. Its staged rows are the only place a builder can act,
    * so they are fetched whenever such an upload exists — and only then.
    */
-  const heldUploadId = progressRecord && !progressRecord.published
-    && Number(progressRecord.total) > 0
+  const heldUploadId = progressRecord && Number(progressRecord.total) > 0
+    && (!progressRecord.published || owesAPhotograph(progressRecord))
     ? progressRecord.upload_id
     : null;
   const heldItemsQuery = useBuilderStockHeldItems(heldUploadId);
@@ -776,9 +802,13 @@ export default function BuilderStockList() {
                       ? `${heldNeedingBuilder === 1 ? 'The other was' : `The other ${heldNeedingBuilder} were`} read in full and the documents name no photograph of that property — those are yours to correct, and each one says what its documents contained. `
                       : `${heldNeedingBuilder === 1 ? 'Its documents were' : 'Their documents were'} read in full and name no photograph of the property — each one below says what its documents contained. `
                   ) : null}
-                  A stock list goes live once every property in it has a
-                  photo, so these are holding the rest of the list back —
-                  adding a picture to each one below releases it.
+                  {listIsLive
+                    ? 'The rest of your list is already on the marketplace. '
+                      + 'These are the only ones not on it — adding a picture '
+                      + 'to each one below puts it there too.'
+                    : 'A stock list goes live once every property in it has a '
+                      + 'photo, so these are holding the rest of the list back — '
+                      + 'adding a picture to each one below releases it.'}
                 </p>
               </div>
             </div>
@@ -810,9 +840,13 @@ export default function BuilderStockList() {
                   : `${heldWithoutPhoto.length} properties are waiting to go live`}
               </h3>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                Your stock list publishes in one go, once every property in
-                it has a photo. These are the ones still without one — add a
-                picture to each and the whole list goes live.
+                {listIsLive
+                  ? 'The rest of your list is live. These are the properties '
+                    + 'still without a photo, so they are the only ones not on '
+                    + 'the marketplace — add a picture to each and it joins them.'
+                  : 'Your stock list publishes in one go, once every property in '
+                    + 'it has a photo. These are the ones still without one — add '
+                    + 'a picture to each and the whole list goes live.'}
               </p>
               <ul className="bd-plate-list builder-stock-list-plates mt-3">
                 {heldWithoutPhoto.map((item) => (
