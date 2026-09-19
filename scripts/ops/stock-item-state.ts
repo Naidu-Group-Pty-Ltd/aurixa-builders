@@ -358,6 +358,58 @@ if (uploadIds.length) {
   }
 
   /*
+   * WHY IS IT NOT PUBLISHED — ASKED OF THE FUNCTION, NOT INFERRED.
+   *
+   * `publication_blocked_reason` is a SENTENCE about the photograph counts.
+   * It is not the whole predicate: `ready` also requires that no source asset
+   * is still pending and that enumeration did not fail, and neither appears in
+   * that sentence — so an upload can read "1 of 47 without a photo" while a
+   * second, unmentioned gate is holding it too, and repairing the one named
+   * would change nothing.
+   *
+   * Three times in one session this state was reasoned about from branch rows
+   * and timestamps rather than measured, and one of those readings was wrong.
+   * `builder_stock_publication_readiness` is the authority and it is one call,
+   * so it is called here, per upload in the lineage, with the two gates it
+   * does not return printed beside its answer.
+   */
+  const gateRows = await sql('publication gates', `
+    select u.id::text as upload_id,
+           r.staged, r.source_outstanding, r.missing_primary, r.failed_items,
+           r.ready, r.ready_items, r.first_publication, r.partial_ready,
+           (select count(*) from public.builder_stock_source_assets a
+             where a.upload_id = u.id and a.state = 'pending') as assets_pending,
+           (u.source_manifest_state = 'failed') as manifest_failed,
+           (select count(*) from public.builder_stock_items i
+             where i.lifecycle_status = 'active'
+               and i.upload_id = any(coalesce(u.replaces_upload_ids, '{}'))
+               and i.upload_id <> u.id) as superseded_live
+      from public.builder_stock_uploads u
+      cross join lateral public.builder_stock_publication_readiness(u.id) r
+     where u.id in (${lineage.map((id) => `'${id}'`).join(',')})
+     order by u.created_at`);
+  heading('PUBLICATION GATES — the readiness function\'s own answer, per upload');
+  for (const row of gateRows) {
+    console.log('');
+    printRow(row);
+    /*
+     * And the one line an operator actually needs: of everything `ready` and
+     * `partial_ready` require, which conditions are currently false. Derived
+     * from the columns above rather than restated, so it cannot drift from
+     * them.
+     */
+    const blocking: string[] = [];
+    if (Number(row.staged ?? 0) === 0) blocking.push('no properties in scope');
+    if (Number(row.missing_primary ?? 0) > 0) blocking.push(`${row.missing_primary} without a ready builder-source photo`);
+    if (Number(row.failed_items ?? 0) > 0) blocking.push(`${row.failed_items} failed`);
+    if (Number(row.source_outstanding ?? 0) > 0) blocking.push(`${row.source_outstanding} still reading their source`);
+    if (Number(row.assets_pending ?? 0) > 0) blocking.push(`${row.assets_pending} source asset(s) still pending`);
+    if (String(row.manifest_failed) === 'true') blocking.push('enumeration failed');
+    if (Number(row.superseded_live ?? 0) > 0) blocking.push(`replaces a LIVE list (${row.superseded_live} active row(s)) — all-or-nothing`);
+    console.log(`  holding it back         : ${blocking.length ? blocking.join('; ') : 'nothing — it should publish on the next tick'}`);
+  }
+
+  /*
    * AND THE BYTES THE IMPORT ACTUALLY BANKED.
    *
    * `repairSourceImages` re-fetches the sheet live and falls back to this
