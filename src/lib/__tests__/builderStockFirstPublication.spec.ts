@@ -28,28 +28,58 @@ import { join } from "node:path";
 const read = (p: string) => readFileSync(join(process.cwd(), p), "utf8");
 
 const MIGRATION = "supabase/migrations/20260919030000_first_publication_publishes_what_is_ready.sql";
+const CORRECTION = "supabase/migrations/20260919040000_a_replacement_is_one_with_a_live_list_to_protect.sql";
 const PAGE = "src/pages/builder/BuilderStockList.tsx";
 const SCALE = "scripts/db/stock-scale-proof.mjs";
 
 describe("which upload may publish part of itself", () => {
   const sql = read(MIGRATION);
 
-  it("reads the mode off what the upload SUPERSEDES, never off live rows", () => {
+  it("asks whether anything this upload supersedes is LIVE", () => {
     /*
-     * THE TRAP THIS AVOIDS. "The organisation has no live properties" is the
-     * obvious reading of "first upload" and it FLIPS the moment the first
-     * partial publication makes rows active — so the builder fixes their last
-     * property, it settles ready, and publication refuses it because the
-     * upload has become a replacement of itself.
+     * THIS ASSERTION REPLACES ITS OWN FIRST VERSION, and the reason is worth
+     * keeping. The rule shipped as `array_length(replaces_upload_ids) = 0` —
+     * "names no predecessor at all" — which is a PROXY for the question
+     * atomic cutover answers: is there a live generation a partial promotion
+     * would mix with?
      *
-     * `replaces_upload_ids` is written once at import and never changes, so
-     * the mode is a fact about the upload for its whole life.
+     * Measured against production an hour after it shipped, the proxy was
+     * wrong in exactly the case the feature was built for. The builder had
+     * two uploads: `2c412938` (09:26, supersedes nothing, NEVER published)
+     * and `58010c95` (09:41, supersedes it, never published), with all 47
+     * properties on the second — 46 with a ready builder-source primary and
+     * one whose documents name a sibling property. They had re-imported
+     * fifteen minutes in, long before the photographs finished. So the live
+     * upload was a REPLACEMENT OF AN UPLOAD THAT NEVER WENT LIVE, the rule
+     * did not fire, and the marketplace stayed at zero — the outcome the
+     * whole migration exists to prevent.
+     *
+     * The corrected rule is the question itself.
      */
-    expect(sql).toContain(
-      "coalesce(array_length(u.replaces_upload_ids, 1), 0) = 0 AS first_publication",
-    );
-    // Nothing anywhere derives the mode from how much is currently live.
-    expect(sql).not.toMatch(/first_publication[\s\S]{0,200}lifecycle_status\s*=\s*'active'/);
+    const fix = read(CORRECTION);
+    expect(fix).toContain("live.lifecycle_status = 'active'");
+    expect(fix).toContain("live.upload_id = ANY(coalesce(u.replaces_upload_ids, '{}'))");
+  });
+
+  it("does not flip once its own partial publication makes rows live", () => {
+    /*
+     * THE TRAP THE FIRST VERSION WAS RIGHT ABOUT. "The organisation has no
+     * live properties" is the obvious reading and it flips the moment a
+     * partial publication makes rows active — the builder then fixes their
+     * last property and publication refuses it, because the upload has
+     * become a replacement of itself.
+     *
+     * The corrected rule reads the SUPERSEDED uploads' active counts, which
+     * promoting this upload's own rows cannot change. Asserted by execution
+     * in the migration (it publishes, then re-reads the mode); asserted here
+     * as the structural fact that makes it true — the predicate is scoped to
+     * superseded uploads and explicitly excludes this one.
+     */
+    const fix = read(CORRECTION);
+    expect(fix).toContain("live.upload_id <> u.id");
+    expect(fix).toContain("the mode flipped after its own partial publication");
+    // And never the whole-organisation reading.
+    expect(fix).not.toMatch(/first_publication[\s\S]{0,120}live\.organisation_id/);
   });
 
   it("leaves the strict all-or-nothing answer exactly as it was", () => {
