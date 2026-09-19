@@ -46,6 +46,16 @@
  * hand-written identifier was wrong. The affected rows are discovered, shown
  * with the heading that condemned each one, and only then written.
  *
+ * AND STAGED ROWS ARE IN SCOPE, WHICH IS A WIDENING WORTH SAYING OUT LOUD.
+ * The thirteen this was written for are live; the same fault on a STAGED row
+ * is the same fault one publication earlier. The publication gate reads
+ * `builder_stock_photo_is_source_ready`, which tests the photograph's
+ * PROVENANCE and not its subject — deliberately, because it is the one
+ * statement of the publication rule — so a staged row settled on a masterplan
+ * counts as a property with a photograph and would go live with a blank card.
+ * Both counts are reported separately, and `archived` is never touched:
+ * reprocessing a row nobody can see spends a worker for nothing.
+ *
  * DRY RUN UNLESS TOLD OTHERWISE. Nothing is written without `--apply`.
  * Idempotent: a property already at `source` is not selected, so a second run
  * changes nothing.
@@ -96,23 +106,29 @@ console.log(`${APPLY ? 'APPLY' : 'DRY RUN'} — collateral-column reprocess on $
  * RULE decides here, in the one implementation. A `where` clause matching
  * headings would be the second copy this exists to avoid.
  */
-const leads = await sql('active leads', `
+const leads = await sql('leads', `
   select i.id::text                              as id,
          coalesce(i.external_reference, '')       as reference,
          coalesce(i.lot_number, '')               as lot,
+         i.lifecycle_status                       as lifecycle,
          i.image_work_stage                       as stage,
          im.source_detail ->> 'source_column'     as source_column
     from public.builder_stock_items as i
     join public.builder_stock_item_images as im on im.id = i.primary_image_id
-   where i.lifecycle_status = 'active'
-   order by i.created_at, i.id`);
+   where i.lifecycle_status in ('active', 'staged')
+   order by i.lifecycle_status, i.created_at, i.id`);
 
 const affected = leads.filter((row) => !columnMaySupplyPrimaryImage(row.source_column));
 const working = affected.filter((row) => String(row.stage) !== 'source');
+const live = (rows: Array<Record<string, unknown>>) =>
+  rows.filter((row) => String(row.lifecycle) === 'active').length;
 
-console.log(`${leads.length} active card(s) with a primary image.`);
-console.log(`${affected.length} led by a column that declares collateral.`);
-console.log(`${working.length} of those are past 'source' and will be sent back.\n`);
+console.log(`${leads.length} propert(ies) with a primary image `
+  + `(${live(leads)} active, ${leads.length - live(leads)} staged).`);
+console.log(`${affected.length} led by a column that declares collateral `
+  + `(${live(affected)} active, ${affected.length - live(affected)} staged).`);
+console.log(`${working.length} of those are past 'source' and will be sent back `
+  + `(${live(working)} active, ${working.length - live(working)} staged).\n`);
 
 const byColumn = new Map<string, number>();
 for (const row of affected) {
@@ -131,8 +147,9 @@ if (!working.length) {
 
 console.log('\nProperties to reprocess:');
 for (const row of working) {
-  console.log(`  ${row.id}  ${String(row.reference || row.lot || '—').padEnd(16)} stage=${
-    String(row.stage).padEnd(12)} ${safeDetail(String(row.source_column ?? ''), 44)}`);
+  console.log(`  ${row.id}  ${String(row.reference || row.lot || '—').padEnd(16)} ${
+    String(row.lifecycle).padEnd(7)} stage=${String(row.stage).padEnd(12)} ${
+    safeDetail(String(row.source_column ?? ''), 44)}`);
 }
 
 const ids = working.map((row) => String(row.id));
@@ -169,7 +186,7 @@ const updated = await sql('reprocess', `
          enrichment_status          = 'pending',
          updated_at                 = now()
    where id in (${ids.map(q).join(',')})
-     and lifecycle_status = 'active'
+     and lifecycle_status in ('active', 'staged')
   returning id::text as id, image_work_stage as stage, lifecycle_status as lifecycle,
             (primary_image_id is not null) as kept_primary`);
 
@@ -183,14 +200,14 @@ for (const row of updated) console.log(`  ${JSON.stringify(row)}`);
  * read back what happened rather than trusting what was sent.
  */
 const after = await sql('verify', `
-  select count(*) filter (where lifecycle_status <> 'active')      as not_active,
+  select count(*) filter (where lifecycle_status not in ('active','staged')) as wrong_lifecycle,
          count(*) filter (where primary_image_id is null)          as lost_primary,
          count(*) filter (where image_work_stage <> 'source')      as not_reset
     from public.builder_stock_items
    where id in (${ids.map(q).join(',')})`);
 const check = after[0] ?? {};
 console.log(`\nafter: ${JSON.stringify(check)}`);
-if (Number(check.not_active ?? 0) || Number(check.lost_primary ?? 0)
+if (Number(check.wrong_lifecycle ?? 0) || Number(check.lost_primary ?? 0)
   || Number(check.not_reset ?? 0)) {
   console.error('The reprocess changed something it must not have. Investigate before re-running.');
   Deno.exit(1);
