@@ -244,3 +244,88 @@ describe("the scale proof asserts both halves of the split", () => {
     expect(scale).toContain("predecessorLive === n - 1");
   });
 });
+
+/**
+ * A manifest row records what happened to its branch.
+ *
+ * MEASURED ON PRODUCTION, 19 September 2026. The live upload held 110
+ * `pending` source assets and could not publish — a gate
+ * `publication_blocked_reason` never mentions, so the upload advertised
+ * "1 of 47 without a photo, 1 failed" while a second, unnamed condition
+ * held it as well. Every one of those rows belonged to a property that had
+ * SETTLED WITH A READY BUILDER-SOURCE PHOTOGRAPH, in two populations:
+ *
+ *   72  the branch was answered and the row never heard, because the verdict
+ *       was written against whichever upload was current at the time and a
+ *       replacement re-enumerates the same branches as fresh pending rows;
+ *   38  the branch was never opened, because the property found its
+ *       photograph in an earlier document and stopped.
+ *
+ * Between them, a stock list is permanently unpublishable once it has been
+ * re-imported or once any property settles early — which is every list.
+ * Nothing in this deployment had ever published.
+ */
+describe("the source manifest converges", () => {
+  const RECONCILE = "supabase/migrations/20260919050000_a_manifest_row_records_what_happened_to_its_branch.sql";
+  const sql = read(RECONCILE);
+
+  it("gives a document nobody opened its own word, not a finding", () => {
+    /*
+     * NOT `no_image`, which asserts the document names no photograph — a
+     * verdict nobody reached, about a document nobody read. Inventing a
+     * finding we did not make is the failure this repository keeps paying
+     * for, so the state is its own.
+     */
+    expect(sql).toContain("'not_required'::text");
+    expect(sql).toContain("SET state = 'not_required'");
+    expect(sql).toContain("so this one was not opened");
+  });
+
+  it("closes a document only where the property is settled AND photographed", () => {
+    /*
+     * This is what keeps the gate meaning something. A property still
+     * climbing the ladder, one that failed, and one that settled blank all
+     * keep their pending rows and keep blocking — the migration asserts all
+     * three by execution.
+     */
+    const closing = sql.slice(sql.indexOf("SET state = 'not_required'"));
+    expect(closing).toContain("i.image_work_stage = 'settled'");
+    expect(closing).toContain("public.builder_stock_photo_is_source_ready(i.primary_image_id)");
+  });
+
+  it("adopts a verdict only for the SAME document of the SAME property", () => {
+    // Matched on the property and the exact reference, so nothing is carried
+    // between properties or between different documents of one property.
+    expect(sql).toContain("AND a.stock_item_id = s.stock_item_id");
+    expect(sql).toContain("AND a.reference = s.reference");
+    // And never adopts a row that is itself unresolved.
+    expect(sql).toContain("WHERE q.state <> 'pending'");
+  });
+
+  it("is run by the sweep that is about to read the answer", () => {
+    /*
+     * The rule being right is not the same as the rule running. A sweep that
+     * stopped calling it would leave every other assertion passing while no
+     * upload in production was ever reconciled, so the migration proves the
+     * wiring by publishing through `publish_ready_builder_stock_uploads`.
+     */
+    const sweep = sql.slice(sql.indexOf("FUNCTION public.publish_ready_builder_stock_uploads"));
+    expect(sweep).toContain("builder_stock_reconcile_source_manifest(v_upload.id)");
+    expect(sweep).toContain("manifest_rows_reconciled");
+    const reconcileAt = sweep.indexOf("builder_stock_reconcile_source_manifest");
+    const publishAt = sweep.indexOf("publish_builder_stock_upload(v_upload.id)");
+    expect(reconcileAt).toBeGreaterThan(-1);
+    expect(publishAt).toBeGreaterThan(reconcileAt);
+  });
+
+  it("scopes every write to the upload it was asked about", () => {
+    // It takes an upload id and is called per upload; one that quietly
+    // repaired every upload in the table would be doing work nobody asked
+    // for on lists nobody is publishing.
+    const fn = sql.slice(
+      sql.indexOf("FUNCTION public.builder_stock_reconcile_source_manifest"),
+      sql.indexOf("COMMENT ON FUNCTION public.builder_stock_reconcile_source_manifest"),
+    );
+    expect((fn.match(/a\.upload_id = p_upload_id/g) ?? []).length).toBe(2);
+  });
+});

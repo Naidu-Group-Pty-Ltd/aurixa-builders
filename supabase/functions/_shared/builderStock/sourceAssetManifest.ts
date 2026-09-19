@@ -29,7 +29,12 @@ import {
 } from './sourceBranches.pure.ts';
 
 export type SourceAssetState =
-  | 'pending' | 'stored' | 'no_image' | 'unreadable' | 'unsupported' | 'failed';
+  | 'pending' | 'stored' | 'no_image' | 'unreadable' | 'unsupported' | 'failed'
+  // A document nobody needed to open: the property was satisfied by another of
+  // its own. A fact about our reading, never a finding about the document —
+  // which is why it is not spelled 'no_image'. Written only by
+  // builder_stock_reconcile_source_manifest.
+  | 'not_required';
 
 /**
  * Write the manifest for everything this upload's stored rows supply.
