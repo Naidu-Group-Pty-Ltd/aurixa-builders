@@ -79,6 +79,19 @@ jobs:
         with:
           version: latest
 
+      # RETRY WHAT THE VENDOR ITSELF CALLS RETRYABLE, AND NOTHING ELSE.
+      #
+      # 19 Sep 2026: `builder-portal-stock` and `builder-portal-transactions`
+      # both answered `409 {"message":"Function was deployed concurrently by
+      # another request, please retry"}` two seconds apart, and the loop had no
+      # retry — so a merge that was correct in every other respect left 25 of
+      # 27 functions on the new build and 2 on the old one. The platform
+      # serialises deploys per project; a 27-function loop races itself.
+      #
+      # The retry is matched on the answer, never on the exit code: a 409 is a
+      # collision worth asking again about, while a compile error or a rejected
+      # token is a fact that three attempts cannot change. Retrying everything
+      # would turn a two-second failure into a ninety-second one and still fail.
       - name: deploy every function (config.toml carries verify_jwt)
         id: deploy
         env:
@@ -93,9 +106,19 @@ jobs:
             fn="$(basename "$dir")"
             [ "$fn" = "_shared" ] && continue
             echo "::group::deploy $fn"
-            if ! supabase functions deploy "$fn" --project-ref "$PROJECT_REF" --use-api; then
-              failed="$failed $fn"
-            fi
+            attempt=1
+            while :; do
+              if supabase functions deploy "$fn" --project-ref "$PROJECT_REF" --use-api 2>&1 | tee /tmp/deploy-$fn.log; then
+                break
+              fi
+              if [ "$attempt" -ge 4 ] || ! grep -qiE 'status 409|deployed concurrently' /tmp/deploy-$fn.log; then
+                failed="$failed $fn"
+                break
+              fi
+              echo "$fn: the platform is deploying it concurrently; retrying (attempt $attempt)"
+              sleep $((attempt * 5))
+              attempt=$((attempt + 1))
+            done
             echo "::endgroup::"
           done
           if [ -n "$failed" ]; then
@@ -109,7 +132,14 @@ jobs:
       # step asks the Management API what is actually deployed and fails on a
       # partial deploy — the state where production runs a mixture of builds
       # and nobody is told.
+      #
+      # IT RUNS WHEN THE DEPLOY FAILED TOO, which is the case it was written
+      # for and the one it could not see: a failing loop skips this step, and a
+      # failing loop is exactly when production is running a mixture of builds.
+      # The job still fails on the deploy's own exit code — what changes is
+      # that the log now NAMES which functions are on which build.
       - name: confirm every function actually shipped
+        if: ${{ always() && steps.deploy.outputs.started_at != '' }}
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         run: node scripts/ops/verify-functions-deployed.mjs "${{ steps.deploy.outputs.started_at }}"
