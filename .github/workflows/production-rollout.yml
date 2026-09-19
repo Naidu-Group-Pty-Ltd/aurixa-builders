@@ -81,7 +81,7 @@ on:
         default: ''
         type: string
       apply:
-        description: 'item-reopen only: false is a dry run that writes nothing'
+        description: 'item-reopen / stock-collateral-reprocess: false is a dry run that writes nothing'
         required: false
         default: false
         type: boolean
