@@ -696,6 +696,30 @@ if (publicationLineage.length) {
        and ${orgScope}
      group by 1, 2
      order by properties desc, source_column`);
+  /*
+   * AND THE ACTIVE PROPERTIES THAT CARRY NO PRIMARY IMAGE AT ALL.
+   *
+   * EVERY OTHER SECTION HERE JOINS ON `primary_image_id`, so a property whose
+   * pointer was CLEARED vanishes from all of them — and the counts shrink
+   * with no line saying why. `chooseAndStorePrimaryImage` clears rather than
+   * leaves a stale pointer, deliberately, so this is the ordinary outcome of
+   * a repair that found nothing and it must be visible rather than inferred
+   * from a total that no longer adds up.
+   */
+  const noPrimary = await sql('active cards with no primary image', `
+    select count(*) as active_cards,
+           count(*) filter (where i.primary_image_id is null) as no_primary_image,
+           count(*) filter (where i.image_work_stage = 'settled') as settled,
+           count(*) filter (where i.image_work_stage = 'source') as back_at_source,
+           count(*) filter (where i.image_work_stage = 'failed') as failed,
+           count(*) filter (where i.image_work_stage not in ('settled','source','failed'))
+             as mid_ladder
+      from public.builder_stock_items as i
+     where i.lifecycle_status = 'active'
+       and ${orgScope}`);
+  heading('LIVE CARDS — the whole active set, including any with no picture');
+  for (const row of noPrimary) printRow(row);
+
   heading('LIVE CARDS — which document each one\'s photograph came out of');
   if (!leadByColumn.length) console.log('  (no active property carries a primary image)');
   for (const row of leadByColumn) {
