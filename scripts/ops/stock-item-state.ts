@@ -752,8 +752,114 @@ if (publicationLineage.length) {
       shared === 0
         ? 'no live card leads with a picture any other card leads with'
           + (sharedDoc ? ` — ${sharedDoc} share a DOCUMENT, which is one brochure with a page each` : '')
-        : `${shared} card(s) lead with byte-identical imagery — estate collateral is on the marketplace`}`);
+        : `${shared} card(s) lead with byte-identical imagery — the next section says whether that is one design or one estate plate`}`);
   }
+
+  /*
+   * AND WHAT THE SHARING ACTUALLY IS.
+   *
+   * "32 of 46 cards lead with byte-identical imagery" HAS A LEGITIMATE
+   * READING and reporting it as a fault without separating the two would be
+   * the same error this investigation has already made twice. A builder sells
+   * HOUSE DESIGNS: Lot A and Lot B are both a Sandpiper 24, the brochure
+   * carries one facade render of the Sandpiper 24, and both cards showing it
+   * is correct — the picture is of the product each lot is selling.
+   *
+   * One estate masterplan on thirty-two cards is the fault. The two are told
+   * apart by what the sharing cards have in common:
+   *
+   *   SAME DESIGN   every card in the group sells the same house design, so
+   *                 the render is of the thing being sold
+   *   MIXED         cards selling DIFFERENT designs share one picture, which
+   *                 no design render can explain
+   *
+   * `house_design` lives in `source_row` and is the builder's own word for
+   * it, so this asks the source rather than inferring from the picture.
+   *
+   * The group's size is printed too, because a pair is a design and a group
+   * of twenty is an estate plate however the designs read.
+   */
+  const sharingShape = await sql('what the sharing is', `
+    with leads as (
+      select i.id,
+             nullif(i.source_row->>'house_design', '') as design,
+             coalesce(im.source_detail->>'stored_sha256',
+                      im.source_detail->>'source_sha256',
+                      im.storage_path, im.external_url) as picture,
+             coalesce(nullif(im.source_detail->>'source_column', ''), '(the row''s own cell)')
+               as source_column,
+             im.source_detail->>'marketplace_display_eligible' = 'true' as eligible
+        from public.builder_stock_items i
+        join public.builder_stock_item_images im on im.id = i.primary_image_id
+       where i.lifecycle_status = 'active'
+         and ${orgScope})
+    select picture,
+           count(*) as cards,
+           count(distinct design) as distinct_designs,
+           count(*) filter (where design is null) as cards_with_no_design,
+           min(source_column) as source_column,
+           bool_and(eligible) as all_eligible
+      from leads
+     group by picture
+    having count(*) > 1
+     order by cards desc, source_column
+     limit 20`);
+  heading('LIVE CARDS — one picture on several cards: same design, or an estate plate?');
+  if (!sharingShape.length) console.log('  (no picture leads more than one card)');
+  for (const row of sharingShape) {
+    const cards = Number(row.cards ?? 0);
+    const designs = Number(row.distinct_designs ?? 0);
+    const noDesign = Number(row.cards_with_no_design ?? 0);
+    const verdict = designs === 1 && noDesign === 0
+      ? 'ONE DESIGN — the render is of the product each lot sells'
+      : designs === 0
+        ? 'NO DESIGN RECORDED on any of them — nothing explains the sharing'
+        : `${designs} DIFFERENT DESIGNS${noDesign ? ` (+${noDesign} with none)` : ''}`
+          + ' — no design render explains this';
+    console.log(`  ${String(cards).padStart(3)} cards  ${
+      safeDetail(String(row.source_column), 40).padEnd(42)} eligible=${
+      String(row.all_eligible).padEnd(5)}  ${verdict}`);
+  }
+
+  /*
+   * AND HOW MANY OF THE 46 ACTUALLY DRAW A PICTURE.
+   *
+   * A DIFFERENT QUESTION FROM `primary_image_id IS NOT NULL`, and the gap
+   * between them is a blank card. Publication tests the photograph's
+   * PROVENANCE (`builder_stock_photo_is_source_ready`: the builder's own
+   * document, source-supplied, ready); the marketplace measure decides
+   * separately whether that picture may be DRAWN. A property can therefore
+   * publish with a primary image the card refuses to show, and every surface
+   * reports it as a property with a photograph.
+   */
+  const drawable = await sql('how many live cards draw a picture', `
+    select coalesce(nullif(im.source_detail->>'source_column', ''), '(the row''s own cell)')
+             as source_column,
+           count(*) as live_cards,
+           count(*) filter (where im.source_detail->>'marketplace_display_eligible' = 'true')
+             as draws_a_picture,
+           count(*) filter (where im.source_detail->>'marketplace_rejection_reason' is not null)
+             as blank_because_refused,
+           min(im.source_detail->>'marketplace_rejection_reason') as a_reason
+      from public.builder_stock_items i
+      join public.builder_stock_item_images im on im.id = i.primary_image_id
+     where i.lifecycle_status = 'active'
+       and ${orgScope}
+     group by 1
+     order by live_cards desc`);
+  heading('LIVE CARDS — how many actually draw a picture');
+  let totalCards = 0; let totalDrawn = 0;
+  for (const row of drawable) {
+    totalCards += Number(row.live_cards ?? 0);
+    totalDrawn += Number(row.draws_a_picture ?? 0);
+    console.log(`  ${safeDetail(String(row.source_column), 44).padEnd(46)} ${
+      String(row.live_cards).padStart(3)} card(s)  draws=${
+      String(row.draws_a_picture).padStart(3)}  blank=${
+      String(row.blank_because_refused).padStart(3)}${
+      Number(row.blank_because_refused) ? `  (${row.a_reason})` : ''}`);
+  }
+  console.log(`  ${'-'.repeat(46)} ${String(totalCards).padStart(3)} card(s)  draws=${
+    String(totalDrawn).padStart(3)}  blank=${String(totalCards - totalDrawn).padStart(3)}`);
 
   /*
    * AND WHEN EACH COLUMN FIRST YIELDED ANYTHING AT ALL.
