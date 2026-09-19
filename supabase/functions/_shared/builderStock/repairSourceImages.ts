@@ -71,6 +71,9 @@ import { designOfRecordOrRow } from './builderSuppliedImage.pure.ts';
 import {
   countBranchLinkRows, linkSharedWithOtherRows,
 } from './sharedBranchLinks.pure.ts';
+import {
+  columnCollateralRefusal, columnMaySupplyPrimaryImage,
+} from './columnDeclaration.pure.ts';
 import { anchorPdfRowsToPages, pdfAnchorPage } from './pdfRowAnchors.pure.ts';
 import { chooseAndStorePrimaryImage } from './primaryImage.ts';
 import { readAllRows } from './pagedRead.ts';
@@ -893,6 +896,70 @@ export async function repairSourceImagesForUpload(
      */
     const branches = rowSourceBranches(
       unmappedWithRecoveredLinks(record.unmapped, storedRowByItem.get(itemId)));
+
+    /*
+     * A BRANCH THE COLUMN DECLARES COLLATERAL IS ANSWERED WITHOUT BEING
+     * OPENED — and it is answered rather than skipped, which is the whole of
+     * the difference.
+     *
+     * MEASURED 19 SEPTEMBER 2026: thirteen of forty-six live cards led with a
+     * picture out of `Siting / Masterplan URL`, `Estate Brochure / Location
+     * Map URL` or `Stage Plan / PlanOfSub URL`, twelve of them from four
+     * files, one file leading four properties across two designs. The heading
+     * said what they were the whole time. See `columnDeclaration.pure.ts` for
+     * why neither existing guard could see it and why reading the heading
+     * here does not contradict `sourceBranches.pure.ts`.
+     *
+     * SKIPPING WOULD HAVE COST WHAT PR #21 ALREADY PAID FOR. A branch merely
+     * left out of `openBranches` keeps a `pending` manifest row for ever, and
+     * `assets_settled` is a publication gate — so a list carrying one
+     * masterplan column would become permanently unpublishable, silently,
+     * exactly as 110 rows did. So the verdict is banked and the manifest row
+     * is resolved, once, and the branch is terminal for every reader that
+     * asks: `openBranches`, `allBranchesTerminal` and the manifest alike.
+     *
+     * IT IS A FINDING, NOT AN ERROR. Nothing failed: the builder filed a
+     * masterplan under a heading that says masterplan, and both were read
+     * correctly. `inspected` is therefore the right exhaustion — the evidence
+     * inspected is the builder's own declaration — and a `PROVENANCE_VERSION`
+     * bump reopens it like every other answer, which is what keeps a widened
+     * vocabulary from being retrospective.
+     */
+    for (const refused of branches) {
+      if (columnMaySupplyPrimaryImage(refused.column)) continue;
+      const refusedQuestion = {
+        provenanceVersion: PROVENANCE_VERSION,
+        runtimeVersion: RUNTIME_VERSION,
+        packageReference: refused.url,
+        sourceAnchor: anchor ?? null,
+      };
+      const standing = branchRecord(negativeBefore.get(itemId), refused.url);
+      // Already banked at this version and anchor: nothing to write, and
+      // re-writing it every tick would be one wasted round trip per branch
+      // per property for ever.
+      if (standing && negativeProvenanceStillStands(
+        standing as Record<string, unknown>, refusedQuestion)) continue;
+      const verdict = recordNoDeterministicImage(
+        refusedQuestion, columnCollateralRefusal(refused.column), 'inspected');
+      await db
+        .from('builder_stock_items')
+        .update({
+          source_provenance_result: writeBranchState(
+            negativeBefore.get(itemId), refused.url, verdict),
+        })
+        .eq('id', itemId)
+        .eq('organisation_id', input.organisationId);
+      negativeBefore.set(itemId,
+        writeBranchState(negativeBefore.get(itemId), refused.url, verdict));
+      await syncSourceAssetState(db, {
+        organisationId: input.organisationId,
+        uploadId: upload.id,
+        stockItemId: itemId,
+        reference: refused.url,
+        state: 'no_image',
+        detail: columnCollateralRefusal(refused.column),
+      });
+    }
 
     /*
      * WHAT THE LIVE FETCH DISCOVERED IS MADE DURABLE ON THE ROW.

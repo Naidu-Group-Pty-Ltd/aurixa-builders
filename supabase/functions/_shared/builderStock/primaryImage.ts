@@ -36,6 +36,9 @@ import {
 import {
   servableClearanceFor, servableDerivativeFor, type SanitizedDerivative,
 } from './sanitizedDerivative.pure.ts';
+import {
+  storedColumnMaySupplyPrimaryImage,
+} from './columnDeclaration.pure.ts';
 import { PROCESSED_LIFECYCLE } from './stockLifecycle.pure.ts';
 import { readAllRows } from './pagedRead.ts';
 
@@ -101,7 +104,17 @@ export function isDisplayableSourceImage(image: DisplayableImage): boolean {
     // `overlayClearance.pure.ts`.
     && (isMarketplaceEligible(image.source_detail)
       || !!servableDerivativeFor(image.source_detail)
-      || !!servableClearanceFor(image.source_detail));
+      || !!servableClearanceFor(image.source_detail))
+    // And the seventh: the column the builder filed it under does not say it
+    // is something other than the house. Measured 19 September 2026 — 13 of
+    // 46 live cards led with a picture out of `Siting / Masterplan URL`,
+    // `Estate Brochure / Location Map URL` or `Stage Plan / PlanOfSub URL`,
+    // every one of which passes the six conditions above, because not one of
+    // them asks what the picture is OF. Read here as well as refused at the
+    // branch, so a row stored before the rule existed cannot lead a card and
+    // no backfill decides which pictures a marketplace draws. See
+    // `columnDeclaration.pure.ts`.
+    && storedColumnMaySupplyPrimaryImage(image.source_detail);
 }
 
 /**
@@ -233,6 +246,17 @@ export function classifyPrimaryImageStanding(
     if (!(image.storage_path || image.external_url)) continue;
     if (Number((detail as { provenance_version?: unknown }).provenance_version ?? 0)
       < minimumProvenanceVersion) continue;
+    /*
+     * AND `ready` MEANS USABLE, WHICH A MASTERPLAN IS NOT.
+     *
+     * This is the reading the repair loop skips a property on, so admitting a
+     * picture the column declares collateral here would leave the thirteen
+     * estate-led properties settled for ever with the brochure they never
+     * opened — the display gate would refuse the picture and nothing would
+     * ever go and find a better one. `ready` and `displayable` are different
+     * questions, and this is the one place they have to agree about columns.
+     */
+    if (!storedColumnMaySupplyPrimaryImage(detail)) continue;
     standing.ready = true;
 
     if (image.verification_status !== SOURCE_SUPPLIED_VERIFICATION) continue;

@@ -31,6 +31,15 @@ import {
   servableClearanceFor,
   servableDerivativeFor,
 } from '../../supabase/functions/_shared/builderStock/sanitizedDerivative.pure';
+/*
+ * The seventh condition below, imported rather than restated for the reason
+ * every rule in this file is: the server's `primaryImage.ts` and this mirror
+ * disagreeing about which picture leads a card is a defect this repository
+ * has already shipped once.
+ */
+import {
+  storedColumnMaySupplyPrimaryImage,
+} from '../../supabase/functions/_shared/builderStock/columnDeclaration.pure';
 
 export {
   stockFileAcceptAttribute,
@@ -711,7 +720,11 @@ export function isDisplayableSourceImage(image: BuilderStockImage): boolean {
     // the ORIGINAL — nothing was made and nothing was changed.
     && (isMarketplaceEligible(image.source_detail)
       || !!servableDerivativeFor(image.source_detail)
-      || !!servableClearanceFor(image.source_detail));
+      || !!servableClearanceFor(image.source_detail))
+    // And the column the builder filed it under does not declare it to be
+    // something other than the house — a siting plan, an estate map, a plan
+    // of subdivision. Mirrors the server, and both read the one rule.
+    && storedColumnMaySupplyPrimaryImage(image.source_detail);
 }
 
 /**

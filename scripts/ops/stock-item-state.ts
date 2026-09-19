@@ -649,4 +649,479 @@ for (const row of pendingShape) {
           : `${loose} answered and matched by key`}`);
 }
 
+
+/*
+ * WHICH OF THE BUILDER'S DOCUMENTS EACH LIVE CARD'S PHOTOGRAPH CAME OUT OF.
+ *
+ * THE QUESTION THIS ANSWERS. "Why is the marketplace pulling estate photos —
+ * before this there were only property photos?" That has two candidate
+ * answers with different remedies, and timestamps alone cannot separate them,
+ * which is how two readings in this investigation already went wrong:
+ *
+ *   A SELECTION CHANGED — a document that used to be ignored is now read, so
+ *   pictures that never existed are being stored and shown.
+ *
+ *   A VISIBILITY CHANGED — the same pictures were being stored all along and
+ *   nothing was on the marketplace to show them, so they are newly VISIBLE
+ *   rather than newly OCCURRING.
+ *
+ * Both are measurable from the rows and neither is inferred here. `first_seen`
+ * is the earliest this column ever yielded a stored picture for this builder;
+ * if that predates the marketplace going live, the pictures are older than the
+ * page that shows them and the second answer holds. `properties` is how many
+ * live cards that column is currently leading.
+ *
+ * NOTHING HERE READS A COLUMN NAME TO DECIDE ANYTHING — the pipeline
+ * deliberately does not (`sourceBranches.pure.ts`), and neither does this. The
+ * heading is provenance, printed so a person can recognise the document; every
+ * verdict beside it was reached by the bytes.
+ */
+if (publicationLineage.length) {
+  const lineageList = publicationLineage.map((id) => `'${id}'`).join(',');
+  const orgScope = `i.organisation_id in (select organisation_id
+      from public.builder_stock_uploads where id in (${lineageList}))`;
+
+  const leadByColumn = await sql('what leads each live card', `
+    select coalesce(nullif(im.source_detail->>'source_column', ''), '(the row''s own cell)')
+             as source_column,
+           coalesce(im.source_detail->>'origin', '-') as origin,
+           count(*) as properties,
+           count(*) filter (where im.source_detail->>'marketplace_display_eligible' = 'true')
+             as eligible,
+           min(im.created_at)::date as first_stored,
+           max(im.created_at)::date as last_stored
+      from public.builder_stock_items i
+      join public.builder_stock_item_images im on im.id = i.primary_image_id
+     where i.lifecycle_status = 'active'
+       and ${orgScope}
+     group by 1, 2
+     order by properties desc, source_column`);
+  heading('LIVE CARDS — which document each one\'s photograph came out of');
+  if (!leadByColumn.length) console.log('  (no active property carries a primary image)');
+  for (const row of leadByColumn) {
+    console.log(`  ${String(row.properties).padStart(3)} propert${
+      Number(row.properties) === 1 ? 'y ' : 'ies'}  ${
+      safeDetail(String(row.source_column), 44).padEnd(46)} origin=${
+      String(row.origin).padEnd(24)} stored ${row.first_stored} .. ${row.last_stored}`);
+  }
+
+  /*
+   * AND WHETHER ONE PICTURE IS LEADING SEVERAL CARDS.
+   *
+   * THE SIGNATURE OF ESTATE COLLATERAL, and the only one that is decisive. A
+   * shared DOCUMENT is not a finding — an estate brochure with a page for
+   * each house is exactly how a builder files them, and two rows drawing
+   * different pages of one PDF are two photographs. A shared PICTURE is the
+   * finding: byte-identical imagery on more than one card is one masterplan
+   * standing in for several houses, which is what `sharedBranchLinks` refuses
+   * and what `countBranchLinkRows` had never once counted before 18 Sep.
+   *
+   * So both are measured and reported apart.
+   */
+  const sharedLeads = await sql('is one picture leading several cards', `
+    with leads as (
+      select i.id,
+             coalesce(im.source_detail->>'stored_sha256',
+                      im.source_detail->>'source_sha256',
+                      im.source_detail->>'marketplace_measured_sha256',
+                      im.storage_path, im.external_url) as picture,
+             nullif(im.source_detail->>'document', '') as document
+        from public.builder_stock_items i
+        join public.builder_stock_item_images im on im.id = i.primary_image_id
+       where i.lifecycle_status = 'active'
+         and ${orgScope})
+    select (select count(*) from leads) as live_cards,
+           (select count(*) from leads where picture is null) as picture_unidentifiable,
+           (select count(*) from leads l
+             where l.picture is not null
+               and exists (select 1 from leads o
+                            where o.picture = l.picture and o.id <> l.id))
+             as leading_a_picture_another_card_also_leads,
+           (select count(*) from leads l
+             where l.document is not null
+               and exists (select 1 from leads o
+                            where o.document = l.document and o.id <> l.id))
+             as drawn_from_a_document_another_card_also_used,
+           (select count(distinct document) from leads where document is not null)
+             as distinct_documents`);
+  heading('LIVE CARDS — is one picture standing in for several houses?');
+  for (const row of sharedLeads) {
+    printRow(row);
+    const shared = Number(row.leading_a_picture_another_card_also_leads ?? 0);
+    const sharedDoc = Number(row.drawn_from_a_document_another_card_also_used ?? 0);
+    console.log(`  reading                 : ${
+      shared === 0
+        ? 'no live card leads with a picture any other card leads with'
+          + (sharedDoc ? ` — ${sharedDoc} share a DOCUMENT, which is one brochure with a page each` : '')
+        : `${shared} card(s) lead with byte-identical imagery — the next section says whether that is one design or one estate plate`}`);
+  }
+
+  /*
+   * AND WHAT THE SHARING ACTUALLY IS.
+   *
+   * "32 of 46 cards lead with byte-identical imagery" HAS A LEGITIMATE
+   * READING and reporting it as a fault without separating the two would be
+   * the same error this investigation has already made twice. A builder sells
+   * HOUSE DESIGNS: Lot A and Lot B are both a Sandpiper 24, the brochure
+   * carries one facade render of the Sandpiper 24, and both cards showing it
+   * is correct — the picture is of the product each lot is selling.
+   *
+   * One estate masterplan on thirty-two cards is the fault. The two are told
+   * apart by what the sharing cards have in common:
+   *
+   *   SAME DESIGN   every card in the group sells the same house design, so
+   *                 the render is of the thing being sold
+   *   MIXED         cards selling DIFFERENT designs share one picture, which
+   *                 no design render can explain
+   *
+   * `house_design` lives in `source_row` and is the builder's own word for
+   * it, so this asks the source rather than inferring from the picture.
+   *
+   * The group's size is printed too, because a pair is a design and a group
+   * of twenty is an estate plate however the designs read.
+   */
+  const sharingShape = await sql('what the sharing is', `
+    with leads as (
+      select i.id,
+             nullif(i.source_row->>'house_design', '') as design,
+             coalesce(im.source_detail->>'stored_sha256',
+                      im.source_detail->>'source_sha256',
+                      im.source_detail->>'marketplace_measured_sha256',
+                      im.storage_path, im.external_url) as picture,
+             coalesce(nullif(im.source_detail->>'source_column', ''), '(the row''s own cell)')
+               as source_column,
+             im.source_detail->>'marketplace_display_eligible' = 'true' as eligible
+        from public.builder_stock_items i
+        join public.builder_stock_item_images im on im.id = i.primary_image_id
+       where i.lifecycle_status = 'active'
+         and ${orgScope})
+    select picture,
+           count(*) as cards,
+           count(distinct design) as distinct_designs,
+           count(*) filter (where design is null) as cards_with_no_design,
+           min(source_column) as source_column,
+           bool_and(eligible) as all_eligible
+      from leads
+     group by picture
+    having count(*) > 1
+     order by cards desc, source_column
+     limit 20`);
+  heading('LIVE CARDS — one picture on several cards: same design, or an estate plate?');
+  if (!sharingShape.length) console.log('  (no picture leads more than one card)');
+  for (const row of sharingShape) {
+    const cards = Number(row.cards ?? 0);
+    const designs = Number(row.distinct_designs ?? 0);
+    const noDesign = Number(row.cards_with_no_design ?? 0);
+    const verdict = designs === 1 && noDesign === 0
+      ? 'ONE DESIGN — the render is of the product each lot sells'
+      : designs === 0
+        ? 'NO DESIGN RECORDED on any of them — nothing explains the sharing'
+        : `${designs} DIFFERENT DESIGNS${noDesign ? ` (+${noDesign} with none)` : ''}`
+          + ' — no design render explains this';
+    console.log(`  ${String(cards).padStart(3)} cards  ${
+      safeDetail(String(row.source_column), 40).padEnd(42)} eligible=${
+      String(row.all_eligible).padEnd(5)}  ${verdict}`);
+  }
+
+
+  /*
+   * AND WHICH FILE EACH LEAD CAME OUT OF — BY ITS ADDRESS, NOT ITS NAME.
+   *
+   * THE BYTE FINGERPRINT NEARLY MISSED HALF OF THEM. A picture recovered from
+   * a DOCUMENT carries `stored_sha256` in its detail, so two cards showing the
+   * same bytes match on it. A picture taken from a row's own image link
+   * (`filed_as_is`) carries neither that nor `source_sha256`, and the fallback
+   * the fingerprint would then reach — `storage_path` — is built as
+   * `<org>/items/<stock_item_id>/source/…`, so it embeds the property and can
+   * NEVER equal another property's: those rows were structurally incapable of
+   * matching, which reads exactly like "no two cards share a picture".
+   * `marketplace_measured_sha256` is now in the fingerprint ahead of it — the
+   * eligibility measure hashes whatever bytes it judged, on every image and
+   * every path — so both halves are compared on bytes. This section stays,
+   * because the FILE is a different fact from the bytes and it is the one
+   * `linkIsExclusiveToRow` is written in terms of.
+   *
+   * The link is the fact that covers both. Two properties whose photograph
+   * came out of the SAME FILE is what `linkIsExclusiveToRow` exists to
+   * refuse, so this is also the measure of whether that guard is working —
+   * asked of the addresses actually stored on the leading images rather than
+   * of the counting function.
+   *
+   * Grouped by design too, for the same reason as the section above: several
+   * cards off one brochure is how a brochure works, and several cards off one
+   * IMAGE FILE is one picture on several houses.
+   */
+  const byFile = await sql('which file each lead came out of', `
+    with leads as (
+      select i.id,
+             nullif(i.source_row->>'house_design', '') as design,
+             coalesce(nullif(im.source_detail->>'document_url', ''),
+                      im.source_page_url, im.source_reference) as file_address,
+             coalesce(nullif(im.source_detail->>'source_column', ''), '(the row''s own cell)')
+               as source_column,
+             coalesce(im.source_detail->>'origin', '-') as origin
+        from public.builder_stock_items i
+        join public.builder_stock_item_images im on im.id = i.primary_image_id
+       where i.lifecycle_status = 'active'
+         and ${orgScope})
+    select source_column, origin,
+           count(distinct file_address) as distinct_files,
+           count(*) as cards,
+           max(per_file.cards_on_this_file) as most_cards_on_one_file,
+           max(per_file.designs_on_this_file) as most_designs_on_one_file
+      from leads
+      join lateral (
+        select count(*) as cards_on_this_file,
+               count(distinct l2.design) as designs_on_this_file
+          from leads l2 where l2.file_address = leads.file_address) as per_file on true
+     group by source_column, origin
+     order by cards desc`);
+  heading('LIVE CARDS — how many distinct FILES the 46 photographs came out of');
+  for (const row of byFile) {
+    console.log(`  ${safeDetail(String(row.source_column), 40).padEnd(42)} ${
+      String(row.cards).padStart(3)} card(s) from ${
+      String(row.distinct_files).padStart(3)} file(s)   busiest file: ${
+      String(row.most_cards_on_one_file).padStart(2)} card(s) across ${
+      String(row.most_designs_on_one_file).padStart(2)} design(s)   origin=${row.origin}`);
+  }
+  /*
+   * AND HOW MANY OF THE 46 ACTUALLY DRAW A PICTURE.
+   *
+   * A DIFFERENT QUESTION FROM `primary_image_id IS NOT NULL`, and the gap
+   * between them is a blank card. Publication tests the photograph's
+   * PROVENANCE (`builder_stock_photo_is_source_ready`: the builder's own
+   * document, source-supplied, ready); the marketplace measure decides
+   * separately whether that picture may be DRAWN. A property can therefore
+   * publish with a primary image the card refuses to show, and every surface
+   * reports it as a property with a photograph.
+   */
+  const drawable = await sql('how many live cards draw a picture', `
+    select coalesce(nullif(im.source_detail->>'source_column', ''), '(the row''s own cell)')
+             as source_column,
+           count(*) as live_cards,
+           count(*) filter (where im.source_detail->>'marketplace_display_eligible' = 'true')
+             as draws_a_picture,
+           count(*) filter (where im.source_detail->>'marketplace_rejection_reason' is not null)
+             as blank_because_refused,
+           min(im.source_detail->>'marketplace_rejection_reason') as a_reason
+      from public.builder_stock_items i
+      join public.builder_stock_item_images im on im.id = i.primary_image_id
+     where i.lifecycle_status = 'active'
+       and ${orgScope}
+     group by 1
+     order by live_cards desc`);
+  heading('LIVE CARDS — how many actually draw a picture');
+  let totalCards = 0; let totalDrawn = 0;
+  for (const row of drawable) {
+    totalCards += Number(row.live_cards ?? 0);
+    totalDrawn += Number(row.draws_a_picture ?? 0);
+    console.log(`  ${safeDetail(String(row.source_column), 44).padEnd(46)} ${
+      String(row.live_cards).padStart(3)} card(s)  draws=${
+      String(row.draws_a_picture).padStart(3)}  blank=${
+      String(row.blank_because_refused).padStart(3)}${
+      Number(row.blank_because_refused) ? `  (${row.a_reason})` : ''}`);
+  }
+  console.log(`  ${'-'.repeat(46)} ${String(totalCards).padStart(3)} card(s)  draws=${
+    String(totalDrawn).padStart(3)}  blank=${String(totalCards - totalDrawn).padStart(3)}`);
+
+
+  /*
+   * AND WHAT THE ESTATE-LED PROPERTIES' OWN BROCHURE SAID.
+   *
+   * THE REMEDY TURNS ON THIS AND NOTHING ELSE. If a property leading with a
+   * siting plan or an estate map ALSO holds a photograph out of its own
+   * brochure, then the ordering picked the wrong one of two and the fix is
+   * free. If its brochure yielded nothing, the estate picture is the only
+   * image that property has, and refusing it is a decision to show a blank
+   * card — which is a commercial question and not a technical one.
+   *
+   * Arithmetic already implies the second (33 brochure images, 33 of them
+   * leading, so no other live property holds one), but an implication is not
+   * a measurement and this investigation has already paid for the difference
+   * twice. So it is asked directly, with the brochure branch's own verdict
+   * beside it — the branch record's `state` and `state_detail`, which is the
+   * pipeline's sentence about that document and never this script's.
+   */
+  const estateLed = await sql('what the estate-led properties own brochure said', `
+    with led as (
+      select i.id,
+             coalesce(nullif(im.source_detail->>'source_column', ''), '(the row''s own cell)')
+               as lead_column
+        from public.builder_stock_items i
+        join public.builder_stock_item_images im on im.id = i.primary_image_id
+       where i.lifecycle_status = 'active'
+         and ${orgScope})
+    select led.lead_column,
+           count(*) as properties,
+           count(*) filter (where exists (
+             select 1 from public.builder_stock_item_images b
+              where b.stock_item_id = led.id
+                and b.source_detail->>'source_column' ilike '%brochure%'
+                and b.source_detail->>'source_column' not ilike '%estate%')) as also_hold_a_brochure_image,
+           count(*) filter (where exists (
+             select 1 from public.builder_stock_source_assets a
+              where a.stock_item_id = led.id
+                and a.column_header ilike '%brochure%'
+                and a.column_header not ilike '%estate%'
+                and a.state = 'no_image')) as brochure_branch_answered_no_image,
+           count(*) filter (where exists (
+             select 1 from public.builder_stock_source_assets a
+              where a.stock_item_id = led.id
+                and a.column_header ilike '%brochure%'
+                and a.column_header not ilike '%estate%'
+                and a.state in ('unreadable','unsupported','failed'))) as brochure_branch_could_not_be_read,
+           count(*) filter (where not exists (
+             select 1 from public.builder_stock_source_assets a
+              where a.stock_item_id = led.id
+                and a.column_header ilike '%brochure%'
+                and a.column_header not ilike '%estate%')) as no_brochure_branch_at_all
+      from led
+     group by led.lead_column
+     order by properties desc`);
+  heading('ESTATE-LED CARDS — did the property have a brochure photograph to show instead?');
+  for (const row of estateLed) {
+    console.log(`  ${safeDetail(String(row.lead_column), 40).padEnd(42)} ${
+      String(row.properties).padStart(3)} propert${Number(row.properties) === 1 ? 'y ' : 'ies'
+      }  also hold a brochure image=${String(row.also_hold_a_brochure_image).padStart(2)
+      }  brochure said no image=${String(row.brochure_branch_answered_no_image).padStart(2)
+      }  unreadable=${String(row.brochure_branch_could_not_be_read).padStart(2)
+      }  no brochure link=${String(row.no_brochure_branch_at_all).padStart(2)}`);
+  }
+
+
+  /*
+   * AND WHAT STATE THEIR BROCHURE BRANCH IS ACTUALLY IN.
+   *
+   * The section above asked three specific things of it — did it answer
+   * `no_image`, was it unreadable, was there a brochure link at all — and the
+   * answer to all three was zero for all thirteen estate-led properties. That
+   * rules out every reading in which the brochure was tried and had nothing
+   * to give, and leaves the one this asks for by name: the state the branch is
+   * in. A brochure that was never opened is a different fact from a brochure
+   * that was opened and named no image, and only one of them is about the
+   * builder's document.
+   *
+   * Printed as the raw state and the branch's own sentence, both the
+   * pipeline's words, so no reading here is this script's.
+   */
+  const brochureBranchState = await sql('the estate-led properties brochure branch', `
+    with led as (
+      select i.id,
+             coalesce(nullif(im.source_detail->>'source_column', ''), '(the row''s own cell)')
+               as lead_column
+        from public.builder_stock_items i
+        join public.builder_stock_item_images im on im.id = i.primary_image_id
+       where i.lifecycle_status = 'active'
+         and ${orgScope})
+    select led.lead_column, a.state,
+           count(*) as branches,
+           count(distinct led.id) as properties,
+           min(a.attempts) as fewest_attempts, max(a.attempts) as most_attempts,
+           min(a.state_detail) as a_sentence
+      from led
+      join public.builder_stock_source_assets a on a.stock_item_id = led.id
+     where a.column_header ilike '%brochure%'
+       and a.column_header not ilike '%estate%'
+     group by led.lead_column, a.state
+     order by led.lead_column, branches desc`);
+  heading('ESTATE-LED CARDS — the state of their own brochure branch');
+  for (const row of brochureBranchState) {
+    console.log(`  ${safeDetail(String(row.lead_column), 38).padEnd(40)} ${
+      String(row.state).padEnd(14)} ${String(row.branches).padStart(3)} branch(es) / ${
+      String(row.properties).padStart(3)} propert${Number(row.properties) === 1 ? 'y' : 'ies'
+      }  attempts ${row.fewest_attempts}..${row.most_attempts}`);
+    if (row.a_sentence) {
+      console.log(`     WHY: ${safeDetail(String(row.a_sentence), 200)}`);
+    }
+  }
+  /*
+   * AND WHEN, TO THE HOUR.
+   *
+   * "Why is this happening NOW" is a question about a clock, and a date is
+   * too coarse to answer it — every one of these images was stored on
+   * 18 September. The hour separates "the estate pictures arrived in the same
+   * pass as the brochure ones" from "the easy properties settled first and
+   * the hard ones fell back later", which are different stories about the
+   * same day.
+   */
+  const timeline = await sql('when each lead was stored, by hour', `
+    select to_char(date_trunc('hour', im.created_at at time zone 'UTC'), 'MM-DD HH24:00') as hour_utc,
+           count(*) filter (where im.source_detail->>'source_column' ilike 'brochure%') as brochure,
+           count(*) filter (where im.source_detail->>'source_column' not ilike 'brochure%') as other_document,
+           count(*) as leads_stored
+      from public.builder_stock_items i
+      join public.builder_stock_item_images im on im.id = i.primary_image_id
+     where i.lifecycle_status = 'active'
+       and ${orgScope}
+     group by 1
+     order by 1`);
+  heading('LIVE CARDS — the hour each leading photograph was stored (UTC)');
+  for (const row of timeline) {
+    console.log(`  ${row.hour_utc}   brochure=${String(row.brochure).padStart(3)}  other document=${
+      String(row.other_document).padStart(3)}  total=${String(row.leads_stored).padStart(3)}`);
+  }
+  /*
+   * AND WHEN EACH COLUMN FIRST YIELDED ANYTHING AT ALL.
+   *
+   * Every stored image for this builder, not only the ones leading a card,
+   * because the question is when the pipeline STARTED taking pictures out of
+   * a document — not when one reached a page. A column whose first picture
+   * predates the marketplace going live was being read all along.
+   */
+  const everStored = await sql('every stored image by column', `
+    select coalesce(nullif(im.source_detail->>'source_column', ''), '(the row''s own cell)')
+             as source_column,
+           count(*) as images,
+           count(*) filter (where im.id = i.primary_image_id) as leading_a_card,
+           count(*) filter (where im.source_detail->>'marketplace_display_eligible' = 'true')
+             as eligible,
+           count(*) filter (where im.source_detail->>'marketplace_rejection_reason' is not null)
+             as refused,
+           min(im.created_at)::date as first_seen,
+           max(im.created_at)::date as last_seen
+      from public.builder_stock_item_images im
+      join public.builder_stock_items i on i.id = im.stock_item_id
+     where ${orgScope}
+     group by 1
+     order by first_seen, images desc`);
+  heading('EVERY STORED IMAGE — when each document first yielded one');
+  for (const row of everStored) {
+    console.log(`  ${safeDetail(String(row.source_column), 44).padEnd(46)} ${
+      String(row.images).padStart(3)} image(s)  leading=${
+      String(row.leading_a_card).padStart(2)}  eligible=${
+      String(row.eligible).padStart(2)}  refused=${
+      String(row.refused).padStart(2)}  first=${row.first_seen}  last=${row.last_seen}`);
+  }
+
+  /*
+   * AND WHAT THE TWO GUARDS HAVE ACTUALLY REFUSED.
+   *
+   * `state_detail` is the branch's own sentence, so the refusals are counted
+   * by matching it rather than by re-deriving the rule here — this script
+   * must never restate a decision the pipeline made, which is how a
+   * diagnostic comes to disagree with production.
+   */
+  const refusals = await sql('what the guards refused', `
+    select case
+             when a.state_detail ilike '%estate collateral%' then 'shared link: estate collateral'
+             when a.state_detail ilike '%declares it to be collateral%' then 'file name declares it collateral'
+             else 'other' end as guard,
+           count(*) as branches,
+           count(distinct a.stock_item_id) as properties,
+           min(a.updated_at)::date as first, max(a.updated_at)::date as last
+      from public.builder_stock_source_assets a
+      join public.builder_stock_items i on i.id = a.stock_item_id
+     where ${orgScope}
+       and (a.state_detail ilike '%estate collateral%'
+            or a.state_detail ilike '%declares it to be collateral%')
+     group by 1
+     order by branches desc`);
+  heading('THE ESTATE GUARDS — what they have refused, and since when');
+  if (!refusals.length) console.log('  (nothing has been refused as collateral)');
+  for (const row of refusals) {
+    console.log(`  ${String(row.guard).padEnd(40)} ${String(row.branches).padStart(3)} branch(es) across ${
+      String(row.properties).padStart(3)} propert${Number(row.properties) === 1 ? 'y' : 'ies'
+      }  ${row.first} .. ${row.last}`);
+  }
+}
 console.log('\nRead-only run complete. Nothing was written.');
