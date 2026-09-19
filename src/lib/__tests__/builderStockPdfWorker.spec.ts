@@ -29,7 +29,11 @@ import { RUNTIME_VERSION } from '../../../supabase/functions/_shared/builderStoc
 import { runElectionOnRoute } from '../../../supabase/functions/_shared/builderStock/pdfElectionClient';
 import { readPdfPageTextResult } from '../../../supabase/functions/_shared/builderStock/pdfText';
 import workerEntry, { type Env } from '../../../workers/builder-stock-pdf-worker/src/index';
-import { ELECTION_LANE, PdfElection } from '../../../workers/builder-stock-pdf-worker/src/pdfElection.do';
+import { PdfElection } from '../../../workers/builder-stock-pdf-worker/src/pdfElection.do';
+import {
+  ELECTION_LANE_COUNT, ELECTION_LANE_PREFIX, electionLaneName, electionShardKey,
+  laneForShardKey,
+} from '../../../workers/builder-stock-pdf-worker/src/electionLane.pure';
 
 const CONTEXT = {
   label: 'Lot 717 — Enzo 10.5 Modern',
@@ -390,7 +394,7 @@ describe('the worker’s front door', () => {
       } as never,
     });
     expect(res.status).toBe(200);
-    expect(seen).toEqual([ELECTION_LANE]);
+    expect(seen).toEqual([electionLaneName(laneForShardKey(null))]);
   });
 
   /**
@@ -410,15 +414,144 @@ describe('the worker’s front door', () => {
     expect(res.status).toBe(404);
   });
 
-  it('routes every election to one lane, so one document is resident at a time', async () => {
+  /**
+   * WAS "routes every election to one lane". It no longer does, and the queue
+   * that made one lane safe did not go anywhere: each object is still serial,
+   * there are simply `ELECTION_LANE_COUNT` of them. What is still asserted is
+   * that exactly ONE lane is asked for per request and that its name carries
+   * nothing but the number.
+   */
+  it('routes an election to exactly one lane, named only by its number', async () => {
     const names: string[] = [];
-    await call('/v1/elect', { method: 'POST', headers: { authorization: `Bearer ${TOKEN}` } }, {
+    await call('/v1/elect', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        [ELECTION_CONTEXT_HEADER]: encodeElectionContext(CONTEXT),
+      },
+    }, {
       PDF_ELECTION: {
         idFromName: (name: string) => { names.push(name); return name; },
         get: () => ({ fetch: async () => new Response('{}', { status: 200 }) }),
       } as never,
     });
-    expect(names).toEqual([ELECTION_LANE]);
+    expect(names).toHaveLength(1);
+    expect(names[0]).toMatch(
+      new RegExp(`^${ELECTION_LANE_PREFIX}-[0-${ELECTION_LANE_COUNT - 1}]$`));
+  });
+
+  /**
+   * THE WHOLE POINT, THROUGH THE REAL FRONT DOOR. Two different elections
+   * must be able to reach different lanes, or the sharding is a rename.
+   */
+  it('sends different document identities to different lanes', async () => {
+    const laneFor = async (context: typeof CONTEXT) => {
+      const names: string[] = [];
+      await call('/v1/elect', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          [ELECTION_CONTEXT_HEADER]: encodeElectionContext(context),
+        },
+      }, {
+        PDF_ELECTION: {
+          idFromName: (name: string) => { names.push(name); return name; },
+          get: () => ({ fetch: async () => new Response('{}', { status: 200 }) }),
+        } as never,
+      });
+      return names[0];
+    };
+
+    const lanes = new Set<string>();
+    for (let n = 0; n < 24; n += 1) {
+      lanes.add(await laneFor({
+        ...CONTEXT,
+        label: `Lot ${700 + n} — Enzo 10.5 Modern`,
+        url: `https://drive.google.com/uc?export=download&id=file-${n}`,
+      }));
+    }
+    expect(lanes.size).toBeGreaterThan(1);
+  });
+
+  /**
+   * THE BODY IS NOT READ TO CHOOSE A LANE, asserted by making reading it
+   * fatal. A `Request` body is a one-shot stream: if the front door consumed
+   * it — or cloned it, which buys a second copy of a 14 MB brochure in the
+   * isolate with the least room for one — the lane would receive a used body
+   * and this would fail.
+   */
+  it('hands the document to the lane unread', async () => {
+    const pdf = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0x0a, 0x25]);
+    let delivered: Uint8Array | null = null;
+    const res = await call('/v1/elect', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        [ELECTION_CONTEXT_HEADER]: encodeElectionContext(CONTEXT),
+      },
+      body: pdf,
+    }, {
+      PDF_ELECTION: {
+        idFromName: (name: string) => name,
+        get: () => ({
+          fetch: async (forwarded: Request) => {
+            delivered = new Uint8Array(await forwarded.arrayBuffer());
+            return new Response('{}', { status: 200 });
+          },
+        }),
+      } as never,
+    });
+
+    expect(res.status).toBe(200);
+    expect(delivered).not.toBeNull();
+    expect(Array.from(delivered!)).toEqual(Array.from(pdf));
+  });
+
+  /**
+   * AUTHENTICATION BEFORE ROUTING, asserted on the namespace rather than on
+   * the status code. An unauthenticated caller must not reach the lane
+   * chooser at all — a 401 that had already picked a lane would still have
+   * spent the worker's time on an anonymous request.
+   */
+  it('chooses no lane at all for a caller without the token', async () => {
+    let asked = false;
+    const res = await call('/v1/elect', {
+      method: 'POST',
+      headers: { [ELECTION_CONTEXT_HEADER]: encodeElectionContext(CONTEXT) },
+    }, {
+      PDF_ELECTION: {
+        idFromName: () => { asked = true; return 'x'; },
+        get: () => ({ fetch: async () => new Response('{}', { status: 200 }) }),
+      } as never,
+    });
+    expect(res.status).toBe(401);
+    expect(asked).toBe(false);
+  });
+
+  /**
+   * A CONTEXT THE BOUNDARY REFUSES IS STILL ROUTED. The lane answers it with
+   * the 400 it has always answered it with; the front door must not grow a
+   * second opinion about whether a request is valid.
+   */
+  it.each([
+    ['no context header at all', undefined],
+    ['a context that is not base64 of anything', 'not-base64-at-all!!'],
+  ])('routes %s to a lane rather than refusing it', async (_name, header) => {
+    const names: string[] = [];
+    const res = await call('/v1/elect', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        ...(header ? { [ELECTION_CONTEXT_HEADER]: header } : {}),
+      },
+    }, {
+      PDF_ELECTION: {
+        idFromName: (name: string) => { names.push(name); return name; },
+        get: () => ({ fetch: async () => new Response('{}', { status: 200 }) }),
+      } as never,
+    });
+    expect(res.status).toBe(200);
+    expect(names).toEqual([electionLaneName(0)]);
   });
 });
 

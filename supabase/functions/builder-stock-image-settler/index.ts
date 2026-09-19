@@ -261,12 +261,34 @@ const MAX_BODY_BYTES = 8 * 1024;
 /**
  * How often the phase rotation advances.
  *
- * The cron interval, so one tick is one phase and the next tick is the next
+ * THE CRON INTERVAL, so one tick is one phase and the next tick is the next
  * one. Reading the clock rather than a counter keeps this function stateless;
  * the only property required is that consecutive ticks land on consecutive
- * indices, which any period at or below the cron's gives.
+ * indices.
+ *
+ * IT WAS FIVE MINUTES AGAINST A ONE-MINUTE CRON, which is not "a period at or
+ * below the cron's" — it is five times the cron's, and it broke the one
+ * property the clock-derived index has to have. `Math.floor(now / 300000)`
+ * changes every five minutes, so five consecutive ticks took the SAME phase
+ * and the two it deferred waited five minutes each for their turn. With all
+ * three outstanding a full rotation took fifteen minutes instead of three.
+ * Nothing was ever skipped — rotation "costs ticks and never coverage" — but
+ * on an import whose upload markers are all unstamped, those ticks are most
+ * of the tail.
+ *
+ * `ensure_builder_stock_settlement_scheduled` is the one function that
+ * schedules this job and it schedules `* * * * *`. (The two five-minute cron
+ * literals still in the baseline snapshot sit in target setters that
+ * `20260915200000` replaced precisely so a schedule would stop being named in
+ * two places.) Measured on 19 September 2026: cron job 12 started at 11:44,
+ * 11:45, 11:46, 11:47, 11:48, 11:49, 11:50 and 11:51 — a minute apart, no
+ * gaps.
+ *
+ * Nothing else moves. The three phases, their order, what each one settles
+ * and every cap inside them are untouched; only how often the index advances
+ * changes, which is what the module's own contract already said it was.
  */
-const TICK_ROTATION_MS = 5 * 60 * 1000;
+const TICK_ROTATION_MS = 60 * 1000;
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
