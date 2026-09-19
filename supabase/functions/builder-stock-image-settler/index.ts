@@ -152,12 +152,12 @@ async function runWebImageStorePass(
 /**
  * Re-decide one organisation's cards after a picture was retired.
  *
- * ONE COPY, because the four exits that run housekeeping each needed this and
- * three of them would otherwise write it out again. It never throws: a card
- * left un-re-decided is a stale badge, and failing the tick over it would cost
+ * ONE COPY, because the exits that can retire a picture each needed this and
+ * would otherwise write it out again. It never throws: a card left
+ * un-re-decided is a stale badge, and failing the tick over it would cost
  * every OTHER pass in the same invocation.
  */
-async function enforceAfterRetirement(
+async function enforcePrimariesQuietly(
   supabase: any,
   organisationId: string,
 ): Promise<void> {
@@ -204,14 +204,43 @@ async function enforceAfterRetirement(
  *
  * Order is deliberate: imagery first, because retiring a picture changes what
  * a card draws, and an upload's status is a record ABOUT work already done.
+ *
+ * AND NOT EVERY EXIT IS SERIALISED, which is why the mode is a parameter with
+ * no default. The two upload-sweep exits sit behind the global settlement
+ * lease; the per-item path deliberately takes NO lease, because that lease is
+ * one boolean row for the whole deployment and a killed worker runs no
+ * `finally` — production, 29 August, seventeen minutes of `lease_held` and no
+ * work at all. So up to six per-item invocations can reach this function at
+ * the same instant, and a pass that is safe under the lease is not
+ * automatically safe here.
+ *
+ * `settleCompletedUploads` is: its write is a pure function of rows it has
+ * just read, so two invocations racing write the same status and the same
+ * stage counts, and the loser has overwritten nothing. `storeVerifiedWebImages`
+ * is NOT — it fetches bytes and uploads an object, so concurrent runs would
+ * buy the same image twice. It keeps exactly the coverage it has today rather
+ * than gaining an unserialised caller.
+ *
+ * A DISCRIMINATED UNION RATHER THAN A FLAG, so the next exit cannot arrive
+ * without answering the question: `serialised: true` demands the enforcement
+ * callback the retirement path needs, and `false` admits no callback at all
+ * because nothing on that path can retire a picture.
  */
+type HousekeepingMode =
+  /** Behind the global settlement lease: every pass is safe. */
+  | { serialised: true; enforceAfterRetirement: (organisationId: string) => Promise<void> }
+  /** The per-item path, which holds no lease and may run six-wide. */
+  | { serialised: false };
+
 async function runTickHousekeeping(
   supabase: any,
-  enforceAfterRetirement: (organisationId: string) => Promise<void>,
+  mode: HousekeepingMode,
 ): Promise<void> {
-  await runWebImageStorePass(supabase, enforceAfterRetirement);
+  if (mode.serialised) {
+    await runWebImageStorePass(supabase, mode.enforceAfterRetirement);
+  }
   // An import that finished with nobody watching still has to be recorded as
-  // finished. See `uploadCompletion.ts`.
+  // finished, on EVERY exit. See `uploadCompletion.ts`.
   await settleCompletedUploads(supabase);
 }
 
@@ -418,8 +447,7 @@ Deno.serve(async (req: Request) => {
          * other organisation's queue is doing, and this path is the one a busy
          * deployment leaves by most often.
          */
-        await runTickHousekeeping(
-          supabase, (organisationId) => enforceAfterRetirement(supabase, organisationId));
+        await runTickHousekeeping(supabase, { serialised: false });
         return json({
           success: true, path: 'item_work', settled: 0,
           claimable: pending.claimable, outstanding: pending.outstanding,
@@ -823,8 +851,7 @@ Deno.serve(async (req: Request) => {
      * fall-through below is unreachable and the import is stranded at
      * `enriching` for ever. See `runTickHousekeeping`.
      */
-    await runTickHousekeeping(
-      supabase, (organisationId) => enforceAfterRetirement(supabase, organisationId));
+    await runTickHousekeeping(supabase, { serialised: false });
 
     console.log('[builder-stock-image-settler] item tick', {
       phase: 'item_work',
@@ -1057,8 +1084,11 @@ Deno.serve(async (req: Request) => {
        * settlement path's once-per-tick `enforce` closure does not exist on
        * this one.
        */
-      await runTickHousekeeping(
-        supabase, (organisationId) => enforceAfterRetirement(supabase, organisationId));
+      await runTickHousekeeping(supabase, {
+        serialised: true,
+        enforceAfterRetirement: (organisationId) =>
+          enforcePrimariesQuietly(supabase, organisationId),
+      });
 
       /*
        * THE COMPLETION RULE. With the paid ladder retired, an empty
@@ -1217,11 +1247,14 @@ Deno.serve(async (req: Request) => {
      * tick), so a card whose picture is GONE is re-decided before this tick
      * returns and the badge goes with the photograph. See `webImageStore.ts`.
      */
-    await runTickHousekeeping(supabase, async (organisationId) => {
-      // Even where enforcement already ran this tick: the evidence just
-      // changed, so the once-per-tick guard steps aside for the re-read.
-      enforced.delete(organisationId);
-      await enforce(organisationId);
+    await runTickHousekeeping(supabase, {
+      serialised: true,
+      enforceAfterRetirement: async (organisationId) => {
+        // Even where enforcement already ran this tick: the evidence just
+        // changed, so the once-per-tick guard steps aside for the re-read.
+        enforced.delete(organisationId);
+        await enforce(organisationId);
+      },
     });
 
     const remaining = Math.max(0, outstanding.length - settled);

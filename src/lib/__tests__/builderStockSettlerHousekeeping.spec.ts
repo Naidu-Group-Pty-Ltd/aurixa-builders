@@ -151,6 +151,50 @@ describe('the settler records a finished import on every exit that can', () => {
     expect(body).toContain('settleCompletedUploads(supabase)');
     expect(body).toContain('runWebImageStorePass(supabase');
   });
+
+  /*
+   * AND IT RUNS ON THE UNSERIALISED EXITS TOO.
+   *
+   * The per-item path holds no global lease — deliberately, because that lease
+   * is one boolean row for the whole deployment and a killed worker runs no
+   * `finally`. So the web-image store, which fetches bytes and uploads an
+   * object, stays behind the lease it has always been behind, and only the
+   * pass whose write is a pure function of rows it just read crosses to the
+   * unserialised exits.
+   *
+   * Moving `settleCompletedUploads` inside that guard would leave every exit
+   * calling `runTickHousekeeping` and re-break exactly the thing this file
+   * exists for, silently, with every other test here still green.
+   */
+  it('records a finished import on the exits that hold no lease', () => {
+    const body = source.slice(
+      source.indexOf('async function runTickHousekeeping('),
+      source.indexOf('/** Wall clock for one tick'),
+    );
+    const guard = body.indexOf('if (mode.serialised) {');
+    expect(guard).toBeGreaterThan(0);
+
+    const guarded = body.slice(guard, body.indexOf('}', body.indexOf('runWebImageStorePass')));
+    expect(guarded).toContain('runWebImageStorePass');
+    expect(
+      guarded,
+      'upload completion moved behind the lease guard, so the per-item exits '
+      + 'call the housekeeping and it does nothing for them',
+    ).not.toContain('settleCompletedUploads');
+
+    expect(body.indexOf('settleCompletedUploads')).toBeGreaterThan(guard);
+  });
+
+  it('makes a new exit state whether it is serialised', () => {
+    // A discriminated union with no default: a call site cannot be added
+    // without answering the question, and cannot claim `false` and still pass
+    // the retirement callback.
+    expect(source).toContain('type HousekeepingMode =');
+    expect(source).toMatch(/\{\s*serialised:\s*true;\s*enforceAfterRetirement:/);
+    expect(source).toMatch(/\|\s*\{\s*serialised:\s*false\s*\}/);
+    expect(source).not.toMatch(/serialised\s*[?]:/);
+    expect(source).not.toMatch(/serialised\s*=\s*(true|false)/);
+  });
 });
 
 /**
