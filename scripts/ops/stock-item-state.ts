@@ -723,6 +723,7 @@ if (publicationLineage.length) {
       select i.id,
              coalesce(im.source_detail->>'stored_sha256',
                       im.source_detail->>'source_sha256',
+                      im.source_detail->>'marketplace_measured_sha256',
                       im.storage_path, im.external_url) as picture,
              nullif(im.source_detail->>'document', '') as document
         from public.builder_stock_items i
@@ -785,6 +786,7 @@ if (publicationLineage.length) {
              nullif(i.source_row->>'house_design', '') as design,
              coalesce(im.source_detail->>'stored_sha256',
                       im.source_detail->>'source_sha256',
+                      im.source_detail->>'marketplace_measured_sha256',
                       im.storage_path, im.external_url) as picture,
              coalesce(nullif(im.source_detail->>'source_column', ''), '(the row''s own cell)')
                as source_column,
@@ -825,14 +827,19 @@ if (publicationLineage.length) {
   /*
    * AND WHICH FILE EACH LEAD CAME OUT OF — BY ITS ADDRESS, NOT ITS NAME.
    *
-   * THE BYTE FINGERPRINT ABOVE CANNOT SEE HALF OF THEM, and saying so is the
-   * point of this section. A picture recovered from a DOCUMENT carries
-   * `stored_sha256` in its detail, so two cards showing the same bytes match.
-   * A picture taken from a row's own image link (`filed_as_is`) carries no
-   * hash at all, and the fallback — `storage_path` — is built as
+   * THE BYTE FINGERPRINT NEARLY MISSED HALF OF THEM. A picture recovered from
+   * a DOCUMENT carries `stored_sha256` in its detail, so two cards showing the
+   * same bytes match on it. A picture taken from a row's own image link
+   * (`filed_as_is`) carries neither that nor `source_sha256`, and the fallback
+   * the fingerprint would then reach — `storage_path` — is built as
    * `<org>/items/<stock_item_id>/source/…`, so it embeds the property and can
-   * NEVER equal another property's. Those rows are structurally incapable of
+   * NEVER equal another property's: those rows were structurally incapable of
    * matching, which reads exactly like "no two cards share a picture".
+   * `marketplace_measured_sha256` is now in the fingerprint ahead of it — the
+   * eligibility measure hashes whatever bytes it judged, on every image and
+   * every path — so both halves are compared on bytes. This section stays,
+   * because the FILE is a different fact from the bytes and it is the one
+   * `linkIsExclusiveToRow` is written in terms of.
    *
    * The link is the fact that covers both. Two properties whose photograph
    * came out of the SAME FILE is what `linkIsExclusiveToRow` exists to
@@ -981,6 +988,52 @@ if (publicationLineage.length) {
       }  no brochure link=${String(row.no_brochure_branch_at_all).padStart(2)}`);
   }
 
+
+  /*
+   * AND WHAT STATE THEIR BROCHURE BRANCH IS ACTUALLY IN.
+   *
+   * The section above asked three specific things of it — did it answer
+   * `no_image`, was it unreadable, was there a brochure link at all — and the
+   * answer to all three was zero for all thirteen estate-led properties. That
+   * rules out every reading in which the brochure was tried and had nothing
+   * to give, and leaves the one this asks for by name: the state the branch is
+   * in. A brochure that was never opened is a different fact from a brochure
+   * that was opened and named no image, and only one of them is about the
+   * builder's document.
+   *
+   * Printed as the raw state and the branch's own sentence, both the
+   * pipeline's words, so no reading here is this script's.
+   */
+  const brochureBranchState = await sql('the estate-led properties brochure branch', `
+    with led as (
+      select i.id,
+             coalesce(nullif(im.source_detail->>'source_column', ''), '(the row''s own cell)')
+               as lead_column
+        from public.builder_stock_items i
+        join public.builder_stock_item_images im on im.id = i.primary_image_id
+       where i.lifecycle_status = 'active'
+         and ${orgScope})
+    select led.lead_column, a.state,
+           count(*) as branches,
+           count(distinct led.id) as properties,
+           min(a.attempts) as fewest_attempts, max(a.attempts) as most_attempts,
+           min(a.state_detail) as a_sentence
+      from led
+      join public.builder_stock_source_assets a on a.stock_item_id = led.id
+     where a.column_header ilike '%brochure%'
+       and a.column_header not ilike '%estate%'
+     group by led.lead_column, a.state
+     order by led.lead_column, branches desc`);
+  heading('ESTATE-LED CARDS — the state of their own brochure branch');
+  for (const row of brochureBranchState) {
+    console.log(`  ${safeDetail(String(row.lead_column), 38).padEnd(40)} ${
+      String(row.state).padEnd(14)} ${String(row.branches).padStart(3)} branch(es) / ${
+      String(row.properties).padStart(3)} propert${Number(row.properties) === 1 ? 'y' : 'ies'
+      }  attempts ${row.fewest_attempts}..${row.most_attempts}`);
+    if (row.a_sentence) {
+      console.log(`     WHY: ${safeDetail(String(row.a_sentence), 200)}`);
+    }
+  }
   /*
    * AND WHEN, TO THE HOUR.
    *
