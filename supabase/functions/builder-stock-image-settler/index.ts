@@ -150,19 +150,57 @@ async function runWebImageStorePass(
 }
 
 /**
+ * Re-decide one organisation's cards after a picture was retired.
+ *
+ * ONE COPY, because the four exits that run housekeeping each needed this and
+ * three of them would otherwise write it out again. It never throws: a card
+ * left un-re-decided is a stale badge, and failing the tick over it would cost
+ * every OTHER pass in the same invocation.
+ */
+async function enforceAfterRetirement(
+  supabase: any,
+  organisationId: string,
+): Promise<void> {
+  try {
+    await enforceStrictPrimaryImages(supabase, organisationId);
+  } catch (enforceError) {
+    console.warn('[builder-stock-image-settler] primaries not enforced', {
+      organisation_id: organisationId, phase: 'primary_enforcement',
+      message: String((enforceError as { message?: string })?.message ?? enforceError)
+        .slice(0, 200),
+    });
+  }
+}
+
+/**
  * EVERY HOUSEKEEPING PASS THE TICK OWES, ON EVERY NORMAL EXIT.
  *
- * The tick has TWO normal exits — the fallback phase returns when the
- * settlement queue is empty, and the settlement path returns after its work —
- * and a pass wired to only one of them does not run at all on a deployment
- * that always leaves by the other. That has now happened twice: the
+ * The tick has FOUR normal exits — the two per-item ones, the fallback phase
+ * when the settlement queue is empty, and the settlement path after its work —
+ * and a pass wired to only some of them does not run at all on a deployment
+ * that always leaves by another. That has now happened three times: the
  * web-image store was first wired inside per-candidate enforcement (dead once
  * the marketplace settled), then after the settlement work alone (dead
- * because withheld fallbacks keep that queue non-empty for ever).
+ * because withheld fallbacks keep that queue non-empty for ever), and then
+ * this function was wired to the two UPLOAD-sweep exits while the per-item
+ * path — the one a healthy import actually leaves by — returned straight past
+ * it.
+ *
+ * PRODUCTION, 19 SEPTEMBER 2026. Upload `c2b7faa1` (13 properties). Twelve
+ * invocations between 10:39:44 and 10:46:02, every one of them on the
+ * per-item path. The last settled the thirteenth property, published all
+ * thirteen, read `claimable: 0, outstanding: 0` — and returned. It held every
+ * fact `settleCompletedUploads` needed and never asked. The upload stayed at
+ * `enriching`, so the builder's page read `No imagery outstanding` beside
+ * `1 still being read` under a spinner saying `Bringing in your stock list`,
+ * indefinitely.
  *
  * So the exits call ONE function and the passes are listed here. A pass added
- * to this body reaches both exits by construction rather than by remembering,
- * which is the only version of this that stops being re-learned.
+ * to this body reaches every exit by construction rather than by remembering,
+ * which is the only version of this that stops being re-learned — and
+ * `builderStockSettlerHousekeeping.spec.ts` now fails on an exit that reports
+ * a settlement outcome without having run it, because "remember to add it to
+ * the new exit" is the instruction that has failed three times.
  *
  * Order is deliberate: imagery first, because retiring a picture changes what
  * a card draws, and an upload's status is a record ABOUT work already done.
@@ -372,6 +410,16 @@ Deno.serve(async (req: Request) => {
        * retires itself, which is what stops this path running at all.
        */
       if (pending.outstanding > 0) {
+        /*
+         * AND THE HOUSEKEEPING STILL RUNS. This exit is taken when nothing is
+         * CLAIMABLE while properties are still outstanding — every one of them
+         * leased by a live invocation or backing off after a kill. An upload
+         * whose own properties all finished is owed its status whatever some
+         * other organisation's queue is doing, and this path is the one a busy
+         * deployment leaves by most often.
+         */
+        await runTickHousekeeping(
+          supabase, (organisationId) => enforceAfterRetirement(supabase, organisationId));
         return json({
           success: true, path: 'item_work', settled: 0,
           claimable: pending.claimable, outstanding: pending.outstanding,
@@ -764,6 +812,20 @@ Deno.serve(async (req: Request) => {
     }
 
     const pending = await readItemWorkPending(supabase);
+
+    /*
+     * THE EXIT A HEALTHY IMPORT ACTUALLY LEAVES BY, and it ran no housekeeping
+     * at all until 19 September 2026. The invocation that settles the LAST
+     * property of an upload leaves here holding the two numbers that say the
+     * queue is empty — and, until this line, returned without recording the
+     * upload as finished. Nothing else could: the cron tick starts a settler
+     * only for claimable IMAGE work, which is by then zero, so the drained
+     * fall-through below is unreachable and the import is stranded at
+     * `enriching` for ever. See `runTickHousekeeping`.
+     */
+    await runTickHousekeeping(
+      supabase, (organisationId) => enforceAfterRetirement(supabase, organisationId));
+
     console.log('[builder-stock-image-settler] item tick', {
       phase: 'item_work',
       settled: settledCount,
@@ -990,21 +1052,13 @@ Deno.serve(async (req: Request) => {
        * by the evidence gate never resolves, so `remaining` never hits zero),
        * the pass measurably never ran again: three retired-pending hotlinks
        * sat as card primaries for hours while every tick answered
-       * `phase: "fallback_enrichment"` around them. Both normal exits run the
-       * pass now. Retirement enforcement is built here because the settlement
-       * path's once-per-tick `enforce` closure does not exist on this one.
+       * `phase: "fallback_enrichment"` around them. Every normal exit runs the
+       * pass now. Retirement enforcement uses the shared helper because the
+       * settlement path's once-per-tick `enforce` closure does not exist on
+       * this one.
        */
-      await runTickHousekeeping(supabase, async (organisationId) => {
-        try {
-          await enforceStrictPrimaryImages(supabase, organisationId);
-        } catch (enforceError) {
-          console.warn('[builder-stock-image-settler] primaries not enforced', {
-            organisation_id: organisationId, phase: 'primary_enforcement',
-            message: String((enforceError as { message?: string })?.message ?? enforceError)
-              .slice(0, 200),
-          });
-        }
-      });
+      await runTickHousekeeping(
+        supabase, (organisationId) => enforceAfterRetirement(supabase, organisationId));
 
       /*
        * THE COMPLETION RULE. With the paid ladder retired, an empty
