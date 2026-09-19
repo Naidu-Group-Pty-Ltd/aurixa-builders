@@ -50,6 +50,25 @@
 -- the lease held and return. Throughput here is not the point — reaching the
 -- work at all is.
 --
+-- AND IT STOPS. The obvious worry is a tick that now starts a worker every
+-- minute for ever, so here is the bound. Each of the six terms is discharged
+-- by the worker this starts: the three settlement markers are stamped by the
+-- upload sweep (`v_outstanding`), a completable upload is settled
+-- (`v_upload_completion`), a held-back list publishes (`v_publications`,
+-- `v_blocked`), and per-item work has its own dispatcher (`v_item_work`).
+-- `v_fallback` is the one that could in principle stick — it counts
+-- `enrichment_status IN ('pending','enriching')`, the legacy latch nothing
+-- used to write — and since the image invariant shipped it does not:
+-- `settleItemImages` writes `complete` on the branch that settles a property
+-- with its builder's own photograph and `failed` on the branch that
+-- exhausts, which is how upload `c2b7faa1`'s thirteen properties were
+-- written at 10:46:02. So the sum reaches zero and the tick unschedules
+-- itself exactly as it always has. Even where a legacy row did hold it open,
+-- the cost is ONE invocation a minute against the TWO this tick dispatched
+-- unconditionally before `20260915200000` gated them — inside the envelope
+-- the function was built for, and never silent, because every one of them
+-- is a row in `function_edge_logs`.
+--
 -- AND IT CANNOT FAIL THE TICK. `cron_invoke_signed_function` RAISES when the
 -- vault has no `supabase_url`, so it is wrapped exactly as
 -- `builder_stock_dispatch_image_workers` wraps its own loop: dispatch is the
