@@ -272,11 +272,11 @@ await section('7. builder_network_stamps', `
 
 await section('7b. portal_operational_events — builder_network_*, last 14 days', `
   select event_name, severity, success, count(*) as events,
-         min(created_at) as first_seen, max(created_at) as last_seen,
+         min(occurred_at) as first_seen, max(occurred_at) as last_seen,
          left(max(metadata::text), 220) as sample_metadata
   from public.portal_operational_events
   where event_name ilike 'builder_network%'
-    and created_at > now() - interval '14 days'
+    and occurred_at > now() - interval '14 days'
   group by 1, 2, 3
   order by 6 desc
   limit 30
@@ -293,6 +293,26 @@ await section('8. the vault names this path depends on (presence only)', `
   from vault.decrypted_secrets
   where name in ('supabase_url', 'internal_edge_secret')
   order by name
+`);
+
+// ---------------------------------------------------------------------------
+// 9. WHICH BUILDERS EXIST, AND WHICH OF THEM A CONNECTION ACTUALLY SERVES.
+//    The enqueue reaches an organisation only through a connection mapped to
+//    it, so an organisation absent from this list has no route to any clone
+//    however live its stock is — and nothing anywhere reports that.
+// ---------------------------------------------------------------------------
+await section('9. builder_organisations against the connections that serve them', `
+  select o.id,
+         left(coalesce(o.trading_name, o.legal_name, '(unnamed)'), 40) as builder,
+         o.created_at,
+         (select count(*) from public.builder_stock_items i
+           where i.organisation_id = o.id and i.lifecycle_status = 'active') as active_items,
+         (select count(*) from public.workspace_connections c
+           where c.builder_organisation_id = o.id and c.state = 'active')    as active_connections,
+         (select string_agg(c.id::text, ', ') from public.workspace_connections c
+           where c.builder_organisation_id = o.id)                          as connections_any_state
+  from public.builder_organisations o
+  order by 4 desc, 3
 `);
 
 if (unanswered.length) {
