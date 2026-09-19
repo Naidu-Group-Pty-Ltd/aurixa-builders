@@ -153,6 +153,43 @@ describe("what a published-but-incomplete list still owes", () => {
     expect(page).toContain("owesAPhotograph");
     expect(page).toContain("const listIsLive = progressRecord?.published === true");
   });
+
+  it("keeps the publish sweep reconsidering it", () => {
+    /*
+     * `publish_ready_builder_stock_uploads` looked only at unpublished
+     * uploads, so the LATE promotion would have rested entirely on
+     * `publishUploadIfReady` firing from the per-item path — and a builder
+     * whose repaired property missed that one call would have waited for
+     * ever with no second chance anywhere.
+     */
+    const sweep = sql.slice(sql.indexOf("FUNCTION public.publish_ready_builder_stock_uploads"));
+    expect(sweep).toContain("u.published_at IS NULL OR EXISTS (");
+  });
+});
+
+describe("something still has to be running when the picture arrives", () => {
+  const fn = read("supabase/functions/builder-portal-stock/index.ts");
+
+  it("the builder's own act starts the work", () => {
+    /*
+     * `attachBuilderImage` requeues the property; it does not start a worker
+     * and it does not keep the every-minute job ALIVE. That job unschedules
+     * itself when nothing is outstanding, and a first publication makes
+     * "nothing outstanding" reachable while a builder still has properties
+     * to fix — so the picture would sit in the table with nothing looking at
+     * it. The same "picture saved, card still blank" failure `suppliedDirectly`
+     * closed, arriving by a different door.
+     */
+    const attach = fn.slice(
+      fn.indexOf("if (operation === 'attach_builder_image')"),
+      fn.indexOf("scope: 'property', properties: 1"),
+    );
+    expect(attach).toContain("builder_stock_kick_image_work");
+    // And a failed kick never reports a loss that did not happen: the
+    // picture IS stored and requeued.
+    expect(attach).toContain("console.warn");
+    expect(attach).not.toMatch(/kickError[\s\S]{0,160}return json\(\{ error/);
+  });
 });
 
 describe("the scale proof asserts both halves of the split", () => {

@@ -744,7 +744,27 @@ Deno.serve(async (req) => {
           }),
         });
         if ('error' in attached) return json({ error: 'The image could not be stored.' }, 500);
-        // `attachBuilderImage` requeues the property itself — see its header.
+        /*
+         * `attachBuilderImage` requeues the property itself — see its header.
+         * THE KICK IS WHAT MAKES SOMETHING RUN. The requeue puts the property
+         * back in the queue; it does not start a worker, and it does not keep
+         * the every-minute job alive. That job UNSCHEDULES ITSELF when
+         * nothing is outstanding, and since a first stock list can publish
+         * part of itself, "nothing outstanding" is now reachable while a
+         * builder still has properties to fix — so the picture would sit in
+         * the table with nothing looking at it. This is also simply the right
+         * shape: the act a builder performs should start the work, not wait
+         * up to a minute for a tick.
+         *
+         * Never fatal. The picture IS stored and requeued, so answering with
+         * an error over a failed kick would report a loss that did not happen.
+         */
+        const { error: kickError } = await supabase
+          .rpc('builder_stock_kick_image_work', { p_upload_id: null });
+        if (kickError) {
+          console.warn('[builder-stock] supplied image stored but the queue was not kicked',
+            { stock_item_id: stockItemId, message: kickError.message });
+        }
         await logBuilderProjectActivity(supabase, req, {
           builderUserId: me.id, organisationId: activeOrganisationId,
           action: 'builder_stock_image_supplied',

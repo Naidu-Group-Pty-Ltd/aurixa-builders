@@ -690,7 +690,177 @@ $$;
 
 
 -- ============================================================================
--- 6. Post-migration assertions — shapes, not hopes
+-- 6. The two sweeps that decide whether anything still runs
+--
+-- Found while tracing what a partial publication leaves behind, and each
+-- would have been silent:
+--
+--   * `publish_ready_builder_stock_uploads` looked only at unpublished
+--     uploads, so it would never reconsider a list that had published part of
+--     itself — the late promotion would rest entirely on the per-item call.
+--   * `settle_builder_stock_marketplace_eligibility_tick` counts what is
+--     outstanding and UNSCHEDULES the every-minute job when the total is
+--     zero. Its "blocked upload" term was `published_at IS NULL`, so a first
+--     publication could take the last live term to zero while properties were
+--     still staged and owed — and the builder's next supplied picture would
+--     have nothing running to look at it.
+--
+-- Both are otherwise byte-identical to the definitions they replace.
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION public.publish_ready_builder_stock_uploads() RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public', 'pg_temp'
+    AS $$
+DECLARE
+  v_upload record;
+  v_result jsonb;
+  v_published integer := 0;
+  v_considered integer := 0;
+  v_details jsonb := '[]'::jsonb;
+BEGIN
+  FOR v_upload IN
+    SELECT u.id
+      FROM public.builder_stock_uploads AS u
+     WHERE u.deleted_at IS NULL
+       AND NOT public.builder_stock_upload_superseded(u.id)
+       /*
+        * A PUBLISHED LIST CAN STILL OWE A CUTOVER. A first publication puts
+        * the ready properties live and leaves the rest staged, so this sweep
+        * — which ran only over `published_at IS NULL` — would never look at
+        * that upload again. The late promotion would then depend entirely on
+        * `publishUploadIfReady` firing from the per-item path, and a builder
+        * whose repaired property missed that one call would wait for ever.
+        * `publish_builder_stock_upload` answers `already_published` when
+        * there is genuinely nothing to promote, so the extra pass is a
+        * filter that matches no rows rather than a second cutover.
+        */
+       AND (u.published_at IS NULL OR EXISTS (
+         SELECT 1 FROM public.builder_stock_items i
+          WHERE i.upload_id = u.id AND i.lifecycle_status = 'staged'))
+     ORDER BY u.created_at
+  LOOP
+    v_considered := v_considered + 1;
+    v_result := public.publish_builder_stock_upload(v_upload.id);
+    IF (v_result->>'published')::boolean THEN
+      v_published := v_published + 1;
+      v_details := v_details || jsonb_build_object('upload_id', v_upload.id, 'result', v_result);
+    END IF;
+  END LOOP;
+
+  RETURN jsonb_build_object(
+    'considered', v_considered, 'published', v_published, 'cutovers', v_details);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.settle_builder_stock_marketplace_eligibility_tick() RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public', 'pg_catalog'
+    AS $$
+DECLARE
+  v_target integer;
+  v_sanitization integer;
+  v_provenance integer;
+  v_outstanding integer;
+  v_fallback integer;
+  v_item_work integer;
+  v_publications integer;
+  v_upload_completion integer;
+  v_blocked integer;
+BEGIN
+  PERFORM public.builder_stock_image_watchdog();
+  PERFORM public.publish_ready_builder_stock_uploads();
+  PERFORM public.reopen_builder_stock_stranded_items();
+  -- And the properties a superseded worker failed on, which the sibling above
+  -- cannot see: it reopens on a changed ladder, this on a changed runtime.
+  PERFORM public.reopen_builder_stock_runtime_failures();
+
+  SELECT marketplace_eligibility_version, image_sanitization_version,
+         source_images_version
+    INTO v_target, v_sanitization, v_provenance
+    FROM public.builder_stock_settlement_target
+   LIMIT 1;
+  v_target := coalesce(v_target, 0);
+  v_sanitization := coalesce(v_sanitization, 0);
+  v_provenance := coalesce(v_provenance, 0);
+
+  SELECT count(*) INTO v_outstanding
+    FROM public.builder_stock_uploads
+   WHERE deleted_at IS NULL
+     AND (coalesce(marketplace_eligibility_settled_version, -1) < v_target
+          OR coalesce(image_sanitization_settled_version, -1) < v_sanitization
+          -- WAS `source_images_settled_version IS NULL`. An upload re-read
+          -- under an older extractor is outstanding in exactly the way an
+          -- upload never read is, and only the second was countable.
+          OR coalesce(source_images_settled_version, -1) < v_provenance);
+
+  SELECT count(*) INTO v_fallback
+    FROM public.builder_stock_items
+   WHERE lifecycle_status IN ('active', 'staged')
+     AND enrichment_status IN ('pending', 'enriching');
+
+  SELECT count(*) INTO v_item_work
+    FROM public.builder_stock_items
+   WHERE lifecycle_status IN ('active', 'staged')
+     AND image_work_stage <> ALL (ARRAY['settled', 'failed']);
+
+  v_publications := public.builder_stock_publications_pending();
+
+  SELECT count(*) INTO v_upload_completion
+    FROM public.builder_stock_uploads u
+   WHERE u.deleted_at IS NULL
+     AND u.status IN ('enriching', 'partially_complete')
+     AND NOT EXISTS (
+       SELECT 1
+         FROM public.builder_stock_items it
+        WHERE it.upload_id = u.id
+          AND it.lifecycle_status = 'active'
+          AND it.enrichment_status IN ('pending', 'enriching')
+     );
+
+  -- A blocked invariant upload keeps the tick alive so the watchdog keeps
+  -- stamping and a fixed pipeline resumes work without anything re-arming it.
+  /*
+   * AND A PUBLISHED LIST THAT STILL HOLDS PROPERTIES BACK COUNTS HERE TOO.
+   *
+   * This was `published_at IS NULL`, which was the same question as "is
+   * anything still owed" right up until a first list could publish part of
+   * itself. It is the counter that keeps the every-minute tick SCHEDULED:
+   * with the held-back rows sitting at `failed` and the upload now stamped
+   * published, every term in the sum could reach zero, the tick would
+   * unschedule itself, and the builder's next supplied picture would sit in
+   * the table with nothing running to look at it. That is the "picture
+   * saved, card still blank" failure again, arriving by a different door.
+   */
+  SELECT count(*) INTO v_blocked
+    FROM public.builder_stock_uploads u
+   WHERE u.deleted_at IS NULL
+     AND u.image_invariant
+     AND NOT public.builder_stock_upload_superseded(u.id)
+     AND (u.published_at IS NULL OR EXISTS (
+       SELECT 1 FROM public.builder_stock_items i
+        WHERE i.upload_id = u.id AND i.lifecycle_status = 'staged'));
+
+  IF v_outstanding + v_fallback + v_item_work + v_publications
+     + v_upload_completion + v_blocked = 0 THEN
+    IF EXISTS (
+      SELECT 1 FROM cron.job
+       WHERE jobname = 'settle-builder-stock-marketplace-eligibility'
+    ) THEN
+      PERFORM cron.unschedule('settle-builder-stock-marketplace-eligibility');
+    END IF;
+    RETURN;
+  END IF;
+
+  -- Steady-state trickle: the tick tops the fleet up by at most two workers a
+  -- minute; the import-time kick is what starts a fresh upload six-wide.
+  PERFORM public.builder_stock_dispatch_image_workers(2);
+END;
+$$;
+
+
+-- ============================================================================
+-- 7. Post-migration assertions — shapes, not hopes
 --
 -- Every one of these runs the REAL functions against REAL rows and rolls
 -- back. Reading the source would prove the text says the right thing; only
@@ -710,7 +880,7 @@ DECLARE
   v_unverified_item uuid; v_demoted_item uuid;
   v_img uuid;
   v_r record; v_res jsonb;
-  v_active bigint; v_staged bigint;
+  v_active bigint; v_staged bigint; v_src text;
 BEGIN
   INSERT INTO public.builder_organisations(legal_name, org_type, status, is_active, activated_at)
   VALUES ('First Publication Proof Org', 'builder', 'active', true, now())
@@ -1180,6 +1350,62 @@ BEGIN
   SELECT * INTO v_r FROM public.builder_stock_publication_readiness(gen_random_uuid());
   IF v_r.ready OR v_r.partial_ready THEN
     RAISE EXCEPTION 'readiness answered yes for an upload that does not exist';
+  END IF;
+
+  -- ------------------------------------------------------------------
+  -- THE SWEEP RECONSIDERS A PUBLISHED LIST THAT STILL HOLDS PROPERTIES,
+  -- and the tick stays alive for it.
+  --
+  -- Without these two, the late promotion rests entirely on the per-item
+  -- call and the every-minute job can unschedule itself while a builder
+  -- still has work to do — "picture saved, card still blank" arriving by a
+  -- different door.
+  -- ------------------------------------------------------------------
+  -- `v_late_upload` is published with one property still staged and one
+  -- repaired-but-unpromoted. Undo the promotion so the sweep has something
+  -- to find, exactly as it would on the tick after a builder's picture.
+  UPDATE public.builder_stock_items
+     SET lifecycle_status = 'staged' WHERE id = v_late_fixed;
+  v_res := public.publish_ready_builder_stock_uploads();
+  IF (v_res->>'published')::int < 1 THEN
+    RAISE EXCEPTION 'the sweep did not reconsider a published list still holding properties (%)', v_res;
+  END IF;
+  IF (SELECT lifecycle_status FROM public.builder_stock_items WHERE id = v_late_fixed) <> 'active' THEN
+    RAISE EXCEPTION 'the sweep left a repaired property staged';
+  END IF;
+  IF (SELECT lifecycle_status FROM public.builder_stock_items WHERE id = v_late_never) <> 'staged' THEN
+    RAISE EXCEPTION 'the sweep published a property with no photograph';
+  END IF;
+
+  /*
+   * AND THE TICK STILL COUNTS THAT UPLOAD AS OUTSTANDING.
+   *
+   * ASSERTED ON THE DEFINITION, DELIBERATELY, and this is the second version
+   * of this check. The first re-implemented the liveness query here and
+   * compared the count — which passed against a mutant that changed the
+   * FUNCTION, because the copy in the proof was not the thing being tested.
+   * Code and test agreeing while only the server disagrees is a failure this
+   * repository has already paid for once.
+   *
+   * The effect itself — the every-minute job unscheduling — cannot be
+   * observed here: it fires only when every outstanding term across the
+   * WHOLE database is zero, which a proof running inside a populated
+   * transaction cannot manufacture without deleting other people's rows.
+   * So the function's own text is read, the way the 2026-09-16 migration
+   * reads it to prove the legacy publication branch is gone.
+   */
+  SELECT pg_get_functiondef(p.oid) INTO v_src
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+   WHERE n.nspname = 'public'
+     AND p.proname = 'settle_builder_stock_marketplace_eligibility_tick';
+  IF v_src IS NULL THEN
+    RAISE EXCEPTION 'the settlement tick is missing';
+  END IF;
+  IF position('i.lifecycle_status = ''staged''' IN v_src) = 0 THEN
+    RAISE EXCEPTION 'the tick no longer counts a published list that still holds properties, so it can unschedule itself while a builder still has work to do';
+  END IF;
+  IF v_src ~ 'v_blocked[\s\S]{0,200}WHERE u\.published_at IS NULL' THEN
+    RAISE EXCEPTION 'the tick''s blocked-upload term went back to published_at IS NULL';
   END IF;
 
   RAISE EXCEPTION 'proof complete — rolling back' USING ERRCODE = 'P0001';
