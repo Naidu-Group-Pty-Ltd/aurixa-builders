@@ -26,6 +26,7 @@ import {
   mayHoldSchedule,
   readPdfBrochure,
   readPdfDeterministicRows,
+  readsAsProse,
   type PdfTextItem,
 } from '../../../supabase/functions/_shared/builderStock/pdfDeterministicRows.pure';
 import {
@@ -43,7 +44,15 @@ const PROBE_A = 'ACME HOMES - STOCK LIST MARCH\n'
   + 'Palomino Estate 324 Nex 20 4 2 2 420 $910,000\n'
   + 'Society 1056 717 Enzo 10.5 3 2 2 271 $741,655';
 
-/** A single-property brochure with its facts written as labelled statements. */
+/**
+ * A brochure whose estate and design are drawn as BARE LINES.
+ *
+ * This is the document the whole first gate exists for. The reader is right
+ * to refuse to guess which of `PALOMINO ESTATE` and `ENZO 8.5 LUCA` is the
+ * estate and which the design — and it must therefore also refuse to declare
+ * the document read, because the assisted reader can tell them apart and
+ * completing here would suppress it and publish a property missing both.
+ */
 const PROBE_B = 'LOT 315\n'
   + 'PALOMINO ESTATE\n'
   + 'ENZO 8.5 LUCA\n'
@@ -53,6 +62,18 @@ const PROBE_B = 'LOT 315\n'
   + 'Bathrooms 2\n'
   + 'Car Spaces 2\n'
   + 'PACKAGE PRICE $863,850\n'
+  + 'Full turnkey inclusions: landscaping, driveway and fencing.';
+
+/** The same property, written as labelled statements throughout. */
+const LABELLED_BROCHURE = 'Lot: 315\n'
+  + 'Estate: Palomino Estate\n'
+  + 'Design: Enzo 8.5 Luca\n'
+  + 'Land Size: 350 m2\n'
+  + 'Build Size: 180 m2\n'
+  + 'Bedrooms: 4\n'
+  + 'Bathrooms: 2\n'
+  + 'Car Spaces: 2\n'
+  + 'Price: $863,850\n'
   + 'Full turnkey inclusions: landscaping, driveway and fencing.';
 
 /** The same eight columns, as the reader's item list places them. */
@@ -131,8 +152,45 @@ describe('a column cannot be recovered from flattened page text', () => {
 // C — the deterministic single-property brochure
 // ---------------------------------------------------------------------------
 
-describe('an explicit brochure is read without a model', () => {
+describe('a brochure whose facts are not all labelled stands down', () => {
   const reading = readPdfBrochure([PROBE_B]);
+
+  it('refuses, so the assisted reader still sees the whole document', () => {
+    expect(reading.status).toBe('incomplete');
+    expect(reading.reason).toBe('unaccounted_specification_lines');
+    expect(reading.rows).toEqual([]);
+    expect(reading.strategy).toBeNull();
+  });
+
+  it('the two bare lines are what it could not account for', () => {
+    // `PALOMINO ESTATE` and `ENZO 8.5 LUCA`. The inclusions sentence is prose
+    // and is correctly not counted as a fact we failed to read.
+    expect(reading.diagnostics.unaccountedLines).toBe(2);
+  });
+
+  it('it had read seven fields and still refuses — the fields are not the test', () => {
+    /*
+     * THE POINT OF THE GATE. Seven of nine facts read cleanly. Completing on
+     * that basis is exactly the failure: it would bank a property with no
+     * development and no design, permanently, while suppressing the reader
+     * that can recover both.
+     */
+    expect(reading.diagnostics.fieldsRead).toHaveLength(7);
+    expect(reading.rows).toEqual([]);
+  });
+
+  it('the sentence in it is prose, and the bare lines are not', () => {
+    expect(readsAsProse('Full turnkey inclusions: landscaping, driveway and fencing.')).toBe(true);
+    expect(readsAsProse('Welcome to your new home.')).toBe(true);
+    expect(readsAsProse('PALOMINO ESTATE')).toBe(false);
+    expect(readsAsProse('ENZO 8.5 LUCA')).toBe(false);
+    // A specification line with a full stop on the end is still a fact.
+    expect(readsAsProse('Land Size 350 m2.')).toBe(false);
+  });
+});
+
+describe('an explicit brochure is read without a model', () => {
+  const reading = readPdfBrochure([LABELLED_BROCHURE]);
 
   it('is complete and names its own strategy', () => {
     expect(reading.status).toBe('complete');
@@ -140,11 +198,19 @@ describe('an explicit brochure is read without a model', () => {
     expect(reading.rows).toHaveLength(1);
   });
 
-  it('recovers exactly the fields the document states, through the real normaliser', () => {
+  it('leaves nothing unaccounted — which is what admits it', () => {
+    // The same property as PROBE_B, and the ONLY difference is that its
+    // estate and design carry their labels. That difference is the gate.
+    expect(reading.diagnostics.unaccountedLines).toBe(0);
+  });
+
+  it('recovers every field the document states, through the real normaliser', () => {
     const record = normaliseStockRow(reading.rows[0]);
     expect(record).not.toBeNull();
     expect({
       lot_number: record!.lot_number,
+      development_name: record!.development_name,
+      house_design: record!.house_design,
       land_size_sqm: record!.land_size_sqm,
       building_size_sqm: record!.building_size_sqm,
       bedrooms: record!.bedrooms,
@@ -153,6 +219,8 @@ describe('an explicit brochure is read without a model', () => {
       price: record!.price,
     }).toEqual({
       lot_number: '315',
+      development_name: 'Palomino Estate',
+      house_design: 'Enzo 8.5 Luca',
       land_size_sqm: 350,
       building_size_sqm: 180,
       bedrooms: 4,
@@ -164,14 +232,12 @@ describe('an explicit brochure is read without a model', () => {
 
   it('invents nothing the document did not label', () => {
     const record = normaliseStockRow(reading.rows[0])!;
-    // "PALOMINO ESTATE" and "ENZO 8.5 LUCA" are drawn as bare headings with no
-    // label beside them. A reader that guessed which was the estate and which
-    // the design would be reading prose.
-    expect(record.development_name).toBeNull();
-    expect(record.house_design).toBeNull();
-    // The inclusions paragraph is marketing, and it stays out of the record.
+    // The inclusions sentence is marketing, and it stays out of the record —
+    // a brochure may not state its own description or availability.
     expect(record.description).toBeNull();
     expect(record.availability_status).toBe('unknown');
+    expect(record.suburb).toBeNull();
+    expect(record.address_line).toBeNull();
   });
 
   it('reads the colon form for the fields a number cannot carry', () => {
@@ -354,23 +420,44 @@ describe('a PDF schedule is reconstructed from where the text was drawn', () => 
     expect(reading.rows).toEqual([]);
   });
 
-  it('a totals line is admitted, exactly as it is from a CSV today', () => {
+  it('a TOTAL footer stands the whole schedule down', () => {
     /*
-     * RECORDED, NOT FIXED. `identifiesAProperty` is the admission test every
-     * format shares and its own header says the bar is deliberately low — a
-     * `TOTAL` row carrying a figure passes it. That is not a property of this
-     * reader: the identical row in a CSV or a workbook imports the same way
-     * and always has. Narrowing it here would give the PDF path its own
-     * admission rule, and narrowing it in `normalise.pure.ts` would change
-     * what every builder's spreadsheet imports.
+     * `normaliseStockRow` ACCEPTS this row — `identifiesAProperty` takes a
+     * development name beside a figure, and its own header says the bar is
+     * deliberately low. That is right for a CSV, where it is the only gate a
+     * row has, and it is deliberately NOT changed: it is shared with every
+     * other format. This PDF-only stage asks the stricter question instead.
+     *
+     * And it refuses the DOCUMENT rather than dropping the row: dropping it
+     * would be this stage deciding which line of a builder's schedule is not
+     * stock, and importing the other three while sending the document to the
+     * assisted reader would import those three twice.
      */
     const items = [...SCHEDULE_ITEMS,
       { text: 'TOTAL', x: 40, y: 628, width: 28 },
       { text: '$2,515,505', x: 510, y: 628, width: 48 },
     ];
+    const totalsRow = normaliseStockRow({ Estate: 'TOTAL', 'Package Price': '$2,515,505' });
+    expect(totalsRow).not.toBeNull();          // the shared admission test takes it
+    expect(totalsRow!.lot_number).toBeNull();  // and it names no property
+
     const reading = assemblePdfSchedule(schedulePages(items));
-    expect(reading.status).toBe('complete');
-    expect(reading.rows).toHaveLength(4);
+    expect(reading.status).toBe('incomplete');
+    expect(reading.reason).toBe('a_row_identifies_no_property');
+    expect(reading.rows).toEqual([]);
+    expect(reading.strategy).toBeNull();
+  });
+
+  it('a row with no identifier of any kind stands the schedule down', () => {
+    // A "prices from" legend under the table: a price and nothing to look up.
+    const items = [...SCHEDULE_ITEMS,
+      { text: 'Palomino Estate', x: 40, y: 628, width: 60 },
+      { text: '$741,655', x: 510, y: 628, width: 40 },
+    ];
+    const reading = assemblePdfSchedule(schedulePages(items));
+    expect(reading.status).toBe('incomplete');
+    expect(reading.reason).toBe('a_row_identifies_no_property');
+    expect(reading.rows).toEqual([]);
   });
 
   it('a row carrying more cells than the heading declares refuses the document', () => {
@@ -459,9 +546,18 @@ describe('positions are read only where a schedule might be', () => {
 
 describe('the orchestrator', () => {
   it('prefers the brochure when the brochure is complete, and asks for no positions', () => {
-    const reading = readPdfDeterministicRows({ pageTexts: [PROBE_B] });
+    const reading = readPdfDeterministicRows({ pageTexts: [LABELLED_BROCHURE] });
     expect(reading.status).toBe('complete');
     expect(reading.strategy).toBe('pdf_deterministic_brochure');
+  });
+
+  it('a brochure with an unlabelled fact reaches the assisted reader, positions or not', () => {
+    for (const positionedPages of [undefined, schedulePages([])]) {
+      const reading = readPdfDeterministicRows({ pageTexts: [PROBE_B], positionedPages });
+      expect(reading.status).not.toBe('complete');
+      expect(reading.rows).toEqual([]);
+      expect(reading.strategy).toBeNull();
+    }
   });
 
   it('falls to the schedule when the text is a table', () => {

@@ -49,6 +49,16 @@
  * builder's marketplace. The two are not symmetrical, so every judgement here
  * is made on the refusing side.
  *
+ * NEVER COMPLETE AROUND A FACT WE DID NOT READ. Standing down is not only for
+ * what this reader gets WRONG — it is also for what it cannot ACCOUNT FOR.
+ * A brochure that states its estate and its design as bare lines is a document
+ * the assisted reader can read and this one cannot, so completing it would
+ * publish a property permanently missing both, with nothing saying so. Two
+ * gates enforce that: a brochure refuses when any line that reads as a fact
+ * went unassigned, and a schedule refuses when any reconstructed row names no
+ * property (a `TOTAL` footer is a row `normaliseStockRow` accepts and this
+ * stage must not).
+ *
  * NO SECOND VOCABULARY. Headings resolve through `fieldForHeader`, rows key
  * through `keyRowsByHeader`, and every value is coerced by `normaliseStockRow`
  * — the same three functions a CSV goes through. This module decides WHICH
@@ -120,6 +130,12 @@ export interface PdfDeterministicReading {
     candidates: number;
     /** Set when a field was stated twice with two different values. */
     conflictField?: string;
+    /**
+     * Lines that read as a property fact and that this reader could not
+     * assign to a canonical field. Any one of them stands a brochure down.
+     * A COUNT and never the text, because this reaches the import log.
+     */
+    unaccountedLines?: number;
   };
 }
 
@@ -360,6 +376,40 @@ function readInlineCounts(line: string): Claim | null {
  * is what stops "Lot released" and "Lot 5 of the finest homes" claiming
  * anything.
  */
+/**
+ * Is this line a SENTENCE, rather than a fact we failed to read?
+ *
+ * The question only ever arises for a line this reader could not assign, and
+ * the two answers are not symmetrical: calling a sentence a fact costs a model
+ * call, and calling a fact a sentence loses it out of a client's record for
+ * good. So the test is deliberately hard to pass, and everything it is unsure
+ * about is a fact.
+ *
+ * A sentence ends in a full stop, a question mark or an exclamation, AND runs
+ * longer than the longest thing a specification line plausibly is. The word
+ * count carries that second half on its own for an unpunctuated line.
+ *
+ * Measured against the shapes this has to separate:
+ *
+ *   "Full turnkey inclusions: landscaping, driveway and fencing."  7 w, stop → prose
+ *   "Welcome to your new home."                                    5 w, stop → prose
+ *   "PALOMINO ESTATE"                                              2 w       → FACT
+ *   "ENZO 8.5 LUCA"                                                3 w       → FACT
+ *   "Land Size 350 m2."                                            4 w, stop → FACT
+ *
+ * That last one is why the stop alone is not enough: a specification line with
+ * a full stop on the end is still a specification line.
+ */
+const PROSE_MIN_WORDS_WITH_STOP = 4;
+const PROSE_MIN_WORDS_WITHOUT_STOP = 8;
+
+export function readsAsProse(line: string): boolean {
+  const trimmed = line.trim();
+  const words = trimmed.split(/\s+/).filter(Boolean).length;
+  if (/[.!?]$/.test(trimmed)) return words > PROSE_MIN_WORDS_WITH_STOP;
+  return words > PROSE_MIN_WORDS_WITHOUT_STOP;
+}
+
 function readLotHeading(line: string): Claim | null {
   const tokens = line.trim().split(/\s+/);
   if (tokens.length !== 2) return null;
@@ -413,7 +463,11 @@ export function readPdfBrochure(pageTexts: readonly string[]): PdfDeterministicR
   };
 
   const claimed = new Map<string, string>();
-  let sawAnyLabel = false;
+  /*
+   * Lines that look like a property fact and that this reader could not
+   * assign. A COUNT, never the text: the diagnostics go to the import log.
+   */
+  let unaccounted = 0;
 
   const lines = pageTexts
     .flatMap((page) => String(page ?? '').split(/\r?\n/))
@@ -426,8 +480,17 @@ export function readPdfBrochure(pageTexts: readonly string[]): PdfDeterministicR
 
     const labelled = readLabelledValue(line);
     if (labelled) {
-      if (!BROCHURE_CLAIMABLE_FIELDS.has(labelled.field)) continue;
-      sawAnyLabel = true;
+      if (!BROCHURE_CLAIMABLE_FIELDS.has(labelled.field)) {
+        /*
+         * A LABEL WE KNOW AND DELIBERATELY DO NOT TAKE — "Status: Selling",
+         * "Inclusions: stone benchtops". It is still a statement about the
+         * property, so it is unaccounted rather than ignored: completing
+         * around it would be bypassing the assisted reader while knowing the
+         * document says something we did not read.
+         */
+        if (!readsAsProse(line)) unaccounted += 1;
+        continue;
+      }
       if (!labelled.value) {
         /*
          * THE DOCUMENT NAMED A FACT AND DID NOT STATE IT. A template whose
@@ -452,9 +515,13 @@ export function readPdfBrochure(pageTexts: readonly string[]): PdfDeterministicR
       }
     }
 
+    if (!found.length) {
+      if (!readsAsProse(line)) unaccounted += 1;
+      continue;
+    }
+
     for (const claim of found) {
       if (!BROCHURE_CLAIMABLE_FIELDS.has(claim.field)) continue;
-      sawAnyLabel = true;
       const existing = claimed.get(claim.field);
       if (existing === undefined) {
         claimed.set(claim.field, claim.value);
@@ -475,9 +542,44 @@ export function readPdfBrochure(pageTexts: readonly string[]): PdfDeterministicR
   }
 
   diagnostics.fieldsRead = [...claimed.keys()].sort();
+  diagnostics.unaccountedLines = unaccounted;
 
   if (!claimed.size) {
-    return refuse('unsupported', sawAnyLabel ? 'no_values_read' : 'no_labelled_fields', diagnostics);
+    return refuse('unsupported', 'no_labelled_fields', diagnostics);
+  }
+
+  /*
+   * ===================================================================
+   * NEVER COMPLETE AROUND A FACT THE DOCUMENT STATES AND WE DID NOT READ.
+   * ===================================================================
+   *
+   * The defect this closes, on the reader's own first fixture:
+   *
+   *   LOT 315
+   *   PALOMINO ESTATE          ← the estate, correctly not guessed at
+   *   ENZO 8.5 LUCA            ← the design, correctly not guessed at
+   *   Land Size 350 m2
+   *   …
+   *
+   * Refusing to guess which of those two bare lines is the estate and which
+   * the design was right. Returning `complete` anyway was not: it imported a
+   * property with no development and no design, and — far worse — it
+   * SUPPRESSED the assisted reader, which can read both. The deterministic
+   * stage turned a document we could read most of into a property missing
+   * the two fields we could not, with nothing anywhere saying so.
+   *
+   * So the supported shape is narrow by construction: a brochure completes
+   * only when it is labelled statements THROUGHOUT. A short line we could not
+   * assign is a property fact we did not read, and one of them stands the
+   * whole document down. The cost of standing down is exactly today's
+   * behaviour; the cost of completing is a permanently thinner record.
+   *
+   * `readsAsProse` is what keeps this from refusing every real brochure over
+   * its marketing copy — and it is deliberately narrow, because the
+   * conservative side of that judgement is to call a line a FACT.
+   */
+  if (unaccounted > 0) {
+    return refuse('incomplete', 'unaccounted_specification_lines', diagnostics);
   }
 
   /*
@@ -734,8 +836,38 @@ export function assemblePdfSchedule(
    * lose the rest with nothing saying so.
    */
   for (const row of keyed.rows) {
-    if (!normaliseStockRow(row)) {
+    const record = normaliseStockRow(row);
+    if (!record) {
       return refuse('incomplete', 'a_row_could_not_be_normalised', diagnostics);
+    }
+    /*
+     * ===============================================================
+     * EVERY ROW MUST NAME A PROPERTY, AND A TOTAL DOES NOT.
+     * ===============================================================
+     *
+     * `normaliseStockRow` admits far more than a property: its own header
+     * says the bar is deliberately low, and `identifiesAProperty` accepts a
+     * development name beside a figure — which is exactly the shape of
+     *
+     *     TOTAL | | | | | | | $2,515,505
+     *
+     * so a schedule's own footer imported as a fourth "property" called
+     * TOTAL priced at the sum of the other three.
+     *
+     * That test is right for a CSV, where it is the only gate a row has and
+     * dropping a thin row is worse than importing one, and it is NOT changed
+     * here — `normalise.pure.ts` is shared with every other format and this
+     * is a PDF-only stage in front of it. What this adds is the stricter
+     * question a RECONSTRUCTED row has to answer: does it carry an
+     * identifier a person could go and look up? A total, a subtotal, a
+     * "prices from" line and a legend carry none.
+     *
+     * And it stands the WHOLE document down rather than dropping the row,
+     * because dropping it would silently decide that one line of a builder's
+     * schedule is not stock — the judgement this stage exists not to make.
+     */
+    if (!IDENTITY_FIELDS.some((field) => record[field as keyof typeof record])) {
+      return refuse('incomplete', 'a_row_identifies_no_property', diagnostics);
     }
   }
 
