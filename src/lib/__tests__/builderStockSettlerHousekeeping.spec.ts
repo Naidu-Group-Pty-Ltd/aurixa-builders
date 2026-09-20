@@ -216,8 +216,20 @@ describe('a tick that finds work and starts no image worker starts a settler', (
   const sql = read(MIGRATION);
 
   it('reads what the image dispatcher actually did', () => {
+    /*
+     * THE CAPTURE, NOT THE WIDTH. This pinned `(2)` — the number THIS
+     * migration installed — and that is a number in a file that stopped
+     * deciding anything the moment a later migration re-installed the
+     * function: `20260920050000` tops the fleet up by four now, and this
+     * assertion would have gone on passing against a superseded body for
+     * ever. What belongs here is the property this file exists for, which is
+     * that the tick keeps the dispatcher's ANSWER — a tick that called it and
+     * ignored the return value would start a second settler below on every
+     * tick of a healthy import. The width is pinned against the last writer
+     * by `builderStockDispatchWidth.spec.ts`.
+     */
     expect(sql).toMatch(
-      /v_dispatched\s*:=\s*public\.builder_stock_dispatch_image_workers\(2\);/);
+      /v_dispatched\s*:=\s*public\.builder_stock_dispatch_image_workers\(\d+\);/);
   });
 
   it('starts exactly one settler when it dispatched none', () => {
