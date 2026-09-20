@@ -17,6 +17,8 @@ import { classifyStockFile, MAX_STOCK_FILE_BYTES } from './fileTypes.pure.ts';
 import type { StockFileClassification } from './fileTypes.pure.ts';
 import { extractStockFile, StockExtractionError } from './extract.ts';
 import { extractStockRowsFromImages, extractStockRowsFromText } from './modelExtract.ts';
+import { StockModelExtractionError, modelFailureFromRouterError } from './modelExtractionFailure.pure.ts';
+import { assistedReaderFailure, SOURCE_HAS_COLUMNS } from './assistedReaderFailure.pure.ts';
 import type { RowLinkDiscovery } from './suppliedEvidence.pure.ts';
 import { importStockRecords } from './importStock.ts';
 import { NOTION_NO_PROPERTIES_MESSAGE } from './urlSource.pure.ts';
@@ -255,26 +257,85 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
      * never been given. Nothing in it was true and nothing in it was
      * actionable.
      *
-     * So it is a NAMED failure now, and the sentence separates the two facts:
-     * the deterministic reader did not recognise a table (which the builder
-     * can act on), and the assisted reader could not be reached (which they
-     * cannot, and must not be asked to). The underlying error travels in
-     * `detail`, which is recorded on the row and never shown.
+     * So it became a NAMED failure — and the first version of that name was
+     * still wrong in two ways, measured on this deployment on 20 September
+     * 2026 against `LOT 315 - ENZO 8.5 LUCA - BROCHURE V002.pdf`:
+     *
+     *  1. ONE CODE FOR FOUR FAILURES. A missing credential, a provider
+     *     outage, a timeout and a model answering with arguments that would
+     *     not parse all wrote `assisted_reader_unavailable` and the same
+     *     sentence. The router had already told us which — `LLMError.attempts`
+     *     carries a per-model, already-sanitised account — and the catch kept
+     *     only `error.message`, so the row recorded "All 2 models failed" and
+     *     nothing else. `modelExtractionFailure.pure.ts` reads those attempts.
+     *
+     *  2. IT TOLD A BROCHURE TO GROW COLUMNS. The sentence ended "If the file
+     *     lists one property per row, giving it column headings lets it import
+     *     without assistance" — shown for every source type, including the
+     *     document kinds the assisted reader exists BECAUSE they are not
+     *     tables. A builder was asked to repair a 6.8 MB PDF brochure that was
+     *     never the problem. `assistedReaderFailure.pure.ts` offers that hint
+     *     only for the grid kinds it is true of.
+     *
+     * The underlying diagnosis travels in `detail`, which is recorded on the
+     * row and never shown.
      */
+    const failure = error instanceof StockModelExtractionError
+      ? error
+      : modelFailureFromRouterError(error);
+    const reading = assistedReaderFailure({
+      code: failure.code,
+      sourceKind,
+      classificationKind: classification.kind,
+    });
+
+    /*
+     * ENOUGH TO DIAGNOSE THIS WITHOUT THE BUILDER'S DOCUMENT.
+     *
+     * Safe by construction: ids, the classification, the strategy, sizes, and
+     * the router's own sanitised per-attempt categories. Never the document's
+     * text, never a signed URL, never a credential — `summariseAttempts`
+     * copies no provider body, and the extracted prose is reported only as a
+     * LENGTH, which is what tells "the PDF gave us nothing to send" apart from
+     * "we sent 40,000 characters and the reader was down".
+     */
+    try {
+      console.error(`${TELEMETRY_PREFIX} assisted reader failed`, {
+        phase: 'assisted_extraction',
+        upload_id: upload.id,
+        organisation_id: organisationId,
+        source_kind: sourceKind,
+        classification: classification.kind,
+        extraction_strategy: extraction.strategy,
+        text_extracted: Boolean(extraction.text),
+        text_length: extraction.text?.length ?? 0,
+        page_count: extraction.pageTexts?.length ?? null,
+        vision_images: extraction.visionImages.length,
+        assisted_extraction_started: true,
+        failure_code: failure.code,
+        error_code: reading.code,
+        retryable: reading.retryable,
+        model_attempts: failure.attemptCount,
+        attempt_categories: failure.categories,
+        diagnosis: failure.diagnosis,
+      });
+    } catch { /* a line that cannot be written is not an import failure */ }
+
     return {
       ok: false,
-      code: 'assisted_reader_unavailable',
-      message: sourceKind === 'url'
-        ? 'We could not finish reading that page. Its columns were not recognised as '
-          + 'a stock list, and the assisted reader could not be reached — our team has '
-          + 'been alerted. If the page lists one property per row, giving it column '
-          + 'headings lets it import without assistance.'
-        : 'We could not finish reading that file. Its columns were not recognised as '
-          + 'a stock list, and the assisted reader could not be reached — our team has '
-          + 'been alerted. If the file lists one property per row, giving it column '
-          + 'headings lets it import without assistance.',
-      detail: String((error as { message?: string })?.message ?? error).slice(0, 500),
-      status: 503,
+      code: reading.code,
+      message: reading.message,
+      // Structured, so the row says which models were tried and how each
+      // failed rather than only that some number of them did.
+      detail: JSON.stringify({
+        failure: failure.code,
+        attempts: failure.attemptCount,
+        categories: failure.categories,
+        diagnosis: failure.diagnosis,
+        strategy: extraction.strategy,
+        text_length: extraction.text?.length ?? 0,
+      }).slice(0, 1500),
+      status: reading.status,
     };
   }
 
@@ -345,9 +406,22 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     if (input.isNotionSource) {
       return fail('no_properties_found', NOTION_NO_PROPERTIES_MESSAGE);
     }
-    return fail('no_properties_found', sourceKind === 'url'
-      ? 'No properties could be read from that page. Check that it lists one property per row, or upload the stock list instead.'
-      : 'No properties could be read from that file. Check that it lists one property per row with column headings.');
+    /*
+     * THE SAME COLUMN-HEADING RULE AS THE FAILURE ABOVE. This sentence used to
+     * end "Check that it lists one property per row with column headings" for
+     * every source, so a brochure the reader had genuinely found no property
+     * in was also told to become a spreadsheet. `SOURCE_HAS_COLUMNS` is the
+     * one place that decides which sources that advice is true of.
+     */
+    const what = sourceKind === 'url' ? 'page' : 'file';
+    if (SOURCE_HAS_COLUMNS.has(classification.kind)) {
+      return fail('no_properties_found', sourceKind === 'url'
+        ? 'No properties could be read from that page. Check that it lists one property per row, or upload the stock list instead.'
+        : 'No properties could be read from that file. Check that it lists one property per row with column headings.');
+    }
+    return fail('no_properties_found',
+      `We read that ${what}, but it did not describe a property we could list.`
+      + ' If it should, check that it names the lot or address and its price.');
   }
 
   /**

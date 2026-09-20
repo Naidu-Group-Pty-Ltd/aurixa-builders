@@ -36,7 +36,7 @@ import { AU_LOCALE } from '@/lib/aml/displayDate';
 import { BuilderSchedule } from '@/components/builder-portal/ui/BuilderSchedule';
 import { useDebounce } from '@/hooks/useDebounce';
 import {
-  importBuilderStockUrl, type StockImportSummary, type StockUploadProgress, type StockUploadResult, uploadBuilderStockFile, useAcknowledgeStockSelection, useBuilderStockHeldItems, useBuilderStockItems, useBuilderStockSelections, useBuilderStockUploads, useBuilderStockImageProgress, useArchiveBuilderStockItem, useDeleteBuilderStockSource, useEnrichPendingStockImages, useRecoverStockSourceImages, useRefreshBrochureLinks, useReprocessStockSource,
+  importBuilderStockUrl, type StockImportSummary, type StockUploadProgress, type StockUploadResult, uploadBuilderStockFile, useAcknowledgeStockSelection, useBuilderStockHeldItems, useBuilderStockItems, useBuilderStockSelections, useBuilderStockUploads, useBuilderStockImageProgress, useArchiveBuilderStockItem, useDeleteBuilderStockSource, useEnrichPendingStockImages, useRecoverStockSourceImages, useRefreshBrochureLinks, useReprocessStockSource, useRetryStockSource,
   useSetBuilderStockAvailability, builderStockImageUrl,
 } from '@/lib/builderStockQueries';
 import {
@@ -62,6 +62,9 @@ import {
 import {
   describeRereadCounts, rereadNaming,
 } from '../../../supabase/functions/_shared/builderStock/sourceReread.pure';
+import {
+  RETRYABLE_UPLOAD_ERROR_CODES,
+} from '../../../supabase/functions/_shared/builderStock/assistedReaderFailure.pure';
 import './BuilderStockList.css';
 
 /**
@@ -160,6 +163,7 @@ export default function BuilderStockList() {
   const recoverImages = useRecoverStockSourceImages();
   const refreshLinks = useRefreshBrochureLinks();
   const reprocessSource = useReprocessStockSource();
+  const retrySource = useRetryStockSource();
 
   const records = itemsQuery.data?.records ?? [];
   const pagination = itemsQuery.data?.pagination;
@@ -399,6 +403,56 @@ export default function BuilderStockList() {
   const canReprocess = useCallback((upload: BuilderStockUpload) => (
     !['uploaded', 'failed', 'parsing'].includes(String(upload.status ?? ''))
   ), []);
+
+  /**
+   * A failed source the builder may simply try again.
+   *
+   * `canReprocess` is false for `failed` and that is correct — the server
+   * refuses `reprocess_upload` there, because nothing was imported to re-read.
+   * The operation for a source that has produced no properties is
+   * `process_upload`, which accepts exactly `uploaded` and `failed`.
+   *
+   * Nothing drew it. A brochure whose import failed because the assisted
+   * reader was unreachable offered "Source images" and "Delete" and no way to
+   * retry, so the only route back was to delete the source and upload it
+   * again — for a failure that had nothing to do with the document and would
+   * very likely not repeat.
+   *
+   * WHICH failures qualify is the server's decision, not this page's:
+   * `RETRYABLE_UPLOAD_ERROR_CODES` is the same list
+   * `assistedReaderFailure.pure.ts` assigns `retryable` from, imported rather
+   * than restated, so the button cannot offer a retry the reading calls
+   * pointless. A model that answered unusably is not in it — trying again
+   * unchanged would produce the same answer, and a button that cannot work is
+   * worse than none.
+   */
+  const canRetryFailure = useCallback((upload: BuilderStockUpload) => (
+    String(upload.status ?? '') === 'failed'
+    && RETRYABLE_UPLOAD_ERROR_CODES.includes(String(upload.error_code ?? ''))
+  ), []);
+
+  const retryStockSource = useCallback((upload: BuilderStockUpload) => {
+    retrySource.mutate(upload.id, {
+      onSuccess: (response) => {
+        const counts = describeRereadCounts(response.summary);
+        toast({
+          title: 'Stock list read',
+          description: counts
+            ? `${counts} from ${stockSourceLabel(upload)}.`
+            : `${stockSourceLabel(upload)} was read again.`,
+        });
+        void uploadsQuery.refetch();
+        void itemsQuery.refetch();
+      },
+      onError: (error) => {
+        toast({
+          title: 'That source could not be read',
+          description: error instanceof Error ? error.message : 'Please try again shortly.',
+          variant: 'destructive',
+        });
+      },
+    });
+  }, [itemsQuery, retrySource, toast, uploadsQuery]);
 
   const reprocessStockSource = useCallback((upload: BuilderStockUpload) => {
     /*
@@ -1237,6 +1291,26 @@ export default function BuilderStockList() {
                           been read; the server refuses the rest, so this is a
                           convenience rather than the control.
                         */}
+                        {/*
+                          Try a failed read again. Same bytes, same bucket,
+                          same import — offered only for the failures the
+                          server itself calls retryable, which is why the list
+                          comes from the shared module rather than from here.
+                        */}
+                        {canRetryFailure(upload) ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={retrySource.isPending || busy}
+                            onClick={() => retryStockSource(upload)}
+                            aria-label={`Read ${stockSourceLabel(upload)} again`}
+                          >
+                            <RefreshCw className="h-4 w-4" aria-hidden />
+                            <span className="sr-only sm:not-sr-only sm:ml-2">
+                              Read again
+                            </span>
+                          </Button>
+                        ) : null}
                         {canReprocess(upload) ? (
                           <Button
                             variant="ghost"

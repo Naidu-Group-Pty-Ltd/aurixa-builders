@@ -648,6 +648,43 @@ export function useReprocessStockSource() {
 }
 
 /**
+ * Read a FAILED source again, from the file already in the bucket.
+ *
+ * Not the same operation as `useReprocessStockSource`, and deliberately so.
+ * The server draws the line: `reprocess_upload` refuses a `failed` row with
+ * `not_yet_processed` because nothing was ever imported from it, while
+ * `process_upload` accepts exactly `uploaded` and `failed` — it is the
+ * operation for a source that has not yet produced any properties, which is
+ * what a failed one is.
+ *
+ * The distinction had no surface. A source that failed because the assisted
+ * reader was unreachable offered the builder no way to try again at all: the
+ * row drew "Source images" and "Delete", so the only route back was to delete
+ * the stock list and upload it a second time — the delete-and-re-add loop
+ * `49-re-importing-a-linked-stock-list.md` exists to stop.
+ *
+ * Nothing is at risk in re-running it: the bytes are unchanged, the duplicate
+ * guard excludes the row against itself (`.neq('id', upload.id)`), and the
+ * import matches by the identity rule it always uses, so a property that did
+ * import keeps its id, its images and anything a client has done with it.
+ */
+export function useRetryStockSource() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (uploadId: string) =>
+      invoke<{
+        upload: BuilderStockUpload;
+        summary: StockImportSummary;
+        enrichment_pending: number;
+      }>({
+        operation: 'process_upload',
+        upload_id: uploadId,
+      }),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: builderStockKeys.root() }); },
+  });
+}
+
+/**
  * Ask again for the brochure links a Google Sheet would not export.
  *
  * The SOURCE only. No rows are re-imported, no stock data is touched, and no
