@@ -51,7 +51,15 @@ export type ModelExtractionFailureCode =
    * reached. NOTHING was called — this is decided before any provider is
    * touched, and it is the one failure here that is not about a model at all.
    */
-  | 'model_budget_exhausted';
+  | 'model_budget_exhausted'
+  /**
+   * Every model REFUSED the request — a rejected key, an account out of
+   * credit, a forbidden model, a rate limit. Distinct from `model_unavailable`
+   * because nothing here is transient: waiting does not add credit, and
+   * telling a builder to try again shortly is telling them to do something
+   * that cannot work.
+   */
+  | 'model_refused';
 
 /** One entry of `llmRouter`'s `attempts`. Structural, so the router owns it. */
 export interface RouterAttempt {
@@ -185,6 +193,10 @@ export function classifyModelFailure(
     if (every('missing_tool_call')) code = 'model_missing_tool_call';
     else if (every('missing_tool_call', 'invalid_arguments')) code = 'model_invalid_response';
     else if (every('timeout')) code = 'model_timeout';
+    // Every step turned the request away. The router stops on the first of
+    // these by design — a second model on the same account answers the same
+    // 402 — so a chain of one refusal is the whole chain refusing.
+    else if (every('refused')) code = 'model_refused';
     else code = 'model_unavailable';
   }
 

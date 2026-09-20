@@ -171,6 +171,34 @@ describe('a brochure is never told to grow columns', () => {
     expect(reading.message.toLowerCase()).not.toContain('column');
   });
 
+  it('an all-refused chain is model_refused, and promises no retry', () => {
+    /*
+     * The production 402. `model_unavailable` would have told the builder to
+     * "try again shortly" about an account with no credit on it — waiting adds
+     * no credit, so the button would be one that cannot work.
+     */
+    const diagnosis = classifyModelFailure([
+      { route: 'openrouter', model_id: 'openai/gpt-5.6-luna', ok: false, status: 402, error: 'provider_http_402' },
+    ]);
+    expect(diagnosis.code).toBe('model_refused');
+
+    const reading = assistedReaderFailure({
+      code: 'model_refused', sourceKind: 'file', classificationKind: 'pdf',
+    });
+    expect(reading.code).toBe('assisted_reader_refused');
+    expect(reading.retryable).toBe(false);
+    expect(reading.message).not.toContain('again shortly');
+    expect(RETRYABLE_UPLOAD_ERROR_CODES).not.toContain(reading.code);
+    expect(reading.message.toLowerCase()).not.toContain('column');
+  });
+
+  it('a MIXED chain with one refusal is still infrastructure', () => {
+    expect(classifyModelFailure([
+      { route: 'openrouter', model_id: 'a', ok: false, status: 402, error: 'provider_http_402' },
+      { route: 'openrouter', model_id: 'b', ok: false, status: 503, error: 'provider_http_503' },
+    ]).code).toBe('model_unavailable');
+  });
+
   it('each failure keeps a distinct, stable machine-readable code', () => {
     const code = (c: Parameters<typeof assistedReaderFailure>[0]['code']) =>
       assistedReaderFailure({ code: c, sourceKind: 'file', classificationKind: 'pdf' }).code;

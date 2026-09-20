@@ -205,6 +205,27 @@ export function attemptReachedProvider(attempt: BudgetAttempt): boolean {
 }
 
 /**
+ * Did this attempt consume tokens, and therefore money?
+ *
+ * Reaching a provider is not the same as being charged by one. A 401, 402,
+ * 403 or 429 is the provider DECLINING before it does any work — a rejected
+ * key, an account out of credit, a forbidden model, a rate limit — and none of
+ * them runs a single token through a model.
+ *
+ * Measured 20 September 2026: the first OpenRouter call answered 402 (no
+ * credit on the account) and the whole hold, 43,277 micros, was committed for
+ * a request that cost nothing. At that rate 231 refusals would have exhausted
+ * a US$10 month without a token being spent — a ceiling consumed entirely by
+ * being turned away.
+ */
+export function attemptWasBillable(attempt: BudgetAttempt): boolean {
+  if (!attemptReachedProvider(attempt)) return false;
+  const status = attempt.status;
+  if (status === 401 || status === 402 || status === 403 || status === 429) return false;
+  return true;
+}
+
+/**
  * What to commit once the request is over.
  *
  * The winning attempt's cost is the provider's own reported figure where there
@@ -225,7 +246,12 @@ export function settleMicrosFor(args: {
   inputTokens: number;
   maxOutputTokens: number;
 }): number {
-  const reaching = args.attempts.filter(attemptReachedProvider);
+  /*
+   * BILLABLE, not merely reached. A provider that refused the request on
+   * payment or credentials ran nothing and charged nothing, so it must not
+   * consume the ceiling — see `attemptWasBillable`.
+   */
+  const reaching = args.attempts.filter(attemptWasBillable);
   if (!reaching.length) return 0;
 
   if (args.reportedCostUsd === null) return args.reservedMicros;
