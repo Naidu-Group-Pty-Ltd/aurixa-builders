@@ -214,6 +214,13 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
   try {
     extraction = await extractStockFile(bytes, upload.original_filename, classification, {
       baseUrl: input.baseUrl,
+      /*
+       * The uploading organisation's own name, for the deterministic PDF
+       * reader alone: a builder's brochure carries the builder's name on
+       * every page and it is never the estate or the design. The assisted
+       * reader has been handed it since it was written.
+       */
+      organisationName: input.organisationName,
     });
   } catch (error) {
     if (error instanceof StockExtractionError) {

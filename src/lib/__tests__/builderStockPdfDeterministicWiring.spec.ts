@@ -37,6 +37,10 @@ import {
 // eslint-disable-next-line import/first
 import { extractStockFile } from '../../../supabase/functions/_shared/builderStock/extract';
 // eslint-disable-next-line import/first
+import {
+  readPdfBrochure,
+} from '../../../supabase/functions/_shared/builderStock/pdfDeterministicRows.pure';
+// eslint-disable-next-line import/first
 import { classifyStockFile } from '../../../supabase/functions/_shared/builderStock/fileTypes.pure';
 // eslint-disable-next-line import/first
 import { normaliseStockRow } from '../../../supabase/functions/_shared/builderStock/normalise.pure';
@@ -163,6 +167,100 @@ describe('the ceiling is taken by the model path and by nothing else', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The decision the whole stage exists to make, executed
+// ---------------------------------------------------------------------------
+
+describe('what reaches the assisted reader, and what does not', () => {
+  /*
+   * `extract.ts` writes `result.rows` on `complete` and on nothing else, and
+   * `runImport` reads a model only when `!rows.length`. Both are asserted at
+   * the source above; this runs the reader and applies the same two steps, so
+   * "the model is skipped" is a consequence rather than a claim.
+   */
+  const rowsFor = (reading: { status: string; rows: unknown[] }) =>
+    (reading.status === 'complete' ? reading.rows : []);
+
+  it('a deterministic brochure leaves nothing for a model to do', () => {
+    const before = callLLM.mock.calls.length;
+    const reading = readPdfBrochure([
+      ['LOT 315', 'ENZO 8.5 LUCA DESIGN', 'PALOMINO ESTATE', '4 BED', '2 BATH',
+        '2 CAR', 'LAND', '350 m²', 'HOUSE', '210 m²', 'PACKAGE PRICE',
+        '$863,850', 'Ph 1300 123 456', '© 2026 Acme Homes'].join('\n'),
+    ]);
+    const rows = rowsFor(reading);
+    expect(rows.length).toBeGreaterThan(0);
+    // runImport's guard, applied verbatim.
+    expect(!rows.length).toBe(false);
+    // And reading it called nothing: this module has no door to a provider.
+    expect(callLLM.mock.calls.length).toBe(before);
+  });
+
+  it('a genuinely ambiguous document reaches the fallback', () => {
+    const reading = readPdfBrochure([
+      ['LOT 315', 'PALOMINO ESTATE', 'ENZO 8.5 LUCA DESIGN', 'NEX 20 DESIGN',
+        'Price: $1'].join('\n'),
+    ]);
+    expect(reading.status).toBe('ambiguous');
+    expect(!rowsFor(reading).length).toBe(true);
+  });
+
+  it('a brochure with an unread identity line reaches the fallback', () => {
+    const reading = readPdfBrochure([
+      ['LOT 315', 'ENZO 8.5 LUCA', 'PALOMINO', '4 BED', '2 BATH', '2 CAR',
+        'LAND', '350 m²', 'PACKAGE PRICE', '$863,850'].join('\n'),
+    ]);
+    expect(reading.status).toBe('incomplete');
+    expect(!rowsFor(reading).length).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The architectures this change does not reach
+// ---------------------------------------------------------------------------
+
+describe('the linked and image architectures are untouched', () => {
+  const UNTOUCHED = [
+    'supabase/functions/_shared/builderStock/linkedSource.ts',
+    'supabase/functions/_shared/builderStock/sourceReread.pure.ts',
+    'supabase/functions/_shared/builderStock/pdfText.ts',
+    'supabase/functions/_shared/builderStock/pdfSourcePhoto.ts',
+    'supabase/functions/_shared/builderStock/pdfPrimaryImage.pure.ts',
+    'supabase/functions/_shared/builderStock/pdfElection.ts',
+    'supabase/functions/_shared/builderStock/pdfRowAnchors.pure.ts',
+    'supabase/functions/_shared/builderStock/packageImages.ts',
+    'supabase/functions/_shared/builderStock/importStock.ts',
+  ];
+
+  it.each(UNTOUCHED)('%s knows nothing of the deterministic reader', (path) => {
+    const source = read(path);
+    expect(source).not.toContain('pdfDeterministicRows');
+    expect(source).not.toContain('pdfTextLayout');
+    expect(source).not.toContain('deterministicReading');
+  });
+
+  it('the deterministic stage sits AFTER the images and reads no bucket', () => {
+    const source = read('supabase/functions/_shared/builderStock/extract.ts');
+    const stage = source.indexOf('THE MISSING MIDDLE');
+    expect(source.indexOf('result.media.push({')).toBeLessThan(stage);
+    expect(source.indexOf('result.pageTexts = pages;')).toBeLessThan(stage);
+    const deterministic = read(
+      'supabase/functions/_shared/builderStock/pdfDeterministicRows.pure.ts');
+    for (const forbidden of ['storage', 'fetch(', 'Deno.', 'createClient']) {
+      expect(deterministic).not.toContain(forbidden);
+    }
+  });
+
+  it('the layout reader still only reads, and can never fail an upload', () => {
+    const layout = read('supabase/functions/_shared/builderStock/pdfTextLayout.ts');
+    expect(layout).toContain('ok: false');
+    expect(layout).not.toContain('throw ');
+    // The same pinned reader as the text path, so positions and prose cannot
+    // come from two different parsers.
+    expect(layout).toContain("import('https://esm.sh/unpdf@0.12.1')");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The decision point
 // ---------------------------------------------------------------------------
 
@@ -215,11 +313,47 @@ describe('where a model is decided on', () => {
       .toContain("import('https://esm.sh/unpdf@0.12.1')");
   });
 
-  it('positions are read only behind the screen, so a brochure pays nothing', () => {
+  it('the positions are read for every PDF, and the screen still owns the table', () => {
+    /*
+     * THIS ASSERTED THE OPPOSITE, and the change is the feature.
+     *
+     * The layout used to be read only where the flattened text showed a
+     * heading row, because only the table parser used it. A brochure needs it
+     * more: flattening `LAND  HOUSE` over `350 m²  210 m²` destroys which
+     * value belongs to which label, and a label drawn beside its value
+     * becomes one unreadable string. So `extract.ts` reads the positions
+     * once per PDF and hands them on.
+     *
+     * What must NOT change is that a brochure is never offered to the TABLE
+     * parser — that is the defect which refused a readable document with
+     * `two_cells_in_one_column`. The screen moved into the reader, and it is
+     * asserted there rather than being dropped.
+     */
     const source = read('supabase/functions/_shared/builderStock/extract.ts');
-    expect(source).toContain('if (mayHoldSchedule(pageTexts)) {');
-    expect(source.indexOf('if (mayHoldSchedule(pageTexts)) {'))
-      .toBeLessThan(source.indexOf("await import('./pdfTextLayout.ts')"));
+    expect(source).not.toContain('if (mayHoldSchedule(pageTexts)) {');
+    expect(source).toContain("await import('./pdfTextLayout.ts')");
+    expect(source).toContain('organisationName: options.organisationName ?? null');
+
+    const reader = read(
+      'supabase/functions/_shared/builderStock/pdfDeterministicRows.pure.ts');
+    const entry = reader.slice(reader.indexOf('export function readPdfDeterministicRows'));
+    expect(entry).toContain('mayHoldSchedule(pageTexts)');
+    // And the table parser is reached through that screen and nowhere else.
+    const calls = entry.match(/assemblePdfSchedule\(/g) ?? [];
+    expect(calls).toHaveLength(1);
+    expect(entry.indexOf('mayHoldSchedule(pageTexts)'))
+      .toBeLessThan(entry.indexOf('assemblePdfSchedule('));
+  });
+
+  it('the uploading organisation reaches the reader, and nothing else new does', () => {
+    const runImport = read('supabase/functions/_shared/builderStock/runImport.ts');
+    expect(runImport).toContain('organisationName: input.organisationName,');
+    // The deterministic modules still know nothing about money or models.
+    const reader = read(
+      'supabase/functions/_shared/builderStock/pdfDeterministicRows.pure.ts');
+    for (const forbidden of ['budget', 'callLLM', 'llmRouter', 'openrouter']) {
+      expect(reader).not.toContain(forbidden);
+    }
   });
 
   it('the images, the page texts and the order are settled before any of this', () => {

@@ -430,7 +430,7 @@ export async function extractStockFile(
   bytes: Uint8Array,
   filename: string,
   classification: StockFileClassification,
-  options: { baseUrl?: string } = {},
+  options: { baseUrl?: string; organisationName?: string | null } = {},
 ): Promise<StockExtraction> {
   const result: StockExtraction = {
     strategy: classification.kind,
@@ -762,14 +762,26 @@ export async function extractStockFile(
      * builder's marketplace.
      */
     try {
-      const { mayHoldSchedule, readPdfDeterministicRows } =
+      const { readPdfDeterministicRows } =
         await import('./pdfDeterministicRows.pure.ts');
 
       /*
-       * Positions are read only where the flattened text suggests a heading
-       * row, because reading them means opening the document a second time
-       * and a brochure must not pay for a table it does not have. A brochure
-       * is decided entirely on the strings already in hand.
+       * THE POSITIONS ARE READ FOR EVERY PDF.
+       *
+       * They used to be read only where the flattened text suggested a
+       * heading row, because only the schedule parser used them. A BROCHURE
+       * needs them at least as much: flattening a page to lines is what turns
+       *
+       *     LAND        HOUSE
+       *     350 m²      210 m²
+       *
+       * into two labels over two values with no way to say which belongs to
+       * which, and what turns a label drawn beside its value into one
+       * unreadable string. The screen that kept a brochure away from the
+       * TABLE parser has moved into `readPdfDeterministicRows`, where it
+       * still does exactly that job — so the cost of this is one extra parse
+       * of a document already in memory, and no brochure is offered to the
+       * schedule reader that was not offered to it before.
        */
       /*
        * `result.pageTexts`, NOT the `pages` const above: that one is declared
@@ -778,14 +790,15 @@ export async function extractStockFile(
        * These are the same strings — the line that set it is thirty above.
        */
       const pageTexts = result.pageTexts ?? [];
-      let positionedPages: PdfTextLayoutPage[] | null = null;
-      if (mayHoldSchedule(pageTexts)) {
-        const { readPdfTextLayout } = await import('./pdfTextLayout.ts');
-        const layout = await readPdfTextLayout(bytes);
-        positionedPages = layout.ok ? layout.pages : null;
-      }
+      const { readPdfTextLayout } = await import('./pdfTextLayout.ts');
+      const layout = await readPdfTextLayout(bytes);
+      const positionedPages: PdfTextLayoutPage[] | null = layout.ok ? layout.pages : null;
 
-      const reading = readPdfDeterministicRows({ pageTexts, positionedPages });
+      const reading = readPdfDeterministicRows({
+        pageTexts,
+        positionedPages,
+        organisationName: options.organisationName ?? null,
+      });
       result.deterministicReading = {
         status: reading.status,
         reason: reading.reason,

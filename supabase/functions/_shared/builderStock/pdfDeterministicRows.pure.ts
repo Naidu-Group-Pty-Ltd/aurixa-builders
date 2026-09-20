@@ -32,10 +32,22 @@
  * — ten tokens under eight headings, with no recoverable boundary between
  * them. **A column cannot be recovered from `readPdfPageTexts` output**, and
  * anything that split that string on whitespace would be inventing the table
- * it claims to have found. That is why the two modes below are different
- * shapes of work rather than one parser: `readPdfBrochure` reads LINES, which
- * survive flattening intact, and `assemblePdfSchedule` reads POSITIONS, which
- * only the layout reader can supply.
+ * it claims to have found.
+ *
+ * THAT IS NOT ONLY A TABLE'S PROBLEM, and treating it as one is what left a
+ * legible brochure unread. A brochure sets a two-column block
+ *
+ *     LAND        HOUSE
+ *     350 m²      210 m²
+ *
+ * which flattens to `LAND HOUSE` over `350 m² 210 m²` — two labels and two
+ * values with the pairing destroyed — and sets a label beside its value,
+ * which flattens to one string. So BOTH modes read positions where the
+ * layout reader supplied them: `assemblePdfSchedule` reconstructs a grid,
+ * and `readPdfBrochure` reads a page as the rows and cells it was drawn in,
+ * falling back to the flattened lines for any page that has none. With no
+ * positions at all the brochure reading is byte for byte the one this module
+ * has always made.
  *
  * ── THE CONTRACT ──────────────────────────────────────────────────────────
  *
@@ -49,18 +61,31 @@
  * builder's marketplace. The two are not symmetrical, so every judgement here
  * is made on the refusing side.
  *
+ * A BROCHURE IS NOT A SPREADSHEET, AND IT IS NOT A BAG OF STRINGS EITHER.
+ * `Label: value` is the shape a brochure almost never uses. It says what a
+ * line is by putting the field's own word inside the name (`PALOMINO
+ * ESTATE`), by captioning the name (`ENZO 8.5 LUCA` over `HOME DESIGN`), by
+ * drawing the label beside or above the value, or by printing the name bare
+ * on the cover and again, with one of those, further in. Each of those is
+ * the DOCUMENT saying so, read through the alias table every other format
+ * uses and through the positions the page drew. None of them is a rule about
+ * which bare line tends to be a design: there is no such rule here, because
+ * `Society 1056` is an estate and `Enzo 8.5` is a design and nothing about
+ * either line says which.
+ *
  * NEVER COMPLETE AROUND A FACT WE DID NOT READ. `complete` is a statement
  * about the WHOLE document, not about the fields that happened to resolve: a
  * brochure completes only where every line of it was read into a field,
- * declined under a named policy (`BROCHURE_CLAIMABLE_FIELDS`), or POSITIVELY
- * recognised as the document's own furniture — a phone number, a web or email
- * address, a page number, a copyright or licence line, a disclaimer, a
- * cue-free marketing sentence. A line that is none of those may be a property
- * fact, so it stands the document down and the assisted reader runs. That
- * includes the short bare lines this vocabulary cannot name (`PALOMINO`,
- * `ENZO 8.5 LUCA`), because those are an estate and a design and a model can
- * read them: ignoring one does not make the record thinner, it makes it wrong,
- * since completing also SUPPRESSES the reader that could have read it.
+ * repeated a name already read, declined under a named policy
+ * (`BROCHURE_CLAIMABLE_FIELDS`), or was POSITIVELY recognised as the
+ * document's own furniture — a phone number, a web or email address, a page
+ * number, a copyright or licence line, a disclaimer, the uploading
+ * organisation's own name, a cue-free marketing sentence. A line that is
+ * none of those may be a property fact, so it stands the document down and
+ * the assisted reader runs. That still includes a bare name nothing in seven
+ * pages ever qualifies: ignoring one does not make the record thinner, it
+ * makes it wrong, since completing also SUPPRESSES the reader that could
+ * have read it.
  *
  * The furniture list is what keeps this reachable rather than theoretical —
  * an earlier rule blocked on any line carrying a digit, which a real
@@ -165,6 +190,13 @@ export interface PdfDeterministicReading {
      * because each was recognised POSITIVELY rather than merely unmatched.
      */
     incidentalLines?: number;
+    /**
+     * Lines that repeat something the document has ALREADY had read — the
+     * cover's bare `PALOMINO` where page five states `PALOMINO ESTATE`.
+     * Reported, and not blocking, because a second printing of a fact is
+     * not a second fact.
+     */
+    corroboratedLines?: number;
     /**
      * Canonical fields the document stated and this reader declines BY
      * POLICY — the four `BROCHURE_CLAIMABLE_FIELDS` names for stated
@@ -569,7 +601,20 @@ function readVerticalPair(
   const resolved = (unit ? fieldForHeader(`${label} ${unit}`) : null) ?? bare;
   if (!BROCHURE_CLAIMABLE_FIELDS.has(resolved)) return null;
 
-  if (NUMERIC_VALUE_FIELDS.has(resolved)) {
+  if (resolved === 'lot_number' || resolved === 'unit_number') {
+    /*
+     * AN IDENTIFIER HAS A SHAPE, and without this it had none. `LOT` over
+     * `350 m²` resolved a claimable field with a value that passed every
+     * other guard — neither numeric nor descriptive — and wrote a land size
+     * into the one field that says WHICH PROPERTY this is. The reading of a
+     * page's columns is what made the pairing reachable; the hole was always
+     * there. It is the same shape `readLotHeading` demands.
+     */
+    if (!LOT_DESIGNATION.test(value)) return null;
+  } else if (IDENTITY_FIELDS.includes(resolved) && BARE_MEASUREMENT.test(value)) {
+    // An address or a reference is free-form, but it is never a bare figure.
+    return null;
+  } else if (NUMERIC_VALUE_FIELDS.has(resolved)) {
     if (!HAS_DIGIT.test(value)) return null;
   } else if (DESCRIPTIVE_FIELDS.has(resolved) && BARE_MEASUREMENT.test(value)) {
     /*
@@ -689,6 +734,121 @@ function declinedHeadings(line: string): string[] | null {
     }
   }
   return found.size ? [...found] : null;
+}
+
+/**
+ * THE MOST WORDS A PROPER NAME IS SET IN.
+ *
+ * `Aspire 24 Grande Facade`, `The Reserve at Warralily` — past this a line is
+ * a sentence about the property rather than the property's name, and this
+ * module does not read sentences.
+ */
+const MAX_NAME_TOKENS = 6;
+
+/**
+ * The characters a lot or unit designation is made of.
+ *
+ * `12A`, `315/2` and `315` are all real and a builder may spell one however
+ * they like — but a lot number is not a measurement and not a price, which is
+ * what this is here to say. Named once because two readers ask it.
+ */
+const LOT_DESIGNATION = /^[0-9]{1,6}[A-Za-z]?(?:[/-][0-9A-Za-z]{1,6})?$/;
+
+/**
+ * Is this line set the way a PROPER NAME is set?
+ *
+ * The one typographic fact that separates `PALOMINO ESTATE` from
+ * `Welcome to Palomino Estate`: a name capitalises every word it has, and a
+ * sentence does not capitalise its function words. Digits and punctuation are
+ * not letters and carry no case, so `ENZO 8.5 LUCA` is a name and `8.5` on
+ * its own is not disqualified by having no letter at all.
+ *
+ * It is a property of how the PAGE was typeset, not a list of words, which is
+ * what makes it safe to apply to any builder's vocabulary.
+ */
+function readsAsAName(value: string): boolean {
+  const tokens = String(value ?? '').trim().split(/\s+/).filter(Boolean);
+  if (!tokens.length || tokens.length > MAX_NAME_TOKENS) return false;
+  return tokens.every((token) => {
+    const letter = token.match(/[A-Za-z]/);
+    return !letter || letter[0] === letter[0].toUpperCase();
+  });
+}
+
+/**
+ * THE DOCUMENT NAMED THE FIELD INSIDE THE NAME — `PALOMINO ESTATE`.
+ *
+ * A brochure rarely writes `Estate: Palomino`. It writes the estate's name,
+ * and the name ENDS in the word for what it is: an estate, a development, a
+ * community, a project, a design. That trailing word is a heading the
+ * existing alias table already resolves, so the document has labelled the
+ * line itself and nothing here has to decide which of two bare lines is
+ * which.
+ *
+ * FOUR GUARDS. The heading must be the line's LAST run (a heading in the
+ * middle is a specification — `Land Size 350 m2`); the field it resolves to
+ * must be one this reader may claim AND descriptive, so `PACKAGE PRICE` and
+ * `LAND SIZE` claim nothing here; something must remain in front of it to BE
+ * the name; and the line must be set as a name, which is what keeps
+ * `Welcome to Palomino Estate` out.
+ *
+ * THE VALUE IS THE LINE AS PRINTED. `Estate` is part of `Palomino Estate`
+ * the way it is not part of a caption, and no rule can tell those apart — so
+ * nothing is stripped, because editing a builder's own name is a judgement
+ * this module does not get to make.
+ */
+function readInlineFieldName(line: string): Claim | null {
+  const trimmed = String(line ?? '').trim();
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return null;
+  if (!readsAsAName(trimmed)) return null;
+  if (CURRENCY_OR_AREA.test(trimmed)) return null;
+  const reach = Math.min(MAX_LABEL_WORDS, tokens.length - 1);
+  for (let length = reach; length >= 1; length--) {
+    const field = fieldForHeader(tokens.slice(tokens.length - length).join(' '));
+    if (!field) continue;
+    if (!BROCHURE_CLAIMABLE_FIELDS.has(field)) return null;
+    if (!DESCRIPTIVE_FIELDS.has(field)) return null;
+    const name = tokens.slice(0, tokens.length - length).join(' ');
+    // All headings and no name is a caption row, not a statement.
+    if (!name || fieldForHeader(name)) return null;
+    return { field, value: trimmed };
+  }
+  return null;
+}
+
+/**
+ * THE NAME FIRST AND ITS CAPTION UNDER IT.
+ *
+ *     ENZO 8.5 LUCA
+ *     HOME DESIGN
+ *
+ * The mirror of `readVerticalPair`, and a brochure sets identity this way at
+ * least as often as the other. It is tried only after the label-over-value
+ * reading has failed, so a column of `LAND / 350 m² / HOUSE / 210 m²` still
+ * pairs downwards and nothing here can reach it.
+ *
+ * DESCRIPTIVE FIELDS ONLY, and this is the guard that matters. A caption
+ * reading over a numeric or identity field would take `$863,850` above `LOT`
+ * as a lot number; a name is the only thing a brochure captions this way, so
+ * the value must be a name, must not be a measurement and must not carry
+ * money or an area unit.
+ */
+function readCaptionedValue(
+  value: string,
+  label: string | undefined,
+): { claim: Claim } | null {
+  if (label === undefined) return null;
+  const field = fieldForHeader(label);
+  if (!field || !BROCHURE_CLAIMABLE_FIELDS.has(field)) return null;
+  if (!DESCRIPTIVE_FIELDS.has(field)) return null;
+  const trimmed = String(value ?? '').trim();
+  // A heading is a layout, never a value — the same rule the pair reader has.
+  if (fieldForHeader(trimmed)) return null;
+  if (BARE_MEASUREMENT.test(trimmed)) return null;
+  if (CURRENCY_OR_AREA.test(trimmed)) return null;
+  if (!readsAsAName(trimmed)) return null;
+  return { claim: { field, value: trimmed } };
 }
 
 export function readsAsProse(line: string): boolean {
@@ -819,7 +979,7 @@ function readLotHeading(line: string): Claim | null {
   const tokens = line.trim().split(/\s+/);
   if (tokens.length !== 2) return null;
   if (fieldForHeader(tokens[0]) !== 'lot_number') return null;
-  if (!/^[0-9]{1,6}[A-Za-z]?(?:[/-][0-9A-Za-z]{1,6})?$/.test(tokens[1])) return null;
+  if (!LOT_DESIGNATION.test(tokens[1])) return null;
   return { field: 'lot_number', value: tokens[1] };
 }
 
@@ -856,13 +1016,147 @@ function sameValue(field: string, a: string, b: string): boolean {
 // ---------------------------------------------------------------------------
 
 /**
+ * ONE THING THE PAGE DREW, AND WHERE IT DREW IT.
+ *
+ * A brochure is not a bag of strings, and reading it as one is what made a
+ * legible document unreadable. `readPdfPageTexts` flattens a page to lines,
+ * so a two-column block
+ *
+ *     LAND        HOUSE
+ *     350 m²      210 m²
+ *
+ * arrives as `LAND HOUSE` over `350 m² 210 m²` — two labels and two values
+ * with no way to say which belongs to which, and the pair reader correctly
+ * refuses it. The positions were never lost, only discarded on that path, and
+ * `layoutLines` already reassembles them into rows of cells for the schedule
+ * mode. This is the same reading, offered to the brochure.
+ *
+ * `row` is the visual line the unit sits on and `x` its left edge, which is
+ * all the pairing rules need: BESIDE is the next unit on the same row, BELOW
+ * is the nearest unit on the next row in the same column.
+ *
+ * WITHOUT POSITIONS NOTHING CHANGES. A flattened page produces one unit per
+ * line, every one at `x = 0` on a row of its own, so BESIDE is always absent
+ * and BELOW is always the next line — byte for byte the reading this module
+ * has always made.
+ */
+interface BrochureUnit {
+  text: string;
+  x: number;
+  row: number;
+}
+
+/** How far apart two cells may start and still be one column. */
+const SAME_COLUMN_TOLERANCE = 12;
+
+function unitsFromPageText(page: string): BrochureUnit[] {
+  return String(page ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .map((text, row) => ({ text, x: 0, row }));
+}
+
+function unitsFromLayout(items: readonly PdfTextItem[]): BrochureUnit[] {
+  const units: BrochureUnit[] = [];
+  layoutLines(items).forEach((line, row) => {
+    for (const cell of line.cells) {
+      const text = String(cell.text ?? '').replace(/\s+/g, ' ').trim();
+      if (text) units.push({ text, x: cell.x, row });
+    }
+  });
+  return units;
+}
+
+/** The unit drawn beside this one, on the same visual line. */
+function unitBeside(units: readonly BrochureUnit[], index: number): number | null {
+  const next = index + 1;
+  if (next >= units.length) return null;
+  return units[next].row === units[index].row ? next : null;
+}
+
+/**
+ * The unit drawn directly BELOW this one, in the same column.
+ *
+ * Only the very next row is considered — a label whose value is three rows
+ * down is a label with nothing under it, not a pair — and only a unit whose
+ * left edge lines up with this one's. On the flattened reading every unit is
+ * at x = 0 on its own row, so this resolves to the next line and the rule is
+ * the one that was always there.
+ */
+function unitBelow(units: readonly BrochureUnit[], index: number): number | null {
+  const from = units[index];
+  let targetRow: number | null = null;
+  let best: number | null = null;
+  for (let j = index + 1; j < units.length; j++) {
+    const unit = units[j];
+    if (unit.row === from.row) continue;
+    if (targetRow === null) targetRow = unit.row;
+    if (unit.row !== targetRow) break;
+    if (Math.abs(unit.x - from.x) > SAME_COLUMN_TOLERANCE) continue;
+    if (best === null || Math.abs(unit.x - from.x) < Math.abs(units[best].x - from.x)) {
+      best = j;
+    }
+  }
+  return best;
+}
+
+/** Tokens of a value, case and punctuation removed. */
+function nameTokens(value: string): string[] {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(Boolean);
+}
+
+/**
+ * Has the document already had this line read, somewhere else?
+ *
+ * A brochure prints its estate on the cover, in the running foot and beside
+ * the sales office, and it prints the design on the cover and over the floor
+ * plan. Exactly one of those printings usually carries the evidence that says
+ * what it is — `PALOMINO ESTATE` on page five for the cover's bare
+ * `PALOMINO`. The others are the same fact again.
+ *
+ * So a line whose every token appears in a NAME this reader has already
+ * claimed is accounted for. It claims nothing itself and it can move no
+ * field: the value came from the printing that carried the evidence, and
+ * this only stops the bare repeat from standing the document down.
+ *
+ * It is matched against names alone — the identity and descriptive fields —
+ * because a bare `350` sharing a digit with a land size is a coincidence and
+ * a bare `PALOMINO` sharing every token with `PALOMINO ESTATE` is not.
+ */
+function corroboratedBy(line: string, names: ReadonlyArray<readonly string[]>): boolean {
+  const tokens = nameTokens(line);
+  if (!tokens.length) return false;
+  return names.some((name) => tokens.every((token) => name.includes(token)));
+}
+
+/**
  * Read a brochure that STATES its property.
  *
  * Runs on `pageTexts` — the strings `readPdfPageTexts` already produced for
- * this upload — so it costs one pass over text the pipeline is holding anyway
- * and reads nothing the assisted reader would not have been sent.
+ * this upload — and, where the layout reader supplied them, on the positions
+ * the page actually drew its text at. Neither costs a network call: the
+ * strings are already in hand and the positions come from the same pinned
+ * reader, opened once per upload.
  */
-export function readPdfBrochure(pageTexts: readonly string[]): PdfDeterministicReading {
+export function readPdfBrochure(
+  pageTexts: readonly string[],
+  options: {
+    positionedPages?: readonly PdfTextLayoutPage[] | null;
+    /**
+     * The organisation that uploaded the document. Its own name is on every
+     * page of its own brochure and is never the estate or the design — so it
+     * is recognised as the publisher talking about itself rather than left
+     * to stand the document down. Absent, nothing changes.
+     */
+    organisationName?: string | null;
+  } = {},
+): PdfDeterministicReading {
   const diagnostics: PdfDeterministicReading['diagnostics'] = {
     mode: 'brochure', pages: pageTexts.length, fieldsRead: [], candidates: 0,
   };
@@ -873,32 +1167,55 @@ export function readPdfBrochure(pageTexts: readonly string[]): PdfDeterministicR
    * resolve. ANY ONE OF THEM REFUSES THE DOCUMENT. A COUNT, never the text:
    * the diagnostics go to the import log.
    */
-  let unaccounted = 0;
+  const unresolved: string[] = [];
   /** Lines POSITIVELY recognised as furniture. Reported, not blocking. */
   let incidental = 0;
   /** Canonical fields the document stated and this reader declines by policy. */
   const declined = new Set<string>();
+  const organisation = nameTokens(options.organisationName ?? '');
 
   /*
    * PAGE BY PAGE, AND THE PAGES NEVER JOIN.
    *
-   * The vertical reader below pairs a label with the line UNDER it, so a
-   * flattened array would let the last line of one page pair with the first
-   * line of the next — `HOUSE` at the foot of page 1 taking `210 m²` off the
-   * top of page 2, two facts that were never set together. The page break is
-   * the document's own evidence that they are not a pair, so the scan is
-   * page-local and `index + 1` can never leave the page it started on.
+   * The pairing rules reach for the unit UNDER this one, so a document read
+   * as one stream would let the last line of a page pair with the first line
+   * of the next — `HOUSE` at the foot of page 1 taking `210 m²` off the top
+   * of page 2, two facts that were never set together. The page break is the
+   * document's own evidence that they are not a pair, so every page is its
+   * own unit stream and no rule can leave the page it started on.
+   *
+   * POSITIONS WHERE THERE ARE POSITIONS. A page the layout reader supplied
+   * is read as the rows and cells it was drawn in; a page it did not is read
+   * as the lines it flattens to, which is exactly what this module has
+   * always read. The two are matched by page NUMBER, so a document whose
+   * layout came back short still reads every page it has.
    */
-  const pages = pageTexts
-    .map((page) => String(page ?? '').split(/\r?\n/)
-      .map((line) => line.replace(/\s+/g, ' ').trim())
-      .filter(Boolean));
+  const positioned = new Map<number, PdfTextItem[]>();
+  for (const page of options.positionedPages ?? []) {
+    if (page && Number.isFinite(page.page) && Array.isArray(page.items)) {
+      positioned.set(page.page, page.items);
+    }
+  }
+  const pages = pageTexts.map((page, index) => {
+    const items = positioned.get(index + 1);
+    const laid = items && items.length ? unitsFromLayout(items) : null;
+    /*
+     * A layout reading that produced nothing falls back to the flattened
+     * one. An empty page is a page the reader could not decode, and reading
+     * it as no content at all would let a document complete around it.
+     */
+    return laid && laid.length ? laid : unitsFromPageText(page);
+  });
+  if (positioned.size) diagnostics.mode = 'brochure';
 
   let scanned = 0;
-  for (const lines of pages) {
-    for (let index = 0; index < lines.length; index++) {
+  for (const units of pages) {
+    /** Units already spent as another unit's value. */
+    const consumed = new Set<number>();
+    for (let index = 0; index < units.length; index++) {
       if (++scanned > MAX_LINES_SCANNED) break;
-      const line = lines[index];
+      if (consumed.has(index)) continue;
+      const line = units[index].text;
       const found: Claim[] = [];
 
       const labelled = readLabelledValue(line);
@@ -945,11 +1262,43 @@ export function readPdfBrochure(pageTexts: readonly string[]): PdfDeterministicR
             const lot = readLotHeading(line);
             if (lot) found.push(lot);
             else {
-              // The label on this line, its value on the next.
-              const vertical = readVerticalPair(line, lines[index + 1]);
-              if (vertical) {
-                found.push(vertical.claim);
-                index += vertical.consumed - 1;
+              const named = readInlineFieldName(line);
+              if (named) found.push(named);
+              else {
+                /*
+                 * THE THREE WAYS A PAGE SETS A LABEL BESIDE ITS VALUE, in
+                 * the order a document means them.
+                 *
+                 * BESIDE first, because a cell drawn to the right of a label
+                 * on the same line is that label's value and nothing else
+                 * can claim it — this is the reading only the positions
+                 * make possible. Then BELOW, the label over its value, which
+                 * is what the flattened reading already did. Then the
+                 * caption, the value over its label, which is tried last so
+                 * a column of labels and values can never be read upwards.
+                 */
+                const beside = unitBeside(units, index);
+                const alongside = beside !== null && !consumed.has(beside)
+                  ? readVerticalPair(line, units[beside].text) : null;
+                if (alongside && beside !== null) {
+                  found.push(alongside.claim);
+                  consumed.add(beside);
+                } else {
+                  const below = unitBelow(units, index);
+                  const under = below !== null && !consumed.has(below)
+                    ? readVerticalPair(line, units[below].text) : null;
+                  if (under && below !== null) {
+                    found.push(under.claim);
+                    consumed.add(below);
+                  } else {
+                    const caption = below !== null && !consumed.has(below)
+                      ? readCaptionedValue(line, units[below].text) : null;
+                    if (caption && below !== null) {
+                      found.push(caption.claim);
+                      consumed.add(below);
+                    }
+                  }
+                }
               }
             }
           }
@@ -1006,7 +1355,7 @@ export function readPdfBrochure(pageTexts: readonly string[]): PdfDeterministicR
            * reader can identify, and that makes the log actionable.
            */
           diagnostics.fieldsRead = [...claimed.keys()].sort();
-          diagnostics.unaccountedLines = unaccounted + 1;
+          diagnostics.unaccountedLines = unresolved.length + 1;
           diagnostics.incidentalLines = incidental;
           if (declined.size) diagnostics.declinedFields = [...declined].sort();
           return refuse('incomplete', `label_without_value:${bareLabel}`, diagnostics);
@@ -1021,7 +1370,23 @@ export function readPdfBrochure(pageTexts: readonly string[]): PdfDeterministicR
           incidental += 1;
           continue;
         }
-        unaccounted += 1;
+        /*
+         * THE PUBLISHER'S OWN NAME. A builder's brochure carries the
+         * builder's name on every page, and it is never the estate and never
+         * the design — the uploading organisation is what a stock row's
+         * `builder_name` already comes from, which is why this vocabulary
+         * declines to read one off a page at all.
+         */
+        if (organisation.length && corroboratedBy(line, [organisation])) {
+          incidental += 1;
+          continue;
+        }
+        /*
+         * UNRESOLVED, AND JUDGED AT THE END. It may yet be the second
+         * printing of a name another page stated with its field word
+         * attached, and that page may come after this one.
+         */
+        unresolved.push(line);
         continue;
       }
 
@@ -1053,15 +1418,32 @@ export function readPdfBrochure(pageTexts: readonly string[]): PdfDeterministicR
      */
     if (scanned > MAX_LINES_SCANNED) {
       diagnostics.fieldsRead = [...claimed.keys()].sort();
-      diagnostics.unaccountedLines = unaccounted;
+      diagnostics.unaccountedLines = unresolved.length;
       diagnostics.incidentalLines = incidental;
       return refuse('incomplete', 'line_ceiling_reached', diagnostics);
     }
   }
 
+  /*
+   * THE SECOND PRINTING IS NOT A SECOND FACT.
+   *
+   * Judged here rather than in the loop because the evidence can come later
+   * in the document than the bare line it accounts for: a cover states
+   * `PALOMINO`, page five states `PALOMINO ESTATE`, and only the second one
+   * says what the first one is. The names are the fields that hold one — the
+   * identity and descriptive fields — so a digit shared with a land size can
+   * never account for anything.
+   */
+  const names = [...claimed.entries()]
+    .filter(([field]) => IDENTITY_FIELDS.includes(field) || DESCRIPTIVE_FIELDS.has(field))
+    .map(([, value]) => nameTokens(value))
+    .filter((tokens) => tokens.length > 0);
+  const stillUnresolved = unresolved.filter((line) => !corroboratedBy(line, names));
+
   diagnostics.fieldsRead = [...claimed.keys()].sort();
-  diagnostics.unaccountedLines = unaccounted;
+  diagnostics.unaccountedLines = stillUnresolved.length;
   diagnostics.incidentalLines = incidental;
+  diagnostics.corroboratedLines = unresolved.length - stillUnresolved.length;
   if (declined.size) diagnostics.declinedFields = [...declined].sort();
 
   if (!claimed.size) {
@@ -1099,7 +1481,7 @@ export function readPdfBrochure(pageTexts: readonly string[]): PdfDeterministicR
    * that has made one for every PDF ever uploaded. The cost of completing
    * wrongly is a permanently thinner record that nothing reports.
    */
-  if (unaccounted > 0) {
+  if (stillUnresolved.length > 0) {
     return refuse('incomplete', 'unaccounted_specification_lines', diagnostics);
   }
 
@@ -1118,6 +1500,18 @@ export function readPdfBrochure(pageTexts: readonly string[]): PdfDeterministicR
   const identity = IDENTITY_FIELDS.filter((field) => claimed.has(field));
   if (!identity.length) {
     return refuse('incomplete', 'no_identity_field', diagnostics);
+  }
+  /*
+   * A SUMMARY WORD IS NOT A PROPERTY, and the brochure reader needs this
+   * rule now for the same reason the schedule reader always has. Reading a
+   * page's COLUMNS means a heading can sit over a footer cell — `LOT` above
+   * `TOTAL` — and `normaliseStockRow` accepts `lot_number: "TOTAL"` as a
+   * perfectly good row. It is the same test, over the same words, that
+   * `rowIdentity` applies to a reconstructed table row.
+   */
+  if (identity.every((field) =>
+    SUMMARY_IDENTITY_LABELS.has(flattenIdentity(claimed.get(field) ?? '')))) {
+    return refuse('incomplete', 'summary_row_identity', diagnostics);
   }
   if (claimed.size < MIN_BROCHURE_FIELDS) {
     return refuse('unsupported', 'too_few_fields_for_a_specification', diagnostics);
@@ -1491,19 +1885,47 @@ const VALUE_TOKEN = /^[$€£¥]?\d/;
 export function readPdfDeterministicRows(input: {
   pageTexts: readonly string[];
   positionedPages?: readonly PdfTextLayoutPage[] | null;
+  organisationName?: string | null;
 }): PdfDeterministicReading {
   const pageTexts = input.pageTexts ?? [];
 
-  const brochure = readPdfBrochure(pageTexts);
-  if (brochure.status === 'complete') return brochure;
+  const readBrochure = () => readPdfBrochure(pageTexts, {
+    positionedPages: input.positionedPages,
+    organisationName: input.organisationName,
+  });
 
-  if (input.positionedPages && input.positionedPages.length) {
-    const schedule = assemblePdfSchedule(input.positionedPages);
+  /*
+   * THE SCHEDULE SCREEN MOVED HERE, and it now decides ORDER as well.
+   *
+   * It used to gate whether the positions were READ at all, which was right
+   * while only the schedule mode used them. The brochure reads them now, so
+   * the positions are fetched for every PDF and the screen keeps doing the
+   * one job it was written for: a document whose flattened text shows no
+   * heading row is never offered to the table parser, so a brochure can
+   * never be refused with a table's refusal — the defect that masked a
+   * readable document behind `two_cells_in_one_column`.
+   *
+   * WHY THE TABLE NOW GOES FIRST WHERE THERE IS ONE. The brochure was tried
+   * first because a schedule could not pass it: its data lines open with an
+   * estate name rather than a label, so they claimed nothing. Reading the
+   * page's COLUMNS changes that — a one-row table is a heading over a value
+   * in every column, which is exactly the shape the brochure reader is built
+   * to read. It would produce the same row, but through a reader that has
+   * none of the table parser's guarantees about the grid. So a document the
+   * screen says holds a table is read as a table, and the brochure is what
+   * happens to everything else and to a table reading that refused.
+   */
+  const positioned = input.positionedPages ?? null;
+  if (positioned && positioned.length && mayHoldSchedule(pageTexts)) {
+    const schedule = assemblePdfSchedule(positioned);
     if (schedule.status === 'complete') return schedule;
+    const fallback = readBrochure();
+    if (fallback.status === 'complete') return fallback;
     // The schedule reading is the more informative refusal wherever the
     // document actually had a table in it.
     if (schedule.reason !== 'no_schedule_found') return schedule;
+    return fallback;
   }
 
-  return brochure;
+  return readBrochure();
 }
