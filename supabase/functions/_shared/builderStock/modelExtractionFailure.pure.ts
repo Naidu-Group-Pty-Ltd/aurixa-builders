@@ -45,7 +45,13 @@ export type ModelExtractionFailureCode =
   /** A model answered, and the answer was not the shape the schema demands. */
   | 'model_invalid_response'
   /** A model answered without calling the tool it was required to call. */
-  | 'model_missing_tool_call';
+  | 'model_missing_tool_call'
+  /**
+   * The monthly reading allowance is spent, or its accounting could not be
+   * reached. NOTHING was called — this is decided before any provider is
+   * touched, and it is the one failure here that is not about a model at all.
+   */
+  | 'model_budget_exhausted';
 
 /** One entry of `llmRouter`'s `attempts`. Structural, so the router owns it. */
 export interface RouterAttempt {
@@ -247,6 +253,34 @@ export function unusableAnswerFailure(
     attemptCount: list.length,
     categories,
     diagnosis: summariseAttempts(list, categories),
+  });
+}
+
+/**
+ * The monthly ceiling refused this read, so no provider was called.
+ *
+ * Carries no attempts, because there were none — which is the point. The
+ * diagnosis states the ceiling's own arithmetic in micro-dollars so an
+ * operator can see how far over the request was without reading any
+ * builder's document.
+ *
+ * `unavailable` (the budget's accounting could not be reached) resolves to the
+ * SAME refusal as `exhausted`, deliberately: a hard cap whose bookkeeping is
+ * down must not be treated as a cap of infinity.
+ */
+export function budgetExhaustedFailure(args: {
+  reason: 'exhausted' | 'unavailable';
+  remainingMicros: number;
+  requiredMicros: number;
+  detail?: string;
+}): StockModelExtractionError {
+  const detail = args.detail ? `; ${args.detail}` : '';
+  return new StockModelExtractionError({
+    code: 'model_budget_exhausted',
+    attemptCount: 0,
+    categories: [],
+    diagnosis: `budget ${args.reason}: needed ${args.requiredMicros} micros, `
+      + `${args.remainingMicros} remaining this month${detail}`,
   });
 }
 

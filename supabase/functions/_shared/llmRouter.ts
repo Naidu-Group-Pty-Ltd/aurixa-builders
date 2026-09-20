@@ -18,7 +18,7 @@ import { convertContent, anthropicRejectsSampling } from './claudeReconstruct.pu
 import { ANTHROPIC_MESSAGES_URL, anthropicJsonHeaders } from './anthropicRoute.pure.ts';
 import { resolveAnthropicCredential } from './anthropicCredential.ts';
 import { logApiUsage } from './logApiUsage.ts';
-import { extractUsageTokens, resolveLlmCredential, resolveModelUsed } from './llmUsageBinding.pure.ts';
+import { extractReportedCostUsd, extractUsageTokens, resolveLlmCredential, resolveModelUsed } from './llmUsageBinding.pure.ts';
 
 export type LLMRoute = 'gateway' | 'native' | 'openrouter';
 export type LLMMessage = { role: 'system' | 'user' | 'assistant' | 'tool'; content: any; tool_call_id?: string; name?: string };
@@ -521,6 +521,14 @@ async function meterRouterCall(
       ? 'GOOGLE_API_KEY'
       : binding.secretName;
     const tokens = extractUsageTokens(data);
+    /*
+     * WHAT IT COST, FROM THE PARTY THAT CHARGED IT. OpenRouter reports the
+     * request's real cost in `usage.cost`; `logApiUsage` otherwise derives a
+     * figure from its own per-1K table, which is an estimate that goes stale
+     * the day a vendor reprices. Passed through only when present, so every
+     * other provider keeps the behaviour it had.
+     */
+    const reportedCostUsd = extractReportedCostUsd(data);
     await logApiUsage(getAdminClient(), {
       service_name: binding.serviceName,
       endpoint: '/v1/chat/completions',
@@ -530,8 +538,12 @@ async function meterRouterCall(
       tokens_used: tokens?.totalTokens ?? 0,
       response_time_ms: responseMs,
       status: 'success',
+      ...(reportedCostUsd !== null ? { cost_estimate_usd: reportedCostUsd } : {}),
       ...(userId ? { user_id: userId } : {}),
-      metadata: { secret_name: secretName, source: 'llmRouter', agent_key: agentKey, route },
+      metadata: {
+        secret_name: secretName, source: 'llmRouter', agent_key: agentKey, route,
+        ...(reportedCostUsd !== null ? { cost_source: 'provider_reported' } : {}),
+      },
     });
   } catch (e) {
     console.warn('[llmRouter] usage metering failed (non-fatal)', e);
