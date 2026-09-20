@@ -42,12 +42,16 @@ export const ELECTION_CONTEXT_HEADER = 'x-election-context';
  * `text_free_cover_not_elected` is not that. It means the document was
  * fetched whole, its text was read and every page came back empty, the
  * builder's own folder had already tied it to this one property so the
- * structural cover was licensed, the cover page's rasters WERE decoded and
- * inspected, and the cover rule still elected nothing. Every step of that is
- * a pure function of the bytes. The same bytes answer the same way for ever,
- * so retrying is spend with no possible new outcome — measured on Lot 208 /
- * `46 Satinwood Crescent Donnybrook`, fourteen attempts across two imports,
- * one verdict.
+ * structural cover was licensed, a raster on that cover page WAS materialised
+ * — proven, not assumed, by `coverRastersInspected` — and the cover rule
+ * still elected nothing from it. Every step of that is a pure function of the
+ * bytes. The same bytes answer the same way for ever, so retrying is spend
+ * with no possible new outcome — measured on Lot 208 / `46 Satinwood Crescent
+ * Donnybrook`, fourteen attempts across two imports, one verdict.
+ *
+ * A COVER PAGE WITH NOTHING DECODED IS EXPRESSLY NOT THIS. That is a starved
+ * or failed raster step, it is a fact about us, and it keeps the generic
+ * six.
  *
  * SO THE CODE TRAVELS, AND THE SENTENCE DOES NOT DECIDE ANYTHING. Retry
  * behaviour keys on this value and never on the prose, because prose is

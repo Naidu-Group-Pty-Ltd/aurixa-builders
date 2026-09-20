@@ -68,12 +68,47 @@ HEAVY = '--heavy' in sys.argv
 # and is the deterministic refusal `TEXT_FREE_COVER_NOT_ELECTED` exists for.
 # Neither draws a single character, which is the property that makes them
 # text-free — so nothing here may call `drawString`.
+#
+# `--text-free-plan` is the LOT 208 SHAPE ITSELF, and it is the one the retry
+# budget turns on. Measured on the real document (4,178,756 bytes, the byte
+# size production recorded on all fourteen attempts): coverPages [1], ONE
+# decoded asset of 2,375,240 bytes, pageOrderAuthoritative, no unread streams,
+# and the cover rule refusing it with "every picture on the property cover is
+# a plan or a graphic rather than a photograph of the property". The decode
+# SUCCEEDED; the picture simply is not a photograph of a house.
+#
+# `--text-free-blank` is deliberately NOT that. It embeds no raster at all, so
+# it yields zero assets — which is exactly what a starved or failed decode
+# yields, and the two cannot be told apart. It is here to prove that shape
+# stays on the generic allowance.
 TEXT_FREE_HERO = '--text-free-hero' in sys.argv
 TEXT_FREE_BLANK = '--text-free-blank' in sys.argv
-if TEXT_FREE_HERO or TEXT_FREE_BLANK:
+TEXT_FREE_PLAN = '--text-free-plan' in sys.argv
+if TEXT_FREE_HERO or TEXT_FREE_BLANK or TEXT_FREE_PLAN:
     c = canvas.Canvas(out, pagesize=A4)
     pw, ph = A4
-    if TEXT_FREE_HERO:
+    if TEXT_FREE_PLAN:
+        # A drawn plan rasterised: near-white ground, thin dark rules, no
+        # sky/lawn colour statistics. The role classifier separates a facade
+        # from a plan on colour and edge statistics, so this materialises as a
+        # real asset and is then refused as "a plan or a graphic".
+        pw_, ph_ = 1400, 990
+        plan = Image.new('RGB', (pw_, ph_), (252, 252, 250))
+        d = plan.load()
+        for x in range(pw_):
+            for y in range(ph_):
+                on_frame = (60 < x < pw_ - 60 and 60 < y < ph_ - 60
+                            and (abs(x - 60) < 3 or abs(x - (pw_ - 60)) < 3
+                                 or abs(y - 60) < 3 or abs(y - (ph_ - 60)) < 3))
+                on_wall = (200 < x < pw_ - 200 and abs(y - ph_ // 2) < 3) or \
+                          (200 < y < ph_ - 200 and abs(x - pw_ // 2) < 3)
+                if on_frame or on_wall:
+                    d[x, y] = (24, 24, 28)
+        buf_ = io.BytesIO(); plan.save(buf_, format='JPEG', quality=92); buf_.seek(0)
+        c.drawImage(ImageReader(buf_), 20 * mm, ph - 165 * mm,
+                    width=pw - 40 * mm, height=110 * mm,
+                    preserveAspectRatio=True, mask=None)
+    elif TEXT_FREE_HERO:
         # One large raster and nothing else: the cover rule's "the only
         # photograph the property cover presents" case.
         c.drawImage(ImageReader(jpeg), 20 * mm, ph - 165 * mm,

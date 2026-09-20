@@ -270,19 +270,46 @@ if (args.includes('--heavy')) {
 
   try {
     /*
-     * THE LOT 208 SHAPE: no text anywhere, no raster on the cover. The folder
-     * tie licenses page 1, the page is decoded, and the cover rule finds no
-     * photograph it may take — which is the one deterministic refusal.
+     * THE LOT 208 SHAPE, AND IT IS THE ONE THE BUDGET TURNS ON. Text-free,
+     * folder-tied, page 1 licensed as a structural cover, ONE raster decoded
+     * off it — and the cover rule refuses it because a plan is not a
+     * photograph of a house. Measured on the real document at 4,178,756
+     * bytes: coverPages [1], assets 1 (2,375,240 bytes), page order
+     * authoritative, no unread streams. The decode SUCCEEDED, so the refusal
+     * is the document's and two attempts is the honest budget.
      */
-    const blank = await elect('text-free-blank', {
+    const plan = await elect('text-free-plan', {
       label: 'Lot 208, 46 Satinwood Crescent Donnybrook',
       documentName: 'Lot 208, 46 Satinwood Crescent Donnybrook VIC_Package.pdf',
       url: 'https://drive.google.com/uc?export=download&id=satinwood-208',
     });
-    check('a text-free cover that elects nothing refuses',
-      blank.status === 'unreachable', `status=${blank.status}`);
+    check('a text-free cover whose decoded raster is refused, refuses',
+      plan.status === 'unreachable', `status=${plan.status}`);
     check('and it carries the deterministic code, not just a sentence',
-      blank.reason === 'text_free_cover_not_elected', `reason=${blank.reason}`);
+      plan.reason === 'text_free_cover_not_elected', `reason=${plan.reason}`);
+
+    /*
+     * THE SHAPE THAT MUST NOT BE CODED, AND THIS IS THE WHOLE POINT OF IT.
+     *
+     * No raster is embedded at all, so the selection yields ZERO assets —
+     * which is byte-for-byte the shape a STARVED OR FAILED decode yields, and
+     * nothing downstream can tell the two apart. `coverPages` alone would
+     * call this inspected and shorten it from six attempts to two, retiring a
+     * brochure we merely ran out of CPU on. It must stay on the generic
+     * allowance.
+     */
+    const blank = await elect('text-free-blank', {
+      label: 'Lot 208, 46 Satinwood Crescent Donnybrook',
+      documentName: 'Lot 208 no raster.pdf',
+      url: 'https://drive.google.com/uc?export=download&id=satinwood-blank',
+    });
+    check('a text-free cover with NOTHING decoded still refuses',
+      blank.status === 'unreachable', `status=${blank.status}`);
+    check('and it is NOT coded, because a failed decode looks exactly like it',
+      blank.reason === undefined, `reason=${blank.reason}`);
+    check('and it does not claim the page presents no photograph',
+      String(blank.detail ?? '').includes('could not be read on this attempt'),
+      String(blank.detail ?? '').slice(0, 90));
 
     /*
      * THE SAME SHAPE WITH A PHOTOGRAPH ON IT. Text-free, folder-tied, and the

@@ -55,6 +55,9 @@ import {
   PDF_ELECTION_PROTOCOL, TEXT_FREE_COVER_NOT_ELECTED, isElectionRefusalReason,
 } from '../../../supabase/functions/_shared/builderStock/pdfElectionBoundary.pure';
 import {
+  coverRastersInspected,
+} from '../../../supabase/functions/_shared/builderStock/pdfSourcePhoto';
+import {
   runElectionOnRoute,
 } from '../../../supabase/functions/_shared/builderStock/pdfElectionClient';
 import {
@@ -142,9 +145,14 @@ describe('the deterministic text-free cover refusal retires after exactly two el
   });
 
   /**
-   * The first refusal must NOT retire. One starved raster decode is the one
-   * way this answer could move without the document changing, and a budget of
-   * one would bank on the first of them.
+   * The first refusal must NOT retire.
+   *
+   * `coverRastersInspected` now rules out the decode that produced NOTHING,
+   * so the residual is narrower and sharper: a decode that materialised SOME
+   * of a page's rasters and was starved of the rest would satisfy the
+   * predicate while a healthier run might still find the photograph. One
+   * retry covers exactly that; a budget of one would bank on the first of
+   * them.
    */
   it('does not retire on the first refusal', () => {
     const first = writeBranchState(null, BRANCH.url,
@@ -171,6 +179,101 @@ describe('the deterministic text-free cover refusal retires after exactly two el
       generic = recordUnreachableAttempt(generic, QUESTION);
     }
     expect(unreachableAttemptsExhausted(generic, QUESTION)).toBe(true);
+  });
+});
+
+/**
+ * THE SHAPES, MEASURED THROUGH THE BUNDLED READER ON THE REAL DOCUMENTS.
+ *
+ * `coverPages.length > 0` is NOT proof that anything was decoded — the
+ * selection contract says in as many words that a non-empty list with no
+ * asset is OURS, and `pdfElection.ts` already refuses that shape as a starved
+ * raster step further down. The mint therefore has to gate on positive
+ * evidence, or a brochure we merely ran out of CPU on drops from six attempts
+ * to two.
+ *
+ * Every row below is a real reading, not a supposition:
+ *
+ *   Lot 208's own 4,178,756-byte document — coverPages [1], ONE decoded asset
+ *   of 2,375,240 bytes on page 1, page order authoritative, no unread
+ *   streams, refused "every picture on the property cover is a plan or a
+ *   graphic rather than a photograph of the property".
+ *
+ *   The no-raster fixture — coverPages [1], ZERO assets. Byte-for-byte the
+ *   shape a starved decode yields, and indistinguishable from it.
+ */
+describe('the mint demands positive evidence that the rasters were inspected', () => {
+  /** Lot 208, exactly as the bundled reader reported it on 20 Sep 2026. */
+  const LOT_208 = {
+    assets: [{ page: 1 }],
+    coverPages: [1],
+    pageOrderAuthoritative: true,
+    objectStreamsUnread: 0,
+  };
+
+  it('accepts the measured Lot 208 shape', () => {
+    expect(coverRastersInspected(LOT_208)).toBe(true);
+  });
+
+  /** THE ONE THIS REVIEW EXISTS FOR. Nothing decoded is never the document. */
+  it('refuses a cover page with nothing decoded — a starved or failed raster step', () => {
+    expect(coverRastersInspected({ ...LOT_208, assets: [] })).toBe(false);
+  });
+
+  it('refuses a document whose page tree could not be decompressed', () => {
+    expect(coverRastersInspected({
+      ...LOT_208, pageOrderAuthoritative: false, objectStreamsUnread: 3,
+    })).toBe(false);
+  });
+
+  /**
+   * A catalogue that genuinely names no page tree, with every stream read, is
+   * the DOCUMENT speaking — so the predicate does not refuse on page order
+   * alone. It refuses only when a stream went unread with it.
+   */
+  it('does not refuse on page order alone when every stream was read', () => {
+    expect(coverRastersInspected({
+      ...LOT_208, pageOrderAuthoritative: false, objectStreamsUnread: 0,
+    })).toBe(true);
+  });
+
+  it('refuses when no cover page was named at all', () => {
+    expect(coverRastersInspected({ ...LOT_208, coverPages: [] })).toBe(false);
+  });
+
+  it('refuses when the decoded assets are on pages that are not the cover', () => {
+    expect(coverRastersInspected({ ...LOT_208, assets: [{ page: 4 }] })).toBe(false);
+  });
+
+  it('refuses an asset whose page is unknown', () => {
+    expect(coverRastersInspected({ ...LOT_208, assets: [{}] })).toBe(false);
+  });
+});
+
+describe('a text-free failed raster decode keeps the full generic allowance', () => {
+  /**
+   * The end of the same argument, stated as a budget rather than a predicate.
+   * A text-free document whose decode produced nothing answers `unreachable`
+   * with NO code, so it walks the six-attempt path exactly as a sign-in wall
+   * does — it must never be one of the two-attempt retirements.
+   */
+  const textFreeDecodeFailed: Answer = () => ({});
+
+  it('spends the generic budget, not the deterministic one', () => {
+    const { elections, stored } = driveBranchToRetirement(textFreeDecodeFailed, 20);
+    expect(elections).toBe(MAX_UNREACHABLE_ATTEMPTS + 1);
+    expect(elections).not.toBe(MAX_TEXT_FREE_COVER_ATTEMPTS);
+    expect(branchTerminal(stored, BRANCH, QUESTION)).toBe(true);
+  });
+
+  it('leaves the deterministic counter untouched throughout', () => {
+    let record: unknown = null;
+    for (let n = 0; n < MAX_UNREACHABLE_ATTEMPTS; n += 1) {
+      record = recordUnreachableAttempt(record, QUESTION);
+    }
+    expect(unreachableSoFar(record, QUESTION)).toBe(MAX_UNREACHABLE_ATTEMPTS);
+    expect(textFreeCoverSoFar(record, QUESTION)).toBe(0);
+    expect(textFreeCoverExhaustedAfter(record, QUESTION)).toBe(false);
   });
 });
 
@@ -464,12 +567,14 @@ describe('the settler reads the code, not the sentence', () => {
     // Exactly one MINT — counted as a value assignment, so the constant may
     // still be named in prose without weakening the assertion.
     expect(source.match(/reason: TEXT_FREE_COVER_NOT_ELECTED/g)?.length).toBe(1);
-    expect(source).toContain('const inspectedCover = (selection.coverPages?.length ?? 0) > 0');
-    expect(source).toContain('...(inspectedCover ? { reason: TEXT_FREE_COVER_NOT_ELECTED } : {})');
+    // And it is gated on the PREDICATE, never on `coverPages` alone — which
+    // is the whole correctness question this rule exists to answer.
+    expect(source).toContain('if (coverRastersInspected(selection)) {');
+    expect(source).not.toMatch(/coverPages\??\.length[^\n]*\?\s*\{\s*reason/);
     // The early return — the one taken when the document was NOT tied to this
     // property by its folder — must stay uncoded, on the generic allowance.
     const early = source.indexOf('if (textFree && identifiedBy !== \'folder_structure\')');
-    const mint = source.indexOf('inspectedCover ? { reason:');
+    const mint = source.indexOf('if (coverRastersInspected(selection)) {');
     expect(early).toBeGreaterThan(-1);
     expect(mint).toBeGreaterThan(early);
     expect(source.slice(early, source.indexOf('}', early) + 1))

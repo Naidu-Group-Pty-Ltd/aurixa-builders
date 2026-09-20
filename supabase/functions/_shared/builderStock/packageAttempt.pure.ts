@@ -113,10 +113,19 @@ export const MAX_UNREACHABLE_ATTEMPTS = 6;
  *
  * `TEXT_FREE_COVER_NOT_ELECTED` covers none of that. It is only ever minted
  * after the bytes arrived whole, every page's text read back empty, the
- * builder's folder had already tied the document to this one property, and
- * the cover page's rasters were decoded and put through the cover rule. Every
- * one of those steps is a pure function of the bytes, so the same document
- * answers the same way for ever. Asking again recovers nothing.
+ * builder's folder had already tied the document to this one property, and a
+ * raster on the named cover page was ACTUALLY MATERIALISED and put through
+ * the cover rule. Every one of those steps is a pure function of the bytes,
+ * so the same document answers the same way for ever. Asking again recovers
+ * nothing.
+ *
+ * THE WORD "ACTUALLY" IS LOAD-BEARING AND WAS ADDED IN REVIEW. A named cover
+ * page with NOTHING decoded is a starved or failed raster step — `pdfElection`
+ * says so itself, a few lines further down — and it is indistinguishable from
+ * a page that carries no picture. Coding that shape would have moved a
+ * brochure we merely ran out of CPU on from six attempts to two, which is the
+ * one way this budget could retire a document that reads perfectly well.
+ * `coverRastersInspected` is the gate, and it refuses that shape.
  *
  * MEASURED, Lot 208 / `46 Satinwood Crescent Donnybrook`. Seven elections in
  * the 12:12 import of 19 September 2026 and seven more in the 13:33 one:
@@ -126,13 +135,14 @@ export const MAX_UNREACHABLE_ATTEMPTS = 6;
  * in the first import, 8 min 13 s in the second — while the property had
  * ALREADY held a stored picture since 41 seconds after the upload began.
  *
- * WHY TWO AND NOT ONE. There is one way the answer could move that is not
- * about the document: a raster decode starved of CPU could in principle
- * return fewer media than a healthy one, and the `textFree` branch returns
- * before the code draws its usual "a cover page and nothing decoded is US"
- * distinction. One retry covers that without funding a treadmill. It also
- * costs this import nothing — on the measured timeline the other seventeen
- * properties are still working when the second attempt lands.
+ * WHY TWO AND NOT ONE. With the zero-asset shape excluded, one residual
+ * remains and it is narrower: a decode that materialised SOME of a page's
+ * rasters and was starved of the rest satisfies the gate, while a healthier
+ * run might still find the photograph among the ones it missed. Nothing in
+ * the selection distinguishes a partial decode from a complete one, so one
+ * retry covers it without funding a treadmill. It also costs this import
+ * nothing — on the measured timeline the other seventeen properties are
+ * still working when the second attempt lands.
  *
  * It is deliberately NOT a fraction or a function of the six: these are two
  * budgets for two failures, and tying them together is how a change to one

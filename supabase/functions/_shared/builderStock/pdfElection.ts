@@ -34,7 +34,9 @@
  *
  * Pure of IO except the decoding itself: no database, no network, no clock.
  */
-import { selectPdfPropertyPrimaryHoldingSlot } from './pdfSourcePhoto.ts';
+import {
+  coverRastersInspected, selectPdfPropertyPrimaryHoldingSlot,
+} from './pdfSourcePhoto.ts';
 import { withPdfDecodeSlot } from './pdfDecodeSlot.pure.ts';
 import { coverIdentityQuote } from './pdfPrimaryImage.pure.ts';
 import { TEXT_FREE_COVER_NOT_ELECTED } from './pdfElectionBoundary.pure.ts';
@@ -187,19 +189,52 @@ export async function electFromPdfBytes(
      * publication waited behind them for 8 min 13 s.
      *
      * `TEXT_FREE_COVER_NOT_ELECTED` is therefore attached for the retry
-     * budget to read. It is NOT attached on the `coverPages` -less path
-     * below, because that one means no page was even searched — the decode
-     * did not happen, so this refusal is not the deterministic one and
-     * belongs on the patient generic allowance with every other "we did not
-     * get to look".
+     * budget to read — BUT ONLY ON POSITIVE EVIDENCE THAT THE RASTERS WERE
+     * ACTUALLY DECODED, which `coverPages` alone does not give.
+     *
+     * THIS RETURN SITS IN FRONT OF THE TWO OPERATIONAL RULES BELOW, so it
+     * cannot lean on them. A named cover page with NOTHING decoded is a
+     * starved or failed raster step — the rule below says so in as many words
+     * — and it is indistinguishable from a page that genuinely carries no
+     * picture. Coding that shape would take a brochure we ran out of CPU on
+     * from six attempts to two, which is the one way this change could retire
+     * a document that reads perfectly well. `coverRastersInspected` is the
+     * exact negation of both operational rules and is defined beside the
+     * selection contract that states them.
+     *
+     * MEASURED ON THE REAL DOCUMENT, 20 September 2026, byte-exact at
+     * 4,178,756 — the size production recorded on all fourteen attempts:
+     *
+     *   pages 4, every one of them zero characters   → textFree
+     *   coverPages [1]                               → a cover WAS named
+     *   assets 1, 2,375,240 bytes on page 1          → it WAS decoded
+     *   pageOrderAuthoritative true, streams 0       → nothing went unread
+     *   role `unknown`, because "every picture on the property cover is a
+     *   plan or a graphic rather than a photograph of the property"
+     *
+     * So Lot 208 is the coded case on evidence rather than by assumption: the
+     * decode succeeded and the cover rule refused what it found.
      */
     if (textFree) {
-      const inspectedCover = (selection.coverPages?.length ?? 0) > 0;
+      if (coverRastersInspected(selection)) {
+        return {
+          status: 'unreachable',
+          reason: TEXT_FREE_COVER_NOT_ELECTED,
+          detail: 'That document\'s pages carry no extractable text and its first page '
+            + 'presents no single photograph, so it could not be read.',
+        };
+      }
+      /*
+       * AND WHERE NOTHING WAS DECODED, THE SENTENCE MAY NOT CLAIM THE PAGE
+       * PRESENTS NO PHOTOGRAPH EITHER. We did not look; saying we did is the
+       * same error as coding it, written in prose. This is the wording the
+       * operational rule below already uses, for the same shape.
+       */
       return {
         status: 'unreachable',
-        ...(inspectedCover ? { reason: TEXT_FREE_COVER_NOT_ELECTED } : {}),
-        detail: 'That document\'s pages carry no extractable text and its first page '
-          + 'presents no single photograph, so it could not be read.',
+        detail: 'That document\'s pages carry no extractable text and its cover page '
+          + 'could not be read on this attempt, so nothing was learned about the '
+          + 'pictures it carries.',
       };
     }
     /*
