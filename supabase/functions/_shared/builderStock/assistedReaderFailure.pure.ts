@@ -83,7 +83,8 @@ export interface AssistedReaderFailure {
     | 'assisted_reader_unavailable'
     | 'assisted_reader_timeout'
     | 'assisted_reader_invalid_response'
-    | 'ai_budget_exhausted';
+    | 'ai_budget_exhausted'
+    | 'assisted_reader_refused';
   /** Safe to show the builder. */
   message: string;
   status: number;
@@ -153,6 +154,22 @@ export function assistedReaderFailure(
         message: `We read that ${what}, but the assisted property reader did not return a`
           + ` usable answer. Our team has been alerted.${hint}`,
         status: 502,
+        retryable: false,
+      };
+
+    case 'model_refused':
+      return {
+        code: 'assisted_reader_refused',
+        /*
+         * NOT "try again shortly". The provider turned the request away on
+         * credentials or credit, and neither is something waiting fixes or
+         * the builder can act on. Same shape as the budget reading: say it did
+         * not happen, say somebody is on it, offer no button that cannot work.
+         */
+        message: `We read that ${what}, but the assisted property reader is not currently`
+          + ` able to run for this workspace, so it was not read. Our team has been`
+          + ` alerted.${hint}`,
+        status: 503,
         retryable: false,
       };
 

@@ -24,7 +24,7 @@ import {
 } from '../../../supabase/functions/_shared/builderStock/modelExtract';
 // eslint-disable-next-line import/first
 import {
-  attemptCeilingMicros, attemptReachedProvider, BUDGET_CHAIN,
+  attemptCeilingMicros, attemptReachedProvider, attemptWasBillable, BUDGET_CHAIN,
   BUILDER_STOCK_AGENT_KEY, BUILDER_STOCK_MONTHLY_CAP_MICROS, BUILDER_STOCK_MONTHLY_CAP_USD,
   estimateTokens, messageChars, microsToUsd, OPENROUTER_MODEL_RATES, periodMonthKey,
   readReportedCostUsd, reservationMicrosFor, settleMicrosFor, usdToMicros,
@@ -195,6 +195,38 @@ describe('settling books what was actually charged', () => {
       ...base, reportedCostUsd: 999, winningModelId: 'openai/gpt-5.6-luna',
       attempts: [{ route: 'openrouter', model_id: 'openai/gpt-5.6-luna', ok: true, status: 200 }],
     })).toBe(base.reservedMicros);
+  });
+
+  it('A REFUSAL COSTS NOTHING — the production 402, charged at zero', () => {
+    /*
+     * MEASURED 20 SEP 2026. The first OpenRouter call answered 402 (no credit
+     * on the account) and the whole 43,277-micro hold was committed for a
+     * request that ran no tokens. 231 of those would have emptied a US$10
+     * month without a model ever being asked anything.
+     */
+    const refused402 = [{
+      route: 'openrouter', model_id: 'openai/gpt-5.6-luna',
+      ok: false, status: 402, error: 'provider_http_402',
+    }];
+    expect(settleMicrosFor({
+      reservedMicros: 43_277, reportedCostUsd: null, winningModelId: null,
+      attempts: refused402, inputTokens: 4466, maxOutputTokens: 8000,
+    })).toBe(0);
+  });
+
+  it('every refusal status is unbillable; a real answer and a 5xx are not', () => {
+    for (const status of [401, 402, 403, 429]) {
+      expect(attemptWasBillable({ status, error: `provider_http_${status}` }),
+        `${status} should not be billable`).toBe(false);
+      // It still REACHED a provider — the two questions are different.
+      expect(attemptReachedProvider({ status })).toBe(true);
+    }
+    expect(attemptWasBillable({ ok: true, status: 200 })).toBe(true);
+    // A 500 may have run tokens before failing, so it stays chargeable.
+    expect(attemptWasBillable({ status: 500, error: 'provider_http_500' })).toBe(true);
+    // A 422 is a response the provider generated and charged for.
+    expect(attemptWasBillable({ status: 422, error: 'required tool call missing: x' })).toBe(true);
+    expect(attemptWasBillable({ error: 'provider_not_configured' })).toBe(false);
   });
 
   it('tells a charged attempt from one that never left the process', () => {
