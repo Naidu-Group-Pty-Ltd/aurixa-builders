@@ -15,8 +15,7 @@
 import { callLLM, type LLMMessage } from '../llmRouter.ts';
 import {
   modelFailureFromRouterError,
-  StockModelExtractionError,
-  classifyModelFailure,
+  unusableAnswerFailure,
 } from './modelExtractionFailure.pure.ts';
 
 /**
@@ -160,10 +159,20 @@ async function run(
        * fallback was the only one that ever got a realistic run, on a third of
        * the time.
        *
-       * At 40 s two models fit inside the same 90 s with room for the import
-       * that follows, and neither is starved. The router's own deadline guard
-       * still stops the chain the moment the budget is gone, so a longer
-       * operator-configured chain costs latency, never an overrun.
+       * At 40 s the seeded three-step chain worst-cases at 40 / 40 / 10 —
+       * exactly the 90 s budget, never over it, because the router's deadline
+       * guard shortens each attempt to whatever remains and abandons the chain
+       * below one second. End to end that is ~15 s of extraction (the 25 MB
+       * cap; the 7.2 MB production brochure took 4.7 s) + 90 s + a couple of
+       * seconds of import, ~108 s inside the runtime's ceiling.
+       *
+       * The 10 s third step is not the case that matters. The step exists for
+       * a chain whose earlier models spend a DIFFERENT credential, and when
+       * that credential is missing or refused those two fail in about no time
+       * at all — which leaves the third its full 40 s, which is the whole
+       * point. Ten seconds is only ever what is left when two gateway models
+       * were both present and both slow, and in that case one of them has
+       * almost certainly already answered.
        */
       timeoutMs: MODEL_ATTEMPT_TIMEOUT_MS,
       deadlineAt: options.deadlineAt,
@@ -199,23 +208,20 @@ async function run(
    */
   const call = result.toolCalls?.find((entry: any) => entry?.function?.name === 'record_stock_items');
   if (!call) {
-    throw new StockModelExtractionError(classifyModelFailure(
-      result.attempts, 'model_missing_tool_call'));
+    throw unusableAnswerFailure(result.attempts, 'model_missing_tool_call');
   }
 
   let parsed: { items?: unknown };
   try {
     parsed = JSON.parse(call.function.arguments ?? '{}');
   } catch {
-    throw new StockModelExtractionError(classifyModelFailure(
-      result.attempts, 'model_invalid_response'));
+    throw unusableAnswerFailure(result.attempts, 'model_invalid_response');
   }
 
   if (!Array.isArray(parsed.items)) {
     // `items` is `required` in the schema. Absent is a malformed answer;
     // present-and-empty is handled below and is a real, reportable nothing.
-    throw new StockModelExtractionError(classifyModelFailure(
-      result.attempts, 'model_invalid_response'));
+    throw unusableAnswerFailure(result.attempts, 'model_invalid_response');
   }
 
   const rows: Array<Record<string, unknown>> = [];

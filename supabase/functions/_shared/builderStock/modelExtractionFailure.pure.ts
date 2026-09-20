@@ -63,6 +63,7 @@ export interface RouterAttempt {
  * timeout, and only per-attempt categories can say so.
  */
 export type AttemptCategory =
+  | 'ok'
   | 'timeout'
   | 'unconfigured'
   | 'refused'
@@ -99,6 +100,18 @@ const UNUSABLE_ANSWER_STATUS = 422;
 export function categoriseAttempt(attempt: RouterAttempt): AttemptCategory {
   const error = typeof attempt.error === 'string' ? attempt.error : '';
   const status = typeof attempt.status === 'number' ? attempt.status : undefined;
+
+  /*
+   * A SUCCESSFUL attempt is a real category.
+   *
+   * `callLLM` only throws once every step failed, so a transport failure's
+   * attempts never include one of these — but the array returned ALONGSIDE a
+   * successful call does, and `unusableAnswerFailure` summarises exactly that
+   * array. Without this the winning model was categorised `unavailable` (it
+   * carries status 200 and no error), so the one line naming which model
+   * produced an unusable answer named it as an outage instead.
+   */
+  if (attempt.ok === true) return 'ok';
 
   if (status === UNUSABLE_ANSWER_STATUS) {
     if (error.startsWith(ROUTER_MISSING_TOOL_PREFIX)) return 'missing_tool_call';
@@ -147,6 +160,12 @@ export function classifyModelFailure(
   attempts: RouterAttempt[] | undefined,
   fallback: ModelExtractionFailureCode = 'model_unavailable',
 ): ModelFailureDiagnosis {
+  /*
+   * TRANSPORT ONLY. This reduces what the CHAIN did, so it must be handed the
+   * attempts of a chain that failed — `callLLM` throwing. For an answer that
+   * arrived and was unusable, use `unusableAnswerFailure`: the attempts there
+   * describe a SUCCESSFUL call and say nothing about the shape of its answer.
+   */
   const list = Array.isArray(attempts) ? attempts : [];
   const categories = list.map(categoriseAttempt);
 
@@ -195,6 +214,40 @@ export function summariseAttempts(
       return `${route}/${model}: ${categories[index] ?? 'unknown'}${status}`;
     })
     .join('; ');
+}
+
+/**
+ * A model ANSWERED, and the answer was not usable.
+ *
+ * The caller has already decided which kind — it is the one that looked at the
+ * payload — so that verdict stands, and the attempts are kept only to name
+ * WHICH model produced it.
+ *
+ * This is a separate function because folding it into `classifyModelFailure`
+ * was a live defect, not a tidiness point. That reducer reads the attempt
+ * array and only falls back to its parameter when the array is EMPTY — and the
+ * array returned beside a successful call is not empty, it holds the winning
+ * attempt. So `model_missing_tool_call` and `model_invalid_response` were both
+ * reduced to `model_unavailable`, which `assistedReaderFailure` marks
+ * RETRYABLE: a model answering with `{}` on every attempt would have told the
+ * builder to "try again shortly", for ever.
+ *
+ * It is reachable, not theoretical. `requireValidToolArguments` in the router
+ * only proves the arguments PARSE; nothing there checks that `items` is an
+ * array, so a well-formed `{}` passes the whole chain and arrives here.
+ */
+export function unusableAnswerFailure(
+  attempts: RouterAttempt[] | undefined,
+  code: ModelExtractionFailureCode,
+): StockModelExtractionError {
+  const list = Array.isArray(attempts) ? attempts : [];
+  const categories = list.map(categoriseAttempt);
+  return new StockModelExtractionError({
+    code,
+    attemptCount: list.length,
+    categories,
+    diagnosis: summariseAttempts(list, categories),
+  });
 }
 
 /**

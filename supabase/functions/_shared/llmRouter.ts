@@ -206,13 +206,22 @@ async function loadAssignment(agentKey: string): Promise<AgentAssignment> {
 
   if (error) throw new Error(`[llmRouter] Failed to load assignment: ${error.message}`);
 
-  const requested = data?.find((r) => r.agent_key === agentKey);
+  /*
+   * `r` is annotated because it is genuinely untyped, not to satisfy a linter:
+   * the client is created without a `Database` generic, so a selected row is
+   * `any` under the real supabase-js types too and the annotation discards
+   * nothing. It is stated here so the app's typechecker can follow this module
+   * in — see `src/types/edgeRuntimeModules.d.ts`, whose whole purpose is that
+   * a real type error in a shared module surfaces instead of the typecheck
+   * dying at a specifier only Deno can resolve.
+   */
+  const requested = data?.find((r: any) => r.agent_key === agentKey);
   if (requested?.is_active === false) {
     throw new Error(`[llmRouter] Assignment '${agentKey}' is disabled`);
   }
   if (requested) return requested as AgentAssignment;
 
-  const fallback = data?.find((r) => r.agent_key === 'default');
+  const fallback = data?.find((r: any) => r.agent_key === 'default');
   if (fallback?.is_active === false) {
     throw new Error("[llmRouter] Default assignment is disabled");
   }

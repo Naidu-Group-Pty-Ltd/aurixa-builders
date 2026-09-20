@@ -49,6 +49,21 @@ declare module 'https://esm.sh/jszip@3.10.1' {
   export const loadAsync: any;
 }
 
+/**
+ * Reached by `builderStockModelExtraction.spec.ts`, which runs
+ * `modelExtract.run()` for real — with `callLLM` replaced and every rule under
+ * test the product's own. That module imports `llmRouter.ts`, and this is the
+ * specifier it opens a service-role client with.
+ *
+ * Declaring it is what the file's own rule asks for: the spec exists because
+ * reading the source could NOT see that an unusable model answer was being
+ * reduced to a retryable outage, and a typecheck that dies at the first
+ * unresolvable specifier would have hidden the spec instead of checking it.
+ */
+declare module 'https://esm.sh/@supabase/supabase-js@2.45.0' {
+  export function createClient(url: string, key: string, options?: any): any;
+}
+
 declare module 'npm:@supabase/supabase-js@2.55.0' {
   export function createClient(url: string, key: string, options?: any): any;
 }
