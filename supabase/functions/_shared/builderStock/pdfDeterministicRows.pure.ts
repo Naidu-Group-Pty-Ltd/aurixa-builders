@@ -49,13 +49,15 @@
  * builder's marketplace. The two are not symmetrical, so every judgement here
  * is made on the refusing side.
  *
- * NEVER COMPLETE AROUND A FACT WE DID NOT READ. Standing down is not only for
- * what this reader gets WRONG — it is also for what it cannot ACCOUNT FOR.
- * A brochure that states its estate and its design as bare lines is a document
- * the assisted reader can read and this one cannot, so completing it would
- * publish a property permanently missing both, with nothing saying so. Two
- * gates enforce that: a brochure refuses when any line that reads as a fact
- * went unassigned, and a schedule refuses when any reconstructed row names no
+ * NEVER COMPLETE AROUND A FACT WE DID NOT READ — AND KNOW WHICH FACTS THOSE
+ * ARE. A brochure refuses when a line NAMES a field this vocabulary knows and
+ * states a value the reader did not take (`Land Size 350 m2 approx`), and when
+ * a label is set on its own with nothing pairable under it. It does NOT refuse
+ * over a line it cannot classify at all (`PALOMINO`, `ENZO 8.5 LUCA`): that
+ * rule blocked on any line carrying a digit, which a real seven-page brochure
+ * breaks on its builder's own phone number. The record is then thinner than a
+ * model's, and every value in it is one the document stated in terms this
+ * vocabulary knows. A schedule refuses when any reconstructed row names no
  * property (a `TOTAL` footer is a row `normaliseStockRow` accepts and this
  * stage must not).
  *
@@ -143,6 +145,12 @@ export interface PdfDeterministicReading {
      * A COUNT and never the text, because this reaches the import log.
      */
     unaccountedLines?: number;
+    /**
+     * Lines this reader could not classify at all. Reported so a thin record
+     * is visible, and deliberately NOT blocking — see the gate in
+     * `readPdfBrochure` for why naming a fact and being unreadable differ.
+     */
+    unclassifiedLines?: number;
   };
 }
 
@@ -414,9 +422,164 @@ function readLabelledValue(line: string): Claim | null {
 const INLINE_COUNTS =
   /^(?:\d{1,2}(?:\.\d)?\s*(?:bed(?:room)?s?|bath(?:room)?s?|cars?|carports?)\b[\s,/|·+-]*)+$/i;
 
-function readInlineCounts(line: string): Claim | null {
-  if (!INLINE_COUNTS.test(line.trim())) return null;
-  return { field: 'bed_bath_car', value: line.trim() };
+/** Each count and the word that names it, in the order the line writes them. */
+const COUNT_GROUP = /(\d{1,2}(?:\.\d)?)\s*(bed(?:room)?s?|bath(?:room)?s?|cars?|carports?)\b/gi;
+
+/** The canonical field each count word names. The vocabulary is the existing one. */
+const COUNT_FIELD: ReadonlyArray<[RegExp, string]> = [
+  [/^bed/i, 'bedrooms'],
+  [/^bath/i, 'bathrooms'],
+  [/^car/i, 'car_spaces'],
+];
+
+/**
+ * A line that is nothing but counts.
+ *
+ * TWO SHAPES, AND THE DIFFERENCE IS WHY THIS RETURNS A LIST.
+ *
+ * A brochure sets its counts as three separate lines beside three icons —
+ *
+ *     4 BED
+ *     2 BATH
+ *     2 CAR
+ *
+ * — and each of those lines is a complete statement about ONE field. Claiming
+ * each as the combined `bed_bath_car` cell made them three different values of
+ * one field, so the second line contradicted the first and a perfectly plain
+ * brochure answered `conflicting_values:bed_bath_car`. Measured on the shape
+ * this module exists to read, that was the FIRST thing it refused.
+ *
+ * So a line naming exactly ONE count word claims that one canonical field,
+ * where a repeat of the same figure on a later page corroborates and a
+ * genuine disagreement still conflicts — both for free, through the same
+ * machinery every other field uses.
+ *
+ * A line naming MORE than one is handed on verbatim under `configuration`
+ * exactly as before, because `parseBedBathCar` in `normalise.pure.ts` already
+ * knows that cell's dual-occupancy form, its doubled slash and its eleven
+ * other spellings, and a second opinion about it here is the last thing this
+ * module should hold.
+ */
+function readInlineCounts(line: string): Claim[] | null {
+  const trimmed = line.trim();
+  if (!INLINE_COUNTS.test(trimmed)) return null;
+  const groups = [...trimmed.matchAll(COUNT_GROUP)];
+  if (!groups.length) return null;
+
+  const fields = new Set(groups.map(([, , word]) =>
+    COUNT_FIELD.find(([pattern]) => pattern.test(word))?.[1] ?? ''));
+  if (fields.size !== 1 || fields.has('')) {
+    return [{ field: 'bed_bath_car', value: trimmed }];
+  }
+  /*
+   * ONE WORD, BUT IT MAY BE WRITTEN TWICE ("2 bed + 2 bed" on a dual key).
+   * That is the combined cell's arithmetic, not this one's, so anything but a
+   * single figure goes back to the shared parser rather than being summed here.
+   */
+  if (groups.length !== 1) return [{ field: 'bed_bath_car', value: trimmed }];
+  return [{ field: [...fields][0], value: groups[0][1] }];
+}
+
+/**
+ * A value that is a measurement or a sum and carries no words of its own —
+ * `350 m²`, `$863,850`, `210`. Used to tell a descriptive field's value from a
+ * figure that has been set under it.
+ */
+const BARE_MEASUREMENT = /^[$€£¥]?\s*\d[\d.,\s]*(?:m2|m²|sqm|sq\s?m|ha|hectares?|acres?)?$/i;
+
+/**
+ * The area unit a value carries, in the spelling the alias table knows.
+ *
+ * Anchored to the end of the value rather than fenced with `\b`, because a
+ * word boundary cannot match after `²` — it is not a word character, so
+ * `\bm²\b` never fires and `210 m²` read as carrying no unit at all.
+ */
+function areaUnitOf(value: string): string | null {
+  const match = value.match(/(?:\d|\s)(m2|m²|sqm|sq\s?m)\.?\s*$/i);
+  return match ? match[1].replace(/\s+/g, ' ') : null;
+}
+
+/**
+ * Fields whose value is WORDS. A figure set under one of these is not its
+ * value — it is a measurement whose label has been read too narrowly.
+ */
+const DESCRIPTIVE_FIELDS: ReadonlySet<string> = new Set([
+  'house_design', 'development_name', 'project_name', 'suburb', 'property_type',
+]);
+
+/**
+ * THE LABEL ON ONE LINE, THE VALUE ON THE NEXT.
+ *
+ * This is how a brochure is actually set, and not reading it is most of why a
+ * plainly legible document produced nothing:
+ *
+ *     LAND              HOUSE             PACKAGE PRICE
+ *     350 m²            210 m²            $863,850
+ *
+ * Every one of those is a complete, explicit statement, and the old reader saw
+ * none of them because it only understood a label and a value sharing a line.
+ * Nothing is inferred here: the label line must resolve WHOLLY through
+ * `fieldForHeader`, the value must be the very next line, and the value must
+ * be the shape that field takes.
+ *
+ * THE UNIT RESOLVES THE LABEL, and that is what keeps this honest. `HOUSE`
+ * alone is `house_design` — the alias table says so deliberately, because a
+ * builder's `HOUSE` column holds the design name. Set above `210 m²` it is the
+ * house's AREA, and the table already knows that spelling too (`house m2` is
+ * `building_size_sqm`). So where the value carries an area unit the label is
+ * re-read WITH that unit through the same table. No mapping is invented: the
+ * document supplied both halves and the existing vocabulary resolved them.
+ *
+ * Returns the claim and how many lines it consumed, or null.
+ */
+function readVerticalPair(
+  label: string,
+  value: string | undefined,
+): { claim: Claim; consumed: number } | null {
+  const bare = fieldForHeader(label);
+  if (!bare || !BROCHURE_CLAIMABLE_FIELDS.has(bare)) return null;
+  if (value === undefined) return null;
+
+  // A heading directly under a heading is a layout, not a statement.
+  if (fieldForHeader(value)) return null;
+
+  const unit = areaUnitOf(value);
+  const resolved = (unit ? fieldForHeader(`${label} ${unit}`) : null) ?? bare;
+  if (!BROCHURE_CLAIMABLE_FIELDS.has(resolved)) return null;
+
+  if (NUMERIC_VALUE_FIELDS.has(resolved)) {
+    if (!HAS_DIGIT.test(value)) return null;
+  } else if (DESCRIPTIVE_FIELDS.has(resolved) && BARE_MEASUREMENT.test(value)) {
+    /*
+     * A figure under a descriptive label that no unit rescued. Reading it
+     * would write a measurement into a design name, so the pair is refused
+     * and the caller records the label as stated-but-unread.
+     */
+    return null;
+  }
+  return { claim: { field: resolved, value }, consumed: 2 };
+}
+
+/**
+ * Does this line name a field we know AND state a value we did not take?
+ *
+ * The narrow, precise version of "we can see a fact here". A recognised
+ * heading anywhere in the line, beside something value-shaped, and nothing
+ * claimed from it — `Land Size 350 m2 approx`, `Priced from $800,000`. A line
+ * with no heading we recognise is not this; a bare heading with no value is
+ * caught by its own rule where the pairing is attempted.
+ */
+function namesAnUnreadFact(line: string): boolean {
+  if (!/\d/.test(line) && !CURRENCY_OR_AREA.test(line)) return false;
+  const tokens = line.split(/\s+/).filter(Boolean);
+  for (let start = 0; start < tokens.length; start++) {
+    const reach = Math.min(MAX_LABEL_WORDS, tokens.length - start);
+    for (let length = 1; length <= reach; length++) {
+      const field = fieldForHeader(tokens.slice(start, start + length).join(' '));
+      if (field && BROCHURE_CLAIMABLE_FIELDS.has(field)) return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -562,10 +725,15 @@ export function readPdfBrochure(pageTexts: readonly string[]): PdfDeterministicR
 
   const claimed = new Map<string, string>();
   /*
-   * Lines that look like a property fact and that this reader could not
-   * assign. A COUNT, never the text: the diagnostics go to the import log.
+   * Lines that NAME a field we know and whose value we did not take. A COUNT,
+   * never the text: the diagnostics go to the import log.
    */
   let unaccounted = 0;
+  /*
+   * Lines this reader cannot classify at all. Reported and NOT blocking — see
+   * the gate below for why the two are different questions.
+   */
+  let unclassified = 0;
 
   const lines = pageTexts
     .flatMap((page) => String(page ?? '').split(/\r?\n/))
@@ -573,7 +741,8 @@ export function readPdfBrochure(pageTexts: readonly string[]): PdfDeterministicR
     .filter(Boolean)
     .slice(0, MAX_LINES_SCANNED);
 
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
     const found: Claim[] = [];
 
     const labelled = readLabelledValue(line);
@@ -605,16 +774,63 @@ export function readPdfBrochure(pageTexts: readonly string[]): PdfDeterministicR
       if (numbers) found.push(...numbers);
       else {
         const counts = readInlineCounts(line);
-        if (counts) found.push(counts);
+        if (counts) found.push(...counts);
         else {
           const lot = readLotHeading(line);
           if (lot) found.push(lot);
+          else {
+            // The label on this line, its value on the next.
+            const vertical = readVerticalPair(line, lines[index + 1]);
+            if (vertical) {
+              found.push(vertical.claim);
+              index += vertical.consumed - 1;
+            }
+          }
         }
       }
     }
 
     if (!found.length) {
-      if (!readsAsProse(line)) unaccounted += 1;
+      /*
+       * ===============================================================
+       * NAMING A FACT WE DID NOT READ IS NOT THE SAME AS BEING UNREADABLE.
+       * ===============================================================
+       *
+       * This gate used to block on any line carrying a cue, and on a real
+       * seven-page brochure that is unreachable: a document sets its estate,
+       * its facade, its inclusions and its builder's own phone number, and a
+       * reader that must account for every one of them can never finish.
+       *
+       * The two cases are different, and only one of them is dangerous.
+       *
+       * A line that NAMES A FIELD WE KNOW and also states a value we failed to
+       * take — `Land Size 350 m2 approx` — is a fact we can see and did not
+       * read, and completing around it would bank a record the document itself
+       * contradicts. That still refuses.
+       *
+       * A line we cannot classify at all — `PALOMINO`, `ENZO 8.5 LUCA` — is
+       * not a field we recognise. We cannot say whether it is the estate, the
+       * facade, the photographer's credit or the street it faces, and the one
+       * thing this module may never do is decide. It is counted, reported, and
+       * left alone; the record is thinner than a model's would be, and every
+       * value in it is one the document stated in terms this vocabulary knows.
+       */
+      const bareLabel = fieldForHeader(line);
+      if (bareLabel && BROCHURE_CLAIMABLE_FIELDS.has(bareLabel)) {
+        /*
+         * A LABEL SET ON ITS OWN WITH NOTHING THIS READER COULD PAIR TO IT.
+         * The shape a template whose values live in form fields produces, and
+         * the shape a figure under a descriptive heading produces once the
+         * pairing has refused it. The document named the fact; importing the
+         * rest would publish a record its own brochure contradicts.
+         */
+        diagnostics.fieldsRead = [...claimed.keys()].sort();
+        diagnostics.unaccountedLines = unaccounted + 1;
+        diagnostics.unclassifiedLines = unclassified;
+        return refuse('incomplete', `label_without_value:${bareLabel}`, diagnostics);
+      }
+      if (namesAnUnreadFact(line)) unaccounted += 1;
+      else if (!readsAsProse(line)) unclassified += 1;
       continue;
     }
 
@@ -641,6 +857,7 @@ export function readPdfBrochure(pageTexts: readonly string[]): PdfDeterministicR
 
   diagnostics.fieldsRead = [...claimed.keys()].sort();
   diagnostics.unaccountedLines = unaccounted;
+  diagnostics.unclassifiedLines = unclassified;
 
   if (!claimed.size) {
     return refuse('unsupported', 'no_labelled_fields', diagnostics);
@@ -1017,11 +1234,29 @@ export function mayHoldSchedule(pageTexts: readonly string[]): boolean {
     for (const line of String(page ?? '').split(/\r?\n/)) {
       const tokens = line.split(/\s+/).filter(Boolean);
       if (tokens.length < 3) continue;
-      if (headerScore(tokens) >= 3) return true;
+      if (headerScore(tokens) < 3) continue;
+      /*
+       * A HEADING ROW IS MADE OF HEADINGS. It names its columns and states
+       * none of their values, so a bare figure anywhere in the line means
+       * this is a specification, not a heading — `4 BED 2 BATH 2 CAR` and
+       * `LAND 350 HOUSE 210 PRICE` both reach three recognised words and
+       * neither is a table.
+       *
+       * Production paid for that: a seven-page brochure tripped this screen,
+       * the positional reader ran, the schedule parser found a heading-shaped
+       * line and refused the document `two_cells_in_one_column` — a table's
+       * refusal, on a document that never held a table, masking the brochure
+       * reading underneath it.
+       */
+      if (tokens.some((token) => VALUE_TOKEN.test(token))) continue;
+      return true;
     }
   }
   return false;
 }
+
+/** A token that states a value rather than naming a column. */
+const VALUE_TOKEN = /^[$€£¥]?\d[\d.,]*$/;
 
 /**
  * The deterministic reading of a PDF, from what the pipeline already holds.
