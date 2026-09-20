@@ -35,6 +35,9 @@ import {
 import { noPrimaryEvidence } from './sourceImageRole.pure.ts';
 import type { PdfPhotoProvenance } from './pdfSourcePhoto.ts';
 import type { PdfMediaPlacement } from './pdfPrimaryImage.pure.ts';
+import type {
+  PdfDeterministicReading, PdfTextLayoutPage,
+} from './pdfDeterministicRows.pure.ts';
 
 export interface ExtractedMedia {
   /** Path inside the container, or the filename for a bare image. */
@@ -107,6 +110,22 @@ export interface StockExtraction {
   warnings: string[];
   /** A document/page title, when the format carries one. */
   title?: string | null;
+  /**
+   * What the deterministic PDF reader made of this document, set by the PDF
+   * branch alone.
+   *
+   * DIAGNOSTIC AND NEVER A DECISION. The pipeline reads `rows` to decide
+   * whether the assisted reader runs, exactly as it always has; this is here
+   * so the import log can say WHY a document went to a model — "its labels
+   * carried no values", "it stated two prices" — instead of a support question
+   * having no answer. It carries counts, status words and canonical field
+   * NAMES only, so it is safe to log.
+   */
+  deterministicReading?: {
+    status: PdfDeterministicReading['status'];
+    reason: string;
+    diagnostics: PdfDeterministicReading['diagnostics'];
+  };
 }
 
 const MAX_ROWS = 5000;
@@ -715,6 +734,82 @@ export async function extractStockFile(
       // Accurate, and it promises nothing: no other imagery is displayable, so
       // saying where a substitute will come from would be a lie.
       result.warnings.push('No property photograph could be identified in this PDF.');
+    }
+
+    /**
+     * THE MISSING MIDDLE: what this document SAYS, before anything is asked.
+     *
+     * Every branch above this one produces rows when the file holds a table
+     * and prose when it does not. The PDF branch has only ever produced prose
+     * — it has never once written to `result.rows` — so `runImport`'s
+     * `if (!rows.length && extraction.text)` was satisfied by every PDF ever
+     * uploaded and the assisted reader was reached by construction rather
+     * than by judgement. A brochure stating its lot, its estate, its design,
+     * its price and its bed/bath/car count in so many words was sent to a paid
+     * provider to be told what it already said.
+     *
+     * NOTHING ABOVE THIS POINT CHANGES. `pageTexts`, `text`, `media`,
+     * `pageOrderAuthoritative` and every warning are already settled and are
+     * left exactly as they were — the reading below is additive, and on
+     * anything but a confident answer this function returns precisely what it
+     * returned before.
+     *
+     * ONLY `complete` SETS ROWS. `incomplete`, `ambiguous` and `unsupported`
+     * all mean the same thing here: the deterministic reader could not prove
+     * it had read the document, so it says nothing and the existing model path
+     * runs. That is fail-closed in the only direction that matters — a refusal
+     * costs what today costs, and a wrong acceptance writes a property into a
+     * builder's marketplace.
+     */
+    try {
+      const { mayHoldSchedule, readPdfDeterministicRows } =
+        await import('./pdfDeterministicRows.pure.ts');
+
+      /*
+       * Positions are read only where the flattened text suggests a heading
+       * row, because reading them means opening the document a second time
+       * and a brochure must not pay for a table it does not have. A brochure
+       * is decided entirely on the strings already in hand.
+       */
+      /*
+       * `result.pageTexts`, NOT the `pages` const above: that one is declared
+       * inside the try block that reads it, and a name read outside the block
+       * that declares it is the defect class this repository makes fatal.
+       * These are the same strings — the line that set it is thirty above.
+       */
+      const pageTexts = result.pageTexts ?? [];
+      let positionedPages: PdfTextLayoutPage[] | null = null;
+      if (mayHoldSchedule(pageTexts)) {
+        const { readPdfTextLayout } = await import('./pdfTextLayout.ts');
+        const layout = await readPdfTextLayout(bytes);
+        positionedPages = layout.ok ? layout.pages : null;
+      }
+
+      const reading = readPdfDeterministicRows({ pageTexts, positionedPages });
+      result.deterministicReading = {
+        status: reading.status,
+        reason: reading.reason,
+        diagnostics: reading.diagnostics,
+      };
+      /*
+       * `<= MAX_ROWS` rather than a slice. Every other branch truncates at the
+       * ceiling and is right to — it has no second reader behind it — but
+       * truncating HERE would suppress the assisted reader as well, so the
+       * rows past the ceiling would be lost with nothing saying so. A schedule
+       * that long goes to the model exactly as it does today.
+       */
+      if (reading.status === 'complete' && reading.rows.length && reading.strategy
+        && reading.rows.length <= MAX_ROWS) {
+        result.rows = reading.rows;
+        result.strategy = reading.strategy;
+      }
+    } catch {
+      /*
+       * A READING THAT THREW IS NO READING. The document's text and images are
+       * already in hand and the assisted reader is still in front of it, so
+       * this can never be worth an upload — and it deliberately adds no
+       * warning, because a builder has nothing to do about it.
+       */
     }
     return result;
   }

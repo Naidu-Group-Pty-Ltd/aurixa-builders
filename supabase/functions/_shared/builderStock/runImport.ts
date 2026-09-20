@@ -329,6 +329,18 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
         model_attempts: failure.attemptCount,
         attempt_categories: failure.categories,
         diagnosis: failure.diagnosis,
+        /*
+         * WHY A MODEL WAS REACHED AT ALL. A PDF now goes to the assisted
+         * reader only because the deterministic reader stood down, and this
+         * says which of its four answers it gave — a label with no value, two
+         * prices, a shape it does not claim to read. Safe by construction:
+         * `diagnostics` carries counts, status words and canonical field
+         * NAMES, never a value the document stated.
+         */
+        deterministic_status: extraction.deterministicReading?.status ?? null,
+        deterministic_reason: extraction.deterministicReading?.reason ?? null,
+        deterministic_fields: extraction.deterministicReading?.diagnostics.fieldsRead ?? null,
+        deterministic_candidates: extraction.deterministicReading?.diagnostics.candidates ?? null,
       });
     } catch { /* a line that cannot be written is not an import failure */ }
 
