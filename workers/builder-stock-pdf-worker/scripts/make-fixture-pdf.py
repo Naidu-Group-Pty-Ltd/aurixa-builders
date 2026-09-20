@@ -54,6 +54,45 @@ out = sys.argv[1]
 # rather than committed — eight megabytes of synthetic noise has no business
 # in a git history.
 HEAVY = '--heavy' in sys.argv
+
+# ---- the two text-free shapes -------------------------------------------
+#
+# A REAL PRODUCTION SHAPE, NOT A CONTRIVANCE. Lot 208 / `46 Satinwood Crescent
+# Donnybrook` is a brochure exported entirely as artwork: every page yields
+# zero characters to text extraction, so the election cannot read the property
+# out of the document and falls back to the builder's own folder having named
+# the file for this one lot — which licenses page 1 as a structural cover.
+# What then decides the outcome is whether that page presents ONE photograph.
+#
+# `--text-free-hero` does, and must still elect. `--text-free-blank` does not,
+# and is the deterministic refusal `TEXT_FREE_COVER_NOT_ELECTED` exists for.
+# Neither draws a single character, which is the property that makes them
+# text-free — so nothing here may call `drawString`.
+TEXT_FREE_HERO = '--text-free-hero' in sys.argv
+TEXT_FREE_BLANK = '--text-free-blank' in sys.argv
+if TEXT_FREE_HERO or TEXT_FREE_BLANK:
+    c = canvas.Canvas(out, pagesize=A4)
+    pw, ph = A4
+    if TEXT_FREE_HERO:
+        # One large raster and nothing else: the cover rule's "the only
+        # photograph the property cover presents" case.
+        c.drawImage(ImageReader(jpeg), 20 * mm, ph - 165 * mm,
+                    width=pw - 40 * mm, height=110 * mm,
+                    preserveAspectRatio=True, mask=None)
+    else:
+        # Vector line art only — no embedded raster at all, so the cover page
+        # presents no photograph and the election has nothing it may take.
+        c.setStrokeColorRGB(0.2, 0.2, 0.2)
+        c.setLineWidth(1.2)
+        c.rect(20 * mm, ph - 165 * mm, pw - 40 * mm, 110 * mm)
+        for i in range(12):
+            y = ph - (60 + i * 8) * mm
+            c.line(28 * mm, y, pw - 28 * mm, y)
+    c.showPage()
+    c.save()
+    print(out)
+    sys.exit(0)
+
 c = canvas.Canvas(out, pagesize=A4)
 pw, ph = A4
 c.setFont('Helvetica-Bold', 22)

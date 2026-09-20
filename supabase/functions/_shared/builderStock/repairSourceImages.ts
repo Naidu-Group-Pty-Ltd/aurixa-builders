@@ -52,7 +52,10 @@ import {
   attemptsSoFar, MAX_UNREACHABLE_ATTEMPTS, packageAttemptsExhausted,
   recordPackageAttempt, recordPackageUnprocessable, recordPackageUnreachable,
   recordUnreachableAttempt, unreachableAttemptsExhausted, provenanceAfterAttempt,
+  MAX_TEXT_FREE_COVER_ATTEMPTS, recordPackageTextFreeCover,
+  recordTextFreeCoverAttempt, textFreeCoverExhaustedAfter,
 } from './packageAttempt.pure.ts';
+import { TEXT_FREE_COVER_NOT_ELECTED } from './pdfElectionBoundary.pure.ts';
 import {
   demoteUnprovenSourceImage, hasReadySourceImage, readPrimaryImageStanding,
   storeSourceImageBytes, storeSourceImages, PROVENANCE_VERSION, type SourceImageFetcher,
@@ -1365,6 +1368,59 @@ export async function repairSourceImagesForUpload(
       outcome.incomplete = true;
     };
 
+    /**
+     * THE SAME SHAPE, A DIFFERENT BUDGET, AND A DIFFERENT EXHAUSTION TEST.
+     *
+     * A document whose every page is text-free, whose folder had already tied
+     * it to this one property, and whose cover rasters were decoded and
+     * elected nothing, has answered as completely as it ever will. The bytes
+     * decide it, so the same bytes decide it again — see
+     * `MAX_TEXT_FREE_COVER_ATTEMPTS` for the fourteen measured attempts that
+     * priced this at two.
+     *
+     * NOTE `textFreeCoverExhaustedAfter`, WHICH IS NOT THE FUNCTION ABOVE.
+     * It counts the refusal in hand, so the SECOND one is terminal here and
+     * no third election is ever dispatched. The generic path's "check the
+     * stored count" behaviour — which costs one extra election at six — is
+     * deliberately untouched, because changing it would move every transient
+     * failure in the system.
+     */
+    const bankTextFreeCover = async () => {
+      if (textFreeCoverExhaustedAfter(branchBefore, question)) {
+        const { error: bankError } = await db
+          .from('builder_stock_items')
+          .update({ source_provenance_result: writeBranchState(
+            negativeBefore.get(itemId), packageUrl, recordPackageTextFreeCover(question)) })
+          .eq('id', itemId)
+          .eq('organisation_id', input.organisationId);
+        // Unrecorded means unadvanced; say so rather than settle on it.
+        if (bankError) outcome.incomplete = true;
+        else {
+          outcome.packageNotIdentified += 1;
+          await syncSourceAssetState(db, {
+            organisationId: input.organisationId, uploadId: upload.id, stockItemId: itemId,
+            reference: packageUrl, state: 'unreadable',
+            detail: `no photograph could be taken from that document's cover after `
+              + `${MAX_TEXT_FREE_COVER_ATTEMPTS} readings`,
+          });
+        }
+        outcome.problems.push({
+          reference: packageUrl.slice(0, 400),
+          reason: `no photograph could be taken from that document's cover after `
+            + `${MAX_TEXT_FREE_COVER_ATTEMPTS} readings`,
+        });
+        return;
+      }
+      await db
+        .from('builder_stock_items')
+        .update({ source_provenance_result: writeBranchState(
+          negativeBefore.get(itemId), packageUrl,
+          recordTextFreeCoverAttempt(branchBefore, question)) })
+        .eq('id', itemId)
+        .eq('organisation_id', input.organisationId);
+      outcome.incomplete = true;
+    };
+
     let recovered: PackageOutcome;
     try {
       recovered = await recoverPackageImage(
@@ -1414,7 +1470,24 @@ export async function repairSourceImagesForUpload(
      */
     if (recovered.status === 'unreachable') {
       outcome.packageUnreachable += 1;
-      await bankUnreachable();
+      /*
+       * WHICH BUDGET THIS SPENDS IS READ FROM THE CODE, NEVER THE SENTENCE.
+       *
+       * `reason` is present only where the shared election read the bytes to
+       * the end and the refusal is a pure function of them; the client relays
+       * it only when it recognises the value, and constructs it never. So
+       * every other way of arriving here — a fetch that failed, a 404, a
+       * sign-in wall, a rate limit, a stalled origin, a document that is not
+       * a document, a worker this deployment cannot reach, the 75-second
+       * deadline, and the `catch` above that covers a kill — has no code and
+       * keeps the six-attempt allowance it has today.
+       *
+       * Matching on the detail STRING was the available alternative and is
+       * the wrong one: prose gets reworded for an operator, and a retry
+       * budget must not move when somebody fixes a comma.
+       */
+      if (recovered.reason === TEXT_FREE_COVER_NOT_ELECTED) await bankTextFreeCover();
+      else await bankUnreachable();
       continue;
     }
 

@@ -37,6 +37,7 @@
 import { selectPdfPropertyPrimaryHoldingSlot } from './pdfSourcePhoto.ts';
 import { withPdfDecodeSlot } from './pdfDecodeSlot.pure.ts';
 import { coverIdentityQuote } from './pdfPrimaryImage.pure.ts';
+import { TEXT_FREE_COVER_NOT_ELECTED } from './pdfElectionBoundary.pure.ts';
 // Type-only, so it is erased at compile time and no runtime cycle exists
 // between this module and the one that calls it.
 import type { PackageOutcome } from './packageImages.ts';
@@ -166,10 +167,37 @@ export async function electFromPdfBytes(
      * where its first page was structurally eligible and presented no single
      * photograph. Recording a negative for it would bank an answer this reader
      * never earned, so it stays operational and the property is asked again.
+     *
+     * ASKED AGAIN — BUT ONCE, NOT SIX TIMES, AND THE CODE IS WHAT SAYS SO.
+     *
+     * Reaching here with `textFree` means all four of these held: the bytes
+     * arrived whole, every page's text came back empty, the builder's own
+     * folder had already tied this document to this one property (or the
+     * guard above would have returned first, since `identifiedBy` must be
+     * `folder_structure` to get past it), and the cover page's rasters were
+     * decoded and put through the cover rule. Each of those is a pure
+     * function of the bytes, so the answer cannot change while the bytes and
+     * this extractor version both stand.
+     *
+     * MEASURED, Lot 208 / `46 Satinwood Crescent Donnybrook`: seven elections
+     * in the 12:12 import and seven in the 13:33 one, identical 4,178,756
+     * bytes every time, identical verdict every time, durations ranging 3.3 s
+     * to 16.3 s across two different isolate populations. Thirteen of those
+     * fourteen were spend with no possible new outcome, and the property's
+     * publication waited behind them for 8 min 13 s.
+     *
+     * `TEXT_FREE_COVER_NOT_ELECTED` is therefore attached for the retry
+     * budget to read. It is NOT attached on the `coverPages` -less path
+     * below, because that one means no page was even searched — the decode
+     * did not happen, so this refusal is not the deterministic one and
+     * belongs on the patient generic allowance with every other "we did not
+     * get to look".
      */
     if (textFree) {
+      const inspectedCover = (selection.coverPages?.length ?? 0) > 0;
       return {
         status: 'unreachable',
+        ...(inspectedCover ? { reason: TEXT_FREE_COVER_NOT_ELECTED } : {}),
         detail: 'That document\'s pages carry no extractable text and its first page '
           + 'presents no single photograph, so it could not be read.',
       };

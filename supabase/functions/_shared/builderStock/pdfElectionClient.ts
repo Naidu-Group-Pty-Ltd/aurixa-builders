@@ -29,6 +29,7 @@ import { electionRoute, type ElectionRoute } from './pdfElectionRoute.pure.ts';
 import {
   ELECTION_CONTEXT_HEADER, ELECTION_TIMEOUT_MS, MAX_DOCUMENT_BYTES,
   PDF_ELECTION_PROTOCOL, base64ToBytes, encodeElectionContext,
+  isElectionRefusalReason,
 } from './pdfElectionBoundary.pure.ts';
 import type { PackageOutcome } from './packageImages.ts';
 import { TELEMETRY_PREFIX, pdfTelemetry } from './importTelemetry.pure.ts';
@@ -156,6 +157,12 @@ export async function runElectionOnRoute(
       outcome: outcome.status,
       documentVerdict: outcome.status !== 'unreachable',
       /*
+       * Present only where the election minted a code, so an operator reading
+       * this line can tell a two-attempt deterministic refusal from a
+       * six-attempt transient one. `compact` drops it everywhere else.
+       */
+      reason: (outcome as { reason?: string }).reason ?? null,
+      /*
        * THE ROLE'S NAME, NOT THE ROLE OBJECT.
        *
        * `image.role` is a `{ role, evidenceLevel, evidence, reason }` record,
@@ -271,12 +278,30 @@ async function electViaWorker(
    * RELAYED, NEVER INVENTED. `not_identified` may only ever reach a caller
    * because the worker ran the shared election over the real bytes and said
    * so. Anything this side cannot make sense of is `unreachable`.
+   *
+   * THE REFUSAL CODE ANSWERS TO THE SAME RULE, and it matters more here than
+   * the status does, because the code SHORTENS a retry budget. It is taken
+   * only from a worker answer, only when `isElectionRefusalReason` recognises
+   * the value, and only onto `unreachable` — so a worker running ahead of
+   * this build cannot introduce a budget this build has never heard of, and
+   * a garbled body cannot shorten one. Everything unrecognised is simply
+   * absent, which lands on the patient generic allowance.
+   *
+   * Note what this module CANNOT do: the `unreachable()` helper above takes
+   * a sentence and nothing else, so every refusal this side constructs for
+   * itself — a fetch that failed, a non-result body, a protocol mismatch, an
+   * unusable image, an answer about another document, a worker that is not
+   * configured — carries no code and keeps exactly the behaviour it has
+   * today.
    */
   if (body.status === 'not_identified' || body.status === 'unreachable') {
-    return {
-      status: body.status,
-      detail: typeof body.detail === 'string' ? body.detail : 'That document could not be read.',
-    };
+    const detail = typeof body.detail === 'string'
+      ? body.detail
+      : 'That document could not be read.';
+    if (body.status === 'unreachable' && isElectionRefusalReason(body.reason)) {
+      return { status: 'unreachable', detail, reason: body.reason };
+    }
+    return { status: body.status, detail };
   }
   if (body.status !== 'recovered') {
     return unreachable('The document reader returned an outcome this deployment '
