@@ -173,10 +173,33 @@ describe('the ceiling exists in the database, not only in the application', () =
     expect(budgetMigration).toContain('LEAST(GREATEST(p_actual_micros, 0), amount_micros)');
   });
 
-  it('the budget is service-role only', () => {
+  it('the budget TABLES are service-role only', () => {
     expect(budgetMigration).toContain('REVOKE ALL ON public.ai_spend_budgets FROM anon, authenticated');
     expect(budgetMigration).toContain('GRANT ALL ON public.ai_spend_budgets TO service_role');
     expect(budgetMigration).toContain('ENABLE ROW LEVEL SECURITY');
+  });
+
+  it('every budget FUNCTION is revoked FROM PUBLIC, not merely from the two roles', () => {
+    /*
+     * Postgres grants EXECUTE on a new function to PUBLIC by default, so
+     * `REVOKE ... FROM anon, authenticated` removes nothing — both reach it by
+     * inheriting PUBLIC. These are SECURITY DEFINER functions that move money,
+     * and they shipped callable by an anonymous caller until
+     * `baseline-check.mjs` named all five.
+     *
+     * Asserted per function rather than by counting, so adding a sixth without
+     * revoking it fails here rather than in the gate.
+     */
+    const declared = [...budgetMigration.matchAll(
+      /CREATE OR REPLACE FUNCTION public\.(ai_budget_\w+)\(/g)].map((m) => m[1]);
+    expect(declared.length).toBeGreaterThanOrEqual(5);
+    for (const fn of new Set(declared)) {
+      const revoke = new RegExp(
+        `REVOKE ALL ON FUNCTION public\\.${fn}\\([^)]*\\) FROM PUBLIC`);
+      expect(budgetMigration, `${fn} is not revoked FROM PUBLIC`).toMatch(revoke);
+      expect(budgetMigration, `${fn} is not granted to service_role`)
+        .toMatch(new RegExp(`GRANT EXECUTE ON FUNCTION public\\.${fn}\\([^)]*\\) TO service_role`));
+    }
   });
 });
 

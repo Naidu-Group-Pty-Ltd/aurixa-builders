@@ -305,11 +305,20 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
      AND b.period_month = (date_trunc('month', now() AT TIME ZONE 'utc'))::date;
 $$;
 
-REVOKE ALL ON FUNCTION public.ai_budget_reserve(text, bigint, bigint, text, text) FROM anon, authenticated;
-REVOKE ALL ON FUNCTION public.ai_budget_settle(uuid, bigint) FROM anon, authenticated;
-REVOKE ALL ON FUNCTION public.ai_budget_release(uuid) FROM anon, authenticated;
-REVOKE ALL ON FUNCTION public.ai_budget_reclaim_expired(text, date, interval) FROM anon, authenticated;
-REVOKE ALL ON FUNCTION public.ai_budget_status(text) FROM anon, authenticated;
+-- ---------------------------------------------------------------------------
+-- 8. FROM PUBLIC, because that is where the grant actually is.
+-- ---------------------------------------------------------------------------
+-- Postgres grants EXECUTE on a new function to PUBLIC by default. Revoking
+-- from `anon, authenticated` therefore removes nothing — both roles still
+-- reach it by inheriting PUBLIC — and these are SECURITY DEFINER functions
+-- that move money. `baseline-check.mjs` caught exactly this and named all five;
+-- the repository's own convention is FROM PUBLIC, and 132 existing revokes
+-- follow it.
+REVOKE ALL ON FUNCTION public.ai_budget_reserve(text, bigint, bigint, text, text) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.ai_budget_settle(uuid, bigint) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.ai_budget_release(uuid) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.ai_budget_reclaim_expired(text, date, interval) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.ai_budget_status(text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.ai_budget_reserve(text, bigint, bigint, text, text) TO service_role;
 GRANT EXECUTE ON FUNCTION public.ai_budget_settle(uuid, bigint) TO service_role;
 GRANT EXECUTE ON FUNCTION public.ai_budget_release(uuid) TO service_role;
