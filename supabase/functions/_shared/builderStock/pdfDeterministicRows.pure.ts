@@ -59,6 +59,13 @@
  * property (a `TOTAL` footer is a row `normaliseStockRow` accepts and this
  * stage must not).
  *
+ * Both gates are asked the CONSERVATIVE question, because both were first
+ * written asking the convenient one. "Is this line prose?" excused
+ * `House Design Enzo 8.5 Luca Modern.` on its shape, so it is now "could this
+ * line be a fact?" — a digit, money, an area unit or any known heading, and
+ * the line is never prose. "Does this row carry an identifier?" was satisfied
+ * by `lot_number: "TOTAL"`, so it is now "is that identifier a real one?".
+ *
  * NO SECOND VOCABULARY. Headings resolve through `fieldForHeader`, rows key
  * through `keyRowsByHeader`, and every value is coerced by `normaliseStockRow`
  * — the same three functions a CSV goes through. This module decides WHICH
@@ -246,6 +253,52 @@ const IDENTITY_FIELDS: readonly string[] = [
 ];
 
 /**
+ * Words that name a SUM of the rows above, not a property.
+ *
+ * A schedule headed `LOT | DESIGN | PRICE` puts its footer's word in the LOT
+ * column, so `normaliseStockRow` answers `lot_number: "TOTAL"` and a test that
+ * asks only whether an identifier is PRESENT is satisfied by it. Requiring the
+ * lot to be numeric would be the wrong repair — builders really do sell
+ * `12A`, `315/2` and `MC-0041` — so the rule is about the WORD, not the shape:
+ * an obvious summary label is not property identity.
+ *
+ * Deliberately a short, closed list of the unambiguous ones. A builder whose
+ * estate is called "Summary" is not a case worth guessing at, and anything not
+ * named here simply keeps today's behaviour.
+ */
+const SUMMARY_IDENTITY_LABELS: ReadonlySet<string> = new Set([
+  'total', 'totals', 'subtotal', 'grandtotal', 'summary',
+]);
+
+/** Case, spacing and punctuation only — never the value's meaning. */
+function flattenIdentity(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+/**
+ * Does this row name a property a person could go and look up?
+ *
+ * `none` — no identifier at all (a `TOTAL` under an ESTATE column, a legend).
+ * `summary` — every identifier it has is a summary word.
+ * `ok` — at least one identifier that is not.
+ *
+ * `every` rather than `some`: a row carrying both `TOTAL` and a real street
+ * address is identified by the address, and refusing it would be this stage
+ * guessing again.
+ */
+function rowIdentity(
+  record: Record<string, unknown>,
+): 'ok' | 'none' | 'summary' {
+  const stated = IDENTITY_FIELDS
+    .map((field) => record[field])
+    .filter((value): value is string => typeof value === 'string' && value.trim() !== '');
+  if (!stated.length) return 'none';
+  return stated.every((value) => SUMMARY_IDENTITY_LABELS.has(flattenIdentity(value)))
+    ? 'summary'
+    : 'ok';
+}
+
+/**
  * How many distinct fields a document must state before it is a SPECIFICATION
  * rather than prose that happens to contain a label.
  *
@@ -389,21 +442,66 @@ function readInlineCounts(line: string): Claim | null {
  * longer than the longest thing a specification line plausibly is. The word
  * count carries that second half on its own for an unpunctuated line.
  *
- * Measured against the shapes this has to separate:
+ * SHAPE ALONE WAS NOT ENOUGH, and this is the defect that proved it:
  *
- *   "Full turnkey inclusions: landscaping, driveway and fencing."  7 w, stop → prose
- *   "Welcome to your new home."                                    5 w, stop → prose
- *   "PALOMINO ESTATE"                                              2 w       → FACT
- *   "ENZO 8.5 LUCA"                                                3 w       → FACT
- *   "Land Size 350 m2."                                            4 w, stop → FACT
+ *   "House Design Enzo 8.5 Luca Modern."
  *
- * That last one is why the stop alone is not enough: a specification line with
- * a full stop on the end is still a specification line.
+ * Six words with a full stop on the end — prose by every measure of shape,
+ * and it is the house design. No colon, so no text field claims it; long
+ * enough to read as a sentence, so it was excused; and with enough labelled
+ * fields elsewhere the document completed and the design was gone for good.
+ *
+ * So shape is now the SECOND question. The first is whether the line carries
+ * any cue that it might be a fact at all, and a line that does is never prose
+ * however it is written. The cues are deliberately coarse — a digit, money, an
+ * area unit, or any heading the EXISTING alias table recognises anywhere in
+ * the line — because the two errors are not the same size: a false fallback
+ * costs one model call, and a false "prose" costs a client's record a field
+ * for ever. Nothing here reads the fact it detects; it only declines to
+ * pretend the line is decoration.
+ *
+ *   "House Design Enzo 8.5 Luca Modern."   digit + `house design` → FACT
+ *   "PALOMINO ESTATE"                      `estate`               → FACT
+ *   "ENZO 8.5 LUCA"                        digit                  → FACT
+ *   "Land Size 350 m2."                    digit + unit + `land`  → FACT
+ *   "Priced from $800,000"                 digit + money + `price`→ FACT
+ *   "Discover a better way to live."       no cue, 6 w, stop      → prose
+ *   "Welcome to your new home."            no cue, 5 w, stop      → prose
  */
 const PROSE_MIN_WORDS_WITH_STOP = 4;
 const PROSE_MIN_WORDS_WITHOUT_STOP = 8;
 
+/** Money and the ways an area is written. Digits are tested separately. */
+const CURRENCY_OR_AREA = /[$€£¥]|\b(?:m2|m²|sqm|sq\s?m|hectares?|ha|acres?)\b/i;
+
+/**
+ * Could this line be stating a property fact?
+ *
+ * Asked only of a line this reader could NOT claim, and answered on the
+ * conservative side every time. It detects; it never extracts.
+ *
+ * The heading scan walks every window of up to `MAX_LABEL_WORDS` words through
+ * `fieldForHeader` — the SAME vocabulary the claimers use, never a second list
+ * — so a heading anywhere in the line counts, not only at its start. That is
+ * the half that catches a design or an estate written with no number in it.
+ */
+export function hasSpecificationCue(line: string): boolean {
+  const trimmed = line.trim();
+  if (/\d/.test(trimmed)) return true;
+  if (CURRENCY_OR_AREA.test(trimmed)) return true;
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  for (let start = 0; start < tokens.length; start++) {
+    const reach = Math.min(MAX_LABEL_WORDS, tokens.length - start);
+    for (let length = 1; length <= reach; length++) {
+      if (fieldForHeader(tokens.slice(start, start + length).join(' '))) return true;
+    }
+  }
+  return false;
+}
+
 export function readsAsProse(line: string): boolean {
+  // A line that might be a fact is never prose, whatever shape it is in.
+  if (hasSpecificationCue(line)) return false;
   const trimmed = line.trim();
   const words = trimmed.split(/\s+/).filter(Boolean).length;
   if (/[.!?]$/.test(trimmed)) return words > PROSE_MIN_WORDS_WITH_STOP;
@@ -866,8 +964,19 @@ export function assemblePdfSchedule(
      * because dropping it would silently decide that one line of a builder's
      * schedule is not stock — the judgement this stage exists not to make.
      */
-    if (!IDENTITY_FIELDS.some((field) => record[field as keyof typeof record])) {
+    const identity = rowIdentity(record as unknown as Record<string, unknown>);
+    if (identity === 'none') {
       return refuse('incomplete', 'a_row_identifies_no_property', diagnostics);
+    }
+    if (identity === 'summary') {
+      /*
+       * THE FOOTER MOVED INTO THE LOT COLUMN. Under `LOT | DESIGN | PRICE`
+       * the word `TOTAL` lands in `lot_number`, which is present and truthy —
+       * so "does this row carry an identifier" answered yes for a row that is
+       * the sum of the two above it. Asking WHICH word it is, rather than
+       * whether one is there, is the difference.
+       */
+      return refuse('incomplete', 'a_summary_row_is_not_a_property', diagnostics);
     }
   }
 

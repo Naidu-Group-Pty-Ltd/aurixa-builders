@@ -22,6 +22,7 @@ import {
   CANONICAL_HEADER,
   MIN_BROCHURE_FIELDS,
   assemblePdfSchedule,
+  hasSpecificationCue,
   layoutLines,
   mayHoldSchedule,
   readPdfBrochure,
@@ -64,7 +65,15 @@ const PROBE_B = 'LOT 315\n'
   + 'PACKAGE PRICE $863,850\n'
   + 'Full turnkey inclusions: landscaping, driveway and fencing.';
 
-/** The same property, written as labelled statements throughout. */
+/**
+ * The same property, written as labelled statements throughout.
+ *
+ * It carries no marketing line, and that is not an omission: `Full turnkey
+ * inclusions: …` contains `inclusions`, which the alias table knows as a
+ * description heading, so under the cue rule it is a fact this reader did not
+ * take and the document correctly stands down. Prose with NO cue is still
+ * ignored — proved separately below.
+ */
 const LABELLED_BROCHURE = 'Lot: 315\n'
   + 'Estate: Palomino Estate\n'
   + 'Design: Enzo 8.5 Luca\n'
@@ -73,8 +82,7 @@ const LABELLED_BROCHURE = 'Lot: 315\n'
   + 'Bedrooms: 4\n'
   + 'Bathrooms: 2\n'
   + 'Car Spaces: 2\n'
-  + 'Price: $863,850\n'
-  + 'Full turnkey inclusions: landscaping, driveway and fencing.';
+  + 'Price: $863,850';
 
 /** The same eight columns, as the reader's item list places them. */
 const SCHEDULE_ITEMS: PdfTextItem[] = (() => {
@@ -162,10 +170,13 @@ describe('a brochure whose facts are not all labelled stands down', () => {
     expect(reading.strategy).toBeNull();
   });
 
-  it('the two bare lines are what it could not account for', () => {
-    // `PALOMINO ESTATE` and `ENZO 8.5 LUCA`. The inclusions sentence is prose
-    // and is correctly not counted as a fact we failed to read.
-    expect(reading.diagnostics.unaccountedLines).toBe(2);
+  it('names how many facts it could not account for', () => {
+    /*
+     * Three: `PALOMINO ESTATE`, `ENZO 8.5 LUCA`, and the inclusions line —
+     * which carries `inclusions`, a heading the alias table knows, so it is a
+     * fact we did not take rather than decoration. Any one of them refuses.
+     */
+    expect(reading.diagnostics.unaccountedLines).toBe(3);
   });
 
   it('it had read seven fields and still refuses — the fields are not the test', () => {
@@ -179,13 +190,74 @@ describe('a brochure whose facts are not all labelled stands down', () => {
     expect(reading.rows).toEqual([]);
   });
 
-  it('the sentence in it is prose, and the bare lines are not', () => {
-    expect(readsAsProse('Full turnkey inclusions: landscaping, driveway and fencing.')).toBe(true);
-    expect(readsAsProse('Welcome to your new home.')).toBe(true);
+  it('the bare lines are not prose', () => {
     expect(readsAsProse('PALOMINO ESTATE')).toBe(false);
     expect(readsAsProse('ENZO 8.5 LUCA')).toBe(false);
     // A specification line with a full stop on the end is still a fact.
     expect(readsAsProse('Land Size 350 m2.')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C2 — shape alone may never excuse a line
+// ---------------------------------------------------------------------------
+
+describe('a line that could be a fact is never prose, however it is written', () => {
+  const FACTS = [
+    ['a sentence-shaped design', 'House Design Enzo 8.5 Luca Modern.'],
+    ['a heading with no number', 'Palomino Estate release two'],
+    ['money', 'Priced from $800,000'],
+    ['an area unit', 'Generous blocks from 350 sqm'],
+    ['a bare number', 'Block 512'],
+    ['a postcode', 'Tarneit 3029'],
+    ['a known heading mid-sentence', 'Ask about the availability of this release'],
+  ] as const;
+
+  it.each(FACTS)('%s is a fact, not prose', (_label, line) => {
+    expect(hasSpecificationCue(line)).toBe(true);
+    expect(readsAsProse(line)).toBe(false);
+  });
+
+  it('the reported defect: a design written as a sentence stands the document down', () => {
+    /*
+     * Six words and a full stop — prose by every measure of SHAPE, and it is
+     * the house design. No colon, so nothing claims it; excused as a sentence,
+     * the document completed and the design was lost for good.
+     */
+    const reading = readPdfBrochure([
+      'Lot: 315\nEstate: Palomino Estate\nPrice: $863,850\nBedrooms: 4\n'
+      + 'House Design Enzo 8.5 Luca Modern.',
+    ]);
+    expect(reading.status).toBe('incomplete');
+    expect(reading.reason).toBe('unaccounted_specification_lines');
+    expect(reading.diagnostics.unaccountedLines).toBe(1);
+    expect(reading.rows).toEqual([]);
+  });
+
+  const MARKETING = [
+    'Discover a better way to live.',
+    'Welcome to your new home.',
+    'Thoughtfully crafted for the way you want to live every day.',
+  ];
+
+  it.each(MARKETING)('marketing with no cue is still ignored: %s', (line) => {
+    expect(hasSpecificationCue(line)).toBe(false);
+    expect(readsAsProse(line)).toBe(true);
+  });
+
+  it('a labelled brochure carrying cue-free marketing still completes', () => {
+    const reading = readPdfBrochure([`${LABELLED_BROCHURE}\nDiscover a better way to live.`]);
+    expect(reading.status).toBe('complete');
+    expect(reading.diagnostics.unaccountedLines).toBe(0);
+    expect(reading.rows).toHaveLength(1);
+  });
+
+  it('the cue vocabulary is the existing one, never a second list', () => {
+    // Every cue word here is a heading `fieldForHeader` already resolves.
+    for (const heading of ['Estate', 'Design', 'Price', 'Land', 'Availability']) {
+      expect(fieldForHeader(heading)).toBeTruthy();
+      expect(hasSpecificationCue(`Something about the ${heading.toLowerCase()} here`)).toBe(true);
+    }
   });
 });
 
@@ -446,6 +518,67 @@ describe('a PDF schedule is reconstructed from where the text was drawn', () => 
     expect(reading.reason).toBe('a_row_identifies_no_property');
     expect(reading.rows).toEqual([]);
     expect(reading.strategy).toBeNull();
+  });
+
+  /**
+   * `LOT | DESIGN | PRICE` — the arrangement that puts a footer's word in the
+   * IDENTITY column rather than beside it.
+   */
+  const lotColumnSchedule = (footer: string | null) => {
+    const columns = [40, 160, 300];
+    const rows: string[][] = [
+      ['LOT', 'DESIGN', 'PRICE'],
+      ['315', 'ENZO', '$800,000'],
+      ['316', 'NEX', '$850,000'],
+    ];
+    const items: PdfTextItem[] = [];
+    rows.forEach((cells, rowIndex) => {
+      const y = 700 - rowIndex * 18;
+      cells.forEach((text, column) => {
+        items.push({ text, x: columns[column], y, width: text.length * 5 });
+      });
+    });
+    if (footer !== null) {
+      items.push({ text: footer, x: 40, y: 646, width: footer.length * 5 });
+      items.push({ text: '$1,650,000', x: 300, y: 646, width: 50 });
+    }
+    return schedulePages(items);
+  };
+
+  it('the same schedule with no footer reads its two properties', () => {
+    const reading = assemblePdfSchedule(lotColumnSchedule(null));
+    expect(reading.status).toBe('complete');
+    expect(reading.rows).toHaveLength(2);
+    expect(reading.rows.map((row) => normaliseStockRow(row)!.lot_number)).toEqual(['315', '316']);
+  });
+
+  it.each(['TOTAL', 'TOTALS', 'SUBTOTAL', 'SUB-TOTAL', 'GRAND TOTAL', 'Summary'])(
+    'a %s sitting in the LOT column stands the whole schedule down', (footer) => {
+      /*
+       * `normaliseStockRow` answers `lot_number: "TOTAL"`, which is present
+       * and truthy — so a gate that asks only whether an identifier EXISTS is
+       * satisfied by the sum of the rows above it. The word is the test.
+       */
+      const asProperty = normaliseStockRow({ LOT: footer, PRICE: '$1,650,000' });
+      expect(asProperty).not.toBeNull();
+      expect(asProperty!.lot_number).toBe(footer);
+
+      const reading = assemblePdfSchedule(lotColumnSchedule(footer));
+      expect(reading.status).toBe('incomplete');
+      expect(reading.reason).toBe('a_summary_row_is_not_a_property');
+      expect(reading.rows).toEqual([]);
+      expect(reading.strategy).toBeNull();
+    },
+  );
+
+  it('an alphanumeric lot is never mistaken for a summary marker', () => {
+    // The rule is about the WORD, not the shape — builders sell `12A`,
+    // `315/2` and `MC-0041`, and a numeric-only lot rule would refuse them.
+    for (const lot of ['12A', '315/2', 'MC-0041', 'A1']) {
+      const reading = assemblePdfSchedule(lotColumnSchedule(lot));
+      expect({ lot, status: reading.status }).toEqual({ lot, status: 'complete' });
+      expect(reading.rows).toHaveLength(3);
+    }
   });
 
   it('a row with no identifier of any kind stands the schedule down', () => {
