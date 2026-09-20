@@ -148,7 +148,7 @@ describe('a chain that failed carries the router’s own account', () => {
   it('an all-timeout chain is model_timeout', async () => {
     callLLM.mockRejectedValue(routerThrew([
       { route: 'gateway', model_id: 'a', ok: false, status: 504, error: 'provider_timeout' },
-      { route: 'native', model_id: 'gpt-4o-mini', ok: false, status: 504, error: 'provider_timeout' },
+      { route: 'gateway', model_id: 'google/gemini-3-flash-preview', ok: false, status: 504, error: 'provider_timeout' },
     ]));
     await expect(run()).rejects.toMatchObject({ code: 'model_timeout' });
   });
@@ -156,7 +156,7 @@ describe('a chain that failed carries the router’s own account', () => {
   it('a mixture is infrastructure, not a timeout', async () => {
     callLLM.mockRejectedValue(routerThrew([
       { route: 'gateway', model_id: 'a', ok: false, status: 504, error: 'provider_timeout' },
-      { route: 'native', model_id: 'gpt-4o-mini', ok: false, error: 'provider_not_configured' },
+      { route: 'gateway', model_id: 'google/gemini-3-flash-preview', ok: false, error: 'provider_not_configured' },
     ]));
     await expect(run()).rejects.toMatchObject({ code: 'model_unavailable' });
   });

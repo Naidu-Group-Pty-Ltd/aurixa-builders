@@ -68,7 +68,7 @@ describe('what the router already knew and nobody read', () => {
      */
     const diagnosis = classifyModelFailure([
       { route: 'gateway', model_id: 'a', ok: false, status: 504, error: 'provider_timeout' },
-      { route: 'native', model_id: 'gpt-4o-mini', ok: false, error: 'provider_not_configured' },
+      { route: 'gateway', model_id: 'google/gemini-3-flash-preview', ok: false, error: 'provider_not_configured' },
     ]);
     expect(diagnosis.code).toBe('model_unavailable');
   });
