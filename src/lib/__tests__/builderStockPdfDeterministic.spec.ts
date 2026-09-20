@@ -23,6 +23,7 @@ import {
   MIN_BROCHURE_FIELDS,
   assemblePdfSchedule,
   hasSpecificationCue,
+  isIncidentalContent,
   layoutLines,
   mayHoldSchedule,
   readPdfBrochure,
@@ -68,11 +69,8 @@ const PROBE_B = 'LOT 315\n'
 /**
  * The same property, written as labelled statements throughout.
  *
- * It carries no marketing line, and that is not an omission: `Full turnkey
- * inclusions: …` contains `inclusions`, which the alias table knows as a
- * description heading, so under the cue rule it is a fact this reader did not
- * take and the document correctly stands down. Prose with NO cue is still
- * ignored — proved separately below.
+ * Every line of it resolves, which is what `complete` means: nothing here was
+ * ignored on a judgement about its shape.
  */
 const LABELLED_BROCHURE = 'Lot: 315\n'
   + 'Estate: Palomino Estate\n'
@@ -164,49 +162,39 @@ describe('a brochure whose design and estate are bare lines', () => {
   const reading = readPdfBrochure([PROBE_B]);
 
   /*
-   * THIS BLOCK USED TO ASSERT THE OPPOSITE, and the change is deliberate.
+   * THE DOCUMENT STANDS DOWN, and that is the whole point of the stage.
    *
-   * The gate was "any line that could be a fact must be accounted for", which
-   * on a real seven-page brochure is unreachable — it blocks on the builder's
-   * own phone number. It is now the narrower and more precise question: does
-   * the line NAME a field this vocabulary knows and state a value we did not
-   * take? `PALOMINO ESTATE` and `ENZO 8.5 LUCA` name no field we recognise,
-   * so they are reported and the document completes on what it does state.
-   *
-   * What that costs is recorded rather than hidden: the record carries no
-   * design and no development, and `unclassifiedLines` says two lines went
-   * unread. What it buys is that an ordinary brochure imports at all.
+   * `PALOMINO ESTATE` and `ENZO 8.5 LUCA` name no field this vocabulary
+   * knows, and refusing to guess which is the estate and which the design is
+   * right. Completing anyway was not: it published a property with no
+   * development and no design AND suppressed the assisted reader, which can
+   * tell them apart. The record would have been thin for ever, with nothing
+   * anywhere saying so.
    */
-  it('completes on the facts it can name', () => {
-    expect(reading.status).toBe('complete');
-    expect(reading.strategy).toBe('pdf_deterministic_brochure');
-    expect(reading.rows).toHaveLength(1);
+  it('refuses rather than completing around two lines it could not read', () => {
+    expect(reading.status).toBe('incomplete');
+    expect(reading.reason).toBe('unaccounted_specification_lines');
+    expect(reading.rows).toEqual([]);
+    expect(reading.strategy).toBeNull();
   });
 
-  it('reports the lines it could not place, and invents nothing from them', () => {
-    // `PALOMINO ESTATE`, `ENZO 8.5 LUCA`, and the inclusions sentence — whose
-    // `inclusions` the alias table knows but which this reader may not claim.
-    expect(reading.diagnostics.unclassifiedLines).toBe(3);
-    expect(reading.diagnostics.unaccountedLines).toBe(0);
-    const record = normaliseStockRow(reading.rows[0])!;
-    expect(record.house_design).toBeNull();
-    expect(record.development_name).toBeNull();
+  it('counts exactly the two lines that stood it down', () => {
+    // `PALOMINO ESTATE` and `ENZO 8.5 LUCA`. The inclusions sentence is not
+    // one of them: `inclusions` is a heading this reader declines by policy.
+    expect(reading.diagnostics.unaccountedLines).toBe(2);
+    expect(reading.diagnostics.declinedFields).toEqual(['description']);
   });
 
-  it('every value it did take is one the document stated', () => {
-    const record = normaliseStockRow(reading.rows[0])!;
-    expect({
-      lot: record.lot_number, land: record.land_size_sqm, build: record.building_size_sqm,
-      beds: record.bedrooms, baths: record.bathrooms, cars: record.car_spaces,
-      price: record.price,
-    }).toEqual({
-      lot: '315', land: 350, build: 180, beds: 4, baths: 2, cars: 2, price: 863850,
-    });
+  it('carries no row out, on any status but complete', () => {
+    expect(reading.rows).toEqual([]);
+    expect(reading.diagnostics.fieldsRead).toContain('price');
   });
 
-  it('the bare lines are not prose', () => {
+  it('the bare lines are not prose, and are not furniture either', () => {
     expect(readsAsProse('PALOMINO ESTATE')).toBe(false);
     expect(readsAsProse('ENZO 8.5 LUCA')).toBe(false);
+    expect(isIncidentalContent('PALOMINO ESTATE')).toBe(false);
+    expect(isIncidentalContent('ENZO 8.5 LUCA')).toBe(false);
     // A specification line with a full stop on the end is still a fact.
     expect(readsAsProse('Land Size 350 m2.')).toBe(false);
   });
@@ -770,13 +758,12 @@ describe('diagnostics never carry what the document said', () => {
  *
  * Not a table and not a run of `Label: value` lines. Its identity is a
  * heading, its counts sit one per line beside their icons, and each of its
- * measurements is a label with the figure set UNDER it. Every one of those
- * is an explicit statement; none of them was readable before.
+ * measurements is a label with the figure set UNDER it. Every one of those is
+ * an explicit statement; none of them was readable before.
  *
- * `ENZO 8.5 LUCA` and `PALOMINO` are deliberately left bare. A reader that
- * decided which of the two is the design and which the estate would be
- * guessing, so both stay unread — and the document still completes on what it
- * states in terms this vocabulary knows.
+ * `ENZO 8.5 LUCA` and `PALOMINO` are bare, and this reader may not decide
+ * which is the design and which the estate. So this document does not
+ * complete — it goes to the reader that can tell them apart.
  */
 const BUILDER_BROCHURE = [
   'LOT 315', '', 'ENZO 8.5 LUCA', '', 'PALOMINO', '',
@@ -786,19 +773,60 @@ const BUILDER_BROCHURE = [
   'PACKAGE PRICE', '$863,850',
 ].join('\n');
 
-describe('a normal builder brochure is read without a model', () => {
+/**
+ * THE SAME BROCHURE WITH ITS TWO BARE LINES LABELLED, and with the furniture
+ * a real one carries — a phone number, a copyright line, a web address, a
+ * page number and a marketing sentence.
+ *
+ * This is what `complete` is for: every line of the document is read into a
+ * field or recognised as something the document says about itself.
+ */
+const LABELLED_PACKAGE_BROCHURE = [
+  'LOT 315', '',
+  'DESIGN', 'ENZO 8.5 LUCA', '',
+  'ESTATE', 'PALOMINO', '',
+  '4 BED', '2 BATH', '2 CAR', '',
+  'LAND', '350 m²', '',
+  'HOUSE', '210 m²', '',
+  'PACKAGE PRICE', '$863,850', '',
+  'Discover a better way to live.',
+  'Ph 1300 123 456',
+  'www.acmehomes.com.au',
+  '© 2026 Acme Homes. Prices subject to change without notice.',
+  'Page 1 of 2',
+].join('\n');
+
+describe('a brochure that leaves two lines unread does not suppress the model', () => {
   const reading = readPdfBrochure([BUILDER_BROCHURE]);
+
+  it('reads every labelled fact and still refuses, because two lines are unread', () => {
+    expect(reading.status).toBe('incomplete');
+    expect(reading.reason).toBe('unaccounted_specification_lines');
+    expect(reading.rows).toEqual([]);
+    // It got as far as the price — the refusal is about what it could NOT do.
+    expect(reading.diagnostics.fieldsRead).toContain('price');
+    expect(reading.diagnostics.fieldsRead).toContain('building_size_sqm');
+    // `ENZO 8.5 LUCA` and `PALOMINO`.
+    expect(reading.diagnostics.unaccountedLines).toBe(2);
+  });
+});
+
+describe('a brochure whose every line is accounted for is read without a model', () => {
+  const reading = readPdfBrochure([LABELLED_PACKAGE_BROCHURE]);
 
   it('completes, where before it refused', () => {
     expect(reading.status).toBe('complete');
     expect(reading.strategy).toBe('pdf_deterministic_brochure');
     expect(reading.rows).toHaveLength(1);
+    expect(reading.diagnostics.unaccountedLines).toBe(0);
   });
 
   it('recovers every fact the document states, through the real normaliser', () => {
     const record = normaliseStockRow(reading.rows[0])!;
     expect({
       lot_number: record.lot_number,
+      house_design: record.house_design,
+      development_name: record.development_name,
       bedrooms: record.bedrooms,
       bathrooms: record.bathrooms,
       car_spaces: record.car_spaces,
@@ -807,6 +835,8 @@ describe('a normal builder brochure is read without a model', () => {
       price: record.price,
     }).toEqual({
       lot_number: '315',
+      house_design: 'ENZO 8.5 LUCA',
+      development_name: 'PALOMINO',
       bedrooms: 4,
       bathrooms: 2,
       car_spaces: 2,
@@ -816,14 +846,10 @@ describe('a normal builder brochure is read without a model', () => {
     });
   });
 
-  it('invents neither the design nor the estate, and says how many it could not place', () => {
-    const record = normaliseStockRow(reading.rows[0])!;
-    expect(record.house_design).toBeNull();
-    expect(record.development_name).toBeNull();
-    expect(record.availability_status).toBe('unknown');
-    // `ENZO 8.5 LUCA` and `PALOMINO` — reported, never guessed at.
-    expect(reading.diagnostics.unclassifiedLines).toBe(2);
-    expect(reading.diagnostics.unaccountedLines).toBe(0);
+  it('the furniture cost it nothing, and is counted rather than ignored quietly', () => {
+    // The sentence, the phone number, the web address, the copyright line
+    // and the page number: five lines, none of them about this property.
+    expect(reading.diagnostics.incidentalLines).toBe(5);
   });
 
   it('the unit under a label resolves the label, through the existing table', () => {
@@ -837,7 +863,8 @@ describe('a normal builder brochure is read without a model', () => {
     expect(fieldForHeader('house m2')).toBe('building_size_sqm');
     const record = normaliseStockRow(reading.rows[0])!;
     expect(record.building_size_sqm).toBe(210);
-    expect(record.house_design).toBeNull();
+    // And the design came from the line the document labelled `DESIGN`.
+    expect(record.house_design).toBe('ENZO 8.5 LUCA');
   });
 
   it('a figure under a descriptive label is refused, never written into it', () => {
@@ -855,6 +882,88 @@ describe('a normal builder brochure is read without a model', () => {
     const reading2 = readPdfBrochure([['LOT 315', 'LAND', 'HOUSE', 'Price: $1'].join('\n')]);
     expect(reading2.status).not.toBe('complete');
     expect(reading2.rows).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A LABEL AND ITS VALUE NEVER MEET ACROSS A PAGE BREAK
+// ---------------------------------------------------------------------------
+
+describe('vertical pairing is page-local', () => {
+  /*
+   * The page break is the document's own evidence that two lines were not
+   * set together. A flattened array would let the last line of one page take
+   * the first line of the next as its value — a measurement read off a
+   * different page, which is worse than no measurement at all.
+   */
+  it('a label at the foot of a page does not take the top of the next', () => {
+    const reading = readPdfBrochure([
+      ['LOT 315', 'Bedrooms: 4', 'HOUSE'].join('\n'),
+      ['210 m²', 'Price: $800,000'].join('\n'),
+    ]);
+    expect(reading.status).toBe('incomplete');
+    expect(reading.reason).toBe('label_without_value:house_design');
+    expect(reading.rows).toEqual([]);
+  });
+
+  it('the same two lines on ONE page are a pair', () => {
+    const reading = readPdfBrochure([
+      ['LOT 315', 'Bedrooms: 4', 'HOUSE', '210 m²', 'Price: $800,000'].join('\n'),
+    ]);
+    expect(reading.status).toBe('complete');
+    expect(normaliseStockRow(reading.rows[0])!.building_size_sqm).toBe(210);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WHAT A DOCUMENT SAYS ABOUT ITSELF
+// ---------------------------------------------------------------------------
+
+describe('incidental content does not stand a document down', () => {
+  const FURNITURE = [
+    'Ph 1300 123 456',
+    'Phone: 03 9123 4567',
+    'Mobile 0412 345 678',
+    '+61 3 9123 4567',
+    'sales@acmehomes.com.au',
+    'E sales@acmehomes.com.au',
+    'www.acmehomes.com.au',
+    'https://acmehomes.com.au/stock',
+    'acmehomes.com.au',
+    'Page 3 of 7',
+    '© 2026 Acme Homes Pty Ltd',
+    'ABN 12 345 678 901',
+    'All rights reserved.',
+    'Builder licence no. 123456',
+    'Images are for illustrative purposes only.',
+    "Artist's impression. Not to scale.",
+    'Prices subject to change without notice.',
+  ];
+
+  it.each(FURNITURE)('%s is the document talking about itself', (line) => {
+    expect(isIncidentalContent(line)).toBe(true);
+  });
+
+  const FACTS = [
+    'PALOMINO',
+    'ENZO 8.5 LUCA',
+    'LOT 315',
+    '350 m²',
+    '$863,850',
+    '4 2 2 350 863850',
+    'Land Size 350 m2 approx',
+    'Ph',
+    'Website',
+  ];
+
+  it.each(FACTS)('%s is not furniture, so it is the caller\'s problem', (line) => {
+    expect(isIncidentalContent(line)).toBe(false);
+  });
+
+  it('a specification run of digits is never read as a telephone number', () => {
+    // The reason an unlabelled number must OPEN the way a published number
+    // opens: this line is a bed/bath/car/land/price row, not a phone.
+    expect(isIncidentalContent('4 2 2 350 863850')).toBe(false);
   });
 });
 
@@ -953,16 +1062,104 @@ describe('a fact we can see and did not read still refuses', () => {
 });
 
 describe('a specification line is not a heading row', () => {
+  /*
+   * A VALUE IS ANYTHING THAT OPENS WITH A FIGURE.
+   *
+   * The first version of this screen admitted a bare number only, which is
+   * the one spelling a builder's brochure does not use: `350m²`, `210m2`,
+   * `$863,850` and `4-bed` all state a value, all reached three recognised
+   * words, and all were read as a heading row — which sent the document for
+   * a positional read, where the schedule parser refused it with a table's
+   * refusal and masked the brochure reading underneath.
+   */
   it.each([
     ['counts beside their figures', '4 BED 2 BATH 2 CAR'],
     ['labels beside their figures', 'LAND 350 HOUSE 210 PRICE'],
     ['a configuration sentence', '3 Bed 2 Bath 2 Car Double Garage'],
+    ['an area with its unit attached', 'LAND 350m² HOUSE 210m2 PRICE'],
+    ['an area written sqm', 'Land 350sqm House 210sqm Package Price'],
+    ['a price with its currency', 'Lot 315 Design Enzo Price $863,850'],
+    ['hyphenated counts', 'Lot 315 Design Enzo 4-bed 2-bath 2-car'],
   ])('%s does not send a brochure for a positional read', (_label, line) => {
     expect(mayHoldSchedule([line])).toBe(false);
   });
 
-  it('a real heading row still does', () => {
+  it('a real heading row still does, because a heading never opens with a figure', () => {
     expect(mayHoldSchedule(['ESTATE LOT DESIGN BED BATH CAR LAND PRICE'])).toBe(true);
     expect(mayHoldSchedule(['Estate Lot Design Beds Baths Cars Land m2 Price'])).toBe(true);
+    expect(mayHoldSchedule(['Lot Design Land m² House m² Package Price'])).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WHAT THE DOCUMENT IS ABOUT IS NEVER GUESSED AT
+// ---------------------------------------------------------------------------
+
+describe('a material line this reader cannot name stands the document down', () => {
+  /*
+   * Each of these documents states enough to build a row, and each carries
+   * ONE line this vocabulary cannot resolve. None of them may complete: the
+   * unread line may be the estate, the design, the street or the release, and
+   * completing would suppress the one reader that could have told us which.
+   */
+  const MATERIAL = [
+    ['a bare name', 'PALOMINO'],
+    ['a bare design', 'ENZO 8.5 LUCA'],
+    ['a name with a number in it', 'Society 1056'],
+    ['a short phrase with no cue', 'SALES OFFICE'],
+    ['a stated fact we did not take', 'Frontage 12.5 m'],
+  ];
+
+  it.each(MATERIAL)('%s is unaccounted for', (_label, line) => {
+    const reading = readPdfBrochure([
+      ['LOT 315', 'Bedrooms: 4', 'Bathrooms: 2', 'Price: $800,000', line].join('\n'),
+    ]);
+    expect(reading.status).not.toBe('complete');
+    expect(reading.rows).toEqual([]);
+    expect(reading.diagnostics.unaccountedLines ?? 0).toBeGreaterThan(0);
+  });
+
+  it('the same document without that line completes', () => {
+    const reading = readPdfBrochure([
+      ['LOT 315', 'Bedrooms: 4', 'Bathrooms: 2', 'Price: $800,000'].join('\n'),
+    ]);
+    expect(reading.status).toBe('complete');
+    expect(reading.diagnostics.unaccountedLines).toBe(0);
+  });
+
+  it('and furniture in its place still completes', () => {
+    const reading = readPdfBrochure([
+      ['LOT 315', 'Bedrooms: 4', 'Bathrooms: 2', 'Price: $800,000',
+        'Ph 1300 123 456', '© 2026 Acme Homes', 'Page 2 of 6',
+        'Your new home starts here.'].join('\n'),
+    ]);
+    expect(reading.status).toBe('complete');
+    expect(reading.diagnostics.unaccountedLines).toBe(0);
+    expect(reading.diagnostics.incidentalLines).toBe(4);
+  });
+
+  it('an inclusions paragraph is declined by name, not counted against it', () => {
+    const reading = readPdfBrochure([
+      ['LOT 315', 'Bedrooms: 4', 'Price: $800,000',
+        'Full turnkey inclusions: landscaping, driveway and fencing.',
+        'Status: Selling now'].join('\n'),
+    ]);
+    expect(reading.status).toBe('complete');
+    expect(reading.diagnostics.unaccountedLines).toBe(0);
+    expect(reading.diagnostics.declinedFields)
+      .toEqual(['availability_status', 'description']);
+    // And neither reached the row.
+    const record = normaliseStockRow(reading.rows[0])!;
+    expect(record.description).toBeNull();
+    expect(record.availability_status).toBe('unknown');
+  });
+
+  it('a figure beside an inclusions label is NOT declined — it may be a fact', () => {
+    const reading = readPdfBrochure([
+      ['LOT 315', 'Bedrooms: 4', 'Price: $800,000',
+        'Inclusions include 2 living areas'].join('\n'),
+    ]);
+    expect(reading.status).toBe('incomplete');
+    expect(reading.reason).toBe('unaccounted_specification_lines');
   });
 });

@@ -49,17 +49,26 @@
  * builder's marketplace. The two are not symmetrical, so every judgement here
  * is made on the refusing side.
  *
- * NEVER COMPLETE AROUND A FACT WE DID NOT READ — AND KNOW WHICH FACTS THOSE
- * ARE. A brochure refuses when a line NAMES a field this vocabulary knows and
- * states a value the reader did not take (`Land Size 350 m2 approx`), and when
- * a label is set on its own with nothing pairable under it. It does NOT refuse
- * over a line it cannot classify at all (`PALOMINO`, `ENZO 8.5 LUCA`): that
- * rule blocked on any line carrying a digit, which a real seven-page brochure
- * breaks on its builder's own phone number. The record is then thinner than a
- * model's, and every value in it is one the document stated in terms this
- * vocabulary knows. A schedule refuses when any reconstructed row names no
- * property (a `TOTAL` footer is a row `normaliseStockRow` accepts and this
- * stage must not).
+ * NEVER COMPLETE AROUND A FACT WE DID NOT READ. `complete` is a statement
+ * about the WHOLE document, not about the fields that happened to resolve: a
+ * brochure completes only where every line of it was read into a field,
+ * declined under a named policy (`BROCHURE_CLAIMABLE_FIELDS`), or POSITIVELY
+ * recognised as the document's own furniture — a phone number, a web or email
+ * address, a page number, a copyright or licence line, a disclaimer, a
+ * cue-free marketing sentence. A line that is none of those may be a property
+ * fact, so it stands the document down and the assisted reader runs. That
+ * includes the short bare lines this vocabulary cannot name (`PALOMINO`,
+ * `ENZO 8.5 LUCA`), because those are an estate and a design and a model can
+ * read them: ignoring one does not make the record thinner, it makes it wrong,
+ * since completing also SUPPRESSES the reader that could have read it.
+ *
+ * The furniture list is what keeps this reachable rather than theoretical —
+ * an earlier rule blocked on any line carrying a digit, which a real
+ * seven-page brochure breaks on its builder's own telephone number — and it
+ * is a closed list of positive recognisers, never a fall-through.
+ *
+ * A schedule refuses when any reconstructed row names no property (a `TOTAL`
+ * footer is a row `normaliseStockRow` accepts and this stage must not).
  *
  * Both gates are asked the CONSERVATIVE question, because both were first
  * written asking the convenient one. "Is this line prose?" excused
@@ -140,17 +149,30 @@ export interface PdfDeterministicReading {
     /** Set when a field was stated twice with two different values. */
     conflictField?: string;
     /**
-     * Lines that read as a property fact and that this reader could not
-     * assign to a canonical field. Any one of them stands a brochure down.
+     * Lines this reader could not resolve and could not prove incidental.
+     * ANY ONE OF THEM STANDS A BROCHURE DOWN, whether it named a field we
+     * know or could not be classified at all: the document put it on the
+     * page, so it may be a property fact, and completing around it would
+     * suppress the one reader that could have read it.
      * A COUNT and never the text, because this reaches the import log.
      */
     unaccountedLines?: number;
     /**
-     * Lines this reader could not classify at all. Reported so a thin record
-     * is visible, and deliberately NOT blocking — see the gate in
-     * `readPdfBrochure` for why naming a fact and being unreadable differ.
+     * Lines a document says about ITSELF rather than about the property —
+     * a phone number, a website, a copyright or licence line, a page
+     * number, a disclaimer, a cue-free marketing sentence. Reported so a
+     * document that was mostly furniture is visible, and not blocking,
+     * because each was recognised POSITIVELY rather than merely unmatched.
      */
-    unclassifiedLines?: number;
+    incidentalLines?: number;
+    /**
+     * Canonical fields the document stated and this reader declines BY
+     * POLICY — the four `BROCHURE_CLAIMABLE_FIELDS` names for stated
+     * reasons. Named rather than counted, because "we did not take the
+     * status" is a different sentence from "we could not read a line", and
+     * an import log should be able to tell them apart.
+     */
+    declinedFields?: string[];
   };
 }
 
@@ -561,38 +583,6 @@ function readVerticalPair(
 }
 
 /**
- * Does this line name a field we know AND state a value we did not take?
- *
- * The narrow, precise version of "we can see a fact here". A recognised
- * heading anywhere in the line, beside something value-shaped, and nothing
- * claimed from it — `Land Size 350 m2 approx`, `Priced from $800,000`. A line
- * with no heading we recognise is not this; a bare heading with no value is
- * caught by its own rule where the pairing is attempted.
- */
-function namesAnUnreadFact(line: string): boolean {
-  if (!/\d/.test(line) && !CURRENCY_OR_AREA.test(line)) return false;
-  const tokens = line.split(/\s+/).filter(Boolean);
-  for (let start = 0; start < tokens.length; start++) {
-    const reach = Math.min(MAX_LABEL_WORDS, tokens.length - start);
-    for (let length = 1; length <= reach; length++) {
-      const field = fieldForHeader(tokens.slice(start, start + length).join(' '));
-      if (field && BROCHURE_CLAIMABLE_FIELDS.has(field)) return true;
-    }
-  }
-  return false;
-}
-
-/**
- * `LOT 315`, `Lot 12A` — a line that is a lot designation and nothing else.
- *
- * Its own rule because a lot number is not a number: `12A` and `315/2` are
- * both real, so it cannot go through `readLabelledNumbers`, and a brochure
- * writes it as a heading rather than as `Lot: 315`. Two tokens exactly, and
- * the second may hold only the characters a lot designation is made of — which
- * is what stops "Lot released" and "Lot 5 of the finest homes" claiming
- * anything.
- */
-/**
  * Is this line a SENTENCE, rather than a fact we failed to read?
  *
  * The question only ever arises for a line this reader could not assign, and
@@ -662,6 +652,45 @@ export function hasSpecificationCue(line: string): boolean {
   return false;
 }
 
+/**
+ * Does this line state ONLY fields this reader declines by policy?
+ *
+ * `Full turnkey inclusions: landscaping, driveway and fencing.` is the shape
+ * that needs it. Its label is three words the alias table does not resolve as
+ * a whole, so no claimer touches it; but `inclusions` IS a heading, which
+ * makes it a cue, which without this rule makes an ordinary brochure's
+ * inclusions paragraph stand the whole document down.
+ *
+ * It is the same decision the labelled branch makes for `Inclusions: …`, and
+ * it is safe for the same reason: `BROCHURE_CLAIMABLE_FIELDS` names four
+ * fields a stock row may not carry from a brochure, so a model would not
+ * recover them either and standing down over one buys nothing.
+ *
+ * TWO GUARDS KEEP IT NARROW. Every heading in the line must be one of the
+ * declined four — one recognised claimable heading and this answers nothing,
+ * so `Land Size 350 m2` is untouched — and the line must state no FIGURE at
+ * all, because `Inclusions: 2 living areas` states something a row could have
+ * carried and this module is not the judge of what.
+ *
+ * Returns the declined field names, or null where the rule does not apply.
+ */
+function declinedHeadings(line: string): string[] | null {
+  const trimmed = line.trim();
+  if (/\d/.test(trimmed) || CURRENCY_OR_AREA.test(trimmed)) return null;
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  const found = new Set<string>();
+  for (let start = 0; start < tokens.length; start++) {
+    const reach = Math.min(MAX_LABEL_WORDS, tokens.length - start);
+    for (let length = 1; length <= reach; length++) {
+      const field = fieldForHeader(tokens.slice(start, start + length).join(' '));
+      if (!field) continue;
+      if (BROCHURE_CLAIMABLE_FIELDS.has(field)) return null;
+      found.add(field);
+    }
+  }
+  return found.size ? [...found] : null;
+}
+
 export function readsAsProse(line: string): boolean {
   // A line that might be a fact is never prose, whatever shape it is in.
   if (hasSpecificationCue(line)) return false;
@@ -671,6 +700,121 @@ export function readsAsProse(line: string): boolean {
   return words > PROSE_MIN_WORDS_WITHOUT_STOP;
 }
 
+/*
+ * ===========================================================================
+ * WHAT A DOCUMENT SAYS ABOUT ITSELF.
+ * ===========================================================================
+ *
+ * `readsAsProse` answers "is this a sentence?", and it answers it only for a
+ * line carrying no cue at all — which is right, and which leaves out most of
+ * the furniture a real brochure is made of. A builder's phone number is seven
+ * digits and a cue by every test above; so is `© 2026 Acme Homes`, so is
+ * `Page 3 of 7`, and so is `www.acmehomes.com.au` the moment a dot meets a
+ * digit. A reader that must account for every one of them can never finish a
+ * genuine document.
+ *
+ * THIS IS NOT THE OPPOSITE OF THE BLOCKING RULE, IT IS NARROWER THAN IT. A
+ * line is incidental only where it was RECOGNISED as one of a closed list of
+ * things a publisher writes about the publication — a telephone number, an
+ * email address, a web address, a page number, a legal or licence line, a
+ * disclaimer. Everything else that could not be read is unaccounted and
+ * stands the document down, including every short line this module cannot
+ * name: `PALOMINO` and `ENZO 8.5 LUCA` are not furniture, they are an estate
+ * and a design, and the assisted reader can read them.
+ *
+ * The asymmetry that decides every doubtful case is the one this module is
+ * built on: a false "incidental" loses a field out of a client's record for
+ * good, and a false "unaccounted" costs one model call. So a recogniser here
+ * must match the WHOLE line (or carry an unmistakable legal cue), and a
+ * recogniser that is unsure matches nothing.
+ */
+
+/**
+ * The label a brochure puts in front of a contact detail. Stripping it is
+ * what lets the body be tested as a whole, and its presence is also evidence:
+ * a number the document itself labelled `Ph` is a telephone number whatever
+ * shape it is written in.
+ */
+const CONTACT_LABEL =
+  /^(?:ph|phone|tel|telephone|mob|mobile|fax|call|contact|e|email|w|web|website)\b[\s.:|–—-]*/i;
+
+/**
+ * A telephone number with NO label in front of it, and deliberately not "a
+ * run of digits": `4 2 2 350 863850` is a specification and would satisfy
+ * that. So an unlabelled number must OPEN the way a published number opens —
+ * an international prefix, an area code, or a 13/1300/1800 service number.
+ */
+const UNLABELLED_PHONE =
+  /^(?:\+\d[\d\s().-]{7,18}|(?:\(0\d\)|0\d|1[38]00|13\s?\d\d)[\d\s().-]{4,16})$/;
+/** With a label, the document has already said what the figure is. */
+const LABELLED_NUMBER = /^[+(]?[\d\s().+-]+$/;
+const EMAIL_BODY = /^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i;
+/**
+ * A web address. A scheme or a `www.` says so outright; a bare host must end
+ * in a public suffix we recognise, because `ENZO.LUCA` is not a domain and
+ * `8.5` must never look like one.
+ */
+const WEB_BODY = new RegExp(
+  '^(?:https?://\\S+'
+  + '|www\\.[a-z0-9][^\\s]*'
+  + '|[a-z0-9][a-z0-9-]*(?:\\.[a-z0-9-]+)*'
+  + '\\.(?:com|net|org|edu|gov|info|biz|io|co|au|nz)(?:\\.[a-z]{2,3})?(?:/\\S*)?)$',
+  'i',
+);
+const PAGE_FURNITURE = /^page\s*\d{1,3}(?:\s*(?:of|\/)\s*\d{1,3})?$/i;
+/**
+ * A legal, corporate or presentational statement. These are the only
+ * recognisers that may fire on part of a line, because that is how they are
+ * written — a disclaimer is a sentence with a term of art in the middle of
+ * it — and each term of art belongs to the publication rather than to any
+ * property.
+ */
+const SELF_DESCRIPTION = new RegExp([
+  '©', '\\bcopyright\\b', '\\ball rights reserved\\b',
+  '\\bA\\.?B\\.?N\\.?\\b', '\\bA\\.?C\\.?N\\.?\\b', '\\bE\\.?\\s?&\\s?O\\.?E\\b',
+  '\\bsubject to change\\b', '\\bwithout notice\\b', '\\bwhile every (?:care|effort)\\b',
+  "\\bartist'?s impression\\b", '\\bfor illustrat\\w+', '\\billustrative purposes\\b',
+  '\\bindicative only\\b', '\\bnot to scale\\b', '\\bterms (?:and|&) conditions\\b',
+  '\\bdisclaimer\\b', '\\bprivacy policy\\b', '\\bQBCC\\b',
+  '\\blicen[cs]e (?:no\\b|number\\b|#)', '\\bbuilder\'?s? licen[cs]e\\b',
+].join('|'), 'i');
+
+/**
+ * Is this line the document talking about itself?
+ *
+ * Every answer of `true` is a POSITIVE recognition. There is no fall-through
+ * to `true` and no shape heuristic: a line this function does not recognise
+ * is not incidental, which means the caller counts it against the document.
+ */
+export function isIncidentalContent(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return true;
+  if (PAGE_FURNITURE.test(trimmed)) return true;
+  if (SELF_DESCRIPTION.test(trimmed)) return true;
+
+  const labelled = CONTACT_LABEL.test(trimmed);
+  const body = trimmed.replace(CONTACT_LABEL, '').trim();
+  // A label with nothing after it is a label, and labels are the caller's.
+  if (!body) return false;
+  if (EMAIL_BODY.test(body)) return true;
+  if (WEB_BODY.test(body)) return true;
+  if (labelled ? LABELLED_NUMBER.test(body) : UNLABELLED_PHONE.test(body)) {
+    const digits = body.replace(/\D/g, '').length;
+    return digits >= 8 && digits <= 15;
+  }
+  return false;
+}
+
+/**
+ * `LOT 315`, `Lot 12A` — a line that is a lot designation and nothing else.
+ *
+ * Its own rule because a lot number is not a number: `12A` and `315/2` are
+ * both real, so it cannot go through `readLabelledNumbers`, and a brochure
+ * writes it as a heading rather than as `Lot: 315`. Two tokens exactly, and
+ * the second may hold only the characters a lot designation is made of — which
+ * is what stops "Lot released" and "Lot 5 of the finest homes" claiming
+ * anything.
+ */
 function readLotHeading(line: string): Claim | null {
   const tokens = line.trim().split(/\s+/);
   if (tokens.length !== 2) return null;
@@ -725,139 +869,200 @@ export function readPdfBrochure(pageTexts: readonly string[]): PdfDeterministicR
 
   const claimed = new Map<string, string>();
   /*
-   * Lines that NAME a field we know and whose value we did not take. A COUNT,
-   * never the text: the diagnostics go to the import log.
+   * Lines that may be property information and that this reader did not
+   * resolve. ANY ONE OF THEM REFUSES THE DOCUMENT. A COUNT, never the text:
+   * the diagnostics go to the import log.
    */
   let unaccounted = 0;
+  /** Lines POSITIVELY recognised as furniture. Reported, not blocking. */
+  let incidental = 0;
+  /** Canonical fields the document stated and this reader declines by policy. */
+  const declined = new Set<string>();
+
   /*
-   * Lines this reader cannot classify at all. Reported and NOT blocking — see
-   * the gate below for why the two are different questions.
+   * PAGE BY PAGE, AND THE PAGES NEVER JOIN.
+   *
+   * The vertical reader below pairs a label with the line UNDER it, so a
+   * flattened array would let the last line of one page pair with the first
+   * line of the next — `HOUSE` at the foot of page 1 taking `210 m²` off the
+   * top of page 2, two facts that were never set together. The page break is
+   * the document's own evidence that they are not a pair, so the scan is
+   * page-local and `index + 1` can never leave the page it started on.
    */
-  let unclassified = 0;
+  const pages = pageTexts
+    .map((page) => String(page ?? '').split(/\r?\n/)
+      .map((line) => line.replace(/\s+/g, ' ').trim())
+      .filter(Boolean));
 
-  const lines = pageTexts
-    .flatMap((page) => String(page ?? '').split(/\r?\n/))
-    .map((line) => line.replace(/\s+/g, ' ').trim())
-    .filter(Boolean)
-    .slice(0, MAX_LINES_SCANNED);
+  let scanned = 0;
+  for (const lines of pages) {
+    for (let index = 0; index < lines.length; index++) {
+      if (++scanned > MAX_LINES_SCANNED) break;
+      const line = lines[index];
+      const found: Claim[] = [];
 
-  for (let index = 0; index < lines.length; index++) {
-    const line = lines[index];
-    const found: Claim[] = [];
-
-    const labelled = readLabelledValue(line);
-    if (labelled) {
-      if (!BROCHURE_CLAIMABLE_FIELDS.has(labelled.field)) {
-        /*
-         * A LABEL WE KNOW AND DELIBERATELY DO NOT TAKE — "Status: Selling",
-         * "Inclusions: stone benchtops". It is still a statement about the
-         * property, so it is unaccounted rather than ignored: completing
-         * around it would be bypassing the assisted reader while knowing the
-         * document says something we did not read.
-         */
-        if (!readsAsProse(line)) unaccounted += 1;
-        continue;
-      }
-      if (!labelled.value) {
-        /*
-         * THE DOCUMENT NAMED A FACT AND DID NOT STATE IT. A template whose
-         * values live in form fields reads exactly like this, and importing
-         * the fields it DID fill would publish a property whose own brochure
-         * says it has a land size we do not carry.
-         */
-        diagnostics.fieldsRead = [...claimed.keys()].sort();
-        return refuse('incomplete', `label_without_value:${labelled.field}`, diagnostics);
-      }
-      found.push(labelled);
-    } else {
-      const numbers = readLabelledNumbers(line);
-      if (numbers) found.push(...numbers);
-      else {
-        const counts = readInlineCounts(line);
-        if (counts) found.push(...counts);
+      const labelled = readLabelledValue(line);
+      if (labelled) {
+        if (!BROCHURE_CLAIMABLE_FIELDS.has(labelled.field)) {
+          /*
+           * A LABEL WE KNOW AND DELIBERATELY DO NOT TAKE — `Status: Selling`,
+           * `Inclusions: stone benchtops`.
+           *
+           * This is the one thing that is NOT a fact we failed to read.
+           * `BROCHURE_CLAIMABLE_FIELDS` names four fields a brochure may not
+           * settle and gives a reason for each, and the assisted reader is held
+           * to the same four: sending the document to a model would not recover
+           * them either, so standing down over one buys nothing and costs every
+           * real brochure, all of which carry inclusions copy.
+           *
+           * It is declared rather than dropped. The FIELD NAME goes into the
+           * diagnostics, so an import log says which statement was declined and
+           * under which rule — a different sentence from "a line we could not
+           * read", which is the one below and which blocks.
+           */
+          declined.add(labelled.field);
+          incidental += 1;
+          continue;
+        }
+        if (!labelled.value) {
+          /*
+           * THE DOCUMENT NAMED A FACT AND DID NOT STATE IT. A template whose
+           * values live in form fields reads exactly like this, and importing
+           * the fields it DID fill would publish a property whose own brochure
+           * says it has a land size we do not carry.
+           */
+          diagnostics.fieldsRead = [...claimed.keys()].sort();
+          return refuse('incomplete', `label_without_value:${labelled.field}`, diagnostics);
+        }
+        found.push(labelled);
+      } else {
+        const numbers = readLabelledNumbers(line);
+        if (numbers) found.push(...numbers);
         else {
-          const lot = readLotHeading(line);
-          if (lot) found.push(lot);
+          const counts = readInlineCounts(line);
+          if (counts) found.push(...counts);
           else {
-            // The label on this line, its value on the next.
-            const vertical = readVerticalPair(line, lines[index + 1]);
-            if (vertical) {
-              found.push(vertical.claim);
-              index += vertical.consumed - 1;
+            const lot = readLotHeading(line);
+            if (lot) found.push(lot);
+            else {
+              // The label on this line, its value on the next.
+              const vertical = readVerticalPair(line, lines[index + 1]);
+              if (vertical) {
+                found.push(vertical.claim);
+                index += vertical.consumed - 1;
+              }
             }
           }
         }
       }
-    }
 
-    if (!found.length) {
-      /*
-       * ===============================================================
-       * NAMING A FACT WE DID NOT READ IS NOT THE SAME AS BEING UNREADABLE.
-       * ===============================================================
-       *
-       * This gate used to block on any line carrying a cue, and on a real
-       * seven-page brochure that is unreachable: a document sets its estate,
-       * its facade, its inclusions and its builder's own phone number, and a
-       * reader that must account for every one of them can never finish.
-       *
-       * The two cases are different, and only one of them is dangerous.
-       *
-       * A line that NAMES A FIELD WE KNOW and also states a value we failed to
-       * take — `Land Size 350 m2 approx` — is a fact we can see and did not
-       * read, and completing around it would bank a record the document itself
-       * contradicts. That still refuses.
-       *
-       * A line we cannot classify at all — `PALOMINO`, `ENZO 8.5 LUCA` — is
-       * not a field we recognise. We cannot say whether it is the estate, the
-       * facade, the photographer's credit or the street it faces, and the one
-       * thing this module may never do is decide. It is counted, reported, and
-       * left alone; the record is thinner than a model's would be, and every
-       * value in it is one the document stated in terms this vocabulary knows.
-       */
-      const bareLabel = fieldForHeader(line);
-      if (bareLabel && BROCHURE_CLAIMABLE_FIELDS.has(bareLabel)) {
+      if (!found.length) {
         /*
-         * A LABEL SET ON ITS OWN WITH NOTHING THIS READER COULD PAIR TO IT.
-         * The shape a template whose values live in form fields produces, and
-         * the shape a figure under a descriptive heading produces once the
-         * pairing has refused it. The document named the fact; importing the
-         * rest would publish a record its own brochure contradicts.
+         * ===============================================================
+         * A LINE THIS READER DID NOT RESOLVE STANDS THE DOCUMENT DOWN,
+         * UNLESS IT WAS RECOGNISED AS THE DOCUMENT'S OWN FURNITURE.
+         * ===============================================================
+         *
+         * THREE THINGS MAY PASS IT, each of them RECOGNISED rather than
+         * merely unmatched, and there is no fall-through. Everything else is
+         * a fact we can see on the page and did not read, and completing
+         * around one of those does not produce a thinner record — it
+         * produces a WRONG one, because it also suppresses the assisted
+         * reader, which could have read it. The record is then thin for
+         * ever, and nothing anywhere says so.
+         *
+         * The case this rule exists for is the reader's own first fixture:
+         *
+         *   LOT 315
+         *   PALOMINO ESTATE          ← the estate
+         *   ENZO 8.5 LUCA            ← the design
+         *   Land Size 350 m2
+         *
+         * Neither bare line resolves through this vocabulary, and refusing to
+         * GUESS which is which was right. Calling the document complete anyway
+         * was not. It stands down, the model reads all four lines, and the
+         * builder gets the property their brochure describes.
+         *
+         * What may pass: a line the document says about ITSELF, recognised
+         * as one (`isIncidentalContent` — a phone number, a web or email
+         * address, a page number, a licence or copyright line, a
+         * disclaimer); a line whose only heading is a field declined by the
+         * policy above and which states no figure (`declinedHeadings` — an
+         * inclusions paragraph); and a sentence carrying no cue that it
+         * states anything at all (`readsAsProse`). A brochure's phone
+         * number, copyright line, website, inclusions copy and marketing
+         * prose therefore cost it nothing, which is what keeps this
+         * reachable on a real seven-page document.
          */
-        diagnostics.fieldsRead = [...claimed.keys()].sort();
-        diagnostics.unaccountedLines = unaccounted + 1;
-        diagnostics.unclassifiedLines = unclassified;
-        return refuse('incomplete', `label_without_value:${bareLabel}`, diagnostics);
-      }
-      if (namesAnUnreadFact(line)) unaccounted += 1;
-      else if (!readsAsProse(line)) unclassified += 1;
-      continue;
-    }
-
-    for (const claim of found) {
-      if (!BROCHURE_CLAIMABLE_FIELDS.has(claim.field)) continue;
-      const existing = claimed.get(claim.field);
-      if (existing === undefined) {
-        claimed.set(claim.field, claim.value);
+        const bareLabel = fieldForHeader(line);
+        if (bareLabel && BROCHURE_CLAIMABLE_FIELDS.has(bareLabel)) {
+          /*
+           * A LABEL SET ON ITS OWN WITH NOTHING THIS READER COULD PAIR TO IT.
+           * The shape a template whose values live in form fields produces, and
+           * the shape a figure under a descriptive heading produces once the
+           * pairing has refused it. The document named the fact; importing the
+           * rest would publish a record its own brochure contradicts. It is
+           * named in the refusal because it is the one unresolved line this
+           * reader can identify, and that makes the log actionable.
+           */
+          diagnostics.fieldsRead = [...claimed.keys()].sort();
+          diagnostics.unaccountedLines = unaccounted + 1;
+          diagnostics.incidentalLines = incidental;
+          if (declined.size) diagnostics.declinedFields = [...declined].sort();
+          return refuse('incomplete', `label_without_value:${bareLabel}`, diagnostics);
+        }
+        const declinedHere = declinedHeadings(line);
+        if (declinedHere) {
+          for (const field of declinedHere) declined.add(field);
+          incidental += 1;
+          continue;
+        }
+        if (isIncidentalContent(line) || readsAsProse(line)) {
+          incidental += 1;
+          continue;
+        }
+        unaccounted += 1;
         continue;
       }
-      if (!sameValue(claim.field, existing, claim.value)) {
-        /*
-         * TWO ANSWERS IS NOT AN ANSWER. Two prices, two lots, two bedroom
-         * counts — whether that is a dual-key home, a page per release or a
-         * catalogue of six designs, this reader cannot tell them apart, and
-         * separating them is precisely the judgement it does not make.
-         */
-        diagnostics.conflictField = claim.field;
-        diagnostics.fieldsRead = [...claimed.keys()].sort();
-        return refuse('ambiguous', `conflicting_values:${claim.field}`, diagnostics);
+
+      for (const claim of found) {
+        if (!BROCHURE_CLAIMABLE_FIELDS.has(claim.field)) continue;
+        const existing = claimed.get(claim.field);
+        if (existing === undefined) {
+          claimed.set(claim.field, claim.value);
+          continue;
+        }
+        if (!sameValue(claim.field, existing, claim.value)) {
+          /*
+           * TWO ANSWERS IS NOT AN ANSWER. Two prices, two lots, two bedroom
+           * counts — whether that is a dual-key home, a page per release or a
+           * catalogue of six designs, this reader cannot tell them apart, and
+           * separating them is precisely the judgement it does not make.
+           */
+          diagnostics.conflictField = claim.field;
+          diagnostics.fieldsRead = [...claimed.keys()].sort();
+          return refuse('ambiguous', `conflicting_values:${claim.field}`, diagnostics);
+        }
       }
+    }
+    /*
+     * THE CEILING IS A REFUSAL, NOT A STOPPING POINT. Everything past
+     * it is unread by definition, and a reader that completes on the
+     * first four thousand lines of a document is completing around
+     * whatever the rest of it said.
+     */
+    if (scanned > MAX_LINES_SCANNED) {
+      diagnostics.fieldsRead = [...claimed.keys()].sort();
+      diagnostics.unaccountedLines = unaccounted;
+      diagnostics.incidentalLines = incidental;
+      return refuse('incomplete', 'line_ceiling_reached', diagnostics);
     }
   }
 
   diagnostics.fieldsRead = [...claimed.keys()].sort();
   diagnostics.unaccountedLines = unaccounted;
-  diagnostics.unclassifiedLines = unclassified;
+  diagnostics.incidentalLines = incidental;
+  if (declined.size) diagnostics.declinedFields = [...declined].sort();
 
   if (!claimed.size) {
     return refuse('unsupported', 'no_labelled_fields', diagnostics);
@@ -865,8 +1070,12 @@ export function readPdfBrochure(pageTexts: readonly string[]): PdfDeterministicR
 
   /*
    * ===================================================================
-   * NEVER COMPLETE AROUND A FACT THE DOCUMENT STATES AND WE DID NOT READ.
+   * COMPLETE MEANS THE WHOLE DOCUMENT WAS ACCOUNTED FOR.
    * ===================================================================
+   *
+   * Every line of it: read into a field, declined under a named policy, or
+   * recognised as the document's own furniture. One line that was none of
+   * those stands the whole document down.
    *
    * The defect this closes, on the reader's own first fixture:
    *
@@ -883,15 +1092,12 @@ export function readPdfBrochure(pageTexts: readonly string[]): PdfDeterministicR
    * stage turned a document we could read most of into a property missing
    * the two fields we could not, with nothing anywhere saying so.
    *
-   * So the supported shape is narrow by construction: a brochure completes
-   * only when it is labelled statements THROUGHOUT. A short line we could not
-   * assign is a property fact we did not read, and one of them stands the
-   * whole document down. The cost of standing down is exactly today's
-   * behaviour; the cost of completing is a permanently thinner record.
-   *
-   * `readsAsProse` is what keeps this from refusing every real brochure over
-   * its marketing copy — and it is deliberately narrow, because the
-   * conservative side of that judgement is to call a line a FACT.
+   * So the supported shape is narrow BY CONSTRUCTION: a brochure completes
+   * only where it states its property in labels this vocabulary knows, and
+   * everything else on its pages is furniture we could name. The cost of
+   * standing down is exactly today's behaviour — one model call, on a route
+   * that has made one for every PDF ever uploaded. The cost of completing
+   * wrongly is a permanently thinner record that nothing reports.
    */
   if (unaccounted > 0) {
     return refuse('incomplete', 'unaccounted_specification_lines', diagnostics);
@@ -1255,8 +1461,19 @@ export function mayHoldSchedule(pageTexts: readonly string[]): boolean {
   return false;
 }
 
-/** A token that states a value rather than naming a column. */
-const VALUE_TOKEN = /^[$€£¥]?\d[\d.,]*$/;
+/**
+ * A token that states a value rather than naming a column.
+ *
+ * ANY TOKEN THAT OPENS WITH A FIGURE, whatever it carries after it. The first
+ * version admitted only a bare number, which is the one spelling a builder's
+ * screen shot does not use: `350m²`, `350sqm`, `210m2`, `$863,850`, `4-bed`
+ * and `2-bath` all state a value and every one of them slipped through, so a
+ * specification line reached three recognised words and was read as a heading
+ * row. A column HEADING never opens with a figure — `Estate`, `Lot`,
+ * `Design`, `Beds`, `Land m2`, `Package Price` — so the widened test costs a
+ * genuine heading row nothing and there is no unit list to keep current.
+ */
+const VALUE_TOKEN = /^[$€£¥]?\d/;
 
 /**
  * The deterministic reading of a PDF, from what the pipeline already holds.
