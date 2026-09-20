@@ -315,11 +315,28 @@ describe('the builder can reach the properties that are holding their list', () 
 
 describe('an unreachable model is not a verdict on the document', () => {
   it('the import names the failure instead of throwing past the handler', () => {
+    /*
+     * RENEGOTIATED 20 September 2026, because this was pinning the defect.
+     *
+     * The property worth holding is the one in the describe's own name: a
+     * model that could not be reached is never written up as a finding about
+     * the document. The three assertions that used to stand here pinned the
+     * SENTENCE instead — and that sentence was itself the bug, telling the
+     * uploader of a 6.8 MB PDF brochure that "its columns were not recognised"
+     * and that "giving it column headings lets it import without assistance".
+     *
+     * The wording now belongs to `assistedReaderFailure.pure.ts` and is
+     * exercised by `builderStockAssistedReader.spec.ts` against every source
+     * kind. What is asserted here is the structural guarantee this file is
+     * about: the failure is NAMED and returned, rather than thrown past the
+     * handler into "That file could not be processed."
+     */
     const code = readCode(`${SHARED}/runImport.ts`);
-    expect(code).toContain("code: 'assisted_reader_unavailable'");
-    expect(code).toContain('the assisted reader could not be reached');
-    // What the builder used to be shown for a credential nobody had set.
-    expect(code).toContain('We could not finish reading that page.');
+    expect(code).toContain('assistedReaderFailure({');
+    expect(code).toContain('code: reading.code');
+    expect(code).toContain('message: reading.message');
+    // Still a 5xx: this is ours, so it must never answer as a bad request.
+    expect(code).toContain('status: reading.status');
   });
 
   it('the model call is inside the guard, so no path can escape it', () => {

@@ -87,6 +87,7 @@ vi.mock('@/lib/builderStockQueries', () => {
     useRecoverStockSourceImages: mutation,
     useRefreshBrochureLinks: mutation,
     useReprocessStockSource: mutation,
+    useRetryStockSource: mutation,
     useSetBuilderStockAvailability: mutation,
     useSetBuilderStockManualStats: mutation,
     useSupplyBuilderStockImage: mutation,
