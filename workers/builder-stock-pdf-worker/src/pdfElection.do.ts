@@ -143,6 +143,16 @@ export class PdfElection extends DurableObject {
         protocol: PDF_ELECTION_PROTOCOL,
         status: outcome.status,
         reason: 'reason' in outcome ? outcome.reason : undefined,
+        /*
+         * `finding` travels on the same terms and for the opposite purpose:
+         * `reason` shortens a retry budget, this shortens nothing and is
+         * read by no decision anywhere. It says which KIND of finding an
+         * inspection reached, so the builder's own screen can tell "this
+         * brochure is for another property" from "this brochure carries no
+         * photograph" without matching substrings of a sentence.
+         */
+        finding: 'finding' in outcome ? outcome.finding : undefined,
+        findingEvidence: 'findingEvidence' in outcome ? outcome.findingEvidence : undefined,
         detail: 'detail' in outcome ? outcome.detail : undefined,
       });
     });

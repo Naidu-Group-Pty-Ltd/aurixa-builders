@@ -1058,6 +1058,69 @@ export function coverIdentityQuote(pageText: string | null | undefined): string 
 }
 
 /**
+ * THE LOT THIS PAGE STATES, WHERE IT STATES ONE AND IT IS NOT OURS.
+ *
+ * WHY THIS EXISTS. `coverIdentityQuote` above turns an opaque refusal into a
+ * readable one, and it is still only a quote: a reader has to notice that the
+ * number in it is not their number. Measured on the live list, that is the
+ * single most common reason a builder's own brochure is declined —
+ * `Lot 1037 · Vanta 20` links a document whose cover states `Lot 1307`, a
+ * duplicate of the sibling row's file — and it is the one reason the person
+ * holding the sheet can correct in under a minute. Telling them "no picture
+ * found" instead is what this answers.
+ *
+ * IT DECIDES NOTHING, AND IT RUNS AFTER THE DECISION. Every caller computes
+ * it only once `resolvePropertyCover` has already declined, and no rule reads
+ * the result. It describes WHY rule 1 of `pageStatesIdentity` could not pass:
+ * the page designates a lot, and none of its readings is this label's.
+ * `pageStatesIdentity` itself is untouched, as is every role, cover, and
+ * eligibility rule, so which images are accepted is byte-for-byte unaffected.
+ *
+ * CONSERVATIVE IN ONE DIRECTION ONLY. It answers null unless it has POSITIVE
+ * evidence of a conflict — a page that designates no lot at all, or one that
+ * designates ours among others, yields nothing and the existing wording
+ * stands. That asymmetry is the whole safety property: the message it unlocks
+ * accuses a builder's file of being the wrong file.
+ *
+ * THREE READINGS, BECAUSE A PDF's TEXT LAYER IS NOT PROSE. `lotDesignation-
+ * Readings` reads the token stream strictly and fused, which is what the
+ * identity rule itself spends; the raw reading below adds the shape those two
+ * cannot see, because `tokenise` splits on non-alphanumerics and the live
+ * cover's line is literally `PACKAGE PRICELot 1307 Fuchsia Street` — the run
+ * is glued to the word before it, so the token `lot` never appears and the
+ * token-based readings find nothing on exactly the document this exists for.
+ * That is the same lesson `coverIdentityQuote`'s own pattern records. A lot is
+ * OURS when ANY of the three readings matches, so a number the exporter split
+ * can never be reported as somebody else's.
+ */
+export function statedOtherLotDesignation(
+  pageText: string | null | undefined,
+  label: string | null | undefined,
+): string | null {
+  const ours = lotDesignations(String(label ?? ''));
+  // Nothing of ours to contradict. A label with no lot is described by its
+  // other tokens, and a page that fails on those is not a mismatch claim.
+  if (!ours.length) return null;
+
+  const text = String(pageText ?? '');
+  const readings = lotDesignationReadings(text);
+  const raw = Array.from(
+    text.matchAll(/(?:lot|unit)\s*\.?\s*(\d{1,5})/gi),
+    (match) => match[1],
+  );
+  const stated = [...readings.flatMap((reading) => [reading.strict, reading.fused]), ...raw];
+  if (!stated.length) return null;
+  if (stated.some((value) => ours.includes(value))) return null;
+
+  /*
+   * The longest reading, which is the whole number wherever the exporter
+   * split it: `Lot 130 7` reads strict `130`, fused `1307`, raw `130`, and
+   * `1307` is what a person looking at the page sees.
+   */
+  return stated.slice().sort((a, b) => b.length - a.length || a.localeCompare(b))[0] ?? null;
+}
+
+/**
  * " — its first page reads “…”", or nothing.
  *
  * WHY THE REFUSAL QUOTES THE DOCUMENT. "No page states this property's

@@ -251,7 +251,23 @@ export interface BuilderStockItem {
    * Optional because a deployment whose server predates the projection sends
    * none, and a row with none reads exactly as it did before.
    */
-  source_document_notes?: Array<{ document: string; detail: string }>;
+  source_document_notes?: Array<{
+    document: string;
+    detail: string;
+    /**
+     * The class of the finding, where the reading earned one. Only
+     * `identity_mismatch` exists: the brochure the row links is for a
+     * DIFFERENT property, which is the one refusal in this vocabulary a
+     * builder can correct in a minute. Told apart by a code rather than by
+     * matching substrings of `detail`, because a rule spelled in prose is one
+     * nobody can see and every rewording breaks.
+     */
+    finding?: 'identity_mismatch';
+    /** What the document designates instead, e.g. `Lot 1307`. */
+    states?: string;
+    /** The page's own most identifying lines, verbatim. May be empty. */
+    quote?: string;
+  }>;
   builder_organisation?: { id: string; legal_name: string; trading_name: string | null } | null;
   selection_count?: number;
   latest_selection?: {
@@ -555,6 +571,56 @@ export function homeSizeLabel(sqm: number | null | undefined): string | null {
   return value === null ? null : `${value} m\u00b2 home`;
 }
 
+/**
+ * `Lot 1037` / `Unit 13`, from whichever field the source filled.
+ *
+ * EXTRACTED RATHER THAN COPIED. `stockItemIdentity` below needs exactly this
+ * and a second version of it is how two lines on one card come to disagree
+ * about which lot a row is. The body is `stockItemTitle`'s, unchanged:
+ *
+ * THE DESIGNATION THE LINE OPENED WITH, not whichever field the parse
+ * happened to fill. `Lot 1 - 13/15 Rose Street` carries BOTH — lot 1 is the
+ * row, and 13 is a unit over street number 15 — and reading the unit made
+ * the two dual-key halves of that address, Lot 1 and Lot 2, render as one
+ * title: `Unit 13, 15 Rose Street`, twice.
+ */
+const ADDRESS_LEADING_DESIGNATION = /^\s*(lot|unit)\s*\.?\s*([0-9]+[a-z]?)\b/i;
+
+function itemDesignation(item: Pick<BuilderStockItem,
+  'unit_number' | 'lot_number' | 'address_line'>): { word: 'Lot' | 'Unit'; value: string } | null {
+  const leading = ADDRESS_LEADING_DESIGNATION.exec(item.address_line ?? '');
+  return item.unit_number
+    ? { word: 'Unit', value: String(item.unit_number) }
+    : item.lot_number ? { word: 'Lot', value: String(item.lot_number) }
+    : leading ? { word: leading[1].toLowerCase() === 'unit' ? 'Unit' : 'Lot', value: leading[2] }
+    : null;
+}
+
+/**
+ * WHAT THIS LISTING SAYS IT IS, in the two facts that tell it from its
+ * siblings: the lot and the design.
+ *
+ * FOR ONE SCREEN AND ONE PURPOSE — the line a brochure's stated identity is
+ * set beside when the two disagree. It is deliberately NOT the card's title:
+ * a title carries the street, the estate and the suburb, and every one of
+ * those is shared by the very documents this comparison exists to separate.
+ * The lot is the discriminator; the design is the second one where a lot
+ * carries several packages.
+ *
+ * It states only what the row itself holds. Empty where the row names
+ * neither, and the caller draws nothing rather than a bare separator.
+ */
+export function stockItemIdentity(item: Pick<BuilderStockItem,
+  'unit_number' | 'lot_number' | 'address_line' | 'house_design'>): string {
+  const designation = itemDesignation(item);
+  const design = (item.house_design ?? '').trim()
+    || (parseBuilderAddressLine(item.address_line).designName ?? '').trim();
+  return [
+    designation ? `${designation.word} ${designation.value}` : '',
+    design,
+  ].filter(Boolean).join(' \u00b7 ');
+}
+
 export function stockItemTitle(item: Pick<BuilderStockItem,
   'unit_number' | 'lot_number' | 'address_line' | 'development_name'
   | 'project_name' | 'external_reference' | 'building_size_sqm'
@@ -574,13 +640,16 @@ export function stockItemTitle(item: Pick<BuilderStockItem,
    * the two dual-key halves of that address, Lot 1 and Lot 2, render as one
    * title: `Unit 13, 15 Rose Street`, twice.
    */
-  const leading = /^\s*(lot|unit)\s*\.?\s*([0-9]+[a-z]?)\b/i.exec(item.address_line ?? '');
-  const designation: { word: 'Lot' | 'Unit'; value: string } | null = item.unit_number
-    ? { word: 'Unit', value: String(item.unit_number) }
-    : item.lot_number ? { word: 'Lot', value: String(item.lot_number) }
-    : leading ? { word: leading[1].toLowerCase() === 'unit' ? 'Unit' : 'Lot', value: leading[2] }
-    : null;
+  const designation = itemDesignation(item);
   const prefix = designation ? `${designation.word} ${designation.value}` : '';
+  /*
+   * DID THE LINE ITSELF OPEN WITH A DESIGNATION? A different question from
+   * "does the row have one", and it is the one the street composition below
+   * asks: a line that named its own lot may be composed from the parsed
+   * parts, and a line that did not may not. `itemDesignation` above answers
+   * the first from whichever field the source filled, so this stays here.
+   */
+  const leading = ADDRESS_LEADING_DESIGNATION.test(item.address_line ?? '');
   /*
    * The address without the designation the prefix is about to repeat — the
    * SAME rule the server's own label applies, imported rather than restated,

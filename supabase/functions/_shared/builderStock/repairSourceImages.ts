@@ -1606,7 +1606,22 @@ export async function repairSourceImagesForUpload(
         .from('builder_stock_items')
         .update({ source_provenance_result: writeBranchState(
           negativeBefore.get(itemId), packageUrl,
-          recordNoDeterministicImage(question, recovered.detail, 'inspected')) })
+          recordNoDeterministicImage(question, recovered.detail, 'inspected', undefined,
+            /*
+             * AND THE CLASS OF THE FINDING, WHERE THE ELECTION EARNED ONE.
+             *
+             * Relayed, never composed here: `pdfElectionClient` drops
+             * anything it does not recognise, and the election attaches it
+             * only where the page designated a lot and none of its readings
+             * was this row's. It changes nothing about what is banked or
+             * retried — the record, the exhaustion, the suppression rule and
+             * the ladder are all exactly as before — and exists so the
+             * builder's own screen can say which mistake this is.
+             */
+            recovered.status === 'not_identified' && recovered.finding
+              && recovered.findingEvidence
+              ? { finding: recovered.finding, evidence: recovered.findingEvidence }
+              : null)) })
         .eq('id', itemId)
         .eq('organisation_id', input.organisationId);
       if (writeError) {

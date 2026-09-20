@@ -38,7 +38,8 @@ import {
   coverRastersInspected, selectPdfPropertyPrimaryHoldingSlot,
 } from './pdfSourcePhoto.ts';
 import { withPdfDecodeSlot } from './pdfDecodeSlot.pure.ts';
-import { coverIdentityQuote } from './pdfPrimaryImage.pure.ts';
+import { coverIdentityQuote, statedOtherLotDesignation } from './pdfPrimaryImage.pure.ts';
+import { DOCUMENT_IDENTITY_MISMATCH } from './negativeProvenance.pure.ts';
 import { TEXT_FREE_COVER_NOT_ELECTED } from './pdfElectionBoundary.pure.ts';
 // Type-only, so it is erased at compile time and no runtime cycle exists
 // between this module and the one that calls it.
@@ -330,11 +331,33 @@ export async function electFromPdfBytes(
      * evidence than the one that just declined.
      */
     const says = coverIdentityQuote(pageTexts[0]);
+    /*
+     * AND WHERE THE PAGE DESIGNATES SOMEBODY ELSE'S LOT, THAT IS SAID IN A
+     * FORM A SCREEN CAN ACT ON.
+     *
+     * The quote above is for a person and the code below is for the product:
+     * without it a screen can only match substrings of this sentence to tell
+     * "your brochure is the wrong file" from "your brochure has no photograph
+     * in it", and those two ask the builder for opposite things. `stated-
+     * OtherLotDesignation` answers null unless it has POSITIVE evidence of a
+     * conflict, so the absence of a finding leaves every other refusal
+     * wording untouched.
+     *
+     * COMPUTED AFTER THE DECISION, AND READ BY NOTHING THAT DECIDES. The
+     * refusal above is already final at this line; this only describes it.
+     */
+    const statesInstead = statedOtherLotDesignation(pageTexts[0], context.label);
     return {
       status: 'not_identified',
       detail: 'That document does not present a page as this property\'s package cover, '
         + 'so it names no image for it.'
         + (says ? ` Its first page reads “${says}”.` : ''),
+      ...(statesInstead
+        ? {
+          finding: DOCUMENT_IDENTITY_MISMATCH,
+          findingEvidence: { states: `Lot ${statesInstead}`, quote: says },
+        }
+        : {}),
     };
   }
 
