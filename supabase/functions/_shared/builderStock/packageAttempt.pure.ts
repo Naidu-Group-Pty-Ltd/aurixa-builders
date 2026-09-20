@@ -103,6 +103,53 @@ export const MAX_PACKAGE_ATTEMPTS = 4;
  */
 export const MAX_UNREACHABLE_ATTEMPTS = 6;
 
+/**
+ * How many times a DETERMINISTIC text-free cover refusal is asked for.
+ *
+ * TWO, AND IT IS A DIFFERENT KIND OF FAILURE FROM THE SIX ABOVE. That budget
+ * is six because the failures it covers are transient — a sign-in wall that
+ * may open tomorrow, a 404 that may be a permission being restored, a rate
+ * limit, a cold origin. Asking again is how those are recovered.
+ *
+ * `TEXT_FREE_COVER_NOT_ELECTED` covers none of that. It is only ever minted
+ * after the bytes arrived whole, every page's text read back empty, the
+ * builder's folder had already tied the document to this one property, and a
+ * raster on the named cover page was ACTUALLY MATERIALISED and put through
+ * the cover rule. Every one of those steps is a pure function of the bytes,
+ * so the same document answers the same way for ever. Asking again recovers
+ * nothing.
+ *
+ * THE WORD "ACTUALLY" IS LOAD-BEARING AND WAS ADDED IN REVIEW. A named cover
+ * page with NOTHING decoded is a starved or failed raster step — `pdfElection`
+ * says so itself, a few lines further down — and it is indistinguishable from
+ * a page that carries no picture. Coding that shape would have moved a
+ * brochure we merely ran out of CPU on from six attempts to two, which is the
+ * one way this budget could retire a document that reads perfectly well.
+ * `coverRastersInspected` is the gate, and it refuses that shape.
+ *
+ * MEASURED, Lot 208 / `46 Satinwood Crescent Donnybrook`. Seven elections in
+ * the 12:12 import of 19 September 2026 and seven more in the 13:33 one:
+ * 4,178,756 bytes every time, the same verdict every time, on two different
+ * isolate populations with durations ranging 3.3 s to 16.3 s. The property's
+ * whole stock list could not publish until that branch retired — 10 min 47 s
+ * in the first import, 8 min 13 s in the second — while the property had
+ * ALREADY held a stored picture since 41 seconds after the upload began.
+ *
+ * WHY TWO AND NOT ONE. With the zero-asset shape excluded, one residual
+ * remains and it is narrower: a decode that materialised SOME of a page's
+ * rasters and was starved of the rest satisfies the gate, while a healthier
+ * run might still find the photograph among the ones it missed. Nothing in
+ * the selection distinguishes a partial decode from a complete one, so one
+ * retry covers it without funding a treadmill. It also costs this import
+ * nothing — on the measured timeline the other seventeen properties are
+ * still working when the second attempt lands.
+ *
+ * It is deliberately NOT a fraction or a function of the six: these are two
+ * budgets for two failures, and tying them together is how a change to one
+ * silently moves the other.
+ */
+export const MAX_TEXT_FREE_COVER_ATTEMPTS = 2;
+
 export interface PackageAttemptRecord {
   result: typeof PACKAGE_RECOVERY_ATTEMPT;
   provenance_version: number;
@@ -121,6 +168,18 @@ export interface PackageAttemptRecord {
    */
   unreachable?: number;
   /**
+   * How many times this exact question returned `TEXT_FREE_COVER_NOT_ELECTED`.
+   *
+   * ITS OWN KEY BECAUSE IT IS ITS OWN BUDGET. A link that answered a sign-in
+   * wall twice and then, once the share opened, turned out to be a text-free
+   * brochure has had ONE deterministic refusal, not three — the transient
+   * failures say nothing about the document and must not spend a budget that
+   * is about the document. The reverse holds too: deterministic refusals
+   * leave `unreachable` untouched, so they cannot push a link toward the
+   * six-attempt retirement that is meant for dead links.
+   */
+  text_free_cover?: number;
+  /**
    * The runtime that was holding this question when it failed to finish.
    *
    * An attempt record only ever counts OUR failures — the step started and
@@ -128,7 +187,7 @@ export interface PackageAttemptRecord {
    * compares it. A superseded runtime therefore starts the kill count again
    * from zero, which is what reopens a property we crashed on without
    * touching one that was answered. `unreachableSoFar` deliberately does NOT
-   * compare it: see `unreachableMatch`.
+   * compare it: see `questionMatch`.
    */
   runtime_version?: number;
   started_at: string;
@@ -168,16 +227,22 @@ function attemptFor(
 }
 
 /**
- * The same record WITHOUT the runtime comparison, for the dead-link budget.
+ * The same record WITHOUT the runtime comparison, for the budgets that count
+ * what the LINK or the DOCUMENT did rather than what this worker did.
  *
  * A link that answers a sign-in wall, a 404 or a scan with no text layer is
  * not a failure a better worker fixes, so its count has to survive a runtime
  * bump — otherwise every improvement to the worker would re-chase every dead
- * link in the library from zero, for ever. Kept as its own matcher rather
- * than a flag on the one above, so the two budgets cannot be confused at a
- * call site.
+ * link in the library from zero, for ever. A text-free brochure whose cover
+ * elects nothing is the same in kind: a better worker does not make a drawn
+ * page carry text. Kept as its own matcher rather than a flag on the one
+ * above, so the kill budget and these two cannot be confused at a call site.
+ *
+ * The three keys it DOES compare are the whole identity of the question, so a
+ * bumped `provenance_version`, a swapped package or a different source row
+ * starts every count here from zero.
  */
-function unreachableMatch(
+function questionMatch(
   stored: unknown,
   question: ProvenanceQuestion,
 ): PackageAttemptRecord | null {
@@ -200,7 +265,7 @@ export function attemptsSoFar(stored: unknown, question: ProvenanceQuestion): nu
 
 /** How many times this exact question has answered `unreachable`. */
 export function unreachableSoFar(stored: unknown, question: ProvenanceQuestion): number {
-  const record = unreachableMatch(stored, question);
+  const record = questionMatch(stored, question);
   if (!record) return 0;
   const n = Number(record.unreachable);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
@@ -228,6 +293,9 @@ export function recordUnreachableAttempt(
     source_anchor: question.sourceAnchor,
     attempts: 0,
     unreachable: unreachableSoFar(stored, question) + 1,
+    // CARRIED, NEVER CLEARED. A transient failure says nothing about the
+    // document, so it must not erase what the document has already told us.
+    text_free_cover: textFreeCoverSoFar(stored, question) || undefined,
     runtime_version: question.runtimeVersion ?? RUNTIME_VERSION,
     started_at: now().toISOString(),
   };
@@ -239,6 +307,109 @@ export function unreachableAttemptsExhausted(
   question: ProvenanceQuestion,
 ): boolean {
   return unreachableSoFar(stored, question) >= MAX_UNREACHABLE_ATTEMPTS;
+}
+
+/** How many times this exact question refused as a text-free cover. */
+export function textFreeCoverSoFar(stored: unknown, question: ProvenanceQuestion): number {
+  const record = questionMatch(stored, question);
+  if (!record) return 0;
+  const n = Number(record.text_free_cover);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/**
+ * What the column holds after a deterministic text-free cover refusal.
+ *
+ * The same shape as `recordUnreachableAttempt` and for the same reasons — the
+ * spend returned so the kill claim is cleared, and `attempts` goes to zero
+ * because no worker was destroyed. What differs is only WHICH counter moves.
+ * `unreachable` is carried across untouched, so a document that refuses
+ * deterministically can never be retired as a dead link.
+ */
+export function recordTextFreeCoverAttempt(
+  stored: unknown,
+  question: ProvenanceQuestion,
+  now: () => Date = () => new Date(),
+): PackageAttemptRecord {
+  return {
+    result: PACKAGE_RECOVERY_ATTEMPT,
+    provenance_version: question.provenanceVersion,
+    package_reference: question.packageReference,
+    source_anchor: question.sourceAnchor,
+    attempts: 0,
+    unreachable: unreachableSoFar(stored, question) || undefined,
+    text_free_cover: textFreeCoverSoFar(stored, question) + 1,
+    runtime_version: question.runtimeVersion ?? RUNTIME_VERSION,
+    started_at: now().toISOString(),
+  };
+}
+
+/**
+ * COUNTING THE REFUSAL THAT HAS JUST HAPPENED, is this budget spent?
+ *
+ * READ THE NAME, AND DO NOT COPY `unreachableAttemptsExhausted` HERE.
+ *
+ * That function asks a different question — "does the count ALREADY stored
+ * reach the budget?" — and it is called after an election returns, so the
+ * refusal in hand has not been counted yet. At six, that costs SEVEN
+ * elections: attempts one to six each store a count and retry, and attempt
+ * seven is spent in full only to discover the budget was already gone. That
+ * behaviour is left exactly as it is; it is a known finding recorded for its
+ * own change, because moving it moves every transient failure in the system.
+ *
+ * This budget must not inherit that. Two attempts means TWO elections, so the
+ * question asked here is "with this one counted, is it spent?" — which makes
+ * the second deterministic refusal terminal on the spot and means a third
+ * election is never dispatched.
+ *
+ *   election 1 → stored 0, +1 = 1, 1 >= 2 false → record 1, retry later
+ *   election 2 → stored 1, +1 = 2, 2 >= 2 true  → write the terminal record
+ *   election 3 → never happens
+ */
+export function textFreeCoverExhaustedAfter(
+  stored: unknown,
+  question: ProvenanceQuestion,
+): boolean {
+  return textFreeCoverSoFar(stored, question) + 1 >= MAX_TEXT_FREE_COVER_ATTEMPTS;
+}
+
+/**
+ * The terminal answer for a document read in full whose cover elects nothing.
+ *
+ * OPERATIONAL, AND THE WORD IS LOAD-BEARING. `inspected` would mean "we
+ * opened the document and it names no image for this property", which would
+ * be a finding about the builder's brochure and would admit the online
+ * fallback. This is not that. The pages carry no extractable text, so nothing
+ * in the document was ever READ — what was inspected was its cover's rasters,
+ * and all that is established is that THIS reader can take no single
+ * photograph from them. The brochure may well carry a facade a human sees at
+ * a glance.
+ *
+ * So it retires the branch and nothing more: same `result` as every other
+ * negative, same `operational` exhaustion as the dead-link and killed-worker
+ * retirements, and the property continues down its existing source and image
+ * ladder exactly as it does today after generic exhaustion.
+ *
+ * It deliberately does NOT stamp `runtime_version`, matching
+ * `recordPackageUnreachable` rather than `recordPackageUnprocessable`: a
+ * better worker does not make a drawn page carry text, so re-chasing these
+ * on every runtime bump would be a treadmill. A bumped PROVENANCE version
+ * does reopen it, through the question key, which is the right lever — that
+ * is what a changed extractor is.
+ */
+export function recordPackageTextFreeCover(
+  question: ProvenanceQuestion,
+  now: () => Date = () => new Date(),
+) {
+  return recordNoDeterministicImage(
+    question,
+    `That document was read in full after ${MAX_TEXT_FREE_COVER_ATTEMPTS} attempts — its `
+    + `pages carry no extractable text and no single photograph could be taken from its `
+    + `cover page — so no builder image was taken from it. This is a limit of what this `
+    + `reader can extract, not a finding that the document holds no photograph.`,
+    'operational',
+    now,
+  );
 }
 
 /**
@@ -285,10 +456,17 @@ export function recordPackageAttempt(
     source_anchor: question.sourceAnchor,
     attempts: attemptsSoFar(stored, question) + 1,
     /*
-     * Carried across a runtime bump: the kill count above resets, this does
-     * not. A dead link stays dead however good the worker gets.
+     * Carried across a runtime bump: the kill count above resets, these do
+     * not. A dead link stays dead however good the worker gets, and a drawn
+     * page does not grow text.
+     *
+     * THIS RECORD IS WRITTEN BEFORE THE ELECTION RUNS, so forgetting either
+     * count here would silently reset it on every single attempt and the
+     * budget could never be reached at all — which is the exact defect
+     * `provenanceAfterAttempt`'s header records for the kill counter.
      */
     unreachable: unreachableSoFar(stored, question) || undefined,
+    text_free_cover: textFreeCoverSoFar(stored, question) || undefined,
     runtime_version: question.runtimeVersion ?? RUNTIME_VERSION,
     started_at: now().toISOString(),
   };

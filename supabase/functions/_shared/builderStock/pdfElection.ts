@@ -34,9 +34,12 @@
  *
  * Pure of IO except the decoding itself: no database, no network, no clock.
  */
-import { selectPdfPropertyPrimaryHoldingSlot } from './pdfSourcePhoto.ts';
+import {
+  coverRastersInspected, selectPdfPropertyPrimaryHoldingSlot,
+} from './pdfSourcePhoto.ts';
 import { withPdfDecodeSlot } from './pdfDecodeSlot.pure.ts';
 import { coverIdentityQuote } from './pdfPrimaryImage.pure.ts';
+import { TEXT_FREE_COVER_NOT_ELECTED } from './pdfElectionBoundary.pure.ts';
 // Type-only, so it is erased at compile time and no runtime cycle exists
 // between this module and the one that calls it.
 import type { PackageOutcome } from './packageImages.ts';
@@ -166,12 +169,72 @@ export async function electFromPdfBytes(
      * where its first page was structurally eligible and presented no single
      * photograph. Recording a negative for it would bank an answer this reader
      * never earned, so it stays operational and the property is asked again.
+     *
+     * ASKED AGAIN — BUT ONCE, NOT SIX TIMES, AND THE CODE IS WHAT SAYS SO.
+     *
+     * Reaching here with `textFree` means all four of these held: the bytes
+     * arrived whole, every page's text came back empty, the builder's own
+     * folder had already tied this document to this one property (or the
+     * guard above would have returned first, since `identifiedBy` must be
+     * `folder_structure` to get past it), and the cover page's rasters were
+     * decoded and put through the cover rule. Each of those is a pure
+     * function of the bytes, so the answer cannot change while the bytes and
+     * this extractor version both stand.
+     *
+     * MEASURED, Lot 208 / `46 Satinwood Crescent Donnybrook`: seven elections
+     * in the 12:12 import and seven in the 13:33 one, identical 4,178,756
+     * bytes every time, identical verdict every time, durations ranging 3.3 s
+     * to 16.3 s across two different isolate populations. Thirteen of those
+     * fourteen were spend with no possible new outcome, and the property's
+     * publication waited behind them for 8 min 13 s.
+     *
+     * `TEXT_FREE_COVER_NOT_ELECTED` is therefore attached for the retry
+     * budget to read — BUT ONLY ON POSITIVE EVIDENCE THAT THE RASTERS WERE
+     * ACTUALLY DECODED, which `coverPages` alone does not give.
+     *
+     * THIS RETURN SITS IN FRONT OF THE TWO OPERATIONAL RULES BELOW, so it
+     * cannot lean on them. A named cover page with NOTHING decoded is a
+     * starved or failed raster step — the rule below says so in as many words
+     * — and it is indistinguishable from a page that genuinely carries no
+     * picture. Coding that shape would take a brochure we ran out of CPU on
+     * from six attempts to two, which is the one way this change could retire
+     * a document that reads perfectly well. `coverRastersInspected` is the
+     * exact negation of both operational rules and is defined beside the
+     * selection contract that states them.
+     *
+     * MEASURED ON THE REAL DOCUMENT, 20 September 2026, byte-exact at
+     * 4,178,756 — the size production recorded on all fourteen attempts:
+     *
+     *   pages 4, every one of them zero characters   → textFree
+     *   coverPages [1]                               → a cover WAS named
+     *   assets 1, 2,375,240 bytes on page 1          → it WAS decoded
+     *   pageOrderAuthoritative true, streams 0       → nothing went unread
+     *   role `unknown`, because "every picture on the property cover is a
+     *   plan or a graphic rather than a photograph of the property"
+     *
+     * So Lot 208 is the coded case on evidence rather than by assumption: the
+     * decode succeeded and the cover rule refused what it found.
      */
     if (textFree) {
+      if (coverRastersInspected(selection)) {
+        return {
+          status: 'unreachable',
+          reason: TEXT_FREE_COVER_NOT_ELECTED,
+          detail: 'That document\'s pages carry no extractable text and its first page '
+            + 'presents no single photograph, so it could not be read.',
+        };
+      }
+      /*
+       * AND WHERE NOTHING WAS DECODED, THE SENTENCE MAY NOT CLAIM THE PAGE
+       * PRESENTS NO PHOTOGRAPH EITHER. We did not look; saying we did is the
+       * same error as coding it, written in prose. This is the wording the
+       * operational rule below already uses, for the same shape.
+       */
       return {
         status: 'unreachable',
-        detail: 'That document\'s pages carry no extractable text and its first page '
-          + 'presents no single photograph, so it could not be read.',
+        detail: 'That document\'s pages carry no extractable text and its cover page '
+          + 'could not be read on this attempt, so nothing was learned about the '
+          + 'pictures it carries.',
       };
     }
     /*

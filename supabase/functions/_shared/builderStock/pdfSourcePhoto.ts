@@ -661,6 +661,54 @@ export interface PdfPrimarySelection {
 }
 
 /**
+ * POSITIVE EVIDENCE THAT THE COVER'S RASTERS WERE ACTUALLY LOOKED AT.
+ *
+ * WHY THIS IS A NAMED PREDICATE AND NOT AN INLINE TEST. `coverPages.length > 0`
+ * looks like it means "the cover was inspected" and does not: the interface
+ * above says in as many words that a non-empty list with no decoded asset is
+ * OURS. The two facts sit one field apart and read almost the same, so the
+ * rule is stated once, here, beside the contract it reads — and every caller
+ * that needs "did we really look?" asks this rather than assembling its own
+ * answer out of the parts.
+ *
+ * IT IS THE EXACT NEGATION OF THE TWO OPERATIONAL RULES `pdfElection.ts`
+ * ALREADY DRAWS, and it must stay that way:
+ *
+ *   `coverPages.length && !assets.length` — pages named, nothing decoded. A
+ *   starved or failed raster step. Ours.
+ *
+ *   `coverPages.length && !pageOrderAuthoritative && objectStreamsUnread > 0`
+ *   — a page tree we could not decompress. Ours.
+ *
+ * So this answers true only when a page WAS named, a raster from one of those
+ * named pages WAS materialised, and no stream of the document went unread.
+ * Anything less is a fact about this reading rather than about the document,
+ * and a caller shortening a retry budget on it would be retiring a brochure
+ * because we ran out of CPU.
+ *
+ * AN ASSET ON A PAGE THAT IS NOT A COVER PAGE DOES NOT COUNT. The decode is
+ * scoped to the searched pages, so in practice they coincide; requiring the
+ * page explicitly costs nothing and keeps the predicate true to its name if
+ * that scoping ever widens.
+ *
+ * Pure: no IO, no clock. Reads the selection and nothing else.
+ */
+export function coverRastersInspected(selection: {
+  assets: readonly { page?: number }[];
+  coverPages: readonly number[];
+  pageOrderAuthoritative: boolean;
+  objectStreamsUnread: number;
+}): boolean {
+  const covers = selection?.coverPages ?? [];
+  if (!covers.length) return false;
+  if (!selection.pageOrderAuthoritative && Number(selection.objectStreamsUnread) > 0) {
+    return false;
+  }
+  return (selection.assets ?? []).some(
+    (asset) => typeof asset?.page === 'number' && covers.includes(asset.page));
+}
+
+/**
  * The election with the slot ALREADY HELD by the caller.
  *
  * Exported for `extractFromDocument`, which takes the slot once around the

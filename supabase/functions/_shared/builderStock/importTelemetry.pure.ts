@@ -226,6 +226,16 @@ export interface PdfTelemetry {
    * to know whether a builder has a problem or Aurixa does.
    */
   documentVerdict: boolean;
+  /**
+   * The refusal CODE where the election minted one, and nothing otherwise.
+   *
+   * It is the field that says which retry budget a refusal spent, which is
+   * not readable from `election_outcome` — every one of them is `unreachable`
+   * — and not safely readable from `detail`, which is prose. Without it a
+   * two-attempt retirement and a six-attempt one are indistinguishable in the
+   * production log, and this change could not be verified after it shipped.
+   */
+  reason?: string | null;
   role?: string | null;
   durationMs?: number | null;
   httpStatus?: number | null;
@@ -249,6 +259,7 @@ export function pdfTelemetry(input: PdfTelemetry): TelemetryRecord {
     election_route: input.route,
     election_outcome: input.outcome,
     document_verdict: input.documentVerdict,
+    election_reason: input.reason ?? undefined,
     image_role: input.role ?? undefined,
     duration_ms: input.durationMs ?? undefined,
     http_status: input.httpStatus ?? undefined,

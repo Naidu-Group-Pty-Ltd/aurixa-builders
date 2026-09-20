@@ -39,6 +39,7 @@ import { classifyBranch, sharedLinkFileUrl } from './sourceBranches.pure.ts';
 import { readPdfPageTextResult } from './pdfText.ts';
 import { MAX_SOURCE_IMAGE_BYTES, sniffImageContentType } from './sourceAssets.pure.ts';
 import { PRIMARY_ROLE, type SourceImageRoleAssignment } from './sourceImageRole.pure.ts';
+import { type ElectionRefusalReason } from './pdfElectionBoundary.pure.ts';
 
 /** Folder listings one repair run may read. Shared and cached across rows. */
 const MAX_LISTINGS_PER_RUN = 40;
@@ -144,8 +145,24 @@ export type PackageOutcome =
   | { status: 'recovered_photograph'; photograph: RecoveredPackagePhotograph }
   /** The link was read and stated nothing that identifies this property. */
   | { status: 'not_identified'; detail: string }
-  /** The link could not be read at all without credentials. */
-  | { status: 'unreachable'; detail: string };
+  /**
+   * The link could not be read at all without credentials.
+   *
+   * `reason` is present only where the refusal is a DETERMINISTIC one this
+   * protocol has a code for — today exactly one, `TEXT_FREE_COVER_NOT_ELECTED`
+   * — and it is what the retry budget reads. Its ABSENCE is the normal case
+   * and means the generic allowance applies, so every failure that does not
+   * explicitly earn a code keeps the behaviour it has today: a fetch that
+   * failed, a 404, a sign-in wall, a rate limit, a stalled origin, a document
+   * that is not a document, a worker we never reached, a deadline and a kill.
+   *
+   * Optional rather than a new `status`, on purpose. A fourth status would
+   * have to be handled by every reader of this union — the settler's
+   * dispatch, the telemetry line, the worker's serialiser, the wire decoder —
+   * and each of those is a place the behaviour of the OTHER failures could
+   * change by accident. An added optional field is invisible to all of them.
+   */
+  | { status: 'unreachable'; detail: string; reason?: ElectionRefusalReason };
 
 /**
  * How long one branch's recovery may run before it is answered for.

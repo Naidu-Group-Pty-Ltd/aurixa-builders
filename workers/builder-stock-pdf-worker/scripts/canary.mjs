@@ -227,6 +227,128 @@ if (args.includes('--heavy')) {
   console.log(`\nheavy election wall-clock: ${elapsed} ms over ${bytes.length} bytes`);
 }
 
+// ---- 5. the two text-free shapes, and the code that tells them apart ------
+/*
+ * WHY A REAL DOCUMENT AND NOT A UNIT TEST. `TEXT_FREE_COVER_NOT_ELECTED`
+ * shortens a retry budget from six attempts to two, so what earns it has to be
+ * exercised by a real election over real bytes: the text read returning
+ * nothing, the structural cover being licensed by `identifiedBy`, the page's
+ * rasters actually being decoded, and the cover rule electing or refusing.
+ * Stubbing any of that would test the stub.
+ *
+ * BOTH SHAPES, BECAUSE ONE WITHOUT THE OTHER PROVES NOTHING. A build that
+ * attached the code to every text-free document would pass a refusal-only
+ * check while silently putting successful elections on a two-attempt budget;
+ * a build that never attached it would pass a success-only check while
+ * leaving the Lot 208 case on six. So the hero must elect WITHOUT a code and
+ * the blank must refuse WITH one, in the same run.
+ *
+ * The text-bearing brochure above is the third leg: it is the partially-and-
+ * not-at-all text-free case, and it must stay uncoded too.
+ */
+if (args.includes('--heavy')) {
+  const { execFileSync } = await import('node:child_process');
+  const dir = mkdtempSync(join(tmpdir(), 'pdftextfree-'));
+  /** The same wire context with this fixture's own identity on it. */
+  const headerForDoc = (identity) => Buffer.from(
+    JSON.stringify({ ...CONTEXT, ...identity }), 'utf8').toString('base64');
+
+  const elect = async (mode, identity) => {
+    const file = join(dir, `${mode}.pdf`);
+    execFileSync('python3', [resolve(here, 'make-fixture-pdf.py'), file, `--${mode}`],
+      { stdio: 'ignore' });
+    const res = await call('/v1/elect', {
+      method: 'POST',
+      body: new Uint8Array(readFileSync(file)),
+      headers: {
+        ...auth, 'content-type': 'application/pdf',
+        'x-election-context': headerForDoc(identity),
+      },
+    });
+    return await res.json().catch(() => ({}));
+  };
+
+  try {
+    /*
+     * THE LOT 208 SHAPE, AND IT IS THE ONE THE BUDGET TURNS ON. Text-free,
+     * folder-tied, page 1 licensed as a structural cover, ONE raster decoded
+     * off it — and the cover rule refuses it because a plan is not a
+     * photograph of a house. Measured on the real document at 4,178,756
+     * bytes: coverPages [1], assets 1 (2,375,240 bytes), page order
+     * authoritative, no unread streams. The decode SUCCEEDED, so the refusal
+     * is the document's and two attempts is the honest budget.
+     */
+    const plan = await elect('text-free-plan', {
+      label: 'Lot 208, 46 Satinwood Crescent Donnybrook',
+      documentName: 'Lot 208, 46 Satinwood Crescent Donnybrook VIC_Package.pdf',
+      url: 'https://drive.google.com/uc?export=download&id=satinwood-208',
+    });
+    check('a text-free cover whose decoded raster is refused, refuses',
+      plan.status === 'unreachable', `status=${plan.status}`);
+    check('and it carries the deterministic code, not just a sentence',
+      plan.reason === 'text_free_cover_not_elected', `reason=${plan.reason}`);
+
+    /*
+     * THE SHAPE THAT MUST NOT BE CODED, AND THIS IS THE WHOLE POINT OF IT.
+     *
+     * No raster is embedded at all, so the selection yields ZERO assets —
+     * which is byte-for-byte the shape a STARVED OR FAILED decode yields, and
+     * nothing downstream can tell the two apart. `coverPages` alone would
+     * call this inspected and shorten it from six attempts to two, retiring a
+     * brochure we merely ran out of CPU on. It must stay on the generic
+     * allowance.
+     */
+    const blank = await elect('text-free-blank', {
+      label: 'Lot 208, 46 Satinwood Crescent Donnybrook',
+      documentName: 'Lot 208 no raster.pdf',
+      url: 'https://drive.google.com/uc?export=download&id=satinwood-blank',
+    });
+    check('a text-free cover with NOTHING decoded still refuses',
+      blank.status === 'unreachable', `status=${blank.status}`);
+    check('and it is NOT coded, because a failed decode looks exactly like it',
+      blank.reason === undefined, `reason=${blank.reason}`);
+    check('and it does not claim the page presents no photograph',
+      String(blank.detail ?? '').includes('could not be read on this attempt'),
+      String(blank.detail ?? '').slice(0, 90));
+
+    /*
+     * THE SAME SHAPE WITH A PHOTOGRAPH ON IT. Text-free, folder-tied, and the
+     * cover presents exactly one raster — so it must still elect, and must
+     * NOT be marked deterministic.
+     */
+    const hero = await elect('text-free-hero', {
+      label: 'Lot 717 — Enzo 10.5 Modern',
+      documentName: 'LOT 717 TEXT FREE COVER.pdf',
+      url: 'https://drive.google.com/uc?export=download&id=textfree-hero',
+    });
+    check('a text-free cover that DOES present a photograph still elects',
+      hero.status === 'recovered', `status=${hero.status}${hero.detail ? ` — ${hero.detail}` : ''}`);
+    check('a successful election carries no refusal code',
+      hero.reason === undefined, `reason=${hero.reason}`);
+
+    /*
+     * AND THE DOCUMENT WHOSE TEXT WAS READ — the committed brochure, elected
+     * again here rather than reaching for section 3's block-scoped answer.
+     * It is the control that proves the code is about text-free documents
+     * rather than about refusals in general, and it covers the
+     * partially-text-free case by the same rule: `textFree` is every page
+     * empty, so a document with text on any page can never reach the mint.
+     */
+    const readable = await call('/v1/elect', {
+      method: 'POST',
+      body: PDF,
+      headers: {
+        ...auth, 'content-type': 'application/pdf', 'x-election-context': contextHeader,
+      },
+    }).then((r) => r.json()).catch(() => ({}));
+    check('the text-bearing brochure carries no refusal code either',
+      readable.reason === undefined, `status=${readable.status} reason=${readable.reason}`);
+  } catch (error) {
+    check('the text-free fixtures could be built and elected', false,
+      String(error).slice(0, 160));
+  }
+}
+
 // ---- the election lanes, through the built bundle ---------------------------
 /*
  * THE SHARDING IS A PROPERTY OF THE ARTEFACT, NOT OF THE SOURCE. The unit

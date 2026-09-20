@@ -130,10 +130,19 @@ export class PdfElection extends DurableObject {
        * the shared election read the real bytes and said so. The client is
        * written so that it cannot construct that value itself; this is the
        * one place it is ever earned.
+       *
+       * `reason` is earned the same way and travels for the same reason. The
+       * shared election attaches it only where it read the document to the
+       * end and the refusal is a deterministic property of the bytes; the
+       * client relays it only when it recognises the value. So a refusal
+       * whose budget is shorter than the generic one can be produced by
+       * nothing except an actual reading of an actual document — which is
+       * what makes it safe for the budget to trust.
        */
       return json({
         protocol: PDF_ELECTION_PROTOCOL,
         status: outcome.status,
+        reason: 'reason' in outcome ? outcome.reason : undefined,
         detail: 'detail' in outcome ? outcome.detail : undefined,
       });
     });

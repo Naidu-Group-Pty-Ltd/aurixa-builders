@@ -31,6 +31,61 @@ export const PDF_ELECTION_PROTOCOL = 1;
 export const ELECTION_CONTEXT_HEADER = 'x-election-context';
 
 /**
+ * WHY A REFUSAL CARRIES A CODE AS WELL AS A SENTENCE.
+ *
+ * `unreachable` is one word covering two opposite kinds of failure, and the
+ * retry budget cannot tell them apart. A sign-in wall, a 404, a rate limit, a
+ * cold origin and a killed worker are all TRANSIENT — the same link may read
+ * perfectly tomorrow, which is why `MAX_UNREACHABLE_ATTEMPTS` is six and why
+ * it must stay six.
+ *
+ * `text_free_cover_not_elected` is not that. It means the document was
+ * fetched whole, its text was read and every page came back empty, the
+ * builder's own folder had already tied it to this one property so the
+ * structural cover was licensed, a raster on that cover page WAS materialised
+ * — proven, not assumed, by `coverRastersInspected` — and the cover rule
+ * still elected nothing from it. Every step of that is a pure function of the
+ * bytes. The same bytes answer the same way for ever, so retrying is spend
+ * with no possible new outcome — measured on Lot 208 / `46 Satinwood Crescent
+ * Donnybrook`, fourteen attempts across two imports, one verdict.
+ *
+ * A COVER PAGE WITH NOTHING DECODED IS EXPRESSLY NOT THIS. That is a starved
+ * or failed raster step, it is a fact about us, and it keeps the generic
+ * six.
+ *
+ * SO THE CODE TRAVELS, AND THE SENTENCE DOES NOT DECIDE ANYTHING. Retry
+ * behaviour keys on this value and never on the prose, because prose is
+ * rewritten for readability and a budget must not move when somebody fixes a
+ * comma. The sentence stays exactly what it was, for the operator.
+ *
+ * ONLY THE ELECTION ITSELF MAY MINT IT. It is earned by reading the real
+ * bytes to the end, so nothing on the calling side constructs it: see the
+ * `unreachable()` helper in `pdfElectionClient.ts`, which cannot set it.
+ */
+export const TEXT_FREE_COVER_NOT_ELECTED = 'text_free_cover_not_elected' as const;
+
+/**
+ * Every refusal code this protocol speaks.
+ *
+ * A union of one, deliberately. There is no vocabulary to grow here: a second
+ * code is a second retry budget, and each one has to be argued for from a
+ * measurement the way this one was.
+ */
+export type ElectionRefusalReason = typeof TEXT_FREE_COVER_NOT_ELECTED;
+
+/**
+ * Is this value a code THIS deployment speaks?
+ *
+ * Used on the receiving side so an answer from a worker running ahead of us
+ * cannot introduce a budget this build has never heard of. An unrecognised
+ * code is simply absent, which lands the refusal on the generic allowance —
+ * the conservative direction, because generic is the more patient one.
+ */
+export function isElectionRefusalReason(value: unknown): value is ElectionRefusalReason {
+  return value === TEXT_FREE_COVER_NOT_ELECTED;
+}
+
+/**
  * The largest document that may cross.
  *
  * Lot 6706's 13.9 MB brochure is the largest measured in production. 32 MB
