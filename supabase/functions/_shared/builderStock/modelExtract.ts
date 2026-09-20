@@ -159,20 +159,18 @@ async function run(
        * fallback was the only one that ever got a realistic run, on a third of
        * the time.
        *
-       * At 40 s the seeded three-step chain worst-cases at 40 / 40 / 10 —
-       * exactly the 90 s budget, never over it, because the router's deadline
-       * guard shortens each attempt to whatever remains and abandons the chain
-       * below one second. End to end that is ~15 s of extraction (the 25 MB
-       * cap; the 7.2 MB production brochure took 4.7 s) + 90 s + a couple of
-       * seconds of import, ~108 s inside the runtime's ceiling.
+       * At 40 s the seeded pair — both Gemini on the gateway — worst-cases at
+       * 40 + 40 inside the 90 s budget, with room to spare and neither model
+       * starved. End to end that is ~15 s of extraction (the 25 MB cap; the
+       * 7.2 MB production brochure took 4.7 s) + 90 s + a couple of seconds of
+       * import, ~108 s inside the runtime's ceiling.
        *
-       * The 10 s third step is not the case that matters. The step exists for
-       * a chain whose earlier models spend a DIFFERENT credential, and when
-       * that credential is missing or refused those two fail in about no time
-       * at all — which leaves the third its full 40 s, which is the whole
-       * point. Ten seconds is only ever what is left when two gateway models
-       * were both present and both slow, and in that case one of them has
-       * almost certainly already answered.
+       * This holds for a LONGER chain too, and does not assume one: the
+       * router shortens each attempt to whatever remains of the deadline and
+       * abandons the chain below one second, so an operator who adds a third
+       * model costs it whatever is left rather than an overrun. The chain is
+       * configuration and this constant must never be derived from its
+       * length.
        */
       timeoutMs: MODEL_ATTEMPT_TIMEOUT_MS,
       deadlineAt: options.deadlineAt,
