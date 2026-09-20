@@ -135,6 +135,25 @@ export function extractUsageTokens(raw: unknown): LlmUsageTokens | null {
   return { promptTokens, completionTokens, totalTokens };
 }
 
+/**
+ * The cost a provider reported for the request itself, in US dollars.
+ *
+ * OpenRouter returns this on every chat completion — the `usage: {include}`
+ * parameter that used to request it is deprecated and has no effect. Reading
+ * it means the ledger books what was CHARGED rather than what a rate table in
+ * this repository believes it should have been, which is the difference
+ * between accounting and estimating.
+ *
+ * Null for every provider that reports no cost, which is all of the others.
+ */
+export function extractReportedCostUsd(raw: unknown): number | null {
+  const usage = (raw as { usage?: Record<string, unknown> } | null | undefined)?.usage;
+  if (!usage || typeof usage !== 'object') return null;
+  const cost = (usage as { cost?: unknown }).cost;
+  if (typeof cost === 'number' && Number.isFinite(cost) && cost >= 0) return cost;
+  return null;
+}
+
 /** The model id a provider echoed back, when it did. Falls back to the requested one. */
 export function resolveModelUsed(raw: unknown, requested: string | null | undefined): string {
   const echoed = (raw as { model?: unknown } | null | undefined)?.model;

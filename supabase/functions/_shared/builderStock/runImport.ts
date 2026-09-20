@@ -19,6 +19,7 @@ import { extractStockFile, StockExtractionError } from './extract.ts';
 import { extractStockRowsFromImages, extractStockRowsFromText } from './modelExtract.ts';
 import { StockModelExtractionError, modelFailureFromRouterError } from './modelExtractionFailure.pure.ts';
 import { assistedReaderFailure, SOURCE_HAS_COLUMNS } from './assistedReaderFailure.pure.ts';
+import { createAiBudget } from './aiBudget.ts';
 import type { RowLinkDiscovery } from './suppliedEvidence.pure.ts';
 import { importStockRecords } from './importStock.ts';
 import { NOTION_NO_PROPERTIES_MESSAGE } from './urlSource.pure.ts';
@@ -225,12 +226,22 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
   // a model first, then normalised by exactly the same code.
   let rows = extraction.rows;
   let strategy = extraction.strategy;
+  /*
+   * THE MONTHLY CEILING, BOUND TO THE CLIENT THIS IMPORT ALREADY HOLDS.
+   *
+   * Built here rather than inside `modelExtract` so the reader can be tested
+   * against a fake, and so this stays the one place that decides an import
+   * may spend money. It is constructed unconditionally and used only on the
+   * branches below — a deterministic table never reaches it, and a table that
+   * parsed costs nothing to have built.
+   */
+  const budget = createAiBudget(supabase);
   try {
     if (!rows.length && extraction.visionImages.length) {
       const modelResult = await extractStockRowsFromImages(
         extraction.visionImages,
         { filename: upload.original_filename, organisationName: input.organisationName },
-        { deadlineAt: Date.now() + MODEL_BUDGET_MS },
+        { deadlineAt: Date.now() + MODEL_BUDGET_MS, budget },
       );
       rows = modelResult.rows;
       strategy = `${strategy}+model`;
@@ -238,7 +249,7 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
       const modelResult = await extractStockRowsFromText(
         extraction.text,
         { filename: upload.original_filename, organisationName: input.organisationName },
-        { deadlineAt: Date.now() + MODEL_BUDGET_MS },
+        { deadlineAt: Date.now() + MODEL_BUDGET_MS, budget },
       );
       rows = modelResult.rows;
       strategy = `${strategy}+model`;

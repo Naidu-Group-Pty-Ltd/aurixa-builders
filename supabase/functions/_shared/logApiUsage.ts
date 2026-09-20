@@ -45,6 +45,18 @@ const COST_PER_1K: Record<string, { input: number; output: number }> = {
   'gemini-2.5-flash': { input: 0.00015, output: 0.0006 },
   'gemini-3-flash-preview': { input: 0.00015, output: 0.0006 },
   'text-embedding-3-small': { input: 0.00002, output: 0 },
+  /*
+   * Builder Stock's OpenRouter pair, US$ per 1K tokens (OpenRouter's published
+   * per-million rates / 1000), verified 20 Sep 2026.
+   *
+   * These are a FALLBACK estimate only. OpenRouter reports the true cost of
+   * every request in `usage.cost`, and `meterRouterCall` passes that through
+   * as `cost_estimate_usd` when it is present — so these two entries are what
+   * the ledger falls back to if a response ever arrives without one, not the
+   * figure it normally books.
+   */
+  'openai/gpt-5.6-luna':     { input: 0.0002,  output: 0.0012 },
+  'google/gemini-3.8-flash': { input: 0.00075, output: 0.00375 },
 };
 
 export function estimateCost(model: string, promptTokens: number, completionTokens: number): number {

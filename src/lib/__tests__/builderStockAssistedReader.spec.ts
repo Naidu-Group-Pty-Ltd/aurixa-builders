@@ -236,7 +236,7 @@ describe('an unusable model answer is not an empty document', () => {
     const guardAt = modelExtract.indexOf('if (!Array.isArray(parsed.items))');
     expect(guardAt).toBeGreaterThan(-1);
     expect(loopAt).toBeGreaterThan(guardAt);
-    expect(modelExtract).toContain('return { rows, modelUsed: result.modelUsed };');
+    expect(modelExtract).toContain('return { rows, modelUsed: result.modelUsed, costUsd: reportedCostUsd };');
   });
 
   it('the router error is classified once, at the call, not matched downstream', () => {

@@ -82,7 +82,8 @@ export interface AssistedReaderFailure {
   code:
     | 'assisted_reader_unavailable'
     | 'assisted_reader_timeout'
-    | 'assisted_reader_invalid_response';
+    | 'assisted_reader_invalid_response'
+    | 'ai_budget_exhausted';
   /** Safe to show the builder. */
   message: string;
   status: number;
@@ -152,6 +153,23 @@ export function assistedReaderFailure(
         message: `We read that ${what}, but the assisted property reader did not return a`
           + ` usable answer. Our team has been alerted.${hint}`,
         status: 502,
+        retryable: false,
+      };
+
+    case 'model_budget_exhausted':
+      return {
+        code: 'ai_budget_exhausted',
+        /*
+         * SAYS WHAT HAPPENED WITHOUT NAMING A PRICE. A builder is not the
+         * party who sets this ceiling and cannot raise it, so the sentence
+         * tells them the read did not happen and that it is being looked at —
+         * never a figure, never an invitation to try again, because trying
+         * again before the month turns over produces exactly this.
+         */
+        message: `We read that ${what}, but the assisted property reader has reached its`
+          + ` monthly limit for this workspace, so it was not read. Our team has been`
+          + ` alerted.${hint}`,
+        status: 503,
         retryable: false,
       };
 

@@ -16,7 +16,13 @@ import { callLLM, type LLMMessage } from '../llmRouter.ts';
 import {
   modelFailureFromRouterError,
   unusableAnswerFailure,
+  budgetExhaustedFailure,
 } from './modelExtractionFailure.pure.ts';
+import type { AiBudgetPort } from './aiBudget.ts';
+import {
+  BUDGET_CHAIN, estimateTokens, imageCount, messageChars,
+  ASSUMED_TOKENS_PER_IMAGE, readReportedCostUsd, reservationMicrosFor, settleMicrosFor,
+} from './aiBudget.pure.ts';
 
 /**
  * The ceiling on ONE model attempt, inside the wall clock `runImport` allows
@@ -24,6 +30,9 @@ import {
  * fallback a realistic run instead of the remains of the first model's hang.
  */
 const MODEL_ATTEMPT_TIMEOUT_MS = 40_000;
+
+/** Output ceiling. The budget hold is sized against this, not an expectation. */
+const MODEL_MAX_TOKENS = 8000;
 
 /** Sent to the model as a tool schema so the answer is structured, not prose. */
 const STOCK_TOOL = {
@@ -85,17 +94,31 @@ RULES, in order of importance:
 5. Ignore marketing copy, disclaimers, contact details, finance illustrations and anything that is not a property in the list.
 6. If the document lists no properties, return an empty array.`;
 
+export interface ExtractionOptions {
+  deadlineAt?: number;
+  /**
+   * REQUIRED. The monthly ceiling this read must fit under.
+   *
+   * Not optional and not defaulted: a caller that forgets a budget would spend
+   * without one, and "forgot" is exactly the failure a hard cap exists to
+   * prevent. `runImport` builds it from the client it already holds.
+   */
+  budget: AiBudgetPort;
+}
+
 export interface ModelExtractionResult {
   /** Raw rows keyed by canonical field name, ready for `normaliseStockRow`. */
   rows: Array<Record<string, unknown>>;
   modelUsed: string;
+  /** The provider's own reported cost, when it reported one. */
+  costUsd?: number | null;
 }
 
 /** Rows recovered from document text. */
 export async function extractStockRowsFromText(
   text: string,
   context: { filename: string; organisationName: string | null },
-  options: { deadlineAt?: number } = {},
+  options: ExtractionOptions,
 ): Promise<ModelExtractionResult> {
   return await run([
     { role: 'system', content: SYSTEM_PROMPT },
@@ -112,7 +135,7 @@ export async function extractStockRowsFromText(
 export async function extractStockRowsFromImages(
   images: Array<{ base64: string; contentType: string }>,
   context: { filename: string; organisationName: string | null },
-  options: { deadlineAt?: number } = {},
+  options: ExtractionOptions,
 ): Promise<ModelExtractionResult> {
   const content: Array<Record<string, unknown>> = [
     {
@@ -136,8 +159,45 @@ export async function extractStockRowsFromImages(
 
 async function run(
   messages: LLMMessage[],
-  options: { deadlineAt?: number },
+  options: ExtractionOptions,
 ): Promise<ModelExtractionResult> {
+  /*
+   * =======================================================================
+   * THE CEILING IS TAKEN BEFORE THE PROVIDER IS TOUCHED.
+   * =======================================================================
+   *
+   * A hold sized for the WORST the whole chain could cost — every attempt at
+   * its `maxTokens` output ceiling — so the US$10 month cannot be walked
+   * through by requests that each read the balance and each decide there is
+   * room. Six settler invocations fan out from one import; the decision and
+   * the commitment have to be one statement, and they are, inside
+   * `ai_budget_reserve`.
+   */
+  const inputTokens = estimateTokens(messageChars(messages))
+    + imageCount(messages) * ASSUMED_TOKENS_PER_IMAGE;
+  const reservedMicros = reservationMicrosFor({
+    chain: BUDGET_CHAIN, inputTokens, maxOutputTokens: MODEL_MAX_TOKENS,
+  });
+
+  const decision = await options.budget.reserve({
+    amountMicros: reservedMicros,
+    modelId: BUDGET_CHAIN[0] ?? null,
+    route: 'openrouter',
+  });
+  if (!decision.ok) {
+    /*
+     * NOTHING IS CALLED. Not OpenRouter, not a gateway, not another provider.
+     * The document is left unread and says so — which is the whole point: a
+     * ceiling that degrades to "ask a cheaper model" is a budget nobody set.
+     */
+    throw budgetExhaustedFailure({
+      reason: decision.reason,
+      remainingMicros: decision.remainingMicros,
+      requiredMicros: reservedMicros,
+      detail: decision.detail,
+    });
+  }
+
   let result;
   try {
     result = await callLLM({
@@ -148,43 +208,58 @@ async function run(
       requiredToolName: 'record_stock_items',
       requireValidToolArguments: true,
       temperature: 0,
-      maxTokens: 8000,
+      maxTokens: MODEL_MAX_TOKENS,
       /*
        * ONE ATTEMPT MAY NOT SPEND THE WHOLE CHAIN'S BUDGET.
        *
        * `runImport` allows the reader 90 s of wall clock and the router
        * derives each attempt's timeout from whatever remains, so a 60 s
-       * ceiling here let the FIRST model take two thirds of the budget and
-       * left the fallback 30 s — and a first model that simply hung meant the
-       * fallback was the only one that ever got a realistic run, on a third of
-       * the time.
+       * ceiling here let the FIRST model take two thirds of it and left the
+       * fallback the remainder.
        *
-       * At 40 s the seeded pair — both Gemini on the gateway — worst-cases at
-       * 40 + 40 inside the 90 s budget, with room to spare and neither model
-       * starved. End to end that is ~15 s of extraction (the 25 MB cap; the
-       * 7.2 MB production brochure took 4.7 s) + 90 s + a couple of seconds of
-       * import, ~108 s inside the runtime's ceiling.
-       *
-       * This holds for a LONGER chain too, and does not assume one: the
-       * router shortens each attempt to whatever remains of the deadline and
-       * abandons the chain below one second, so an operator who adds a third
-       * model costs it whatever is left rather than an overrun. The chain is
-       * configuration and this constant must never be derived from its
-       * length.
+       * At 40 s the seeded pair worst-cases at 40 + 40 inside the same 90 s,
+       * with room for the import that follows and neither model starved. It
+       * holds for a longer chain too and does not assume one: the router
+       * shortens each attempt to what remains and abandons the chain below a
+       * second, so an operator who adds a model costs it latency rather than
+       * an overrun.
        */
       timeoutMs: MODEL_ATTEMPT_TIMEOUT_MS,
       deadlineAt: options.deadlineAt,
-      // Left at its default (true). This spends a forwarded vendor key, and an
-      // unlogged call is never recharged to the tenant that made it.
+      // Left at its default (true). This spends a vendor key, and an unlogged
+      // call is never recharged to the tenant that made it.
     });
   } catch (error) {
     /*
-     * The router's `attempts` is the only structured account of what happened
-     * and every caller used to discard it. Classified here, once, rather than
-     * by matching the thrown sentence anywhere downstream.
+     * The chain failed. Some of its attempts may still have reached a provider
+     * and been charged — a 422 is the router's verdict on a response the
+     * provider generated — so the hold is RECONCILED rather than simply
+     * released. `settleMicrosFor` returns 0 when nothing was reached, which
+     * hands the whole hold back.
      */
+    const attempts = (error as { attempts?: unknown[] })?.attempts ?? [];
+    await settle(options.budget, decision.reservationId, settleMicrosFor({
+      reservedMicros, reportedCostUsd: null, attempts: attempts as any,
+      winningModelId: null, inputTokens, maxOutputTokens: MODEL_MAX_TOKENS,
+    }));
     throw modelFailureFromRouterError(error);
   }
+
+  /*
+   * THE PROVIDER'S OWN FIGURE, NOT OUR ESTIMATE. OpenRouter returns the real
+   * cost of the request in `usage.cost` on every response, so the month is
+   * reconciled against what was actually charged and the rest of the hold goes
+   * back immediately rather than waiting to be reclaimed.
+   */
+  const reportedCostUsd = readReportedCostUsd(result.rawResponse);
+  await settle(options.budget, decision.reservationId, settleMicrosFor({
+    reservedMicros,
+    reportedCostUsd,
+    attempts: (result.attempts ?? []) as any,
+    winningModelId: result.modelUsed ?? null,
+    inputTokens,
+    maxOutputTokens: MODEL_MAX_TOKENS,
+  }));
 
   /*
    * =======================================================================
@@ -192,17 +267,12 @@ async function run(
    * =======================================================================
    *
    * Each of the three checks below used to `return { rows: [] }`, which the
-   * import then reported as `no_properties_found` — "No properties could be
-   * read from that file. Check that it lists one property per row with column
-   * headings." So a model that answered without calling the tool, or with
-   * arguments that would not parse, or with no `items` key at all, was
-   * reported to the builder as a statement about their brochure.
+   * import then reported as `no_properties_found` — a statement about the
+   * builder's brochure for a fault that was ours.
    *
    * They are typed failures now. The ONE case that still legitimately yields
    * nothing is a well-formed answer whose `items` array is empty — a model
-   * that read the document properly and found no property in it — and that
-   * one keeps travelling as `{ rows: [] }`, because it is the truth and
-   * `no_properties_found` is the right thing to say about it.
+   * that read the document properly and found no property in it.
    */
   const call = result.toolCalls?.find((entry: any) => entry?.function?.name === 'record_stock_items');
   if (!call) {
@@ -227,5 +297,13 @@ async function run(
     if (!item || typeof item !== 'object') continue;
     rows.push(item as Record<string, unknown>);
   }
-  return { rows, modelUsed: result.modelUsed };
+  return { rows, modelUsed: result.modelUsed, costUsd: reportedCostUsd };
+}
+
+/** Reconciling must never turn a completed read into a failed import. */
+async function settle(budget: AiBudgetPort, reservationId: string, micros: number): Promise<void> {
+  try {
+    if (micros <= 0) await budget.release(reservationId);
+    else await budget.settle(reservationId, micros);
+  } catch { /* the hold is reclaimed on the next reserve */ }
 }

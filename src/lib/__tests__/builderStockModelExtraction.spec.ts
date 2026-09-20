@@ -52,7 +52,23 @@ function routerThrew(attempts: unknown[]) {
   return Object.assign(new Error('[llmRouter] All models failed'), { status: 503, attempts });
 }
 
-const run = () => extractStockRowsFromText(BROCHURE, CONTEXT, { deadlineAt: Date.now() + 90_000 });
+/**
+ * A ceiling with room in it. REQUIRED — `ExtractionOptions.budget` is not
+ * optional, so a caller that forgets one is a type error rather than an
+ * unbudgeted call. The budget's own rules are exercised in
+ * `builderStockAiBudget.spec.ts`; here it only has to get out of the way.
+ */
+const openBudget = () => ({
+  reserve: async () => ({
+    ok: true as const, reservationId: 'res-test',
+    reservedMicros: 100_000, remainingMicros: 9_900_000,
+  }),
+  settle: async () => {},
+  release: async () => {},
+});
+
+const run = () => extractStockRowsFromText(
+  BROCHURE, CONTEXT, { deadlineAt: Date.now() + 90_000, budget: openBudget() });
 
 beforeEach(() => { callLLM.mockReset(); });
 
