@@ -32,6 +32,9 @@
  * Pure: no IO, no clock.
  */
 import { isPrimaryRole, readStoredRole } from './sourceImageRole.pure.ts';
+import {
+  DOCUMENT_IDENTITY_MISMATCH, isDocumentFinding, type DocumentFinding,
+} from './negativeProvenance.pure.ts';
 
 /** The ladder's last rung. Everything before it is work outstanding. */
 export const FAILED_WORK_STAGE = 'failed';
@@ -367,6 +370,53 @@ export interface StockDocumentNote {
   document: string;
   /** The recorded reason, verbatim. Never composed here. */
   detail: string;
+  /**
+   * The CLASS of the finding, where the reading earned one, and what the
+   * document said instead.
+   *
+   * Only `identity_mismatch` exists, and it is the one refusal a builder can
+   * correct in a minute: the brochure they linked is for a different
+   * property. It travels as a code rather than as prose because the screen
+   * has to treat it differently, and a screen that told it apart by matching
+   * substrings of `detail` would be a rule nobody can see and every rewording
+   * breaks.
+   *
+   * Absent on every other `inspected` refusal, which keeps exactly the
+   * wording it has today — a brochure with no photograph in it, a cover of
+   * plans and graphics, a page that states nothing identifying at all.
+   */
+  finding?: DocumentFinding;
+  /** What the document designates instead, e.g. `Lot 1307`. */
+  states?: string;
+  /** The page's own most identifying lines, verbatim. May be empty. */
+  quote?: string;
+}
+
+/**
+ * THE WORDS THE BUILDER SEES FOR A MISMATCH, IN ONE PLACE.
+ *
+ * Here rather than in the component for the reason every other builder-facing
+ * string in this module is here: the portal reads it, the specs read it, and
+ * two copies of a sentence is how two screens come to say different things
+ * about one finding. No pipeline vocabulary appears in any of them — no
+ * election, no provenance, no branch, no exhaustion, no result code. A
+ * builder is told what happened to their brochure and what to do about it.
+ */
+export const STOCK_DOCUMENT_MISMATCH_COPY = {
+  heading: 'Brochure details don\u2019t match this property',
+  body: 'The linked brochure was read successfully, but the page its property image '
+    + 'would come from identifies a different property. To prevent the wrong photo '
+    + 'from being displayed, the image was not added.',
+  listingLabel: 'This listing',
+  documentLabel: 'Brochure image page',
+  action: 'Check the brochure linked to this property, or add the correct property image.',
+} as const;
+
+/** Does this row carry a brochure that names somebody else's property? */
+export function hasDocumentIdentityMismatch(
+  notes: readonly StockDocumentNote[] | null | undefined,
+): boolean {
+  return (notes ?? []).some((note) => note.finding === DOCUMENT_IDENTITY_MISMATCH);
 }
 
 /** At most this many notes reach a row. A status line, not a log. */
@@ -383,13 +433,31 @@ export function stockDocumentNotes(
   for (const [key, value] of Object.entries(branches)) {
     if (notes.length >= Math.max(0, limit)) break;
     if (!value || typeof value !== 'object') continue;
-    const record = value as { result?: unknown; exhaustion?: unknown; detail?: unknown };
+    const record = value as {
+      result?: unknown; exhaustion?: unknown; detail?: unknown;
+      finding?: unknown; finding_evidence?: unknown;
+    };
     if (record.result !== 'no_deterministic_image') continue;
     // The one gate. `operational` is ours and never leaves this side.
     if (record.exhaustion !== 'inspected') continue;
     const detail = typeof record.detail === 'string' ? record.detail.trim() : '';
     if (!detail) continue;
-    notes.push({ document: documentLabel(key), detail });
+    const note: StockDocumentNote = { document: documentLabel(key), detail };
+    /*
+     * The class, and only where the record carries one AND names what the
+     * document said instead. Both, because the message this unlocks accuses
+     * a builder's file of being the wrong file and a claim with no evidence
+     * beside it is worse than the wording it replaces. A record written
+     * before this field existed carries neither and reads exactly as before.
+     */
+    const evidence = record.finding_evidence as Record<string, unknown> | undefined;
+    const states = typeof evidence?.states === 'string' ? evidence.states.trim() : '';
+    if (isDocumentFinding(record.finding) && states) {
+      note.finding = record.finding;
+      note.states = states;
+      note.quote = typeof evidence?.quote === 'string' ? evidence.quote.trim() : '';
+    }
+    notes.push(note);
   }
   return notes;
 }

@@ -42,7 +42,7 @@ import {
 import {
   describeManualStats,
   formatFileSize, primaryStockImage, stockFileAcceptAttribute, stockImageStageSummary,
-  stockItemLocality, stockItemPrice, stockItemTitle,
+  stockItemIdentity, stockItemLocality, stockItemPrice, stockItemTitle,
   MAX_STOCK_FILE_BYTES, STOCK_AVAILABILITY_CLASSES, STOCK_AVAILABILITY_LABELS,
   STOCK_IMAGE_STAGE_BADGES, STOCK_SELECTION_STATUS_LABELS, STOCK_UPLOAD_STATUS_CLASSES,
   STOCK_UPLOAD_STATUS_LABELS, STOCK_SOURCE_TYPE_LABELS, stockSourceLabel,
@@ -55,6 +55,8 @@ import {
 } from '../../../supabase/functions/_shared/builderStock/sourceDeletion.pure';
 import {
   countArrivingUploads, countWorkingImages, stockImageProgress, FAILED_WORK_STAGE,
+  hasDocumentIdentityMismatch,
+  STOCK_DOCUMENT_MISMATCH_COPY,
   STOCK_IMAGE_PROGRESS_BADGE, STOCK_IMAGE_PROGRESS_DETAIL, STOCK_IMAGE_PROGRESS_LABEL,
 } from '../../../supabase/functions/_shared/builderStock/imageProgress.pure';
 import {
@@ -257,6 +259,20 @@ export default function BuilderStockList() {
     workStage: item.image_work_stage,
   }) === 'none_found').length;
   const heldNeedingUs = Math.max(0, photosFailed - heldNeedingBuilder);
+  /*
+   * AND HOW MANY OF THOSE ARE THE WRONG FILE RATHER THAN A FILE WITH NO
+   * PHOTOGRAPH IN IT.
+   *
+   * The banner below said "the documents name no photograph of that
+   * property" over both, and for a brochure that is simply somebody else's
+   * brochure that sentence is wrong in the way that matters: it describes
+   * the document's CONTENTS when the problem is which document was linked.
+   * A builder reading it goes looking for a photograph that is already
+   * there. The count comes from the server's own classification, never from
+   * reading the sentence.
+   */
+  const heldMismatched = heldWithoutPhoto.filter(
+    (item) => hasDocumentIdentityMismatch(item.source_document_notes)).length;
   const uploads = uploadsQuery.data?.records ?? [];
   const selections = selectionsQuery.data?.records ?? [];
 
@@ -836,9 +852,21 @@ export default function BuilderStockList() {
                       : 'Their photos could not be read from the stock list and our team has been alerted. '
                   ) : null}
                   {heldNeedingBuilder > 0 ? (
-                    heldNeedingUs > 0
-                      ? `${heldNeedingBuilder === 1 ? 'The other was' : `The other ${heldNeedingBuilder} were`} read in full and the documents name no photograph of that property — those are yours to correct, and each one says what its documents contained. `
-                      : `${heldNeedingBuilder === 1 ? 'Its documents were' : 'Their documents were'} read in full and name no photograph of the property — each one below says what its documents contained. `
+                    heldMismatched > 0
+                      /*
+                        WHERE ONE OF THEM IS THE WRONG FILE, THE LINE SAYS SO.
+                        `heldMismatched` is the server's classification, so
+                        this cannot claim a mismatch the pipeline did not find
+                        — and where every held property is one, it says only
+                        that rather than adding a contents claim that is false
+                        of all of them.
+                      */
+                      ? (heldMismatched >= heldNeedingBuilder
+                        ? `${heldNeedingBuilder === 1 ? 'Its brochure was' : 'Their brochures were'} read in full and ${heldNeedingBuilder === 1 ? 'carries' : 'carry'} property details that do not match ${heldNeedingBuilder === 1 ? 'the listing' : 'their listings'} — each one below shows what its brochure says. `
+                        : `${heldNeedingBuilder} were read in full: ${heldMismatched === 1 ? 'one links a brochure whose' : `${heldMismatched} link brochures whose`} property details do not match ${heldMismatched === 1 ? 'its listing' : 'their listings'}, and the rest name no photograph of the property — each one below says what its documents contained. `)
+                      : heldNeedingUs > 0
+                        ? `${heldNeedingBuilder === 1 ? 'The other was' : `The other ${heldNeedingBuilder} were`} read in full and the documents name no photograph of that property — those are yours to correct, and each one says what its documents contained. `
+                        : `${heldNeedingBuilder === 1 ? 'Its documents were' : 'Their documents were'} read in full and name no photograph of the property — each one below says what its documents contained. `
                   ) : null}
                   {listIsLive
                     ? 'The rest of your list is already on the marketplace. '
@@ -1630,6 +1658,12 @@ function ImageSources({ item, showLabels = false }: { item: BuilderStockItem; sh
   // Recorded by the server when it read the document. Absent on a deployment
   // whose projection predates this, which reads exactly as it did before.
   const notes = showLabels ? (item.source_document_notes ?? []) : [];
+  /*
+   * The row's own lot and design, for the line a brochure's stated identity
+   * is set beside. Composed from the fields the row already carries — no new
+   * request, and nothing inferred about the document.
+   */
+  const listingIdentity = stockItemIdentity(item);
 
   return (
     <div className="builder-stock-list-images flex min-w-0 flex-col items-start gap-1.5">
@@ -1682,12 +1716,70 @@ function ImageSources({ item, showLabels = false }: { item: BuilderStockItem; sh
         reaches here.
       */}
       {!image && notes.length ? (
-        <ul className="w-full space-y-0.5 text-[11px] leading-snug text-muted-foreground">
+        <ul className="w-full space-y-1 text-[11px] leading-snug text-muted-foreground">
           {notes.map((note) => (
             <li key={`${note.document}-${note.detail}`} className="min-w-0">
-              <span className="font-medium text-foreground/80">{note.document}</span>
-              {': '}
-              {note.detail}
+              {note.finding === 'identity_mismatch' && note.states ? (
+                /*
+                  THE ONE FINDING A BUILDER CAN FIX IN A MINUTE, DRAWN AS
+                  SUCH.
+
+                  A brochure that is simply the wrong file read identically
+                  to a brochure with no photograph in it — one line of grey
+                  prose under a chip saying "No picture found" — and the two
+                  ask for opposite things. This one asks for a corrected
+                  link, so it is given a heading, the two identities side by
+                  side, and the step to take. It is drawn under the status
+                  chip and never in a tooltip: a reason nobody can see is a
+                  reason nobody acts on.
+
+                  The class comes from the server as a code. Nothing here
+                  reads the sentence to decide what to draw, and nothing here
+                  makes a second judgement about which property a document
+                  belongs to — see `statedOtherLotDesignation`.
+                */
+                <div className="rounded-md border border-warning/40 bg-warning/5 px-2 py-1.5">
+                  <p className="flex items-start gap-1 font-medium text-foreground">
+                    <AlertTriangle
+                      className="mt-px h-3 w-3 shrink-0 text-warning"
+                      aria-hidden
+                    />
+                    <span>{STOCK_DOCUMENT_MISMATCH_COPY.heading}</span>
+                  </p>
+                  <p className="mt-0.5">{STOCK_DOCUMENT_MISMATCH_COPY.body}</p>
+                  <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-0.5">
+                    {listingIdentity ? (
+                      <>
+                        <dt className="text-muted-foreground">
+                          {STOCK_DOCUMENT_MISMATCH_COPY.listingLabel}
+                        </dt>
+                        <dd className="min-w-0 font-medium text-foreground">
+                          {listingIdentity}
+                        </dd>
+                      </>
+                    ) : null}
+                    <dt className="text-muted-foreground">
+                      {STOCK_DOCUMENT_MISMATCH_COPY.documentLabel}
+                    </dt>
+                    <dd className="min-w-0 font-medium text-foreground">
+                      {note.states}
+                      {note.quote ? (
+                        <span className="font-normal text-muted-foreground">
+                          {` \u2014 \u201c${note.quote}\u201d`}
+                        </span>
+                      ) : null}
+                    </dd>
+                  </dl>
+                  <p className="mt-1">{STOCK_DOCUMENT_MISMATCH_COPY.action}</p>
+                  <p className="mt-1 text-muted-foreground/80">{note.document}</p>
+                </div>
+              ) : (
+                <>
+                  <span className="font-medium text-foreground/80">{note.document}</span>
+                  {': '}
+                  {note.detail}
+                </>
+              )}
             </li>
           ))}
         </ul>

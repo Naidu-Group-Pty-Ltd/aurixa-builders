@@ -32,6 +32,7 @@ import {
   isElectionRefusalReason,
 } from './pdfElectionBoundary.pure.ts';
 import type { PackageOutcome } from './packageImages.ts';
+import { isDocumentFinding } from './negativeProvenance.pure.ts';
 import { TELEMETRY_PREFIX, pdfTelemetry } from './importTelemetry.pure.ts';
 
 /** Env read the way the rest of Builder Stock reads it. */
@@ -300,6 +301,28 @@ async function electViaWorker(
       : 'That document could not be read.';
     if (body.status === 'unreachable' && isElectionRefusalReason(body.reason)) {
       return { status: 'unreachable', detail, reason: body.reason };
+    }
+    /*
+     * AND THE FINDING, ON THE SAME TERMS. Recognised or dropped: a worker
+     * running ahead of this build cannot introduce a class this build has
+     * never heard of, and a garbled body simply carries none — which is the
+     * normal case and reads exactly as it did before this existed. The
+     * evidence is shaped here rather than trusted, because it is rendered.
+     */
+    if (body.status === 'not_identified' && isDocumentFinding(body.finding)) {
+      const evidence = body.findingEvidence as Record<string, unknown> | undefined;
+      const states = typeof evidence?.states === 'string' ? evidence.states.trim() : '';
+      if (states) {
+        return {
+          status: 'not_identified',
+          detail,
+          finding: body.finding,
+          findingEvidence: {
+            states,
+            quote: typeof evidence?.quote === 'string' ? evidence.quote.trim() : '',
+          },
+        };
+      }
     }
     return { status: body.status, detail };
   }

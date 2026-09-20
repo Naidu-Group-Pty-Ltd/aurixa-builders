@@ -36,6 +36,55 @@ import { RUNTIME_VERSION } from './runtimeVersion.pure.ts';
 
 export type EvidenceExhaustion = 'inspected' | 'operational';
 
+/**
+ * WHAT KIND OF `inspected` FINDING THIS IS, when the reading earned a name.
+ *
+ * `detail` has always carried the sentence and a sentence is not a
+ * classification: a screen that wanted to treat "this brochure is for another
+ * property" differently from "this brochure carries no photograph" could only
+ * match substrings of prose, which is a rule nobody can see and every
+ * rewording breaks. So the one class a reader acts on differently gets a code.
+ *
+ * `identity_mismatch` — the document was read to the end and the page its
+ * image would come from designates a DIFFERENT property. That is a data error
+ * in the builder's own sheet and the only refusal in this vocabulary they can
+ * fix in a minute.
+ *
+ * ITS ABSENCE IS THE NORMAL CASE, and every other `inspected` refusal keeps
+ * exactly the wording it has today: a document with no photograph in it, a
+ * cover of plans and graphics, a page that states nothing identifying at all.
+ * Optional rather than a widened `exhaustion`, for the reason
+ * `PackageOutcome.reason` is optional: `exhaustion` is read by
+ * `suppliedEvidence.pure.ts` to decide whether a fallback may run, and a new
+ * value there would change a decision. This field is read by nothing that
+ * decides anything.
+ */
+export const DOCUMENT_IDENTITY_MISMATCH = 'identity_mismatch' as const;
+export type DocumentFinding = typeof DOCUMENT_IDENTITY_MISMATCH;
+
+export function isDocumentFinding(value: unknown): value is DocumentFinding {
+  return value === DOCUMENT_IDENTITY_MISMATCH;
+}
+
+/**
+ * What the document said about itself, for the sentence the reader is shown.
+ *
+ * `states` is the property identity the document designates INSTEAD of this
+ * one — the lot, which is the one token that discriminates between an
+ * estate's otherwise identical documents. `quote` is the page's own most
+ * identifying lines, verbatim, so the builder recognises the file.
+ *
+ * NO DESIGN IS PARSED OUT OF THE DOCUMENT. Naming the product a brochure is
+ * for would be a second identity judgement made with less evidence than the
+ * one that just declined, and this module's whole safety rule is that it
+ * judges nothing. The design the document names travels inside `quote`, in
+ * the document's own words.
+ */
+export interface DocumentFindingEvidence {
+  states: string;
+  quote: string;
+}
+
 export interface NegativeProvenanceResult {
   result: typeof NO_DETERMINISTIC_IMAGE;
   /** The extractor version that reached this answer. */
@@ -58,6 +107,13 @@ export interface NegativeProvenanceResult {
    * carry no value and are inert for the same reason.
    */
   runtime_version?: number;
+  /**
+   * The class of this finding, where the reading earned one, and the
+   * evidence the reader is shown with it. Present only on `inspected`
+   * answers; absent everywhere else, which is the normal case.
+   */
+  finding?: DocumentFinding;
+  finding_evidence?: DocumentFindingEvidence;
   checked_at: string;
 }
 
@@ -84,8 +140,15 @@ export function recordNoDeterministicImage(
   detail: string,
   exhaustion: EvidenceExhaustion,
   now: () => Date = () => new Date(),
+  /*
+   * LAST, AND OPTIONAL, so every existing writer is untouched and none of
+   * them can acquire a finding by accident. Refused outright on an
+   * `operational` answer: a finding is knowledge about the builder's
+   * document, and an answer about OUR failure has none to give.
+   */
+  finding?: { finding: DocumentFinding; evidence: DocumentFindingEvidence } | null,
 ): NegativeProvenanceResult {
-  return {
+  const record: NegativeProvenanceResult = {
     result: NO_DETERMINISTIC_IMAGE,
     provenance_version: question.provenanceVersion,
     package_reference: question.packageReference,
@@ -95,6 +158,14 @@ export function recordNoDeterministicImage(
     exhaustion,
     checked_at: now().toISOString(),
   };
+  if (exhaustion === 'inspected' && finding && isDocumentFinding(finding.finding)) {
+    record.finding = finding.finding;
+    record.finding_evidence = {
+      states: String(finding.evidence?.states ?? '').slice(0, 60),
+      quote: String(finding.evidence?.quote ?? '').slice(0, 200),
+    };
+  }
+  return record;
 }
 
 /**

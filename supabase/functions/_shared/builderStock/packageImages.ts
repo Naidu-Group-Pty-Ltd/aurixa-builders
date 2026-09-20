@@ -40,6 +40,9 @@ import { readPdfPageTextResult } from './pdfText.ts';
 import { MAX_SOURCE_IMAGE_BYTES, sniffImageContentType } from './sourceAssets.pure.ts';
 import { PRIMARY_ROLE, type SourceImageRoleAssignment } from './sourceImageRole.pure.ts';
 import { type ElectionRefusalReason } from './pdfElectionBoundary.pure.ts';
+import {
+  type DocumentFinding, type DocumentFindingEvidence,
+} from './negativeProvenance.pure.ts';
 
 /** Folder listings one repair run may read. Shared and cached across rows. */
 const MAX_LISTINGS_PER_RUN = 40;
@@ -143,8 +146,23 @@ export type PackageOutcome =
   | { status: 'recovered'; image: RecoveredPackageImage }
   /** A photograph filed under this property, used as the file stands. */
   | { status: 'recovered_photograph'; photograph: RecoveredPackagePhotograph }
-  /** The link was read and stated nothing that identifies this property. */
-  | { status: 'not_identified'; detail: string }
+  /**
+   * The link was read and stated nothing that identifies this property.
+   *
+   * `finding` is present only where the reading earned a CLASS — today
+   * exactly one, `identity_mismatch`, meaning the document designates a
+   * different property — and it exists so a screen can tell that apart from
+   * a brochure with no photograph in it without matching substrings of
+   * prose. Its absence is the normal case and leaves every other refusal
+   * reading exactly as it does today. Nothing that decides anything reads
+   * it; see `negativeProvenance.pure.ts`.
+   */
+  | {
+    status: 'not_identified';
+    detail: string;
+    finding?: DocumentFinding;
+    findingEvidence?: DocumentFindingEvidence;
+  }
   /**
    * The link could not be read at all without credentials.
    *
