@@ -28,6 +28,7 @@ import {
 
 /** The row as it stood, from production. */
 const LOT_48_BEFORE = {
+  external_reference: null,
   lot_number: '48',
   unit_number: '115.30m 12.41sq',
   development_name: null,
@@ -40,6 +41,7 @@ const LOT_48_BEFORE = {
 
 /** The same page, read by the corrected reader. */
 const LOT_48_AFTER = {
+  external_reference: null,
   lot_number: '48',
   unit_number: null,
   development_name: null,
