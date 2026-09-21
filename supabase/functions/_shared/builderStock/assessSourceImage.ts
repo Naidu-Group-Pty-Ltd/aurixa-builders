@@ -80,6 +80,13 @@ function oversizedForInlineDecode(bytes: Uint8Array): boolean {
  */
 export async function assessMarketplaceEligibility(
   bytes: Uint8Array,
+  /**
+   * The role the SOURCE DOCUMENT gave this picture, where the caller holds
+   * it. Spent on exactly one question — see `decideMarketplaceEligibility`'s
+   * `coverDesignated` — and never on the strict pass, which is untouched by
+   * what anything says a picture is.
+   */
+  storedRole?: unknown,
 ): Promise<MarketplaceEligibility> {
   try {
     const result = await decodeThumbnailResult(bytes);
@@ -87,7 +94,9 @@ export async function assessMarketplaceEligibility(
       return unmeasured(
         result.reason === 'unsupported' ? 'decoder_unsupported' : 'decoder_failed');
     }
-    return decideMarketplaceEligibility(readMarketingOverlay(result.thumbnail));
+    return decideMarketplaceEligibility(
+      readMarketingOverlay(result.thumbnail),
+      storedRole === undefined ? false : isPrimaryRole(storedRole));
   } catch {
     return unmeasured('decoder_failed');
   }
@@ -118,7 +127,7 @@ export async function eligibilityDetailFor(
   // The verdict names the bytes it judged, so a later re-store of different
   // bytes cannot inherit it — see `marketplaceEligibilityDetail`.
   return marketplaceEligibilityDetail(
-    await assessMarketplaceEligibility(bytes), await sha256Hex(bytes));
+    await assessMarketplaceEligibility(bytes, role), await sha256Hex(bytes));
 }
 
 /**

@@ -47,6 +47,7 @@
 import { STOCK_IMAGE_BUCKET } from './fileTypes.pure.ts';
 import { sha256Hex } from './rasterPng.ts';
 import { assessMarketplaceEligibility } from './assessSourceImage.ts';
+import { readStoredRole } from './sourceImageRole.pure.ts';
 import {
   marketplaceEligibilityDetail, needsEligibilityAssessment,
   sweepWillJudge,
@@ -205,7 +206,14 @@ export async function settleMarketplaceEligibility(
         continue;
       }
 
-      const eligibility = await assessMarketplaceEligibility(bytes);
+      /*
+       * THE ROW'S OWN ROLE TRAVELS WITH THE BYTES. It is the one thing that
+       * can settle a faint-only uncertainty, and reading it here rather than
+       * re-deriving it keeps the sweep and the import on one answer. See
+       * `decideMarketplaceEligibility`.
+       */
+      const eligibility = await assessMarketplaceEligibility(
+        bytes, readStoredRole(row.source_detail as Record<string, unknown> | null));
 
       const { error: writeError } = await db.from('builder_stock_item_images')
         .update({

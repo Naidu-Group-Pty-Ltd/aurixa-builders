@@ -88,7 +88,7 @@ import {
  * migrations and fails when they disagree — a bump that ships only this half
  * changes new imports and silently leaves every stored image on the old rules.
  */
-export const MARKETPLACE_ELIGIBILITY_VERSION = 2;
+export const MARKETPLACE_ELIGIBILITY_VERSION = 3;
 
 /** The three answers. `pending` is the one that keeps this failing closed. */
 export type MarketplaceEligibilityState = 'eligible' | 'ineligible' | 'pending';
@@ -130,6 +130,12 @@ export interface MarketplaceEligibility {
   /** False when the container could not be decoded at all. */
   measured: boolean;
   overlay: MarketplaceOverlaySummary | null;
+  /**
+   * Set where the verdict was not the measurement's own. Today that is one
+   * case: a faint-only uncertainty the source document's cover designation
+   * settled. Recorded so a served picture can always say what cleared it.
+   */
+  resolvedBy?: 'cover_designation';
 }
 
 /** The eligibility of an image nothing could read. NOT displayable. */
@@ -160,6 +166,16 @@ export function decideMarketplaceEligibility(
       faintTextLineCount?: number;
     }
     | null,
+  /**
+   * WHAT THE SOURCE DOCUMENT SAID THIS PICTURE IS.
+   *
+   * True only where the document's own words designated this image as the
+   * property's package cover — `roleFromPropertyCover` / `roleFromDesignCover`
+   * at a stated evidence level, which means a page carrying this property's
+   * identity AND its package information presented this picture with them.
+   * See `sourceImageRole.pure.ts`.
+   */
+  coverDesignated = false,
 ): MarketplaceEligibility {
   if (!overlay) return unmeasured('decoder_failed');
   const summary: MarketplaceOverlaySummary = {
@@ -189,6 +205,58 @@ export function decideMarketplaceEligibility(
    * not the decode, and the two are different facts.
    */
   if (overlay.uncertain) {
+    /*
+     * ======================================================================
+     * AND `pending` HAD NO WAY OUT, WHICH MAKES IT AN OUTAGE RATHER THAN A
+     * CONTROL.
+     * ======================================================================
+     *
+     * `uncertain` hides the picture and hands the question to the overlay
+     * repair. The repair acts on REGIONS the strict pass located — and this
+     * state is reached only when the strict pass located none, so there is
+     * nothing for it to remove and nothing to re-decide. Measured on
+     * `LOT 48 - EMBER - FLYER.pdf`, 21 September 2026: the repair logged
+     * `repaired 0, cleared 0, refused 0` and the property settled with its
+     * own designated photograph hidden, for ever, and its upload unpublished.
+     *
+     * THE CORPUS, BECAUSE THIS IS A SAFETY GATE AND ONE SAMPLE IS NOT A
+     * DISTRIBUTION. Of 900 measured images on this deployment: 666 eligible,
+     * 230 convicted `annotated_marketing_tile`, and 4 rows carrying just TWO
+     * distinct pictures `uncertain`. So the faint pass is well calibrated
+     * rather than trigger-happy — 666 clean photographs produced no faint
+     * line at all — and what is wrong is not its sensitivity but that its
+     * answer is terminal.
+     *
+     * WHAT BREAKS THE TIE, AND WHY IT IS NOT A WEAKENING. The strict pass is
+     * untouched: anything it convicts is `annotated` above and never reaches
+     * here. This admits a picture only where that pass measured ZERO on every
+     * signal it has — no flat colour region, no confident text line, no
+     * share of the frame at all — and the single thing against it is one
+     * faint line. Against that silence stands the document's own statement:
+     * a page carrying this property's lot, its price and its size presented
+     * THIS picture with them. A promotional tile is not what a builder's
+     * brochure presents as its package cover, and a designation made from
+     * the document's words is better evidence than a pass that has just
+     * reported it cannot tell.
+     *
+     * NO INVENTED THRESHOLD. A ceiling on `faintTextHeightShare` fitted to
+     * two observations is the fixture-shorter-than-the-product mistake this
+     * repository has paid for; the bound is the SHAPE — one faint line,
+     * total silence from the strict pass — and a banner prominent enough to
+     * matter is prominent enough for the strict pass, which is what
+     * `annotated` is for.
+     */
+    const strictSilence = summary.regionCount === 0
+      && summary.textLineCount === 0
+      && summary.largestShare === 0
+      && summary.totalShare === 0
+      && summary.textHeightShare === 0;
+    if (coverDesignated && strictSilence && summary.faintTextLineCount === 1) {
+      return {
+        state: 'eligible', reason: null, measured: true, overlay: summary,
+        resolvedBy: 'cover_designation',
+      };
+    }
     return { state: 'pending', reason: 'overlay_uncertain', measured: true, overlay: summary };
   }
   return { state: 'eligible', reason: null, measured: true, overlay: summary };
@@ -201,6 +269,8 @@ export interface MarketplaceEligibilityDetail {
   marketplace_rejection_reason: MarketplaceRejection | null;
   marketplace_measured: boolean;
   marketplace_measured_sha256: string | null;
+  /** See `MarketplaceEligibility.resolvedBy`. */
+  marketplace_resolved_by: 'cover_designation' | null;
   marketplace_overlay: {
     largest_share: number;
     total_share: number;
@@ -244,6 +314,7 @@ export function marketplaceEligibilityDetail(
     marketplace_rejection_reason: eligibility.reason,
     marketplace_measured: eligibility.measured,
     marketplace_measured_sha256: measuredSha256 ?? null,
+    marketplace_resolved_by: eligibility.resolvedBy ?? null,
     marketplace_overlay: eligibility.overlay
       ? {
         largest_share: eligibility.overlay.largestShare,
