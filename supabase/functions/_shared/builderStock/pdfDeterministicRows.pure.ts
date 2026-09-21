@@ -676,6 +676,17 @@ function readVerticalPair(
   if (fieldForHeader(value)) return null;
   // Nor is a line that is itself asking for a value.
   if (/[:–—]$/.test(value.trim())) return null;
+  /*
+   * AND A LINE THAT IS ITSELF A `Label: value` STATEMENT BELONGS TO ITS OWN
+   * LABEL, NOT TO THIS ONE.
+   *
+   * A siting plan leaves boxes empty — `Estate:` with nothing after it —
+   * and the next line is the next field. Pairing downwards swallowed it
+   * whole: `development_name: "Home Design: Aspire 24 Grande"`, a design
+   * written into the estate and the design itself then lost. Two labels
+   * cannot share one value.
+   */
+  if (statesItsOwnLabel(value)) return null;
 
   const unit = areaUnitOf(value);
   const resolved = (unit ? fieldForHeader(`${label} ${unit}`) : null) ?? bare;
@@ -892,6 +903,16 @@ function readInlineFieldName(line: string): Claim | null {
    * must decline them.
    */
   if (/[:–—]$/.test(trimmed)) return null;
+  /*
+   * AND A LINE THAT RESOLVES WHOLLY THROUGH THE ALIAS TABLE IS A LABEL.
+   *
+   * `BUILD AREA` is a heading. Read as a NAME ending in a field word it
+   * becomes `area`, which this vocabulary knows as a locality — so a
+   * two-column measurement block claimed `suburb: "BUILD AREA"` and the
+   * build area itself was never read. The prefix test alone cannot see it,
+   * because `BUILD` resolves to nothing on its own.
+   */
+  if (fieldForHeader(trimmed)) return null;
   const reach = Math.min(MAX_LABEL_WORDS, tokens.length - 1);
   for (let length = reach; length >= 1; length--) {
     const field = fieldForHeader(tokens.slice(tokens.length - length).join(' '));
@@ -936,6 +957,25 @@ function readInlineFieldName(line: string): Claim | null {
  * other bracket is left where the document put it.
  */
 const TRAILING_POSTCODE = /^(.*\S)\s*\((\d{4})\)$/;
+
+/**
+ * `Site Address: Lot 208 Fairweather Drive` — the address AND the lot.
+ *
+ * A siting plan states the property once, as an address that OPENS with the
+ * lot designation. The address is what a person reads; the lot number is
+ * what a stock row matches on, and leaving it null because it was written
+ * inside another field loses the one identifier a builder searches by.
+ *
+ * It is the reading `readLotHeading` already makes of a line, applied to a
+ * value: the word, a designation, and an address-shaped tail. Nothing is
+ * chosen — if the document states a DIFFERENT lot elsewhere the two meet at
+ * the conflict rule and refuse, exactly as two lots should.
+ */
+function splitAddress(claim: Claim): Claim[] {
+  if (claim.field !== 'address_line') return [claim];
+  const lot = readLotHeading(claim.value);
+  return lot ? [claim, lot] : [claim];
+}
 
 function splitLocality(claim: Claim): Claim[] {
   if (claim.field !== 'suburb') return [claim];
@@ -990,6 +1030,17 @@ function readNamedPlace(line: string): Claim[] | null {
  * the value must be a name, must not be a measurement and must not carry
  * money or an area unit.
  */
+/**
+ * Is this line already a statement of its own?
+ *
+ * `Home Design: Aspire 24 Grande` answers to `Home Design`, never to
+ * whatever label happens to sit above it.
+ */
+function statesItsOwnLabel(value: string): boolean {
+  const own = readLabelledValue(value);
+  return Boolean(own && own.value);
+}
+
 function readCaptionedValue(
   value: string,
   label: string | undefined,
@@ -1001,6 +1052,8 @@ function readCaptionedValue(
   const trimmed = String(value ?? '').trim();
   // A heading is a layout, never a value — the same rule the pair reader has.
   if (fieldForHeader(trimmed)) return null;
+  // Nor is a line that already answers to a label of its own.
+  if (statesItsOwnLabel(trimmed)) return null;
   /*
    * AND A LINE ENDING IN A COLON IS ASKING FOR A VALUE, NOT BEING ONE. The
    * production brochure's last page draws `Date:` above a field word, and
@@ -1423,6 +1476,53 @@ export function corroborateDesignFromFilename(input: {
 }
 
 /**
+ * `NORTHBROOK RISE, CLYDE NORTH` — WHERE THE DOCUMENT PROVES THE TAIL.
+ *
+ * A great many estates are named without the word: `Northbrook Rise`,
+ * `Society 1056`, `The Grove`. `readInlineFieldName` cannot touch those, so
+ * the estate is simply absent — which is honest, and which loses a field
+ * the page prints in full.
+ *
+ * What resolves it is the document's own corroboration rather than a guess
+ * about word order. Where a line is exactly `<name>, <place>` and the
+ * document states that same place AS ITS LOCALITY somewhere else — a siting
+ * plan's `Locality:` box, a suburb read from any labelled field — then the
+ * tail is confirmed to be the suburb, and the head is the thing the suburb
+ * qualifies. Nothing here decides what a comma means; the suburb had to be
+ * read from a label first.
+ *
+ * FOUR GUARDS. Exactly two segments; a suburb already claimed from a
+ * LABELLED statement; the tail matching it; and the development not already
+ * claimed, so a document that names its estate properly always wins.
+ */
+function corroborateDevelopmentFromPlace(
+  unresolved: readonly string[],
+  claimed: ReadonlyMap<string, string>,
+): Claim | null {
+  if (claimed.has('development_name') || claimed.has('project_name')) return null;
+  const suburb = claimed.get('suburb');
+  if (!suburb) return null;
+  const locality = flattenIdentity(suburb);
+  if (!locality) return null;
+
+  const found = new Set<string>();
+  for (const line of unresolved) {
+    const segments = line.split(',').map((part) => part.trim()).filter(Boolean);
+    if (segments.length !== 2) continue;
+    if (flattenIdentity(segments[1]) !== locality) continue;
+    const name = segments[0];
+    if (!readsAsAName(name)) continue;
+    if (fieldForHeader(name)) continue;
+    if (HAS_DIGIT.test(name) && LOT_DESIGNATION.test(name)) continue;
+    found.add(name);
+  }
+  // Two different names before the same suburb is the document declining.
+  return found.size === 1
+    ? { field: 'development_name', value: [...found][0] }
+    : null;
+}
+
+/**
  * Read a brochure that STATES its property.
  *
  * Runs on `pageTexts` — the strings `readPdfPageTexts` already produced for
@@ -1733,7 +1833,7 @@ export function readPdfBrochure(
         continue;
       }
 
-      for (const claim of found.flatMap(splitLocality)) {
+      for (const claim of found.flatMap(splitAddress).flatMap(splitLocality)) {
         if (!BROCHURE_CLAIMABLE_FIELDS.has(claim.field)) continue;
         if (COUNT_FIELDS.has(claim.field) && !statesACount(claim.value)) {
           /*
@@ -1777,7 +1877,7 @@ export function readPdfBrochure(
            * reading — whichever came first is an accident of page order, and
            * keeping it would be choosing.
            */
-          if (DISPUTE_REFUSES_DOCUMENT.has(claim.field)) {
+          if (MATERIAL_FIELDS.has(claim.field)) {
             diagnostics.conflictField = claim.field;
             diagnostics.fieldsRead = [...claimed.keys()].sort();
             return refuse('ambiguous', `conflicting_values:${claim.field}`, diagnostics);
@@ -1842,9 +1942,20 @@ export function readPdfBrochure(
     return refuse('ambiguous', 'filename_lot_disagrees_with_document', diagnostics);
   }
   if (corroborated) claimed.set('house_design', corroborated.claim.value);
-  const placed = corroborated
+  const afterFilename = corroborated
     ? repeats.filter((line) => line.trim() !== corroborated.line)
     : repeats;
+
+  /*
+   * THE ESTATE THE DOCUMENT NAMES WITHOUT THE WORD, confirmed by the
+   * locality it states under a label of its own.
+   */
+  const place = corroborateDevelopmentFromPlace(afterFilename, claimed);
+  if (place) claimed.set('development_name', place.value);
+  const placed = place
+    ? afterFilename.filter((line) =>
+      flattenIdentity(line.split(',')[0] ?? '') !== flattenIdentity(place.value))
+    : afterFilename;
 
   /*
    * =====================================================================
@@ -2438,44 +2549,37 @@ export function mayHoldSchedule(pageTexts: readonly string[]): boolean {
 }
 
 /**
- * The fields where two different statements refuse the WHOLE document.
+ * ===========================================================================
+ * THE MATERIAL FIELDS — the one test the whole reader answers to.
+ * ===========================================================================
  *
- * These are the ones that say which property this is and what it costs. Two
- * lots, two designs, two estates, two addresses or two prices mean the
- * document is describing more than one thing, or describing one thing
- * wrongly, and no rule here can pick. Everything else — a land size, a
- * build size, a room count — is a description OF the property, and a
- * document that disagrees with itself about one of those still says
- * perfectly clearly which property it is. That field is dropped and the
- * rest stands.
+ * Every refusal in this module was walked and asked one question: CAN THIS
+ * EVIDENCE MEAN WE HAVE THE WRONG PROPERTY OR THE WRONG DEAL? Where the
+ * answer is no, it does not stand the document down, because a brochure is
+ * a floor plan, an inclusions list, a disclaimer and five pages of
+ * specification copy as well as a property, and a reader that must account
+ * for all of it can never finish one.
+ *
+ * These are the fields where the answer is YES. They say WHICH property
+ * this is and WHAT IS BEING SOLD FOR HOW MUCH. Two of any of them, or one
+ * of them stated in terms this reader could not take, is a document that
+ * may be describing a different property or a different deal, and no rule
+ * here can pick between them.
+ *
+ * EVERYTHING ELSE DESCRIBES THE PROPERTY RATHER THAN IDENTIFYING IT. A land
+ * size, a build size, a room count, a completion date: a document that
+ * disagrees with itself about one of those, or states one this reader could
+ * not read, still says perfectly clearly which property it is and what it
+ * costs. That field is dropped or left absent and the rest stands.
+ *
+ * ONE SET, USED TWICE — by the conflict rule and by the unread-line rule —
+ * because two lists is how the two come to disagree about what matters.
+ * `land_size_sqm` and `building_size_sqm` were in the second list and not
+ * the first, which is exactly the inconsistency this replaces.
  */
-const DISPUTE_REFUSES_DOCUMENT: ReadonlySet<string> = new Set([
+const MATERIAL_FIELDS: ReadonlySet<string> = new Set([
   'external_reference', 'address_line', 'lot_number', 'unit_number',
   'development_name', 'project_name', 'house_design', 'price',
-]);
-
-/**
- * The fields an unresolved line may NOT leave unread.
- *
- * `complete` does not mean every line of a seven-page brochure became a
- * column. It means the reader established a coherent property and nothing it
- * failed to read could make that the WRONG property or contradict the
- * commercial record it did read. So these are the fields where an unread
- * statement would do exactly that — which property this is, and what is
- * being sold for how much.
- *
- * The counts are deliberately absent. On the production brochure they are
- * three bare digits beside bed, bath and car ICONS, and the icons are images:
- * the text layer states `3 2 1` and nothing that says which is which.
- * Assigning them by the usual order would be inference, and a property is
- * still Lot 315 / Enzo 8.5 / Palomino Estate at $716,675 without them — so
- * they are reported as unresolved and optional, and they never stand a
- * document down.
- */
-const BLOCKING_FIELDS: ReadonlySet<string> = new Set([
-  'external_reference', 'address_line', 'lot_number', 'unit_number',
-  'development_name', 'project_name', 'house_design',
-  'price', 'land_size_sqm', 'building_size_sqm',
 ]);
 
 /**
@@ -2536,7 +2640,19 @@ function blockingFieldNamed(line: string): string | null {
      */
     const after = tokens[length];
     if (after !== undefined && fieldForHeader(after)) return null;
-    return BLOCKING_FIELDS.has(field) ? field : null;
+    /*
+     * A STATEMENT PUTS ITS VALUE NEXT TO ITS LABEL.
+     *
+     * `Land Size 350 m2` states a size. `Prices from $700,000` does not
+     * state the price of anything — it is marketing copy that happens to
+     * open with a word this vocabulary knows, and every brochure carries
+     * lines like it. The difference is whether the very next token is the
+     * VALUE, and that is a property of how a statement is written rather
+     * than of any builder's wording.
+     */
+    if (after === undefined) return null;
+    if (!VALUE_TOKEN.test(after)) return null;
+    return MATERIAL_FIELDS.has(field) ? field : null;
   }
   return null;
 }
