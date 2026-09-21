@@ -131,187 +131,66 @@ describe('the values never reach a log', () => {
   });
 });
 
-describe('the importer falls back rather than failing', () => {
+/*
+ * ===========================================================================
+ * AND THE FALLBACK BECAME THE PATH.
+ * ===========================================================================
+ *
+ * This block used to pin the provisional reading as a RESCUE: taken inside
+ * the catch, after the assisted reader had been called and had failed. That
+ * was the right repair for `LOT 817` and it left the defect standing, because
+ * an ordinary brochure still had to reach a vendor and be refused before its
+ * own evidence was allowed to count.
+ *
+ * `Lot 37 - Miami 190 - Property Package.pdf`, 21 September 2026, is what
+ * that cost: 7 pages, 3,962 characters of clean text, import FAILED with zero
+ * properties because `openrouter/openai/gpt-5.6-luna` answered 402.
+ *
+ * The reading is now taken BEFORE a model is considered at all, and the
+ * assisted reader is off unless a deployment switches it on by name. So these
+ * assertions move to the new site. Every guarantee they made is still made,
+ * and two are stronger: nothing is asked of any vendor on the ordinary path,
+ * and a document that supports no record is reported as such rather than as
+ * an AI-account problem.
+ */
+describe('the deterministic reading is the import', () => {
   const run = read(RUN);
   const block = run.slice(
-    run.indexOf('AND THE READING WE ALREADY HAVE IS BETTER THAN NOTHING AT ALL'),
-    run.indexOf('const { error: stampError }'));
+    run.indexOf('WHAT THE DOCUMENT STATES IS THE IMPORT'),
+    run.indexOf('AND THE ASSISTED READER, WHICH IS OPTIONAL'));
 
-  it('uses the provisional reading when the assisted reader could not run', () => {
+  it('uses the provisional reading without consulting any model', () => {
     expect(block).toContain('extraction.deterministicProvisional');
-    expect(block).toMatch(/rows = provisional;/);
+    expect(block).toMatch(/rows = standing;/);
+    // Nothing in this block reaches a model, a budget or a deadline.
+    expect(block).not.toMatch(/extractStockRowsFrom|createAiBudget|MODEL_BUDGET_MS/);
   });
 
   /*
-   * EVERY code that reaches this catch is a fact about US — the union says so
-   * itself: an unconfigured credential, an outage, a timeout, a spent
-   * allowance, an account out of credit, an unusable answer. None of them is
-   * a statement about the builder's document, which this reader had read.
+   * It is keyed on HAVING a reading, never on which of our failures happened
+   * — and now not on a failure at all, because none has occurred yet.
    */
-  it('does not discriminate between our failures, because none is the document', () => {
-    const codes = read('supabase/functions/_shared/builderStock/modelExtractionFailure.pure.ts');
-    for (const code of ['model_unavailable', 'model_timeout', 'model_refused',
-      'model_budget_exhausted', 'model_invalid_response', 'model_missing_tool_call']) {
-      expect(codes).toContain(code);
-    }
-    // The fallback is keyed on having a reading, never on which of ours failed.
-    expect(block).not.toMatch(/failure\.code ===/);
+  it('is keyed on having a reading, not on a model outcome', () => {
+    expect(block).not.toMatch(/failure\.code|disposition\.consulted/);
   });
 
   it('records the reading as partial, so it cannot pass for a full one', () => {
     expect(block).toContain("strategy = 'pdf_deterministic_partial'");
   });
 
-  it('still fails honestly when there is nothing to fall back on', () => {
-    // A document the reader could not identify a property in has no record to
-    // stand on, and inventing one is the failure this whole module refuses.
-    expect(block).toMatch(/\} else \{\s*\n\s*return \{\s*\n\s*ok: false,/);
+  it('says in the log that the deterministic reading stood', () => {
+    expect(block).toContain("phase: 'deterministic_partial'");
   });
-
-  it('says in the log that the partial reading stood', () => {
-    expect(block).toContain("phase: 'deterministic_fallback'");
-  });
-});
-
-describe('the messages do not promise what the product does not do', () => {
-  const failure = read(FAILURE);
-
-  it('claims no alert, because nothing alerts', () => {
-    /*
-     * Three messages said "Our team has been alerted" and one carried a
-     * comment asserting that was true. Nothing in this repository alerts on
-     * these: the only trace is a `console.error` in the edge log and
-     * `error_detail` on the row, which nothing watches and `get_upload`
-     * projects away. A promise the product does not keep is worse than no
-     * promise — it tells a builder to stop looking.
-     */
-    expect(failure).not.toContain('Our team has been alerted');
-  });
-
-  it('names the account on a refusal, rather than describing a broken feature', () => {
-    // "not currently able to run for this workspace" describes a fault in the
-    // product. A 402 is an unpaid account, and the two send an operator to
-    // different places.
-    const refused = failure.slice(failure.indexOf("case 'model_refused':"),
-      failure.indexOf("case 'model_budget_exhausted':"));
-    expect(refused).toMatch(/credentials or credit/);
-  });
-});
-
-describe('a vocabulary gap can be closed without the document', () => {
-  const reader = read(READER);
-  const run = read(RUN);
-  const extract = read(EXTRACT);
-  const fn = read('supabase/functions/builder-portal-stock/index.ts');
 
   /*
-   * MEASURED ACROSS 21 SEPTEMBER 2026: nine of twelve brochures imported with
-   * NO model call at all. Every one that did not was a template this reader
-   * had not yet learned — `LOT 717 - ENZO 10.5 MODERN - BROCHURE V002.pdf`
-   * failed at 03:09 and 03:24 and imported at 04:07 from the SAME 8,425,036
-   * bytes, once the vocabulary widened. So the pathway is not
-   * model-dependent by design; it is model-dependent exactly where the
-   * vocabulary has a hole, and the only thing needed to close one is knowing
-   * WHICH line. `diagnostics.unaccountedLines` is a count and cannot be
-   * acted on.
+   * A document the reader could not identify a property in has no record to
+   * stand on, and inventing one is the failure this module refuses. What
+   * changed is WHICH outcome it earns: `no_properties_found` — we read it and
+   * found no property — rather than a sentence about an unpaid AI account.
    */
-  it('carries the unaccounted lines out with the refusal', () => {
-    expect(reader).toMatch(/unaccounted: string\[\];/);
-    expect(reader).toMatch(/provisionalFrom\(claimed\), stillUnresolved, ignoredText, placedAt\)/);
-  });
-
-  it('bounds them, because a column is not a place to copy a document', () => {
-    expect(reader).toContain('MAX_UNACCOUNTED_REPORTED');
-    expect(reader).toContain('MAX_UNACCOUNTED_LINE_CHARS');
-    expect(reader).toMatch(/unaccounted\.slice\(0, MAX_UNACCOUNTED_REPORTED\)/);
-  });
-
-  it('keeps them out of the safe-to-log diagnostics', () => {
-    /*
-     * `diagnostics`' contract is that no value a document stated appears in
-     * it, because it is written to the import log and a builder's price is
-     * not ours to put in a log line. These are document text.
-     */
-    const diagnostics = reader.slice(
-      reader.indexOf('  diagnostics: {'), reader.indexOf('function provisionalFrom('));
-    expect(diagnostics).not.toContain('unaccounted:');
-    expect(extract).toMatch(/deterministicUnaccounted\?: string\[\];/);
-  });
-
-  it('records them only where a builder cannot be shown them', () => {
-    // `error_detail` is projected away by the upload select.
-    expect(run).toContain('deterministic_unaccounted');
-    const projection = read('supabase/functions/_shared/builderStock/projection.pure.ts');
-    const select = projection.slice(projection.indexOf('STOCK_UPLOAD_SELECT'));
-    expect(select.slice(0, 600)).not.toContain('error_detail');
-  });
-
-  it('raises the row ceiling past the payload, or the evidence is cut off', () => {
-    // At 2,000 the JSON truncated before reaching the lines, so the field
-    // would have recorded a diagnosis with its own evidence missing. The
-    // payload now also carries the lines the reader PLACED and could not
-    // name (80 at 120 characters), so both ceilings moved with it and the
-    // outer one still sits above the inner.
-    expect(run).toContain('.slice(0, 120_000)');
-    expect(fn).toMatch(/String\(detail\)\.slice\(0, 128_000\)/);
-  });
-});
-
-/**
- * AND THE SAME EVIDENCE ON THE PATH THAT SUCCEEDED.
- *
- * A document that fails to import is diagnosable. A document that imports
- * with five of its twelve fields empty is not — the upload reads `enriching`,
- * the card draws what there is, and nothing anywhere says what the other
- * three hundred lines of the page were. That is the state `LOT 266 Crowlea
- * Estate` was left in, and closing the gap it names has meant guessing at
- * the document or asking a builder to send the file.
- */
-describe('a successful import records what it could not name', () => {
-  const extract = read('supabase/functions/_shared/builderStock/extract.ts');
-  const run = read('supabase/functions/_shared/builderStock/runImport.ts');
-  const fn = read('supabase/functions/builder-portal-stock/index.ts');
-
-  it('carries the lines out of the extraction and out of the run', () => {
-    expect(extract).toMatch(/deterministicIgnored\?: string\[\];/);
-    expect(extract).toContain('result.deterministicIgnored = reading.ignored;');
-    expect(run).toMatch(/deterministicIgnored\?: string\[\] \| null;/);
-    expect(run).toContain('deterministicIgnored: extraction.deterministicIgnored ?? null');
-  });
-
-  it('writes them on the SUCCESS path, which is where they were missing', () => {
-    expect(fn).toContain('deterministic_ignored: result.deterministicIgnored');
-  });
-
-  it('merges into `error_detail` rather than replacing what is there', () => {
-    /*
-     * `sourceNotice.detail` carries a `reason` the link-recovery path reads
-     * back off the row. Overwriting it would silently stop a sheet whose
-     * export permissions were the problem from ever being asked for again.
-     */
-    expect(fn).toMatch(/\.\.\.\(outcomeDetail \?\? \{\}\), \.\.\.\(importDiagnosis \?\? \{\}\)/);
-    expect(fn).toContain('sourceNotice ? sourceNotice.detail : null');
-  });
-
-  it('never invents a failure out of a diagnosis', () => {
-    // An import that succeeded still reads as one: the diagnosis sets no
-    // `error_code` and no `error_message`, so nothing a builder sees moves.
-    const write = fn.slice(fn.indexOf('const importDiagnosis'));
-    const block = write.slice(0, write.indexOf('processing_completed_at'));
-    expect(block).toMatch(/error_code: result\.summary\.failures\.length/);
-    expect(block).toMatch(/error_message: result\.summary\.failures\.length/);
-  });
-
-  it('keeps them off the wire and out of the log', () => {
-    // Document text: internal only, and never in `deterministicReading`,
-    // which is the safe-to-log projection the telemetry line writes.
-    const projection = read('supabase/functions/_shared/builderStock/projection.pure.ts');
-    const select = projection.slice(projection.indexOf('STOCK_UPLOAD_SELECT'));
-    expect(select.slice(0, 600)).not.toContain('error_detail');
-    const reader = read(
-      'supabase/functions/_shared/builderStock/pdfDeterministicRows.pure.ts');
-    const diagnostics = reader.slice(
-      reader.indexOf('  diagnostics: {'), reader.indexOf('function provisionalFrom('));
-    expect(diagnostics).not.toContain('ignored:');
+  it('fails honestly, and about the document, when there is nothing to stand on', () => {
+    expect(run).toMatch(/fail\('no_properties_found'/);
+    const afterCatch = run.slice(run.indexOf('AND IT CHANGES NOTHING ABOUT THE IMPORT'));
+    expect(afterCatch.slice(0, 1600)).not.toMatch(/return \{\s*\n?\s*ok: false/);
   });
 });

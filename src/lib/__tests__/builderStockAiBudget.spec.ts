@@ -342,10 +342,23 @@ describe('the ceiling never charges a deterministic import', () => {
     const fs = require('node:fs') as typeof import('node:fs');
     const code = fs.readFileSync(
       'supabase/functions/_shared/builderStock/runImport.ts', 'utf8');
-    const guardAt = code.indexOf('  try {\n    if (!rows.length');
+    /*
+     * The guard moved: `!rows.length` became `disposition.consulted`, which
+     * is false both where the document already yielded a record and where the
+     * optional assisted reader is switched off. See the Lot 37 incident in
+     * `assistedReaderPolicy.pure.ts`.
+     */
+    const guardAt = code.indexOf('if (!disposition.consulted) {');
     expect(guardAt).toBeGreaterThan(-1);
+    /*
+     * AND NOTHING IS NOW RESERVED WHERE NOTHING WILL BE SPENT. The port used
+     * to be constructed unconditionally; an import that calls no model must
+     * reserve no budget at all.
+     */
+    expect(code).toMatch(
+      /const budget = disposition\.consulted \? createAiBudget\(supabase\) : null;/);
     // Every use of the budget sits inside the "deterministic found nothing" guard.
-    for (const marker of ['budget }', 'budget },']) {
+    for (const marker of ['budget: budget! }', 'budget: budget! },']) {
       let from = 0;
       for (;;) {
         const at = code.indexOf(marker, from);

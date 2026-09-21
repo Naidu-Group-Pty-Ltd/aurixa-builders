@@ -331,17 +331,34 @@ describe('an unreachable model is not a verdict on the document', () => {
      * about: the failure is NAMED and returned, rather than thrown past the
      * handler into "That file could not be processed."
      */
+    /*
+     * RENEGOTIATED AGAIN, 21 September 2026, and the property got stronger.
+     *
+     * A model that could not be reached is no longer written up as a finding
+     * about the document — it is no longer written up as an OUTCOME at all.
+     * The import is decided by what the document supports, so the named
+     * failure that used to be returned here is gone and `no_properties_found`
+     * (a fact about the document) is what a document supporting no record
+     * earns. `Lot 37 - Miami 190 - Property Package.pdf` is why: seven
+     * readable pages written off as an AI-credit error.
+     *
+     * The reading is still COMPOSED — `assistedReaderFailure` still names
+     * which of our failures happened — and it still travels to the operator's
+     * log. It simply no longer speaks for the builder's file.
+     */
     const code = readCode(`${SHARED}/runImport.ts`);
     expect(code).toContain('assistedReaderFailure({');
-    expect(code).toContain('code: reading.code');
-    expect(code).toContain('message: reading.message');
-    // Still a 5xx: this is ours, so it must never answer as a bad request.
-    expect(code).toContain('status: reading.status');
+    expect(code).toContain('modelFailureFromRouterError(error)');
+    // And it is never thrown past the handler into "could not be processed".
+    expect(code).toContain("phase: 'assisted_extraction'");
+    // The document's own outcome is what the import returns.
+    expect(code).toMatch(/fail\('no_properties_found'/);
   });
 
   it('the model call is inside the guard, so no path can escape it', () => {
     const code = read(`${SHARED}/runImport.ts`);
-    const guardAt = code.indexOf('  try {\n    if (!rows.length');
+    // The guard narrowed: see `assistedReaderPolicy.pure.ts`.
+    const guardAt = code.indexOf('if (!disposition.consulted) {');
     const imagesAt = code.indexOf('extractStockRowsFromImages(');
     const textAt = code.indexOf('extractStockRowsFromText(');
     expect(guardAt).toBeGreaterThan(-1);

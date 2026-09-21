@@ -275,8 +275,18 @@ describe('an unusable model answer is not an empty document', () => {
 describe('the import records why, and tells the builder something true', () => {
   const runImport = read(`${SHARED}/builderStock/runImport.ts`);
 
+  /*
+   * THE GUARD IS NARROWER THAN IT WAS, AND THE ANCHOR MOVED WITH IT.
+   *
+   * It used to be `if (!rows.length)` — "the deterministic reader found
+   * nothing". That was true and insufficient: a reading that STOOD DOWN also
+   * has no rows, so an ordinary brochure reached a vendor. The guard is now
+   * `disposition.consulted`, which is false both where the document already
+   * yielded a record and where the optional reader is switched off. See
+   * `assistedReaderPolicy.pure.ts` and the Lot 37 incident it records.
+   */
   it('the model call is still inside the guard, so no path escapes it', () => {
-    const guardAt = runImport.indexOf('  try {\n    if (!rows.length');
+    const guardAt = runImport.indexOf('if (!disposition.consulted) {');
     expect(guardAt).toBeGreaterThan(-1);
     expect(runImport.indexOf('extractStockRowsFromImages(')).toBeGreaterThan(guardAt);
     expect(runImport.indexOf('extractStockRowsFromText(')).toBeGreaterThan(guardAt);
@@ -294,10 +304,23 @@ describe('the import records why, and tells the builder something true', () => {
     expect(runImport).toContain('SOURCE_HAS_COLUMNS.has(classification.kind)');
   });
 
-  it('the row keeps a structured diagnosis, not just a count of failures', () => {
-    expect(runImport).toContain('detail: JSON.stringify({');
-    expect(runImport).toContain('categories: failure.categories');
-    expect(runImport).toContain('attempts: failure.attemptCount');
+  /*
+   * THE DIAGNOSIS MOVED OFF THE ROW, BECAUSE THE ROW NO LONGER FAILS FOR IT.
+   *
+   * `error_detail` exists on a failed import, and a model refusal is no
+   * longer one: the outcome is decided by what the document supports. So the
+   * structured per-attempt account — which models were tried and how each
+   * failed — lives on the `assisted reader failed` log line, which is where
+   * an operator reading production looks and which carries strictly more
+   * than the row ever did.
+   *
+   * What must not happen is the account degrading to a count, which is the
+   * defect this test was written for.
+   */
+  it('keeps a structured per-attempt diagnosis, not just a count of failures', () => {
+    expect(runImport).toContain('attempt_categories: failure.categories');
+    expect(runImport).toContain('model_attempts: failure.attemptCount');
+    expect(runImport).toContain('diagnosis: failure.diagnosis');
   });
 
   it('the log carries enough to diagnose without the builder document', () => {
