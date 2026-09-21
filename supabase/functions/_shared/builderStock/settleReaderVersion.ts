@@ -410,9 +410,29 @@ async function writeImportOutcome(
      * the portal's `finishImport` writes, so a swept row and a builder's own
      * re-read cannot end in different states.
      */
+    /*
+     * AN IMPORT THAT SUCCEEDED CLEARS THE REASON THE LAST ONE FAILED — AND
+     * NOT ONLY WHERE THE STATUS SAID `failed`.
+     *
+     * MEASURED 21 SEPTEMBER 2026, on the read that finally worked.
+     * `Lot 37 - Miami 190 - Property Package.pdf` came back
+     * `records_detected: 1, records_imported: 1`, with the builder's own
+     * photograph attached — and the row went on carrying
+     * `error_code: no_properties_found` from the read before it, because the
+     * status was `complete` rather than `failed` and only `failed` cleared an
+     * error. A row that says it imported one property beside a code saying it
+     * found none is a contradiction the builder is left to resolve, and it is
+     * the same class as the stale reason this function was written to end,
+     * reached from the other side.
+     *
+     * The STATUS is still only written where it said `failed`: that is the
+     * one state a successful read plainly contradicts. A `complete` row is
+     * left `complete` rather than being pushed back to `enriching`, because
+     * the rows it already produced are live stock.
+     */
     const clearedFailure = statusBefore === 'failed'
       ? { status: result.uploadStatus, error_code: null, error_message: null }
-      : {};
+      : { error_code: null, error_message: null };
     await db.from('builder_stock_uploads').update({
       ...clearedFailure,
       records_detected: result.summary.detected,
