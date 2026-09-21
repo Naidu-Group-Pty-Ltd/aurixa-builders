@@ -162,6 +162,57 @@ export const OUR_FAILURE_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * ============================================================================
+ * A VERDICT ABOUT THE DOCUMENT, AS OPPOSED TO A FAULT OF OURS.
+ * ============================================================================
+ *
+ * `OUR_FAILURE_CODES` above names the failures that are never statements
+ * about the builder's file, so they earn a re-read. These are the other half,
+ * and they are needed for the opposite reason: a re-read that ends in one of
+ * them has FINISHED. The same bytes through the same reader version reach the
+ * same answer, so asking again costs a download and an invocation and learns
+ * nothing.
+ *
+ * MEASURED 21 SEPTEMBER 2026. `Lot 37 - Miami 190 - Property Package.pdf` was
+ * re-read on tick after tick — 1.9 MB downloaded and parsed each time — because
+ * the sweep treats every unsuccessful read as a transient fault and leaves the
+ * source outstanding. That rule is right for a fault (storage unreachable, a
+ * timeout, a crash) and wrong for a verdict, and nothing told the two apart.
+ *
+ * `no_properties_found` is deliberately here. It is the honest answer for a
+ * document that names no property, and a reader that has changed is what asks
+ * again — which is exactly what raising `DETERMINISTIC_READER_VERSION` does.
+ *
+ * `pdf_text_extraction_failed` is deliberately NOT here, and the distinction
+ * is `pdfText.ts`'s own: `pdf_no_text_layer` is "this document has no text",
+ * which is a finding about the file, while `pdf_text_extraction_failed` is
+ * "we could not extract text from this document", which is an operational
+ * fault — its header says outright that it "must be retried and must never be
+ * written down as a verdict". Settling on it would abandon a source over a
+ * decoder that failed once.
+ */
+export const DOCUMENT_VERDICT_CODES: ReadonlySet<string> = new Set([
+  'no_properties_found',
+  'pdf_no_text_layer',
+  'unsupported_file_type',
+  'empty_file',
+  'duplicate_file',
+  'file_too_large',
+]);
+
+/**
+ * Has this re-read finished with this source at this reader version?
+ *
+ * Only a verdict settles. Anything else — including a code this build has
+ * never heard of — stays outstanding, which is the conservative side: an
+ * unknown code re-read is wasted work, and an unknown code SETTLED is a
+ * source silently abandoned.
+ */
+export function reReadSettlesAt(code: string | null | undefined): boolean {
+  return DOCUMENT_VERDICT_CODES.has(String(code ?? ''));
+}
+
+/**
  * Why this upload will not be read again — or `null`, meaning read it.
  *
  * A reason is not a failure. Every one of them is a FINISHED answer about this

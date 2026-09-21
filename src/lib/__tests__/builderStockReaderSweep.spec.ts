@@ -318,6 +318,91 @@ describe('the sweep', () => {
     ]);
     expect(updates).toEqual([]);
   });
+
+  /*
+   * A VERDICT IS FINISHED; A FAULT IS NOT.
+   *
+   * The test above pins the fault half: an operational failure writes nothing
+   * and stays outstanding, so a decoder that failed once is retried. These
+   * pin the other half, which is what stopped `Lot 37 - Miami 190 - Property
+   * Package.pdf` being re-read on every tick for ever — 1.9 MB downloaded and
+   * parsed each time to reach the same answer.
+   */
+  const sweepOver = async (
+    upload: Record<string, unknown>, result: Record<string, unknown>,
+  ) => {
+    const { settleReaderVersion } = await import(
+      '../../../supabase/functions/_shared/builderStock/settleReaderVersion');
+    const updates: Array<Record<string, unknown>> = [];
+    const runImport = vi.fn(async () => result);
+    const db: any = {
+      from: (table: string) => {
+        if (table === 'builder_organisations') {
+          return { select: () => ({ eq: () => ({
+            maybeSingle: () => Promise.resolve({ data: null }),
+          }) }) };
+        }
+        if (table !== 'builder_stock_uploads') return rows([]);
+        return {
+          select: () => rows([upload]),
+          update: (patch: Record<string, unknown>) => {
+            updates.push(patch);
+            return { eq: () => ({ eq: () => Promise.resolve({ error: null }) }) };
+          },
+        };
+      },
+      storage: {
+        from: () => ({
+          download: () => Promise.resolve({
+            data: { arrayBuffer: () => Promise.resolve(new Uint8Array([1]).buffer) },
+            error: null,
+          }),
+        }),
+      },
+    };
+    const outcome = await settleReaderVersion(db, {}, { runImport: runImport as any });
+    return { outcome, updates };
+  };
+
+  const SWEPT = {
+    id: 'u-file', organisation_id: 'org', status: 'complete',
+    source_type: 'file', storage_bucket: 'b', storage_path: 'p',
+    deleted_at: null, created_at: '2026-01-01',
+  };
+
+  it('stamps the version when the re-read reached a verdict about the document', async () => {
+    const { outcome, updates } = await sweepOver(SWEPT, {
+      ok: false, code: 'no_properties_found', message: 'nothing to list',
+    });
+    expect(outcome.reread).toBe(0);
+    expect(outcome.failed).toEqual([{ uploadId: 'u-file', reason: 'no_properties_found' }]);
+    expect(updates).toEqual([{ reader_settled_version: DETERMINISTIC_READER_VERSION }]);
+  });
+
+  it('replaces an error that was ours with the answer the document now gets', async () => {
+    const { updates } = await sweepOver(
+      { ...SWEPT, status: 'imported', error_code: 'assisted_reader_refused' },
+      { ok: false, code: 'no_properties_found', message: 'nothing to list', detail: 'why' },
+    );
+    expect(updates[0]).toMatchObject({
+      error_code: 'no_properties_found',
+      error_message: 'nothing to list',
+    });
+    // And the status is NEVER touched: rows this source already produced are
+    // live stock, which is the rule the failure branch is built on.
+    expect(Object.keys(updates[0])).not.toContain('status');
+    expect(updates[1]).toEqual({ reader_settled_version: DETERMINISTIC_READER_VERSION });
+  });
+
+  it('leaves an error that was already about the FILE exactly as it is', async () => {
+    const { updates } = await sweepOver(
+      { ...SWEPT, status: 'imported', error_code: 'pdf_no_text_layer' },
+      { ok: false, code: 'no_properties_found', message: 'nothing to list' },
+    );
+    // Stamped so the loop ends, and nothing rewritten: the re-read reached the
+    // same kind of answer and churning the row would say something happened.
+    expect(updates).toEqual([{ reader_settled_version: DETERMINISTIC_READER_VERSION }]);
+  });
 });
 
 describe('the sweep is wired where the cron can still reach it', () => {
