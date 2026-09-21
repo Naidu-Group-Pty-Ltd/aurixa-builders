@@ -277,7 +277,7 @@ export async function settleReaderVersion(
         continue;
       }
 
-      await writeImportOutcome(db, upload, result);
+      await writeImportOutcome(db, upload, result, String(upload.status ?? ''));
       await stamp(db, upload);
       outcome.reread += 1;
       console.info(`${TELEMETRY_PREFIX} reader sweep re-read`, {
@@ -326,7 +326,7 @@ async function tradingName(db: any, organisationId: unknown): Promise<string | n
  * about a swept row has the same answer a builder's own re-read would give.
  */
 async function writeImportOutcome(
-  db: any, upload: SweepUploadRow, result: any,
+  db: any, upload: SweepUploadRow, result: any, statusBefore = '',
 ): Promise<void> {
   try {
     const diagnosis = result.deterministicIgnored?.length
@@ -338,7 +338,22 @@ async function writeImportOutcome(
     const failures = result.summary.failures?.length
       ? { failures: result.summary.failures }
       : null;
+    /*
+     * A FAILED UPLOAD THAT NOW IMPORTS MUST STOP SAYING FAILED.
+     *
+     * The rule above — a sweep writes no status — exists so a settled list is
+     * not made to look busy by work nobody asked for. It means the opposite
+     * here: the row says `failed` for a reason that was ours, this read
+     * succeeded, and leaving the stamp hides a real import behind a stale
+     * error. `result.uploadStatus` is the import's own answer, the same field
+     * the portal's `finishImport` writes, so a swept row and a builder's own
+     * re-read cannot end in different states.
+     */
+    const clearedFailure = statusBefore === 'failed'
+      ? { status: result.uploadStatus, error_code: null, error_message: null }
+      : {};
     await db.from('builder_stock_uploads').update({
+      ...clearedFailure,
       records_detected: result.summary.detected,
       records_imported: result.summary.imported,
       records_updated: result.summary.updated,
