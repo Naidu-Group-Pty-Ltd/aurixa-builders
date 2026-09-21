@@ -78,7 +78,31 @@
  *     anything, and here it buys the imports that vendor's billing state
  *     refused.
  */
-export const DETERMINISTIC_READER_VERSION = 3;
+/*
+ * VERSION 4 — THE ACCEPTANCE CORPUS'S EIGHT.
+ *
+ * Version 3 was "the model is no longer on this path". Version 4 is what
+ * running the portal's own import over real bytes with no model then found,
+ * and every one of them changes what the SAME bytes produce:
+ *
+ *   • a composed address line (`Lot 9 Perrin Street, Armstrong Creek VIC
+ *     3217`) is read instead of standing the document down;
+ *   • a disclaimer is no longer a fourth property;
+ *   • a marketing slogan is no longer a design name;
+ *   • a site plan's excluded neighbours no longer contradict its subject;
+ *   • `Build 214m2` and `Package $845,000` are read;
+ *   • `Site Area` is a land size;
+ *   • the icon row is read beside a price instead of only alone;
+ *   • a value made entirely of punctuation is not a value — which is the
+ *     one that reaches `Lot 37 - Miami 190 - Property Package.pdf`, whose
+ *     row settled at version 3 reading `development_name = ·` against
+ *     `development_name = PROPLAUNCH`.
+ *
+ * Raising this is the ONLY thing that asks a settled source again, which is
+ * why it is raised here rather than left for the next change: every row
+ * stamped 3 is a row those eight cannot otherwise reach.
+ */
+export const DETERMINISTIC_READER_VERSION = 4;
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */
 export const READER_SETTLED_VERSION_COLUMN = 'reader_settled_version';
