@@ -786,6 +786,40 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     }
   } catch { /* the cron tick is the guarantee */ }
 
+  /*
+   * AND ASK WHETHER THIS UPLOAD CAN BE PUBLISHED, BECAUSE NOTHING ELSE WILL
+   * ASK ON A RE-READ.
+   *
+   * `publish_builder_stock_upload` had exactly ONE caller: the image settler,
+   * after an item's work completes — under its own comment, "there is nothing
+   * else watching". That is true, and it is the whole defect. Publication is
+   * also what APPLIES a held-back patch, so on a list whose photographs are
+   * already settled a re-read produces no image work, nothing claims an item,
+   * nobody asks, and a corrected reading sits in `pending_patch` for ever.
+   *
+   * MEASURED 21 SEPTEMBER 2026. `LOT 266 Crowlea Estate` was re-read at
+   * 10:49 with the right answer — `development_name:leading_field_name`,
+   * `land_size_sqm:below` — and the settler's next three ticks reported
+   * `claimed: 0, claimable: 0, outstanding: 0`. Fixing the publication
+   * function so it applies a patch on a second publication was necessary and
+   * was not sufficient: a function nobody calls cannot apply anything.
+   *
+   * SAFE ON EVERY OTHER PATH, because the function decides and this only
+   * asks. A first upload is not ready this early — its photographs have not
+   * settled — so it answers `not_ready` and changes nothing but the reason it
+   * already writes. A deleted or superseded upload refuses before anything
+   * else. The readiness rule is evaluated inside the same statement that
+   * flips the rows, so asking twice can never publish half a cutover.
+   *
+   * BEST-EFFORT, LIKE THE KICK ABOVE: the settler still asks after every
+   * completed item, so a failure here costs latency and never work.
+   */
+  try {
+    await input.supabase.rpc('publish_builder_stock_upload', {
+      p_upload_id: input.upload.id,
+    });
+  } catch { /* the settler and the cron tick both ask again */ }
+
   return {
     ok: true,
     summary: {
