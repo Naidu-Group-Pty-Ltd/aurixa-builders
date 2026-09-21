@@ -119,6 +119,9 @@ import {
   normaliseStockRow,
 } from './normalise.pure.ts';
 import { headerScore, keyRowsByHeader } from './table.pure.ts';
+import {
+  bedroomsFromPlan, bindCountRow, countRoomsNamed,
+} from './floorPlanCounts.pure.ts';
 
 // ---------------------------------------------------------------------------
 // The answer
@@ -267,6 +270,12 @@ export interface PdfDeterministicReading {
      * document's own floor plan named the same number of bedrooms.
      */
     countsCorroborated?: boolean;
+    /**
+     * How the configuration row's positions were settled — `fraction_is_
+     * bathrooms`, `plan_named_bedrooms` and so on. Safe by construction:
+     * evidence NAMES, never a value the document stated.
+     */
+    countEvidence?: string[];
     /**
      * Optional attributes the document states only in PICTURES. The
      * production brochure prints `3 2 1` beside bed, bath and car icons,
@@ -1781,20 +1790,7 @@ function corroborateDevelopmentFromPlace(
  *   • Nothing may already be claimed for any of the three, so a document
  *     that writes `Bedrooms: 4` in words always wins.
  */
-const BEDROOM_LABEL = /^(?:bed|bedroom)\s*\d{1,2}$/i;
-const MASTER_LABEL = /^master(?:\s+(?:bed|bedroom|suite))?$/i;
 const COUNT_ROW_SIZE = 3;
-
-/** The distinct bedrooms a page's floor plan names. */
-function bedroomsNamedOn(units: readonly BrochureUnit[]): number {
-  const named = new Set<string>();
-  for (const unit of units) {
-    const text = unit.text.trim();
-    if (BEDROOM_LABEL.test(text)) named.add(text.toLowerCase().replace(/\s+/g, ''));
-    else if (MASTER_LABEL.test(text)) named.add('master');
-  }
-  return named.size;
-}
 
 /**
  * A row of three bare counts, however the page drew it.
@@ -1883,22 +1879,76 @@ function countsContradictedByRow(
 function readIconCountRow(
   pages: ReadonlyArray<readonly BrochureUnit[]>,
   claimed: ReadonlyMap<string, string>,
-): Claim[] | null {
+): { claims: Claim[]; evidence: string[] } | null {
   for (const field of COUNT_FIELDS) if (claimed.has(field)) return null;
   if (claimed.has('bed_bath_car')) return null;
 
+  /*
+   * THE PLAN IS THE KEY TO THE ROW, AND IT IS READ ACROSS THE WHOLE DOCUMENT.
+   *
+   * A brochure draws its icon row on the cover and its floor plan three pages
+   * later, so the evidence that reads the row is not on the page the row is
+   * on. `countRoomsNamed` counts distinct NAMES, so a room appearing on both
+   * the plan and its dimensions table is one room.
+   *
+   * THIS REPLACES A RULE THAT COULD ONLY EVER AGREE WITH ONE ORDER. The old
+   * test was `bedroomsNamedOn === row[0]` — it proved the FIRST position and
+   * then took the remaining two in the order they happened to be printed,
+   * which is the assumption this module exists to refuse. `bindCountRow`
+   * settles every position or none.
+   */
+  const rooms = countRoomsNamed(pages.flat());
   const row = soleCountRow(pages);
-  if (!row) return null;
 
-  const bedrooms = Math.max(0, ...pages.map(bedroomsNamedOn));
-  if (bedrooms < 1) return null;
-  if (bedrooms !== row[0]) return null;
+  if (row) {
+    const bound = bindCountRow(row, rooms);
+    if (bound) {
+      return {
+        claims: [
+          { field: 'bedrooms', value: String(bound.bedrooms) },
+          { field: 'bathrooms', value: String(bound.bathrooms) },
+          { field: 'car_spaces', value: String(bound.car_spaces) },
+        ],
+        evidence: bound.evidence,
+      };
+    }
+    /*
+     * AND WHERE IT COULD NOT, THE RULE THIS REPLACES STILL STANDS.
+     *
+     * `bindCountRow` determines every position or none, and on a whole-number
+     * row it usually needs the fraction it does not have. Refusing there
+     * would take away readings this product already makes correctly — a
+     * regression bought with purity — so the original test is kept exactly
+     * as it was: the plan's bedroom count agreeing with the row's FIRST
+     * number, and the remaining two read in the order the row printed them.
+     *
+     * It is the weaker reading and is recorded as one. What it cannot do is
+     * notice a document that prints its counts in another order, which is
+     * precisely what the binding above is for.
+     */
+    const named = bedroomsFromPlan(rooms);
+    if (named !== null && named === row[0]) {
+      return {
+        claims: [
+          { field: 'bedrooms', value: String(row[0]) },
+          { field: 'bathrooms', value: String(row[1]) },
+          { field: 'car_spaces', value: String(row[2]) },
+        ],
+        evidence: ['plan_named_bedrooms_at_first_position'],
+      };
+    }
+    return null;
+  }
 
-  return [
-    { field: 'bedrooms', value: String(row[0]) },
-    { field: 'bathrooms', value: String(row[1]) },
-    { field: 'car_spaces', value: String(row[2]) },
-  ];
+  /*
+   * A DOCUMENT WITH NO ROW CLAIMS NOTHING, which is unchanged.
+   *
+   * A plan's room labels describe the home and the corpus has asserted since
+   * it was written that they may not become the property's counts on their
+   * own. Nothing here overturns that: the plan is the KEY to a row the
+   * document printed, never a substitute for one.
+   */
+  return null;
 }
 
 /**
@@ -2395,11 +2445,24 @@ export function readPdfBrochure(
   }
   const counts = readIconCountRow(pages, claimed);
   if (counts) {
-    for (const claim of counts) {
+    for (const claim of counts.claims) {
       claimed.set(claim.field, claim.value);
+      /*
+       * `icon_row` NAMES WHERE THE VALUE CAME FROM, which is the row the
+       * document printed — the plan is the KEY that reads it, not the source
+       * of the figure. How it was keyed is `countEvidence` beside this.
+       */
       readBy.set(claim.field, 'icon_row');
     }
     diagnostics.countsCorroborated = true;
+    /*
+     * WHAT SETTLED THE ROW, not merely that something did. The two readings
+     * are different evidence — a fraction that can only be a bathroom, and a
+     * plan that named the rooms — and a log that says only "corroborated"
+     * cannot tell a figure proved by the document's own plan from one that
+     * was proved by arithmetic.
+     */
+    diagnostics.countEvidence = counts.evidence;
   }
   // What was read is what the row carries, and the counts settle last.
   diagnostics.fieldsRead = [...claimed.keys()].sort();
