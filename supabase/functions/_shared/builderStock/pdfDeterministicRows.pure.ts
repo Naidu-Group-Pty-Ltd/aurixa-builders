@@ -155,6 +155,35 @@ export interface PdfDeterministicReading {
    * one edit away from importing them.
    */
   rows: Array<Record<string, unknown>>;
+  /**
+   * WHAT THE READER HAD ALREADY READ WHEN IT STOOD DOWN.
+   *
+   * DELIBERATELY NOT `rows`, and the note above that field says why: "a
+   * refusal that carried rows would be one edit away from importing them."
+   * That rule stands. This is a different field, with a different name,
+   * populated ONLY on a refusal, and the one caller permitted to act on it is
+   * the one that has just established there is no better reader available.
+   *
+   * WHY IT EXISTS AT ALL. The brochure gate's own reasoning is that
+   * completing around an unaccounted line "SUPPRESSED the assisted reader,
+   * which can read both" — and it is right. But it is conditional on that
+   * reader existing. Measured 21 SEPTEMBER 2026 on
+   * `LOT 817 - ELARA 18 TEMPIO LIGHT - BROCHURE V002 (1).pdf`: this reader
+   * read `development_name`, `expected_completion`, `house_design` and
+   * `price`, stood down on one unaccounted line, and the assisted reader it
+   * stood down FOR was refused HTTP 402 by its provider — an account with no
+   * credit. Four fields read off the document were discarded to defer to a
+   * reader that cannot run, and the builder was told their stock list could
+   * not be imported.
+   *
+   * Standing down suppresses nothing when there is nothing to suppress. So
+   * the reading survives its own refusal, and whether it may be USED is a
+   * decision taken elsewhere, by a caller that knows what happened next.
+   *
+   * Empty unless the refusal is one where a property could still be
+   * identified: see `provisionalFrom`.
+   */
+  provisional: Array<Record<string, unknown>>;
   /** Set on `complete` and null otherwise. Recorded as `parse_strategy`. */
   strategy: PdfDeterministicStrategy | null;
   /** Machine-readable, stable, and safe to log. Never a fragment of the document. */
@@ -239,12 +268,53 @@ export interface PdfDeterministicReading {
   };
 }
 
+/**
+ * The record a stood-down brochure reading would have produced, or none.
+ *
+ * HELD TO THE SAME BAR AS A COMPLETE READING, and that is the whole safety
+ * argument: every gate below the unaccounted-lines one still applies, in the
+ * same order, over the same inputs. A provisional record therefore names a
+ * property, is not a summary row, carries at least `MIN_BROCHURE_FIELDS`, maps
+ * every field to a canonical header, and survives `normaliseStockRow`. What it
+ * does NOT have is an account of every line on the page — which is exactly and
+ * only what the refusal was about.
+ *
+ * SO IT IS THINNER, NEVER WRONGER. Each value in it was read off the document
+ * by a named reader and is the same value a complete reading would have
+ * carried; the fields it lacks are fields nothing claimed. There is no
+ * inference here and no widening: a field this function invents is a field the
+ * complete path would have invented too.
+ *
+ * NULL RATHER THAN A PARTIAL RECORD wherever any of those gates refuses,
+ * because a row with no identity cannot be matched, re-matched or
+ * de-duplicated — importing one creates a property nothing can ever find
+ * again, which is worse than the import that failed.
+ */
+function provisionalFrom(
+  claimed: Map<string, string>,
+): Array<Record<string, unknown>> {
+  const identity = IDENTITY_FIELDS.filter((field) => claimed.has(field));
+  if (!identity.length) return [];
+  if (identity.every((field) =>
+    SUMMARY_IDENTITY_LABELS.has(flattenIdentity(claimed.get(field) ?? '')))) return [];
+  if (claimed.size < MIN_BROCHURE_FIELDS) return [];
+
+  const raw: Record<string, unknown> = {};
+  for (const [field, value] of claimed) {
+    const header = CANONICAL_HEADER[field];
+    if (!header) return [];
+    raw[header] = value;
+  }
+  return normaliseStockRow(raw) ? [raw] : [];
+}
+
 function refuse(
   status: Exclude<PdfDeterministicStatus, 'complete'>,
   reason: string,
   diagnostics: PdfDeterministicReading['diagnostics'],
+  provisional: Array<Record<string, unknown>> = [],
 ): PdfDeterministicReading {
-  return { status, rows: [], strategy: null, reason, diagnostics };
+  return { status, rows: [], provisional, strategy: null, reason, diagnostics };
 }
 
 // ---------------------------------------------------------------------------
@@ -2342,8 +2412,20 @@ export function readPdfBrochure(
    * that has made one for every PDF ever uploaded. The cost of completing
    * wrongly is a permanently thinner record that nothing reports.
    */
+  /*
+   * AND THE READING SURVIVES THE REFUSAL, without changing it.
+   *
+   * The paragraph above is unchanged and still decides: an unaccounted line
+   * stands this document down and the assisted reader gets it. What is new is
+   * that the four fields already read are carried out with the refusal
+   * instead of being dropped on the floor, so a caller that discovers there
+   * is no assisted reader has something better than nothing to fall back on.
+   * `provisionalFrom` applies every remaining gate, so this cannot admit a
+   * record the complete path would have refused.
+   */
   if (stillUnresolved.length > 0) {
-    return refuse('incomplete', 'unaccounted_specification_lines', diagnostics);
+    return refuse('incomplete', 'unaccounted_specification_lines', diagnostics,
+      provisionalFrom(claimed));
   }
 
   /*
@@ -2407,6 +2489,8 @@ export function readPdfBrochure(
   diagnostics.candidates = 1;
   return {
     status: 'complete',
+    // Nothing provisional on a complete reading: the rows ARE the reading.
+    provisional: [],
     rows: [raw],
     strategy: 'pdf_deterministic_brochure',
     reason: 'explicit_fields_read',
@@ -2829,6 +2913,8 @@ export function assemblePdfSchedule(
 
   return {
     status: 'complete',
+    // Nothing provisional on a complete reading: the rows ARE the reading.
+    provisional: [],
     rows: keyed.rows,
     strategy: 'pdf_deterministic_table',
     reason: 'schedule_reconstructed',
