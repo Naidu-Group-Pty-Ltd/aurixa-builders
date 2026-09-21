@@ -408,6 +408,27 @@ describe('the sweep', () => {
    * once per reader version, so this writes once per version and "churn" was
    * never the risk.
    */
+  /*
+   * AND A SUCCESSFUL RE-READ CLEARS THE REASON THE LAST ONE FAILED.
+   *
+   * Measured on the read that finally worked: `Lot 37` came back with one
+   * property imported and the builder's photograph attached, and the row went
+   * on carrying `error_code: no_properties_found` from the read before it,
+   * because the status was `complete` rather than `failed`.
+   */
+  it('clears a stale error when the re-read imported, whatever the status said', async () => {
+    const { updates } = await sweepOver(
+      { ...SWEPT, status: 'complete', error_code: 'no_properties_found' },
+      { ok: true, uploadStatus: 'enriching',
+        summary: { detected: 1, imported: 1, updated: 0, failed: 0, failures: [] } },
+    );
+    expect(updates[0]).toMatchObject({
+      error_code: null, error_message: null, records_imported: 1,
+    });
+    // A `complete` row is not pushed back to `enriching`: its rows are live.
+    expect(Object.keys(updates[0])).not.toContain('status');
+  });
+
   it('rewrites the recorded reason even where it already described the file', async () => {
     const { updates } = await sweepOver(
       { ...SWEPT, status: 'imported', error_code: 'pdf_no_text_layer' },

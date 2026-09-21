@@ -258,6 +258,31 @@ Stated rather than implied.
   honest `pdf_no_text_layer`, which is a specific true statement and not a
   model-credit error — but it is a refusal, and rasterise-plus-OCR remains
   the open piece of §5.
-- **Two production rows** are still in states this work has not addressed:
-  one stuck at `parsing`, and one at `imported` with zero records and no
-  completion timestamp.
+- **Those "two stranded production rows" were neither.** Both were DELETED
+  by the builder minutes after upload, which the sweep correctly refuses to
+  touch. Recorded because an earlier reading of this incident called them
+  stranded jobs, and they were not.
+
+## 8 · Open: 176 lines the reader could not attribute, and the record keeps none
+
+`Lot 37` imports now — lot 37, 563 m², the builder's own photograph — and
+its log line also says `deterministic_ignored_lines: 176`. Those 176 lines
+are where its address, price and design still are, and the row's
+`error_detail` is **null**.
+
+What is established, by execution rather than by reading: the reader
+produces them (`ignoredText` and `diagnostics.ignoredLines` derive from the
+same set), and `extractStockFile` carries them — driven against a crafted
+partial reading it returned three ignored lines beside one provisional row.
+`runStockImport` has a single success return and it includes them, and
+`writeImportOutcome` writes them into `error_detail` when present.
+
+**Which writer drops them is not yet identified**, and no guess is recorded
+here in place of finding out. Until it is, the remaining Lot 37 fields
+cannot be designed for from the stored record alone — which is the
+diagnostic dead end this whole exercise exists to close, still open one
+level down.
+
+Two smaller things the same row shows: `development_name` reads
+`PROPLAUNCH`, claimed `via: caption` — the platform's own brand mark, not an
+estate — and the design the filename names (`Miami 190`) is not read.
