@@ -1,0 +1,359 @@
+/**
+ * A PARSER CORRECTION MUST REACH THE ROWS IT ALREADY WROTE.
+ *
+ * `pdfDeterministicRows.pure.ts` runs once, at import. Everything downstream is
+ * frozen with it — the property's title, its configuration, its address, and,
+ * because the cover election identifies pages by the row's own label, WHICH
+ * PICTURE LEADS ITS CARD. So a fix reached every future upload and not one row
+ * that already existed.
+ *
+ * MEASURED 21 SEPTEMBER 2026. `LOT 48 - EMBER - FLYER.pdf` imported at 12:02;
+ * the fix for the defect it hit deployed at 12:22. The row kept
+ * `unit_number = '115.30m 12.41sq'` — a floor-plan area schedule read as a
+ * designation — so the card was titled "Unit 115.30m 12.41sq", and its own
+ * facade render sat in storage `ready` and `source_supplied` with the role
+ * `unknown`, because the poisoned label could name no cover page. Twenty
+ * minutes of timing decided whether a row could heal.
+ *
+ * These tests pin the RULES, never the strings: what may be re-read, what is
+ * refused, that a refusal is written down, and that the sweep is wired into the
+ * one exit that decides whether the cron keeps running.
+ */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  ABANDONED_PARSE_MS, DETERMINISTIC_READER_VERSION,
+  READER_SETTLED_VERSION_COLUMN, RE_READABLE_STATUSES,
+  readerReReadRefusal, stampable,
+} from '../../../supabase/functions/_shared/builderStock/readerVersion.pure';
+
+const read = (path: string) => readFileSync(join(process.cwd(), path), 'utf8');
+
+const FILE_UPLOAD = {
+  id: 'u1',
+  status: 'complete',
+  source_type: 'file',
+  storage_bucket: 'stock-lists',
+  storage_path: 'builder-stock/org/u1/flyer.pdf',
+  deleted_at: null,
+};
+
+describe('what a reader sweep may act on', () => {
+  it('re-reads a completed file upload', () => {
+    expect(readerReReadRefusal(FILE_UPLOAD)).toBeNull();
+  });
+
+  it('re-reads every status that has been read at least once', () => {
+    for (const status of ['complete', 'imported', 'enriching']) {
+      expect(readerReReadRefusal({ ...FILE_UPLOAD, status })).toBeNull();
+    }
+  });
+
+  /*
+   * A cron tick may not decide to start importing a file the builder's own
+   * import refused or never ran. A first pass WRITES properties; this exists
+   * only to correct ones that exist.
+   */
+  it('refuses a source nothing has ever read', () => {
+    expect(readerReReadRefusal({ ...FILE_UPLOAD, status: 'failed' }))
+      .toBe('status:failed');
+    expect(readerReReadRefusal({ ...FILE_UPLOAD, status: 'uploaded' }))
+      .toBe('status:uploaded');
+  });
+
+  it('never names a status it will not act on as re-readable', () => {
+    expect(RE_READABLE_STATUSES.has('failed')).toBe(false);
+    expect(RE_READABLE_STATUSES.has('uploaded')).toBe(false);
+  });
+
+  /*
+   * A builder links a sheet BECAUSE they keep editing it, so reaching the link
+   * again imports edits nobody asked to import — their decision, offered to
+   * them in the portal. Re-reading the day-old SNAPSHOT instead is the defect
+   * `49-re-importing-a-linked-stock-list.md` records.
+   */
+  it('refuses a linked source outright', () => {
+    expect(readerReReadRefusal({
+      ...FILE_UPLOAD, source_type: 'url', source_url: 'https://docs.google.com/x',
+    })).toBe('linked_source');
+  });
+
+  it('refuses a deleted source before it looks at anything else', () => {
+    expect(readerReReadRefusal({
+      ...FILE_UPLOAD, status: 'complete', deleted_at: '2026-09-21T00:00:00Z',
+    })).toBe('deleted');
+  });
+
+  it('refuses a source with no stored object', () => {
+    expect(readerReReadRefusal({ ...FILE_UPLOAD, storage_path: '   ' }))
+      .toBe('no_stored_object');
+  });
+
+  /*
+   * A request killed on its resource limit leaves the row at `parsing` for
+   * ever. Refusing it for ever would make the one status a re-read most needs
+   * to repair the one status it can never touch.
+   */
+  it('declines a parse that is running and takes an abandoned one', () => {
+    const now = Date.parse('2026-09-21T12:00:00Z');
+    const live = new Date(now - 60_000).toISOString();
+    const abandoned = new Date(now - ABANDONED_PARSE_MS - 1_000).toISOString();
+    expect(readerReReadRefusal(
+      { ...FILE_UPLOAD, status: 'parsing', processing_started_at: live }, now,
+    )).toBe('parse_in_flight');
+    expect(readerReReadRefusal(
+      { ...FILE_UPLOAD, status: 'parsing', processing_started_at: abandoned }, now,
+    )).toBeNull();
+  });
+});
+
+describe('a refusal is an answer, not a skip', () => {
+  /*
+   * A queue whose refusals stayed outstanding would re-ask the same
+   * unanswerable question every tick for ever — the liveness fault
+   * `repairSourceImagesForUpload` was once held still by.
+   */
+  it('writes down every refusal that is about the upload', () => {
+    for (const reason of ['deleted', 'linked_source', 'status:failed', 'no_stored_object']) {
+      expect(stampable(reason)).toBe(true);
+    }
+  });
+
+  it('never writes down a parse that is still running', () => {
+    // Stamping it would record a version against a read we did not perform.
+    expect(stampable('parse_in_flight')).toBe(false);
+  });
+
+  it('never writes down "no refusal"', () => {
+    expect(stampable(null)).toBe(false);
+  });
+});
+
+describe('the sweep', () => {
+  const rows = (data: unknown[]) => {
+    const chain: any = {
+      select: () => chain, is: () => chain, lt: () => chain,
+      order: () => chain, limit: () => chain, eq: () => chain,
+      then: (resolve: any) => resolve({ data, error: null }),
+    };
+    return chain;
+  };
+
+  it('stamps a linked source without reading it, and never runs the import', async () => {
+    const { settleReaderVersion } = await import(
+      '../../../supabase/functions/_shared/builderStock/settleReaderVersion');
+    const updates: Array<Record<string, unknown>> = [];
+    const runImport = vi.fn();
+    const db: any = {
+      from: (table: string) => {
+        if (table !== 'builder_stock_uploads') return rows([]);
+        return {
+          select: () => rows([{
+            id: 'u-link', organisation_id: 'org', status: 'complete',
+            source_type: 'url', source_url: 'https://docs.google.com/x',
+            storage_bucket: 'b', storage_path: 'p', deleted_at: null,
+            created_at: '2026-01-01',
+          }]),
+          update: (patch: Record<string, unknown>) => {
+            updates.push(patch);
+            return { eq: () => ({ eq: () => Promise.resolve({ error: null }) }) };
+          },
+        };
+      },
+      storage: { from: () => ({ download: () => { throw new Error('never'); } }) },
+    };
+
+    const outcome = await settleReaderVersion(db, {}, { runImport: runImport as any });
+    expect(runImport).not.toHaveBeenCalled();
+    expect(outcome.refused).toEqual([{ uploadId: 'u-link', reason: 'linked_source' }]);
+    expect(updates).toEqual([
+      { [READER_SETTLED_VERSION_COLUMN]: DETERMINISTIC_READER_VERSION },
+    ]);
+  });
+  it('re-reads a file through the same import and stamps it afterwards', async () => {
+    const { settleReaderVersion } = await import(
+      '../../../supabase/functions/_shared/builderStock/settleReaderVersion');
+    const updates: Array<Record<string, unknown>> = [];
+    const runImport = vi.fn(async () => ({
+      ok: true,
+      strategy: 'pdf_deterministic',
+      uploadStatus: 'enriching',
+      summary: {
+        detected: 1, imported: 0, updated: 1, failed: 0, failures: [],
+        withSourceImage: 1, imageryOutstanding: false,
+      },
+      deterministicIgnored: ['HAVENWOOD'],
+      deterministicPlacement: ['p1 r0 x36'],
+    }));
+    const db: any = {
+      from: (table: string) => {
+        if (table === 'builder_organisations') {
+          return { select: () => ({ eq: () => ({
+            maybeSingle: () => Promise.resolve({ data: { trading_name: 'Mairandi' } }),
+          }) }) };
+        }
+        if (table !== 'builder_stock_uploads') return rows([]);
+        return {
+          select: () => rows([{
+            id: 'u-file', organisation_id: 'org', status: 'complete',
+            source_type: 'file', uploaded_by_builder_user_id: 'builder-1',
+            original_filename: 'LOT 48 - EMBER - FLYER.pdf',
+            storage_bucket: 'stock-lists', storage_path: 'p/flyer.pdf',
+            deleted_at: null, created_at: '2026-01-01',
+          }]),
+          update: (patch: Record<string, unknown>) => {
+            updates.push(patch);
+            return { eq: () => ({ eq: () => Promise.resolve({ error: null }) }) };
+          },
+        };
+      },
+      storage: {
+        from: () => ({
+          download: () => Promise.resolve({
+            data: { arrayBuffer: () => Promise.resolve(new Uint8Array([1, 2, 3]).buffer) },
+            error: null,
+          }),
+        }),
+      },
+    };
+
+    const outcome = await settleReaderVersion(db, {}, { runImport: runImport as any });
+
+    expect(outcome.reread).toBe(1);
+    expect(outcome.failed).toEqual([]);
+    // The SAME bytes, as a file, attributed to the person who uploaded it.
+    expect(runImport).toHaveBeenCalledTimes(1);
+    const passed = (runImport.mock.calls[0] as any[])[0];
+    expect(passed.sourceKind).toBe('file');
+    expect(passed.upload).toEqual({
+      id: 'u-file', original_filename: 'LOT 48 - EMBER - FLYER.pdf',
+    });
+    expect(passed.builderUserId).toBe('builder-1');
+
+    // The counts and the unnamed lines are recorded; the STATUS is not, so a
+    // settled list is never made to look busy by a sweep nobody asked for.
+    const outcomeWrite = updates.find((patch) => 'records_updated' in patch)!;
+    expect(outcomeWrite.records_updated).toBe(1);
+    expect(outcomeWrite.error_detail).toEqual({
+      deterministic_ignored: ['HAVENWOOD'],
+      deterministic_placement: ['p1 r0 x36'],
+    });
+    expect(Object.keys(outcomeWrite)).not.toContain('status');
+
+    // And the marker, so it leaves the queue.
+    expect(updates).toContainEqual(
+      { [READER_SETTLED_VERSION_COLUMN]: DETERMINISTIC_READER_VERSION });
+  });
+
+  /*
+   * A read that FAILED is not a builder who has added nothing. The rows this
+   * source already produced are live stock, and the sweep has learned nothing
+   * about them — so the upload stays OUTSTANDING and a transient fault is
+   * retried rather than being written down as settled.
+   */
+  it('leaves a failed read outstanding and writes nothing', async () => {
+    const { settleReaderVersion } = await import(
+      '../../../supabase/functions/_shared/builderStock/settleReaderVersion');
+    const updates: Array<Record<string, unknown>> = [];
+    const runImport = vi.fn(async () => ({
+      ok: false, code: 'pdf_text_extraction_failed', message: 'nope',
+    }));
+    const db: any = {
+      from: (table: string) => {
+        if (table === 'builder_organisations') {
+          return { select: () => ({ eq: () => ({
+            maybeSingle: () => Promise.resolve({ data: null }),
+          }) }) };
+        }
+        if (table !== 'builder_stock_uploads') return rows([]);
+        return {
+          select: () => rows([{
+            id: 'u-file', organisation_id: 'org', status: 'complete',
+            source_type: 'file', storage_bucket: 'b', storage_path: 'p',
+            deleted_at: null, created_at: '2026-01-01',
+          }]),
+          update: (patch: Record<string, unknown>) => {
+            updates.push(patch);
+            return { eq: () => ({ eq: () => Promise.resolve({ error: null }) }) };
+          },
+        };
+      },
+      storage: {
+        from: () => ({
+          download: () => Promise.resolve({
+            data: { arrayBuffer: () => Promise.resolve(new Uint8Array([1]).buffer) },
+            error: null,
+          }),
+        }),
+      },
+    };
+
+    const outcome = await settleReaderVersion(db, {}, { runImport: runImport as any });
+    expect(outcome.reread).toBe(0);
+    expect(outcome.failed).toEqual([
+      { uploadId: 'u-file', reason: 'pdf_text_extraction_failed' },
+    ]);
+    expect(updates).toEqual([]);
+  });
+});
+
+describe('the sweep is wired where the cron can still reach it', () => {
+  const settler = read('supabase/functions/builder-stock-image-settler/index.ts');
+  const sweep = read('supabase/functions/_shared/builderStock/settleReaderVersion.ts');
+
+  it('runs inside the settler', () => {
+    expect(settler).toMatch(/await settleReaderVersion\(supabase, \{ deadlineAt \}\)/);
+  });
+
+  /*
+   * The migration's cron unschedules itself on `complete: true`. Reporting a
+   * quiet deployment complete while sources are still behind the current
+   * reader retires the job that performs the sweep — the identical fault this
+   * function's own header records for the per-item queue.
+   */
+  it('never reports complete while a source is behind the reader', () => {
+    expect(settler).toMatch(/complete: readerOutstanding === 0/);
+    expect(settler).not.toMatch(/\n\s*complete: true,\n\s*deploymentReady: true, eligibilityTarget/);
+  });
+
+  /*
+   * A re-read parses a document and decodes every raster it keeps — the work
+   * that killed this worker at ~16s and again at ~20s on two other paths. The
+   * sweep converges over TICKS, never by widening this number.
+   */
+  it('takes at most one source per tick and reserves time to finish it', () => {
+    expect(sweep).toMatch(/const MAX_REREADS_PER_TICK = 1;/);
+    expect(sweep).toMatch(/Date\.now\(\) \+ READER_SWEEP_RESERVE_MS > deadlineAt\) break;/);
+  });
+
+  /*
+   * A read that FAILED is not a builder who has added nothing. The rows this
+   * source already produced are live stock; writing `failed` over a healthy
+   * list is the defect `49-re-importing-a-linked-stock-list.md` records.
+   */
+  it('never writes a status or an error code over an existing list', () => {
+    expect(sweep).not.toMatch(/status: '(failed|parsing|enriching|complete)'/);
+    expect(sweep).not.toMatch(/error_code:/);
+    expect(sweep).not.toMatch(/error_message:/);
+  });
+});
+
+describe('the marker exists in the schema', () => {
+  const migration = read(
+    'supabase/migrations/20260921133000_a_parser_correction_must_reach_the_rows_it_already_wrote.sql');
+
+  it('adds the column the module names', () => {
+    expect(migration).toContain(`add column if not exists ${READER_SETTLED_VERSION_COLUMN}`);
+  });
+
+  /*
+   * The settlement tick unschedules itself when it has nothing to do, and on a
+   * deployment where every image marker was current it has already done so.
+   * A new kind of work must re-arm the job that performs it, or the column
+   * sits NULL for ever.
+   */
+  it('re-arms the job that performs the sweep', () => {
+    expect(migration).toContain('ensure_builder_stock_settlement_scheduled()');
+  });
+});
