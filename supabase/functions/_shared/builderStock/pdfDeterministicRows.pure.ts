@@ -401,6 +401,23 @@ function labelAt(tokens: string[], start: number): { field: string; length: numb
   return null;
 }
 
+/**
+ * The fields whose label is also the name of a ROOM.
+ *
+ * Named here because `readLabelledNumbers` must refuse them and nothing else
+ * may: every other numeric field's label (`Land Size`, `Price`, `Build Size`)
+ * names a measurement of the property and never a part of it.
+ */
+const COUNT_FIELDS: ReadonlySet<string> = new Set([
+  'bedrooms', 'bathrooms', 'car_spaces',
+]);
+
+/** Is this label written as more than one of the thing it names? */
+function isPlural(labelTokens: readonly string[]): boolean {
+  const last = labelTokens[labelTokens.length - 1] ?? '';
+  return /s$/i.test(last);
+}
+
 /** `m2`, `m²`, `sqm`, `sq`, `m` — a unit belongs to the number before it. */
 const UNIT_TOKEN = /^(?:m2|m²|sqm|sq|m|sqm\.|m\.)$/i;
 const HAS_DIGIT = /\d/;
@@ -424,6 +441,30 @@ function readLabelledNumbers(line: string): Claim[] | null {
   while (index < tokens.length) {
     const label = labelAt(tokens, index);
     if (!label || !NUMERIC_VALUE_FIELDS.has(label.field)) return null;
+    /*
+     * `BED 3` IS THE THIRD BEDROOM. `BEDROOMS 3` IS THREE BEDROOMS.
+     *
+     * Measured on the production brochure for Lot 315: its floor plan
+     * annotates the rooms `Bed 1`, `Bed 2` and `Bed 3` at 6.7pt, and this
+     * reader claimed `bedrooms: 3` off one and `bedrooms: 2` off another.
+     * The conflict rule caught THAT document — but a plan drawing a single
+     * `Bed 3` would have been claimed silently, and a bedroom count read off
+     * a room's NAME is a fabricated figure.
+     *
+     * The counts are the only fields with this collision, because they are
+     * the only ones whose label also names a ROOM; no floor plan annotates a
+     * room `Land Size` or `Price`. And the two readings are told apart by
+     * NUMBER, which is a property of English rather than of any builder: a
+     * room label names ONE room and is written singular, a count names
+     * several and is written plural. `Bed 3` claims nothing; `Bedrooms 3`,
+     * `Beds 3` and `Baths 2` are unchanged, and so are `3 BED` (the figure
+     * first, read by `readInlineCounts`), `Bedrooms: 3` (the document's own
+     * colon) and a label paired with the cell beside or beneath it.
+     */
+    if (COUNT_FIELDS.has(label.field)
+      && !isPlural(tokens.slice(index, index + label.length))) {
+      return null;
+    }
     index += label.length;
 
     // The value: one token carrying a digit, plus any bare unit after it.
@@ -1585,6 +1626,14 @@ const SAME_LINE_TOLERANCE = 1.8;
  */
 const MIN_COLUMN_GAP = 6;
 
+/**
+ * The narrowest gap that is a SPACE rather than the join inside a word.
+ *
+ * Measured: runs that continue a word abut at |gap| ≤ 0.28, and a page that
+ * wants a space emits one as a run of its own. See `layoutLines`.
+ */
+const MIN_SPACE_GAP = 1;
+
 /** A cell may begin a hair to the left of its column and still be in it. */
 const COLUMN_SLACK = 2;
 
@@ -1630,7 +1679,36 @@ export function layoutLines(items: readonly PdfTextItem[]): LayoutLine[] {
       if (!text) continue;
       const previous = cells[cells.length - 1];
       if (previous && item.x - end < MIN_COLUMN_GAP) {
-        previous.text = `${previous.text} ${text}`.replace(/\s+/g, ' ').trim();
+        /*
+         * RUNS THAT ABUT ARE ONE WORD, AND THE PAGE SUPPLIES ITS OWN SPACES.
+         *
+         * This used to join every run in a cell with a space, which is right
+         * for a table — where a cell's runs are whole words — and wrong for
+         * everything else. A PDF's text layer breaks a run wherever the
+         * exporter placed its glyphs, including inside a number, and the
+         * spaces BETWEEN words are runs of their own. Measured on the
+         * production brochure for Lot 315:
+         *
+         *   "Lot"  gap 0.00  " "  gap 0.00  "3"  gap -0.28  "15" …
+         *   "Enzo 8"  gap 0.00  ".5"
+         *
+         * — so the page says `Lot 315 Central Boulevard` and `Enzo 8.5`,
+         * and inserting a space produced `Lot 3 15 Central Boulevard` and
+         * `Enzo 8 .5`. A lot number the reader could not read and a design
+         * nothing could match. `extractText` gets this right on the same
+         * bytes, which is the evidence that the runs, not the reader, carry
+         * the spacing.
+         *
+         * So a space is inserted only where the page LEFT one: runs that
+         * abut are concatenated. `MIN_SPACE_GAP` is a hair above the
+         * measured abutment (|gap| ≤ 0.28 across every run on that page) and
+         * far below the narrowest real word gap.
+         */
+        const gap = item.x - end;
+        const joiner = gap >= MIN_SPACE_GAP && !/\s$/.test(previous.text)
+          && !/^\s/.test(item.text) ? ' ' : '';
+        previous.text = `${previous.text}${joiner}${item.text}`
+          .replace(/\s+/g, ' ').trimStart();
       } else {
         cells.push({ x: item.x, text });
       }
@@ -1849,11 +1927,45 @@ export function mayHoldSchedule(pageTexts: readonly string[]): boolean {
        * reading underneath it.
        */
       if (tokens.some((token) => VALUE_TOKEN.test(token))) continue;
+      /*
+       * A HEADING ROW IS MOSTLY HEADINGS.
+       *
+       * `headerScore` counts how many of a line's words name a column, and
+       * three was enough — which a SENTENCE reaches without being a table.
+       * Measured on the production brochure for Lot 315, this line put the
+       * whole document through the schedule parser and it came back
+       * `two_cells_in_one_column`, a table's refusal on a document holding
+       * no table:
+       *
+       *   "*Price based on standard inclusions and facade. Image depicts
+       *    upgrade items not included in the price."
+       *
+       * Three recognised words — `price`, `inclusions`, `facade` — out of
+       * sixteen. The two other disclaimers on its first two pages do the
+       * same. Measured against the heading rows this screen exists to admit,
+       * the two populations do not overlap and there is nothing in between:
+       *
+       *   heading rows   8/8, 8/9, 4/8, 6/6   → 0.50 to 1.00
+       *   disclaimers    3/16, 3/38, 3/15     → 0.08 to 0.20
+       *
+       * A column heading names its column and says nothing else, so the
+       * density is the test and the floor sits in the empty gap.
+       */
+      if (headerScore(tokens) / tokens.length < MIN_HEADING_DENSITY) continue;
       return true;
     }
   }
   return false;
 }
+
+/**
+ * How much of a line must name a column before it is read as a heading row.
+ *
+ * Derived, not chosen: see the measurement in `mayHoldSchedule`. The real
+ * heading rows this screen admits run 0.50 to 1.00 and the prose it must
+ * reject runs 0.08 to 0.20, so the floor sits in the gap between them.
+ */
+const MIN_HEADING_DENSITY = 0.4;
 
 /**
  * A token that states a value rather than naming a column.
