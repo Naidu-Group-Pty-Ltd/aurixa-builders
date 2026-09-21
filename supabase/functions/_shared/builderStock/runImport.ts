@@ -780,14 +780,53 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
      * one place that decides which sources that advice is true of.
      */
     const what = sourceKind === 'url' ? 'page' : 'file';
+    /*
+     * WHAT THE READER ACTUALLY SAW, RECORDED WITH THE REFUSAL.
+     *
+     * This path carried no `detail` at all, and while a model stood behind it
+     * that was survivable: a document reaching here had already been offered
+     * to a second reader, and the record that mattered was the model's. With
+     * the model gone this IS the outcome, and an outcome nobody can diagnose
+     * is one that can only be investigated by asking the builder to send the
+     * file again — which is the loop this work exists to end.
+     *
+     * MEASURED 21 SEPTEMBER 2026 on `Lot 37 - Miami 190 - Property
+     * Package.pdf`: the row said `conflicting_values:development_name` and
+     * nothing else, over a document whose text had extracted cleanly at
+     * 3,962 characters. Which two estates it named was unknowable from the
+     * record.
+     *
+     * `detail` is the internal diagnosis — `RunImportFailure` says so, and
+     * `get_upload` and `projectUploadListRow` both project it away — which is
+     * what makes it the right home for document text.
+     */
+    const reading = extraction.deterministicReading;
+    const detail = reading
+      ? JSON.stringify({
+        deterministic_status: reading.status,
+        deterministic_reason: reading.reason,
+        fields_read: reading.diagnostics.fieldsRead ?? null,
+        conflict_field: reading.diagnostics.conflictField ?? null,
+        disputed_fields: reading.diagnostics.disputedFields ?? null,
+        // These live BESIDE the projection, never inside it: the projection
+        // is the safe-to-log one and a value the document stated may not
+        // enter it. See their notes on `StockExtraction`.
+        provisional_rows: (extraction.deterministicProvisional ?? []).length,
+        unaccounted: extraction.deterministicUnaccounted ?? null,
+        ignored: extraction.deterministicIgnored ?? null,
+        placement: extraction.deterministicPlacement ?? null,
+      })
+      : undefined;
     if (SOURCE_HAS_COLUMNS.has(classification.kind)) {
       return fail('no_properties_found', sourceKind === 'url'
         ? 'No properties could be read from that page. Check that it lists one property per row, or upload the stock list instead.'
-        : 'No properties could be read from that file. Check that it lists one property per row with column headings.');
+        : 'No properties could be read from that file. Check that it lists one property per row with column headings.',
+        detail);
     }
     return fail('no_properties_found',
       `We read that ${what}, but it did not describe a property we could list.`
-      + ' If it should, check that it names the lot or address and its price.');
+      + ' If it should, check that it names the lot or address and its price.',
+      detail);
   }
 
   /**

@@ -581,6 +581,41 @@ function rowIdentity(
 }
 
 /**
+ * THE FOOTER THAT IS A SENTENCE, NOT A WORD — JUDGED ON WHAT THE DOCUMENT
+ * WROTE, WHICH IS THE WHOLE OF WHY THE FIRST ATTEMPT DID NOT WORK.
+ *
+ * `SUMMARY_IDENTITY_LABELS` catches `TOTAL`, because a footer under a `LOT`
+ * column is usually one word. A stock list's other footer is a sentence, and
+ * it lands in the same cell:
+ *
+ *     All prices correct at time of publication. E&OE. | | | | | | |
+ *
+ * MEASURED 21 SEPTEMBER 2026 on the acceptance corpus's three-property
+ * schedule, which imported FOUR properties — the fourth a property whose lot
+ * number was that sentence. A phantom row on a builder's card is a fabricated
+ * record, which is the one outcome this reader may never produce.
+ *
+ * IT IS ASKED OF THE SOURCE ROW AND NEVER OF THE NORMALISED RECORD.
+ * `normaliseStockRow` caps a lot number at 39 characters, so by the time the
+ * record exists the cell reads `All prices correct at time of publicatio` —
+ * the `E&OE.` that identifies it has been cut off, and every recogniser in
+ * this module then answers no. A coerced field is not evidence about the
+ * document; the cell is.
+ *
+ * Recognised, never guessed: `isIncidentalContent` is the same closed-list
+ * recogniser brochure mode already applies to this exact sentence — `E&OE`
+ * is a term of art in `SELF_DESCRIPTION` — so the two modes now agree about
+ * one line instead of disagreeing about it.
+ */
+function rowIsPublicationFurniture(row: Record<string, unknown>): boolean {
+  const cells = Object.values(row)
+    .map((value) => String(value ?? '').trim())
+    .filter((value) => value !== '');
+  if (!cells.length) return false;
+  return cells.every((cell) => isIncidentalContent(cell) || readsAsProse(cell));
+}
+
+/**
  * How many distinct fields a document must state before it is a SPECIFICATION
  * rather than prose that happens to contain a label.
  *
@@ -1518,6 +1553,134 @@ function readStreetLine(line: string): string | null {
   return trimmed;
 }
 
+/**
+ * `Lot 9 Perrin Street, Armstrong Creek VIC 3217` — THE SAME ADDRESS ON ONE
+ * LINE, WHICH IS HOW MOST BUILDERS PRINT IT.
+ *
+ * `readStreetLine` above needs the street and the locality on two lines,
+ * DIRECTLY above one another, because that is the shape the two flyers it was
+ * measured on happened to use. That guard is sound and it is also the whole
+ * of the rule: a brochure that sets the same address as one comma-separated
+ * line matched nothing, so the line was unaccounted, and one unaccounted line
+ * stands the document down.
+ *
+ * MEASURED 21 SEPTEMBER 2026 over an acceptance corpus of sixteen generated
+ * documents put through the portal's own import: SEVEN of the nine documents
+ * that produced no property at all failed for exactly this and nothing else —
+ *
+ *     Lot 77, Kestrel Way, Rockbank VIC 3335
+ *     Lot 41 Galloway Road, Bacchus Marsh VIC 3340
+ *     Lot 512, Olivewood Boulevard, Donnybrook VIC 3064
+ *     Lot 100, Sandalford Drive, Werribee VIC 3030
+ *     Lot 233, Ridgeback Street, Kalkallo VIC 3064
+ *     Lot 18, Hollybank Crescent, Melton South VIC 3338
+ *     Lot 9 Perrin Street, Armstrong Creek VIC 3217
+ *
+ * — each the one line the reader could not attribute, on a document stating
+ * its price, its land size and its design in terms the reader read perfectly.
+ *
+ * WHY THIS IS A READER AND NOT AN EXEMPTION. The refusal these documents hit
+ * was correct under the asymmetry it was written for: "a false incidental
+ * loses a field for good, and a false unaccounted costs one model call."
+ * That trade no longer exists — nothing on this path calls a model — so an
+ * unaccounted line now costs the whole document. The answer to that is not to
+ * stop refusing; it is to be able to READ the line. Widening
+ * `isIncidentalContent` to swallow it would have been the other thing, and it
+ * would have thrown away the address as well as the refusal.
+ *
+ * FOUR GUARDS, and they are the two-line rule's own, applied to segments.
+ * The line must END in a locality — a suburb, a state from the closed set of
+ * eight, and four digits — which is the document labelling itself and the
+ * reason nothing else on a builder's page can match. The street segment must
+ * end in a street type from the same closed `STREET_TYPE` set the two-line
+ * reader uses, so one vocabulary answers both shapes rather than two. A
+ * street name carrying a digit is a specification, not a street. And the
+ * whole-document guard is unchanged: these blocks join the same
+ * `addressBlocks` list, so TWO addresses in a document still claim nothing.
+ *
+ * THE LOT IS TAKEN OFF THE FRONT RATHER THAN LEFT IN THE STREET, because
+ * `Lot 9 Perrin Street` is a lot and a street and not an address called
+ * "Lot 9 Perrin Street" — and it is claimed only where the document has not
+ * already said which lot it is, so this can never become a second opinion
+ * about identity.
+ */
+
+/**
+ * The publisher's own address, which is the same SHAPE as a property's and
+ * must never be read as one.
+ *
+ * A positive recognition of a closed list, exactly as `SELF_DESCRIPTION` is:
+ * these are labels a builder puts in front of their own premises. It is not a
+ * shape heuristic and there is no fall-through — an address line this does not
+ * recognise is a candidate, and the one-block-per-document guard is what then
+ * protects it. Anchored at the start, because a label is a prefix: a street
+ * genuinely called `Office Street` is not disqualified by its name.
+ */
+const PUBLISHER_PREMISES = new RegExp(
+  '^\\s*(?:'
+  + 'head\\s+office|registered\\s+office|principal\\s+office|postal\\s+address'
+  + '|display\\s+(?:home|homes|centre|center|village|suite)'
+  + '|sales\\s+(?:office|centre|center|suite)'
+  + '|showroom|office'
+  + ')\\b[\\s.:|\u2013\u2014-]*',
+  'i',
+);
+
+/** A street with no number in front of it: `Perrin Street`, `Kestrel Way`. */
+function readStreetName(segment: string): string | null {
+  const trimmed = String(segment ?? '').trim().replace(/^[,\s]+|[.,\s]+$/g, '');
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return null;
+  if (!STREET_TYPE.has(tokens[tokens.length - 1].toLowerCase())) return null;
+  if (tokens.some((token) => HAS_DIGIT.test(token))) return null;
+  return trimmed;
+}
+
+/** `Lot 9` / `Lot 214` at the head of a segment, returned with what is left. */
+const LEADING_LOT = /^lot\s*[:.]?\s*(\d{1,5}[A-Za-z]?)\b[\s,.-]*/i;
+
+interface ComposedAddress extends LocalityLine {
+  street: string;
+  lot: string | null;
+}
+
+/**
+ * Read one line as a whole Australian address, or nothing.
+ *
+ * Nothing is inferred and nothing is reconstructed: every part returned was
+ * written on the line, and a line that does not satisfy all four guards
+ * returns null rather than a best effort.
+ */
+export function readComposedAddressLine(line: string): ComposedAddress | null {
+  const raw = String(line ?? '').trim();
+  if (!raw) return null;
+  // The publisher's own premises are never a property's address.
+  if (PUBLISHER_PREMISES.test(raw)) return null;
+
+  const segments = raw.split(',').map((s) => s.trim()).filter(Boolean);
+  if (segments.length < 2) return null;
+
+  const locality = readLocalityLine(segments[segments.length - 1]);
+  if (!locality) return null;
+
+  let head = segments.slice(0, -1).join(', ').trim();
+  let lot: string | null = null;
+  const lotMatch = head.match(LEADING_LOT);
+  if (lotMatch) {
+    lot = lotMatch[1];
+    head = head.slice(lotMatch[0].length).trim();
+  }
+  if (!head) return null;
+
+  // Either shape of street is acceptable, and both are the existing rules:
+  // numbered streets answer to `readStreetLine`, unnumbered ones to
+  // `readStreetName`. Neither invents a number the line does not carry.
+  const street = readStreetLine(head) ?? readStreetName(head);
+  if (!street) return null;
+
+  return { street, lot, ...locality };
+}
+
 function splitLocality(claim: Claim): Claim[] {
   if (claim.field !== 'suburb') return [claim];
   const match = claim.value.trim().match(TRAILING_POSTCODE);
@@ -1694,6 +1857,52 @@ const SELF_DESCRIPTION = new RegExp([
   '\\bdisclaimer\\b', '\\bprivacy policy\\b', '\\bQBCC\\b',
   '\\blicen[cs]e (?:no\\b|number\\b|#)', '\\bbuilder\'?s? licen[cs]e\\b',
 ].join('|'), 'i');
+
+/**
+ * A MARKETING SLOGAN, WHICH IS NEVER A DESIGN AND NEVER AN ESTATE.
+ *
+ * MEASURED 21 SEPTEMBER 2026. A brochure drawing `SALE NOW ON` across its
+ * render, uploaded as `LOT 512 - SALE NOW ON.pdf`, imported with
+ * `house_design: "SALE NOW ON"` — and every step that produced it was
+ * working as designed. `corroborateDesignFromFilename` exists precisely
+ * because two independent sources agreeing is good evidence, and here the
+ * filename and the page genuinely did agree. They agreed about an offer.
+ *
+ * The defect is that the corroborator had no notion of a line that cannot be
+ * a property attribute WHATEVER corroborates it. A design is the name of a
+ * house; a slogan is the publisher selling one, and no amount of agreement
+ * turns the second into the first. So this is asked of the CANDIDATE rather
+ * than of the evidence, and it is the same doctrine `isIncidentalContent`
+ * answers to — a closed list, positively recognised, no shape heuristic and
+ * no fall-through. A slogan this list does not carry reads exactly as it does
+ * today.
+ *
+ * It deliberately does NOT make the line incidental. A slogan is still a line
+ * the reader could not attribute, and hiding it would be widening the
+ * incidental rule to cover the reader's own gap — the thing this module's
+ * header forbids. It is barred from being a NAME, and nothing else.
+ */
+const PROMOTIONAL_SLOGAN = new RegExp([
+  '\\bsale\\s+now\\s+on\\b', '\\bon\\s+sale\\s+now\\b', '\\bnow\\s+selling\\b',
+  '\\bsave\\s*\\$', '\\bsavings?\\s+of\\s*\\$', '\\bdiscount\\b', '\\bbonus\\b',
+  '\\bthis\\s+weekend\\s+only\\b', '\\blimited\\s+time\\b', '\\bwhile\\s+stocks?\\s+last\\b',
+  '\\bhurry\\b', '\\bact\\s+(?:now|fast)\\b', "\\bdon'?t\\s+miss\\b",
+  '\\bfree\\s+upgrade\\b', '\\bmove\\s+in\\s+ready\\b', '\\bspecial\\s+offer\\b',
+  '\\bprice\\s+drop\\b', '\\breduced\\b', '\\benquire\\s+(?:now|today)\\b',
+  '\\bregister\\s+(?:now|your\\s+interest)\\b', '\\bbook\\s+(?:now|a\\s+tour)\\b',
+  '\\boffer\\s+ends\\b', '\\bfrom\\s+only\\b', '\\bno\\s+deposit\\b',
+].join('|'), 'i');
+
+/**
+ * May this text stand as the name of a design, an estate or a project?
+ *
+ * Exported because two readers ask it — the filename corroborator and the
+ * place corroborator — and one rule asked twice is the only way they cannot
+ * come to disagree about the same line.
+ */
+export function readsAsPromotion(value: string): boolean {
+  return PROMOTIONAL_SLOGAN.test(String(value ?? ''));
+}
 
 /**
  * Is this line the document talking about itself?
@@ -2416,7 +2625,8 @@ export function readPdfBrochure(
    */
   const placedAt = new Map<string, string>();
   /** Every street-over-locality pair the document draws. See `readLocalityLine`. */
-  const addressBlocks: Array<LocalityLine & { street: string; lines: string[] }> = [];
+  const addressBlocks: Array<LocalityLine
+    & { street: string; lines: string[]; lot?: string | null }> = [];
   /*
    * INDEXED, NOT `forEach`. This loop `return`s a refusal from inside itself
    * on a conflict and on the line ceiling; inside a callback those returns
@@ -2670,6 +2880,22 @@ export function readPdfBrochure(
             });
           }
         }
+        /*
+         * AND THE SAME ADDRESS SET AS ONE LINE. It joins the SAME list, so
+         * the whole-document guard above counts both shapes together and a
+         * document carrying one of each still claims nothing.
+         */
+        const composed = street ? null : readComposedAddressLine(line);
+        if (composed) {
+          addressBlocks.push({
+            street: composed.street,
+            suburb: composed.suburb,
+            state: composed.state,
+            postcode: composed.postcode,
+            lot: composed.lot,
+            lines: [line],
+          });
+        }
         unresolved.push(line);
         if (!placedAt.has(line)) {
           const unit = units[index];
@@ -2778,7 +3004,29 @@ export function readPdfBrochure(
           if (MATERIAL_FIELDS.has(claim.field)) {
             diagnostics.conflictField = claim.field;
             diagnostics.fieldsRead = [...claimed.keys()].sort();
-            return refuse('ambiguous', `conflicting_values:${claim.field}`, diagnostics);
+            /*
+             * THE TWO ANSWERS THEMSELVES, AND NOT JUST THE NAME OF THE
+             * QUESTION.
+             *
+             * MEASURED 21 SEPTEMBER 2026 on `Lot 37 - Miami 190 - Property
+             * Package.pdf`. Its row recorded `conflicting_values:
+             * development_name` and `unaccounted_lines: 0`, which names the
+             * field and states that nothing was left over — so the record
+             * said a document disagreed with itself about its estate and
+             * held NOTHING about what the two estates were. There is no way
+             * to tell from that whether the document names two genuinely
+             * different places or spells one place two ways, and no way to
+             * find out except to ask the builder to send the file again.
+             * That is the diagnostic dead end this whole incident kept
+             * running into.
+             *
+             * It travels as `unaccounted`, which is document text and reaches
+             * `error_detail` — bounded by the same two limits every other
+             * line here answers to — and never as a diagnostic, which is the
+             * safe-to-log projection.
+             */
+            return refuse('ambiguous', `conflicting_values:${claim.field}`, diagnostics,
+              [], [`${claim.field} = ${existing}`, `${claim.field} = ${claim.value}`]);
           }
           disputed.add(claim.field);
           claimed.delete(claim.field);
@@ -2859,6 +3107,16 @@ export function readPdfBrochure(
     for (const field of ['address_line', 'suburb', 'state', 'postcode']) {
       readBy.set(field, 'address_block');
     }
+    /*
+     * The lot the address line itself carried — taken ONLY where the document
+     * has not already said which lot it is, so a line can never become a
+     * second opinion about identity. Where both speak and disagree, the
+     * existing conflict rule is the one that decides.
+     */
+    if (addressBlock.lot && !claimed.has('lot_number')) {
+      claimed.set('lot_number', addressBlock.lot);
+      readBy.set('lot_number', 'address_block');
+    }
   }
   const afterAddress = addressBlock && addressBlockRead
     ? repeats.filter((line) => !addressBlock.lines.includes(line))
@@ -2876,7 +3134,7 @@ export function readPdfBrochure(
     diagnostics.fieldsRead = [...claimed.keys()].sort();
     return refuse('ambiguous', 'filename_lot_disagrees_with_document', diagnostics);
   }
-  if (corroborated) {
+  if (corroborated && !readsAsPromotion(corroborated.claim.value)) {
     claimed.set('house_design', trimSeparators(corroborated.claim).value);
     readBy.set('house_design', 'filename');
   }
@@ -2889,7 +3147,7 @@ export function readPdfBrochure(
    * locality it states under a label of its own.
    */
   const place = corroborateDevelopmentFromPlace(afterFilename, claimed);
-  if (place) {
+  if (place && !readsAsPromotion(place.value)) {
     claimed.set('development_name', trimSeparators(place).value);
     readBy.set('development_name', 'named_place');
   }
@@ -3481,7 +3739,19 @@ export function assemblePdfSchedule(
    * import the readable ones twice; importing them and stopping there would
    * lose the rest with nothing saying so.
    */
+  /*
+   * A row the recogniser names as the publication talking about itself is
+   * DROPPED rather than standing the document down, and the difference from
+   * the paragraph above is that this one is not a judgement. "Every row or no
+   * rows" is right where the alternative is deciding in silence that a line
+   * of a builder's schedule is not stock; an `E&OE` footer is not a silent
+   * decision, it is the same positive recognition brochure mode makes about
+   * the same sentence. Refusing here would lose three real properties to a
+   * disclaimer every stock list carries.
+   */
+  const kept: typeof keyed.rows = [];
   for (const row of keyed.rows) {
+    if (rowIsPublicationFurniture(row as Record<string, unknown>)) continue;
     const record = normaliseStockRow(row);
     if (!record) {
       return refuse('incomplete', 'a_row_could_not_be_normalised', diagnostics);
@@ -3526,7 +3796,12 @@ export function assemblePdfSchedule(
        */
       return refuse('incomplete', 'a_summary_row_is_not_a_property', diagnostics);
     }
+    kept.push(row);
   }
+  if (!kept.length) {
+    return refuse('incomplete', 'a_row_identifies_no_property', diagnostics);
+  }
+  diagnostics.candidates = kept.length;
 
   return {
     status: 'complete',
@@ -3536,7 +3811,7 @@ export function assemblePdfSchedule(
     unaccounted: [],
     ignored: [],
     placement: [],
-    rows: keyed.rows,
+    rows: kept,
     strategy: 'pdf_deterministic_table',
     reason: 'schedule_reconstructed',
     diagnostics,
