@@ -60,8 +60,16 @@
  * 1 — the first marker. Everything imported before it was read by some earlier
  *     reader nobody recorded, so every existing upload is outstanding, which
  *     is what makes this the thing that repairs production.
+ * 2 — a cover refusal now NAMES the test that refused it
+ *     (`coverIdentityRefusal`). The role a picture is given is decided during
+ *     the import and written with its reason, so the reason a card has no
+ *     photograph is only re-derived by reading the source again — which is
+ *     what this marker is for. On `LOT 48 - EMBER - FLYER.pdf` the stored
+ *     refusal was identical before and after the reader was corrected, across
+ *     two entirely different labels, and narrowing it by hand cost a deploy
+ *     cycle and did not settle it.
  */
-export const DETERMINISTIC_READER_VERSION = 1;
+export const DETERMINISTIC_READER_VERSION = 2;
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */
 export const READER_SETTLED_VERSION_COLUMN = 'reader_settled_version';

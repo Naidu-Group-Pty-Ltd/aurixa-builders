@@ -200,6 +200,58 @@ export function identityDifferences(
   });
 }
 
+/**
+ * THE SAME QUESTION FOR A RE-READ OF THE SAME PAGE OF THE SAME DOCUMENT.
+ *
+ * `identity.lot` is a DESIGNATION — `unit_number ?? lot_number` — because a
+ * row that states a unit is identified by it and most rows state only a lot.
+ * That is right for matching a property across DOCUMENTS, and it is the wrong
+ * question for a re-read, because it makes the guard that protects a re-read
+ * from forking turn on the very field a reader correction changes.
+ *
+ * MEASURED 21 SEPTEMBER 2026, on the first source the reader sweep touched.
+ * `LOT 48 - EMBER - FLYER.pdf` had imported with `unit_number` read off its
+ * floor plan's area schedule — `115.30m 12.41sq` — and the corrected reader
+ * declines that value by shape, so the re-read stated no unit at all. Both
+ * readings say `lot_number: 48`; both came off page 1 of the same file; the
+ * bytes had not changed. `identity.lot` went from `115.30m 12.41sq` to `48`,
+ * `ownLotHolds` was false, every other key missed (the flyer names no estate
+ * and no reference), and the import INSERTED a second row. The correction
+ * losing to the document it corrects — and the rows a re-read most needs to
+ * fix are exactly the ones whose designation was wrong, so this refused
+ * precisely the cases it exists for.
+ *
+ * THE RULE. Two readings of one page of one document are the same property
+ * when they agree on a stated LOT NUMBER and at most one of them states a
+ * unit. The lot still has to hold, so a re-read landing on a different lot is
+ * still a different property. And where BOTH state a unit they are held
+ * apart by the ordinary rule, because a page that offers `Lot 48 Unit 1` and
+ * `Lot 48 Unit 2` is a dual-key home stating two dwellings and merging them
+ * would destroy one.
+ *
+ * It only ever ADMITS a match the ordinary rule refuses. Where the lot
+ * numbers are absent, disagree, or both units are stated, this answers
+ * exactly what `identityDifferences` answers today.
+ */
+export function reReadHoldsSameProperty(
+  before: PropertyIdentityFields,
+  after: PropertyIdentityFields,
+): boolean {
+  const ordinary = !identityDifferences(
+    stockPropertyIdentity(before), stockPropertyIdentity(after),
+  ).includes('lot');
+  if (ordinary) return true;
+
+  const lotBefore = normaliseDriveName((before.lot_number ?? '').trim());
+  const lotAfter = normaliseDriveName((after.lot_number ?? '').trim());
+  if (!lotBefore || !lotAfter || lotBefore !== lotAfter) return false;
+
+  // Both stating a unit is a document distinguishing two dwellings on one lot.
+  const unitBefore = (before.unit_number ?? '').trim();
+  const unitAfter = (after.unit_number ?? '').trim();
+  return !unitBefore || !unitAfter;
+}
+
 /** The same question, straight from the two sets of fields. */
 export function sameProperty(
   before: PropertyIdentityFields,

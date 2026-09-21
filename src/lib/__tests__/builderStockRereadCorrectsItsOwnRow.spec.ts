@@ -40,7 +40,7 @@ describe('an anchor identifies a row WITHIN a document', () => {
   });
 
   it('consults it BEFORE the organisation-wide anchor', () => {
-    const own = importStock.indexOf('ownAnchored && ownLotHolds ? ownAnchored.id : undefined');
+    const own = importStock.indexOf('ownAnchorTaken ? ownAnchored!.id : undefined');
     const wide = importStock.indexOf('anchored && !anchorDifferences.length ? anchored.id');
     expect(own).toBeGreaterThan(-1);
     expect(own).toBeLessThan(wide);
@@ -54,9 +54,18 @@ describe('an anchor identifies a row WITHIN a document', () => {
      * that gained a name or a design that arrived from the filename are the
      * corrections being delivered, not evidence of a different property. The
      * lot is the identifier and it still has to hold.
+     *
+     * ASKED OF THE FIELDS, NOT OF THE COLLAPSED IDENTITY — and this assertion
+     * used to demand the opposite. `identity.lot` is `unit_number ??
+     * lot_number`, so keying the guard on it made it turn on the very field a
+     * reader correction changes: `LOT 48 - EMBER - FLYER.pdf` went from a unit
+     * of `115.30m 12.41sq` to none, the guard called it a different property,
+     * and the re-read INSERTED a second row on 21 September 2026. The lot is
+     * still the identifier and still has to hold; it is now read from the
+     * column that states it. See `reReadHoldsSameProperty`.
      */
     expect(importStock).toMatch(
-      /identityDifferences\(ownAnchored!\.identity, identity\)\.includes\('lot'\)/);
+      /reReadHoldsSameProperty\(ownAnchored!\.fields, record\)/);
   });
 
   it('leaves every other key exactly where it was', () => {
