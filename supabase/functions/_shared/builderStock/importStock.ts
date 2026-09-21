@@ -182,6 +182,12 @@ interface AnchoredProperty {
   primaryImageId?: string | null;
 }
 
+/** The same, for a row THIS upload already supplies. See `byOwnAnchor`. */
+interface OwnAnchoredProperty extends AnchoredProperty {
+  /** So an active row can outrank a staged fork of itself. */
+  lifecycle: string | null;
+}
+
 /**
  * The columns the match indexes are built from.
  *
@@ -664,6 +670,42 @@ export async function importStockRecords(
    */
   const byAnchor = new Map<string, AnchoredProperty>();
   /**
+   * THE SAME ANCHOR, BUT ONLY AMONG THE ROWS THIS UPLOAD ALREADY SUPPLIES.
+   *
+   * `pdf:page1` IS NOT A PROPERTY. A brochure carries one property, so every
+   * single-property PDF this deployment has ever imported anchors at
+   * `pdf:page1` — measured across all six live rows, every one of them. The
+   * anchor index is organisation-wide, so those six collapse onto ONE entry
+   * and "newest active row wins" hands a re-read of Lot 27 the row for Lot
+   * 266. The identity guard then correctly refuses to carry anything
+   * forward, and the import inserts a fresh row instead of updating the one
+   * the builder is looking at.
+   *
+   * MEASURED 21 SEPTEMBER 2026. Read again on `LOT 324 - NEX 20` reported
+   * `imported: 1, updated: 0` and produced a SECOND row — carrying the
+   * corrected `Watsons Reach Estate` and a land size of 371 — staged, where
+   * nobody can see it, beside the original still serving `(Watsons Reach
+   * Estate)` and no land size at all. That is what "Read again does nothing"
+   * looks like from the outside, and Lot 266 only escaped it by being the
+   * newest active row at the moment it was re-read.
+   *
+   * AN ANCHOR IDENTIFIES A ROW WITHIN A DOCUMENT, so the document has to be
+   * part of the key. For a re-read the document is the same upload, and the
+   * row it already supplies from that anchor IS the row to correct.
+   *
+   * IT IS CONSULTED FIRST AND GUARDED ON THE LOT ALONE. The organisation-wide
+   * guard asks whether five parts agree, which is right when a source row may
+   * have been RE-USED for a different property — that is a statement about a
+   * CHANGED document. Here the bytes are identical and only this reader has
+   * changed, so a development that gained a name, a design that arrived from
+   * the filename or a building size that was finally read are exactly the
+   * corrections being delivered, not evidence of a different property. The
+   * lot is the identifier and it still has to hold: a re-read that lands on a
+   * different lot is a different property and falls through to every key it
+   * always used.
+   */
+  const byOwnAnchor = new Map<string, OwnAnchoredProperty>();
+  /**
    * ARCHIVED rows that still hold a photograph, indexed by anchor.
    *
    * Deleting a stock list ARCHIVES its rows and the photographs live ON those
@@ -708,6 +750,24 @@ export async function importStockRecords(
     // The identity is computed here and only here — for the rows an anchor can
     // actually reach, rather than for every row the organisation holds.
     byAnchor.set(anchor, { id: item.id, identity: stockPropertyIdentity(item) });
+    /*
+     * AND THE SAME ANCHOR, INSIDE THIS UPLOAD'S OWN ROWS. See `byOwnAnchor`.
+     * An ACTIVE row outranks a staged one: where this bug has already forked a
+     * property, the active row is the one the marketplace is serving and the
+     * one holding its photograph, so it is the row a re-read must correct.
+     */
+    if (item.upload_id === input.uploadId) {
+      const held = byOwnAnchor.get(anchor);
+      const outranks = !held
+        || (item.lifecycle_status === 'active' && held.lifecycle !== 'active');
+      if (outranks) {
+        byOwnAnchor.set(anchor, {
+          id: item.id,
+          identity: stockPropertyIdentity(item),
+          lifecycle: item.lifecycle_status ?? null,
+        });
+      }
+    }
   }
 
   const inventory = await buildInventoryIndex(db, input.organisationId);
@@ -750,17 +810,38 @@ export async function importStockRecords(
        * for a file that stopped mentioning it.
        */
       const identity = stockPropertyIdentity(record);
+      /*
+       * THIS UPLOAD'S OWN ROW AT THIS ANCHOR, FIRST OF ALL. Same document,
+       * same source row: this is the row a re-read exists to correct. Guarded
+       * on the lot alone — see `byOwnAnchor` for why the five-part guard is
+       * the wrong question when only the reader has changed.
+       */
+      const ownAnchored = keys.anchor ? byOwnAnchor.get(keys.anchor) : undefined;
+      const ownLotHolds = Boolean(ownAnchored)
+        && !identityDifferences(ownAnchored!.identity, identity).includes('lot');
+
       const anchored = keys.anchor ? byAnchor.get(keys.anchor) : undefined;
       const anchorDifferences = anchored
         ? identityDifferences(anchored.identity, identity)
         : [];
-      if (anchored && anchorDifferences.length) {
+      /*
+       * AND A RE-READ OF OUR OWN ROW IS NEVER A REPLACEMENT.
+       *
+       * `pdf:page1` is every brochure's anchor, so on an organisation holding
+       * more than one the organisation-wide index answers with somebody
+       * else's property and this reported "the development, the lot and the
+       * house design changed" on a builder's own summary, about a row that
+       * had not moved. Where we know which row we are correcting, there is
+       * nothing to report.
+       */
+      if (anchored && anchorDifferences.length && !(ownAnchored && ownLotHolds)) {
         outcome.replacedProperties.push({
           label, reason: describeIdentityChange(anchorDifferences),
         });
       }
 
-      const existingId = (anchored && !anchorDifferences.length ? anchored.id : undefined)
+      const existingId = (ownAnchored && ownLotHolds ? ownAnchored.id : undefined)
+        ?? (anchored && !anchorDifferences.length ? anchored.id : undefined)
         ?? (keys.reference ? byReference.get(keys.reference) : undefined)
         ?? (keys.developmentUnit
           ? byDevelopmentUnit.get(developmentUnitMatchKey(keys.developmentUnit))
