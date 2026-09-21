@@ -67,13 +67,19 @@ function definitionOf(sql: string, name: string): string | null {
   return sql.slice(at, close + 'END;\n$$;'.length);
 }
 
-/** The last migration that defines `name` — what production actually runs. */
-function lastWriter(name: string): { file: string; definition: string } {
+/** Every migration that defines `name`, in the order the database applies them. */
+function writersOf(name: string): { file: string; definition: string }[] {
   const found = migrations()
     .map(({ file, sql }) => ({ file, definition: definitionOf(sql, name) }))
     .filter((entry): entry is { file: string; definition: string } => entry.definition !== null);
   expect(found.length, `nothing defines ${name}`).toBeGreaterThan(0);
-  return found[found.length - 1];
+  return found;
+}
+
+/** The last migration that defines `name` — what production actually runs. */
+function lastWriter(name: string): { file: string; definition: string } {
+  const writers = writersOf(name);
+  return writers[writers.length - 1];
 }
 
 /** The integer a call site passes to the dispatcher. */
@@ -86,8 +92,23 @@ function capPassedBy(definition: string, prefix: RegExp): number {
 describe('the minute tick tops the fleet up by four', () => {
   const tick = lastWriter(TICK);
 
-  it('is defined last by the migration that raised it', () => {
-    expect(tick.file).toBe('20260920050000_the_minute_tick_tops_up_four.sql');
+  /*
+   * THE PIN IS ON THE CURRENT LAST WRITER, AND IT MOVES WHEN ONE ARRIVES.
+   *
+   * Not decoration: every assertion below reads whichever migration defines
+   * the tick last, so a new definition silently inherits this whole suite's
+   * approval. Failing here is the point — it makes the author of the next
+   * revision come and look at what the four, the retirement condition and the
+   * one-settler fallback are for, rather than discovering later that one of
+   * them did not come across.
+   *
+   * `20260921080000` redefines it to add the stranded-finalisation term to
+   * the keep-alive sum; the width it was raised to by
+   * `20260920050000_the_minute_tick_tops_up_four` is asserted below and is
+   * unchanged.
+   */
+  it('is defined last by the migration this suite has been read against', () => {
+    expect(tick.file).toBe('20260921080000_a_stranded_finalisation_keeps_the_tick_alive.sql');
   });
 
   it('calls the dispatcher with 4', () => {
@@ -121,35 +142,55 @@ describe('the minute tick tops the fleet up by four', () => {
 
   it('still retires itself when a deployment has nothing owed', () => {
     expect(tick.definition).toMatch(
-      /v_outstanding \+ v_fallback \+ v_item_work \+ v_publications\s*\+ v_upload_completion \+ v_blocked = 0/);
+      /v_outstanding \+ v_fallback \+ v_item_work \+ v_publications\s*\+ v_upload_completion \+ v_stranded \+ v_blocked = 0/);
     expect(tick.definition).toContain(
       "cron.unschedule('settle-builder-stock-marketplace-eligibility')");
   });
 
   /*
-   * ONE INTEGER MOVES, and the rest is byte-identical.
+   * ONE TERM ARRIVES, and the rest is byte-identical.
    *
    * The risk in re-installing a function is not the line you meant to change;
    * it is the sweep, the term or the guard that silently does not come with
-   * it. Both definitions are in the tree, so the comparison is available and
-   * costs nothing: strip each one's dispatch block and the remainder must
-   * match exactly.
+   * it. This caught a real one: the first draft of `20260921080000`
+   * transcribed `v_fallback` as `lifecycle_status = 'active'` where every
+   * revision since the baseline has counted `IN ('active', 'staged')`, which
+   * would have stopped the tick waking for a staged property's enrichment and
+   * shown up as nothing at all.
+   *
+   * COMPARED AGAINST THE IMMEDIATELY PREVIOUS WRITER rather than a named file,
+   * so the next revision is held to its own predecessor instead of to one
+   * chosen years ago — a fixed anchor accumulates every intervening change as
+   * noise until the assertion has to be deleted.
    */
   it('changes nothing else about the tick', () => {
-    const previous = definitionOf(
-      read(`${MIGRATIONS}/20260919110000_work_the_tick_found_can_start_a_worker.sql`), TICK);
-    expect(previous).not.toBeNull();
+    const writers = writersOf(TICK);
+    expect(writers.length, 'there is no previous revision to compare against')
+      .toBeGreaterThan(1);
+    const previous = writers[writers.length - 2];
 
-    const withoutDispatch = (definition: string) => {
-      const at = definition.indexOf('v_dispatched := public.builder_stock_dispatch_image_workers');
-      expect(at).toBeGreaterThan(0);
-      const before = definition.slice(0, at);
-      // Everything from the start of the comment that introduces the call.
-      const head = before.slice(0, before.lastIndexOf('\n\n'));
-      return head + definition.slice(definition.indexOf(';', at) + 1);
-    };
+    /**
+     * Everything this revision added, removed.
+     *
+     * The declaration, the count, and the one term inside the retirement
+     * condition. Whatever is left must be what was already there.
+     */
+    const withoutStranded = (definition: string) => definition
+      .replace(/\n  v_stranded integer;/, '')
+      .replace(/\n\n  \/\*\n(?:[^*]|\*(?!\/))*?AND AN IMPORT WHOSE RUN WAS KILLED(?:[^*]|\*(?!\/))*?\*\/\n  SELECT count\(\*\) INTO v_stranded[\s\S]*?interval '15 minutes'\);/, '')
+      .replace(' + v_stranded + v_blocked = 0', ' + v_blocked = 0');
 
-    expect(withoutDispatch(tick.definition)).toBe(withoutDispatch(previous!));
+    const stripComments = (definition: string) => definition
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/--[^\n]*/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    expect(
+      stripComments(withoutStranded(tick.definition)),
+      `${tick.file} changed something other than the stranded-finalisation `
+      + `term it was written for, against ${previous.file}`,
+    ).toBe(stripComments(previous.definition));
   });
 
   it('proves itself against the deployed definition rather than this file', () => {
