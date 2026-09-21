@@ -41,7 +41,7 @@
 import type { runStockImport } from './runImport.ts';
 import {
   DETERMINISTIC_READER_VERSION, READER_SETTLED_VERSION_COLUMN,
-  readerReReadRefusal, reReadSettlesAt, OUR_FAILURE_CODES,
+  readerReReadRefusal, reReadSettlesAt,
   stampable, type ReaderSweepUpload,
 } from './readerVersion.pure.ts';
 import { TELEMETRY_PREFIX } from './importTelemetry.pure.ts';
@@ -352,18 +352,31 @@ async function tradingName(db: any, organisationId: unknown): Promise<string | n
  * So a builder looking at that list is told their brochure failed for a
  * reason that has not applied since the model left this path.
  *
- * NARROW ON PURPOSE. It replaces the recorded reason only where that reason
- * is one of OURS — a credential, an account, a provider, an allowance, a
- * crash — because those are the ones that can be superseded by a read that
- * did not need them. An error already describing the FILE is left alone: the
- * re-read reached the same kind of answer and rewriting it would churn the
- * row for nothing. The STATUS is never touched here, for the reason the
- * branch above gives: rows this source already produced are live stock.
+ * IT WRITES THE CURRENT READ'S ANSWER, ALWAYS — AND THE FIRST VERSION DID
+ * NOT, WHICH COST A WHOLE DIAGNOSIS.
+ *
+ * That version replaced the reason only where the old one was OURS, on the
+ * argument that an error already describing the FILE had reached the same
+ * kind of answer and rewriting it would churn the row for nothing. MEASURED
+ * ON THE VERY NEXT DEPLOY: `Lot 37` was re-read at reader version 4 by a
+ * reader that no longer claims a bullet glyph as an estate — its own log
+ * line shows the field set changing from four to three — and the row went on
+ * displaying the evidence of the 16:56 read under version 3,
+ * `development_name = ·`. The stamp said 4 and the diagnosis said 3, so the
+ * one record an operator can consult described a reader that had been
+ * replaced, and every conclusion drawn from it was about the wrong code.
+ *
+ * "Churn" was never the risk: the sweep reads a source once per reader
+ * version and stamps it, so this writes once per version by construction.
+ * The recorded reason is now whatever the CURRENT reader answers, which is
+ * the only reading that can be acted on.
+ *
+ * The STATUS is still never touched here, for the reason the branch above
+ * gives: rows this source already produced are live stock.
  */
 async function supersedeOurFailure(
   db: any, upload: SweepUploadRow, result: any,
 ): Promise<void> {
-  if (!OUR_FAILURE_CODES.has(String((upload as any).error_code ?? ''))) return;
   try {
     await db.from('builder_stock_uploads').update({
       error_code: String(result.code),

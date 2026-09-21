@@ -102,7 +102,27 @@
  * why it is raised here rather than left for the next change: every row
  * stamped 3 is a row those eight cannot otherwise reach.
  */
-export const DETERMINISTIC_READER_VERSION = 4;
+/*
+ * VERSION 5 — BECAUSE EVERY ROW STAMPED 4 CARRIES A DIAGNOSIS FROM AN
+ * EARLIER READER.
+ *
+ * This one is not a change to the reader. Version 4's re-reads happened and
+ * were correct; what was wrong is the RECORD of them. `supersedeOurFailure`
+ * rewrote a refusal's reason only where the previous reason was one of ours,
+ * so a source whose row already carried a verdict kept the evidence of the
+ * read BEFORE it — measured on `Lot 37 - Miami 190 - Property Package.pdf`,
+ * whose row read `reader_settled_version: 4` beside
+ * `development_name = ·`, evidence produced by the version-3 reader that
+ * still claimed a bullet glyph as an estate. The stamp said one thing and
+ * the diagnosis said another, and the diagnosis is the only part an operator
+ * can act on.
+ *
+ * Every row stamped 4 is in that position, so the honest repair is a pass
+ * that records what the current reader actually answers — which is what
+ * raising this does, for every source at once and without touching a single
+ * row by hand.
+ */
+export const DETERMINISTIC_READER_VERSION = 5;
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */
 export const READER_SETTLED_VERSION_COLUMN = 'reader_settled_version';
