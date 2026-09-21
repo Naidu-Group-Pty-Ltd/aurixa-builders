@@ -79,6 +79,10 @@ import { sha256Hex } from '../_shared/builderStock/rasterPng.ts';
 import { consumeRateLimit } from '../_shared/requestSecurity.ts';
 import type { HyperlinkAvailability } from '../_shared/builderStock/sheetHyperlinks.pure.ts';
 import {
+  BUILDER_SYNC_STATE_SELECT,
+  readSyncStateRow,
+} from '../_shared/builderStock/distributionState.pure.ts';
+import {
   linkDiscoveryFromAvailability,
 } from '../_shared/builderStock/suppliedEvidence.pure.ts';
 import {
@@ -1573,9 +1577,44 @@ Deno.serve(async (req) => {
       const items = data ?? [];
       const decorated = await decorateItems(supabase, items, activeOrganisationId);
 
+      /*
+       * WHERE THIS STOCK ACTUALLY GOES.
+       *
+       * The list used to be headed "these are what the Command Centre sees"
+       * unconditionally, and for an organisation with no authorised
+       * connection that is false — the whole defect this reading exists to
+       * end. The state is the server's view, and a read that FAILS carries no
+       * state at all rather than reviving the claim: `describeDistribution`
+       * answers `unknown` and the page says nothing about sharing.
+       */
+      let distribution: Record<string, unknown> | null = null;
+      try {
+        const { data: sync } = await supabase
+          .from('builder_network_sync_state')
+          .select(BUILDER_SYNC_STATE_SELECT)
+          .eq('builder_organisation_id', activeOrganisationId)
+          .maybeSingle();
+        // Checked rather than cast: this deployment keeps no generated
+        // `Database` type, so the shape is established here or not at all.
+        const reading = readSyncStateRow(sync);
+        if (reading) {
+          distribution = {
+            state: reading.state,
+            authorised_destinations: reading.authorisedDestinations,
+            active_stock_count: reading.activeStockCount,
+            events_queued: reading.eventsQueued,
+            last_delivered_at: reading.lastDeliveredAt,
+          };
+        }
+      } catch {
+        // A distribution reading is never worth failing a stock list for.
+        distribution = null;
+      }
+
       return json({
         success: true,
         records: decorated,
+        distribution,
         pagination: {
           page, page_size: pageSize, total: count ?? 0,
           total_pages: Math.max(1, Math.ceil((count ?? 0) / pageSize)),
