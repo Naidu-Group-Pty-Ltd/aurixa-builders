@@ -65,9 +65,11 @@ const LOT_266_ITEMS: PdfTextItem[] = [
   at(52, 29, 'Lot 266'),
 ];
 
+const FILENAME = 'LOT 266 Crowlea Estate - CURA 20B TEMPIO B - BROCHURE V002 - Copy.pdf';
+
 const reading = readPdfBrochure(
   [LOT_266_ITEMS.map((item) => item.text).join('\n')],
-  { positionedPages: [{ page: 1, items: LOT_266_ITEMS }] },
+  { positionedPages: [{ page: 1, items: LOT_266_ITEMS }], filename: FILENAME },
 );
 const record = reading.rows.length ? normaliseStockRow(reading.rows[0]) : null;
 
@@ -122,5 +124,63 @@ describe('a spaced hyphen is a separator and a hyphen is not', () => {
       + 'Bedrooms: 4\nBathrooms: 2\nCar Spaces: 2\nPrice: $863,850']);
     const row = normaliseStockRow(tight.rows[0]);
     expect(row?.land_size_sqm === 350 || row?.land_size_sqm === null).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The label in front of the value
+// ---------------------------------------------------------------------------
+
+describe('a heading that LEADS is a label, and what follows is the value', () => {
+  it('reads the estate the summary block states', () => {
+    // `Estate Warragul`, in the same column as `Land - …`, `Build - …` and
+    // `Titles - …`, with no separator of its own.
+    expect(record?.development_name).toBe('Warragul');
+  });
+
+  it('lets the filename corroborate the design once an estate is claimed', () => {
+    /*
+     * `corroborateDesignFromFilename` confirms a name the PAGE prints
+     * against the name the builder gave the FILE, and its one precondition
+     * is an estate or a project. So the design was never a second gap: it
+     * was downstream of this one, and closing this closes both.
+     */
+    expect(record?.house_design).toBe('Cura 20B');
+    expect(reading.diagnostics.readBy ?? [])
+      .toEqual(expect.arrayContaining(['house_design:filename']));
+  });
+
+  it('never claims a SECTION HEADING as a value', () => {
+    /*
+     * Driven over all 359 lines that document left unnamed, this claimed
+     * `Estate Warragul` and `House Specifications` — a design called
+     * "Specifications". In a trailing position the word for a thing belongs
+     * to the name in front of it; leading, it is as likely to be
+     * introducing a page, so the label is an allow-list and `House` is not
+     * on it. The design comes from the filename instead.
+     */
+    expect(record?.house_design).not.toBe('Specifications');
+  });
+
+  it('never tears a label off an enumerated designation', () => {
+    // `Stage` and `Release` both resolve to `project_name`, so without the
+    // figure guard `Stage 12 Release 4` claims a project called
+    // `12 Release 4`.
+    const staged = readPdfBrochure(['Lot: 315\n'
+      + 'Estate: Palomino Estate\n'
+      + 'Stage 12 Release 4\n'
+      + 'Bedrooms: 4\nBathrooms: 2\nCar Spaces: 2\nPrice: $863,850']);
+    const row = staged.rows.length ? normaliseStockRow(staged.rows[0]) : null;
+    expect(row?.project_name ?? null).not.toBe('12 Release 4');
+  });
+
+  it('leaves a name that ENDS in its field word to the reader that owns it', () => {
+    // `Palomino Estate` is `readInlineFieldName`'s, and the two must never
+    // compete: one reads a heading at the end, the other at the start.
+    const trailing = readPdfBrochure(['Lot: 315\n'
+      + 'Palomino Estate\n'
+      + 'Bedrooms: 4\nBathrooms: 2\nCar Spaces: 2\nPrice: $863,850']);
+    expect(normaliseStockRow(trailing.rows[0])!.development_name)
+      .toBe('Palomino Estate');
   });
 });
