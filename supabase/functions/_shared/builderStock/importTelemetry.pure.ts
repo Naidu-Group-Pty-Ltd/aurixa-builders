@@ -137,6 +137,11 @@ export interface UploadTelemetry {
    * one to a run that was slow for some other cause. See `importBudget.pure`.
    */
   imageryDeferred?: string | null;
+  /**
+   * Canonical field NAMES a model supplied where the reader could not prove
+   * them. Safe by construction: names, never the values.
+   */
+  completedFields?: string[] | null;
   /** Set only where the import refused, and only with the safe code. */
   outcome?: string | null;
   /**
@@ -195,6 +200,7 @@ export function uploadTelemetry(input: UploadTelemetry): TelemetryRecord {
     with_source_image: input.withSourceImage ?? undefined,
     imagery_outstanding: input.imageryOutstanding ?? undefined,
     imagery_deferred: input.imageryDeferred ?? undefined,
+    fields_completed: names(input.completedFields),
     outcome: input.outcome ?? undefined,
     deterministic_status: input.deterministic?.status ?? undefined,
     deterministic_reason: input.deterministic?.reason ?? undefined,

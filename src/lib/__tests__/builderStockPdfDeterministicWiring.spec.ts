@@ -274,15 +274,44 @@ describe('the linked and image architectures are untouched', () => {
 describe('where a model is decided on', () => {
   const runImport = read('supabase/functions/_shared/builderStock/runImport.ts');
 
-  it('the existing guard is the only thing that reaches the assisted reader', () => {
-    // Untouched: rows present means no model, for every format alike.
+  it('the existing guard is the only thing that READS the document with a model', () => {
+    // Untouched: rows present means the document is not re-read, for every
+    // format alike.
     expect(runImport).toContain('if (!rows.length && extraction.visionImages.length)');
     expect(runImport).toContain('} else if (!rows.length && extraction.text) {');
-    // Exactly two calls into the model path, and both are inside that guard.
-    expect((runImport.match(/extractStockRowsFrom(Text|Images)\(/g) ?? [])).toHaveLength(2);
-    // No second opinion about whether a PDF should be read by a model.
+    // No second opinion about whether a PDF should be READ by a model.
     expect(runImport).not.toContain('deterministicReading?.status ===');
     expect(runImport).not.toContain("classification.kind === 'pdf'");
+  });
+
+  /*
+   * AND A THIRD CALL EXISTS, WHICH IS NOT A READING.
+   *
+   * This assertion used to be "exactly two calls into the model path", which
+   * was the right guard while the only thing a model could do here was read
+   * the document instead of the reader. Field completion is a different act:
+   * the deterministic reading STANDS, and what it could not prove goes to the
+   * model as a short list of named fields. The guard that matters is
+   * therefore no longer "how many calls" but "can a model displace a reading"
+   * — so that is what is asserted, and raising the count alone would have
+   * been agreeing with a change rather than checking it.
+   */
+  it('the third call completes gaps and can never displace a reading', () => {
+    expect((runImport.match(/extractStockRowsFrom(Text|Images)\(/g) ?? [])).toHaveLength(3);
+
+    const completion = runImport.slice(
+      runImport.indexOf('WHAT THE READER COULD NOT PROVE IS ASKED FOR BY NAME'),
+      runImport.indexOf("status: 'imported',"));
+
+    // It runs only where a reading already exists and is short of something.
+    expect(completion).toMatch(/rows\.length === 1 && completionWorthAsking\(rows\[0\]\)/);
+    // Its answer reaches `rows` ONLY through the additive merge — never by
+    // assignment, which is what the two reading branches above do.
+    expect(completion).toContain('mergeCompletion(rows[0], completion.rows[0])');
+    expect(completion).toMatch(/rows = \[merged\.row\];/);
+    expect(completion).not.toMatch(/rows = completion\.rows/);
+    // And both sides must agree there is exactly one property.
+    expect(completion).toContain('completionMayMerge(rows, completion.rows)');
   });
 
   it('the PDF branch writes rows on `complete` and on nothing else', () => {
