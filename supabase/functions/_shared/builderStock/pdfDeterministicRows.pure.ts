@@ -233,6 +233,23 @@ export interface PdfDeterministicReading {
    * because the log contract stands.
    */
   ignored: string[];
+  /**
+   * WHERE EACH OF THOSE LINES WAS DRAWN — `p1 r7 x40`, aligned by index.
+   *
+   * WHY GEOMETRY AND NOT MORE TEXT. The first reading of `LOT 266 Crowlea
+   * Estate` handed back its page-1 block and the block did not settle the
+   * question it was captured for: `Estate Warragul` is either one run naming
+   * something, or a label in one column and its value in another, and a
+   * flattened line cannot be told apart from a flattened pair. The same
+   * ambiguity decides `Lot Size` over `520m2` — the property's real land
+   * size, which this reader did not take. Numbers only, so nothing here is
+   * document text and the alignment is what carries the meaning.
+   *
+   * FIRST OCCURRENCE OF A GIVEN LINE. A brochure prints `•` forty times and
+   * they are all the same bullet; recording each one's own coordinate would
+   * buy nothing and cost the entries that matter.
+   */
+  placement: string[];
   /** Set on `complete` and null otherwise. Recorded as `parse_strategy`. */
   strategy: PdfDeterministicStrategy | null;
   /** Machine-readable, stable, and safe to log. Never a fragment of the document. */
@@ -370,10 +387,13 @@ function refuse(
   provisional: Array<Record<string, unknown>> = [],
   unaccounted: string[] = [],
   ignored: string[] = [],
+  placedAt: ReadonlyMap<string, string> = new Map(),
 ): PdfDeterministicReading {
+  const kept = boundLines(ignored);
   return {
     status, rows: [], provisional, strategy: null, reason, diagnostics,
-    ignored: boundLines(ignored),
+    ignored: kept,
+    placement: kept.map((line) => placedAt.get(line) ?? ''),
     // Bounded on both axes: enough to name the gap, never a copy of the page.
     unaccounted: unaccounted.slice(0, MAX_UNACCOUNTED_REPORTED)
       .map((line) => line.slice(0, MAX_UNACCOUNTED_LINE_CHARS)),
@@ -386,10 +406,21 @@ const MAX_UNACCOUNTED_LINE_CHARS = 120;
 /**
  * And a wider bound for the lines a reader ATTRIBUTED TO NOTHING, because a
  * missing address is somewhere among them and twelve lines of a brochure's
- * several hundred would be a lottery. Still a bound: this is a diagnosis, not
- * a copy of the document.
+ * several hundred would be a lottery.
+ *
+ * IT WAS 80 AND THAT WAS A SAMPLE, NOT A CEILING. `LOT 266 Crowlea Estate`
+ * left 359 lines unnamed and the eighty that came back stopped in the middle
+ * of the inclusions list — so the one question the capture exists to answer,
+ * what this document says about where the property IS, was answered for page
+ * one and cut off for the rest. A brochure of this kind runs to about 360
+ * lines, so this is a ceiling above the whole document rather than a window
+ * onto part of it, which is what a diagnosis needs to be.
+ *
+ * Still a bound, and still 120 characters a line: an unbounded copy of a
+ * document into a column is its own defect, and the column is internal —
+ * `get_upload` and `projectUploadListRow` both project it away.
  */
-const MAX_IGNORED_REPORTED = 80;
+const MAX_IGNORED_REPORTED = 400;
 
 function boundLines(lines: readonly string[]): string[] {
   return lines.slice(0, MAX_IGNORED_REPORTED)
@@ -2116,7 +2147,21 @@ export function readPdfBrochure(
   if (positioned.size) diagnostics.mode = 'brochure';
 
   let scanned = 0;
-  for (const units of pages) {
+  /*
+   * WHERE A LINE THIS READER COULD NOT NAME WAS DRAWN. Numbers only, and the
+   * first occurrence of a given line wins — see `placement` on the reading.
+   * Recorded as lines are seen, because every list downstream of here is a
+   * filtered copy of the last and an index cannot survive that.
+   */
+  const placedAt = new Map<string, string>();
+  /*
+   * INDEXED, NOT `forEach`. This loop `return`s a refusal from inside itself
+   * on a conflict and on the line ceiling; inside a callback those returns
+   * would leave the callback and the reader would carry on as though nothing
+   * had been refused.
+   */
+  for (let pageIndex = 0; pageIndex < pages.length; pageIndex++) {
+    const units = pages[pageIndex];
     /** Units already spent as another unit's value. */
     const consumed = new Set<number>();
     for (let index = 0; index < units.length; index++) {
@@ -2339,6 +2384,10 @@ export function readPdfBrochure(
          * attached, and that page may come after this one.
          */
         unresolved.push(line);
+        if (!placedAt.has(line)) {
+          const unit = units[index];
+          placedAt.set(line, `p${pageIndex + 1} r${unit.row} x${Math.round(unit.x)}`);
+        }
         continue;
       }
 
@@ -2628,7 +2677,7 @@ export function readPdfBrochure(
    */
   if (stillUnresolved.length > 0) {
     return refuse('incomplete', 'unaccounted_specification_lines', diagnostics,
-      provisionalFrom(claimed), stillUnresolved, ignoredText);
+      provisionalFrom(claimed), stillUnresolved, ignoredText, placedAt);
   }
 
   /*
@@ -2690,6 +2739,7 @@ export function readPdfBrochure(
   }
 
   diagnostics.candidates = 1;
+  const keptIgnored = boundLines(ignoredText);
   return {
     status: 'complete',
     // Nothing provisional on a complete reading: the rows ARE the reading,
@@ -2700,7 +2750,8 @@ export function readPdfBrochure(
     // leaves these behind — a brochure prints far more than a stock row
     // holds — and they are the only evidence of what the document said in
     // the space a missing field would have come from.
-    ignored: boundLines(ignoredText),
+    ignored: keptIgnored,
+    placement: keptIgnored.map((line) => placedAt.get(line) ?? ''),
     rows: [raw],
     strategy: 'pdf_deterministic_brochure',
     reason: 'explicit_fields_read',
@@ -3128,6 +3179,7 @@ export function assemblePdfSchedule(
     provisional: [],
     unaccounted: [],
     ignored: [],
+    placement: [],
     rows: keyed.rows,
     strategy: 'pdf_deterministic_table',
     reason: 'schedule_reconstructed',

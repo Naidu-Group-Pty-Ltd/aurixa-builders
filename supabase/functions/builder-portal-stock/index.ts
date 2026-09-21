@@ -296,7 +296,8 @@ Deno.serve(async (req) => {
      * never returned — `get_upload` projects it away, and so does
      * `projectUploadListRow`.
      *
-     * THE CEILING IS 16,000 AND WAS 2,000, THEN 6,000. The diagnosis carries
+     * THE CEILING FOLLOWS THE PAYLOAD, AND WAS 2,000, THEN 6,000, THEN
+     * 16,000. The diagnosis carries
      * the lines the deterministic reader could not account for, which is the
      * one fact that turns "this template failed" into a vocabulary fix — and
      * at 2,000 the JSON was truncated before reaching them, so the field
@@ -318,7 +319,7 @@ Deno.serve(async (req) => {
         status: 'failed',
         error_code: code,
         error_message: message,
-        error_detail: detail ? { detail: String(detail).slice(0, 16_000) } : null,
+        error_detail: detail ? { detail: String(detail).slice(0, 128_000) } : null,
         processing_completed_at: new Date().toISOString(),
       }).eq('id', uploadId).eq('organisation_id', activeOrganisationId);
       return json({ success: false, error: message, code }, 400);
@@ -431,7 +432,13 @@ Deno.serve(async (req) => {
        * import that succeeded still reads as one.
        */
       const importDiagnosis = result.deterministicIgnored?.length
-        ? { deterministic_ignored: result.deterministicIgnored }
+        ? {
+          deterministic_ignored: result.deterministicIgnored,
+          // Where each of those was drawn, aligned by index. A flattened line
+          // cannot be told apart from a flattened PAIR, and which of the two
+          // `Estate Warragul` is decides whether a suburb was ever stated.
+          deterministic_placement: result.deterministicPlacement ?? null,
+        }
         : null;
       const outcomeDetail = result.summary.failures.length
         ? { failures: result.summary.failures }

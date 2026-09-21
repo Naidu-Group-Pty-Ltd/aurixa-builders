@@ -154,6 +154,8 @@ export interface RunImportSuccess {
    * which `get_upload` and `projectUploadListRow` both project away.
    */
   deterministicIgnored?: string[] | null;
+  /** Where each of those lines was drawn, aligned by index. Numbers only. */
+  deterministicPlacement?: string[] | null;
   /** The status the upload row was left in. */
   uploadStatus: 'enriching' | 'partially_complete';
 }
@@ -552,7 +554,8 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
           // that the document states in words this reader does not know will
           // be sitting. Same internal-only channel, same bound at the reader.
           deterministic_ignored: extraction.deterministicIgnored ?? null,
-        }).slice(0, 15_000),
+          deterministic_placement: extraction.deterministicPlacement ?? null,
+        }).slice(0, 120_000),
         status: reading.status,
       };
     }
@@ -811,6 +814,7 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     uploadStatus: outcome.failed > 0 ? 'partially_complete' : 'enriching',
     deterministicReading: extraction.deterministicReading ?? null,
     deterministicIgnored: extraction.deterministicIgnored ?? null,
+    deterministicPlacement: extraction.deterministicPlacement ?? null,
   };
 }
 
