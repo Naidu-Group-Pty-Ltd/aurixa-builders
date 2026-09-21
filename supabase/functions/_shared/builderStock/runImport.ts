@@ -392,22 +392,99 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
       });
     } catch { /* a line that cannot be written is not an import failure */ }
 
-    return {
-      ok: false,
-      code: reading.code,
-      message: reading.message,
-      // Structured, so the row says which models were tried and how each
-      // failed rather than only that some number of them did.
-      detail: JSON.stringify({
-        failure: failure.code,
-        attempts: failure.attemptCount,
-        categories: failure.categories,
-        diagnosis: failure.diagnosis,
-        strategy: extraction.strategy,
-        text_length: extraction.text?.length ?? 0,
-      }).slice(0, 1500),
-      status: reading.status,
-    };
+    /*
+     * =====================================================================
+     * AND THE READING WE ALREADY HAVE IS BETTER THAN NOTHING AT ALL.
+     * =====================================================================
+     *
+     * EVERY failure code that reaches here is a fact about US. The union says
+     * so in its own words: an unconfigured credential, a provider outage, a
+     * timeout, a spent allowance, an account out of credit, a model that
+     * answered in the wrong shape. Not one of them is a statement about the
+     * builder's document — which this reader had already read.
+     *
+     * MEASURED, 21 SEPTEMBER 2026.
+     * `LOT 817 - ELARA 18 TEMPIO LIGHT - BROCHURE V002 (1).pdf`, 8,840,575
+     * bytes, 6 pages, 13,079 characters of text extracted cleanly. The
+     * deterministic reader read `development_name`, `expected_completion`,
+     * `house_design` and `price`, stood down on ONE unaccounted line, and the
+     * assisted reader it deferred to answered
+     * `openrouter/openai/gpt-5.6-luna: refused 402` — no credit on the
+     * account. Four fields read off the document were discarded because a
+     * vendor was unpaid, and the builder was told their stock list could not
+     * be imported. Every brochure the deterministic reader does not fully own
+     * fails this way for as long as that account stays empty: one vendor's
+     * billing state is the whole pathway.
+     *
+     * THE BROCHURE GATE'S REASONING IS UNCHANGED AND STILL RIGHT. It stands a
+     * document down so as not to "SUPPRESS the assisted reader, which can
+     * read both" — and that is conditional on the assisted reader existing.
+     * Here it demonstrably does not, so there is nothing left to suppress and
+     * deferring is simply discarding.
+     *
+     * WHAT IS IMPORTED IS THINNER, NEVER WRONGER. `provisionalFrom` applied
+     * every gate below the one that refused: the record names a property, is
+     * not a summary row, carries at least `MIN_BROCHURE_FIELDS`, maps to
+     * canonical headers and survives `normaliseStockRow`. Each value in it was
+     * read off the page by a named reader. Nothing is inferred, and a field
+     * nothing claimed stays absent rather than being guessed — this
+     * repository's own rule, paid for by `rentalEvidence` and
+     * `placesAvailability`: absent is never zero.
+     *
+     * AND IT IS RECORDED AS WHAT IT IS. `parse_strategy` says the reading was
+     * partial, so a thin record can never be mistaken for a full one, and
+     * re-reading the source once the assisted reader is available replaces it
+     * — `reprocess_upload` exists for exactly that and matches on identity.
+     */
+    const provisional = extraction.deterministicProvisional ?? [];
+    if (provisional.length) {
+      rows = provisional;
+      strategy = 'pdf_deterministic_partial';
+      try {
+        console.warn(`${TELEMETRY_PREFIX} assisted reader unavailable, partial reading stands`, {
+          phase: 'deterministic_fallback',
+          upload_id: upload.id,
+          organisation_id: organisationId,
+          failure_code: failure.code,
+          rows: provisional.length,
+          deterministic_reason: extraction.deterministicReading?.reason ?? null,
+          deterministic_fields: extraction.deterministicReading?.diagnostics.fieldsRead ?? null,
+        });
+      } catch { /* a line that cannot be written is not an import failure */ }
+    } else {
+      return {
+        ok: false,
+        code: reading.code,
+        message: reading.message,
+        // Structured, so the row says which models were tried and how each
+        // failed rather than only that some number of them did.
+        detail: JSON.stringify({
+          failure: failure.code,
+          attempts: failure.attemptCount,
+          categories: failure.categories,
+          diagnosis: failure.diagnosis,
+          strategy: extraction.strategy,
+          text_length: extraction.text?.length ?? 0,
+          /*
+           * AND THE LINES THAT STOOD THE DOCUMENT DOWN.
+           *
+           * The one thing needed to close a vocabulary gap and the one thing
+           * nothing recorded. Nine of twelve brochures on 21 September 2026
+           * imported with no model call; every one that did not was a
+           * template this reader had not learned, and `LOT 717 - ENZO 10.5
+           * MODERN` failed twice and then imported from the same bytes once
+           * it had. Knowing WHICH line is the whole difference between
+           * fixing that and guessing at it.
+           *
+           * Internal only: `error_detail` is projected away by `get_upload`
+           * and by `projectUploadListRow`, so no builder is shown their own
+           * document quoted back at them, and it is bounded at the reader.
+           */
+          deterministic_unaccounted: extraction.deterministicUnaccounted ?? null,
+        }).slice(0, 4000),
+        status: reading.status,
+      };
+    }
   }
 
   const { error: stampError } = await supabase.from('builder_stock_uploads').update({

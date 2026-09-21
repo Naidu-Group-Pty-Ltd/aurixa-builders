@@ -147,12 +147,21 @@ export function assistedReaderFailure(
         /*
          * NO RETRY PROMISE HERE. The model answered; the answer was not usable.
          * "Try again shortly" would be false — the same request produces the
-         * same answer — so this says our team has it, which is true, and
-         * `retryable: false` keeps the UI from drawing a button that cannot
-         * work.
+         * same answer — and `retryable: false` keeps the UI from drawing a
+         * button that cannot work.
+         *
+         * AND IT NO LONGER CLAIMS AN ALERT. This said "Our team has been
+         * alerted", under a comment asserting that was true. Nothing in this
+         * repository alerts on it: the only trace is a `console.error` in the
+         * edge log and `error_detail` on the row, which nothing watches and
+         * `get_upload` projects away. A promise the product does not keep is
+         * worse than no promise, because it tells a builder to stop looking.
+         * What IS true is that the attempt is recorded against this stock
+         * list, where whoever administers the workspace can see it.
          */
         message: `We read that ${what}, but the assisted property reader did not return a`
-          + ` usable answer. Our team has been alerted.${hint}`,
+          + ` usable answer. The attempt is recorded against this stock list for`
+          + ` whoever administers this workspace.${hint}`,
         status: 502,
         retryable: false,
       };
@@ -163,12 +172,23 @@ export function assistedReaderFailure(
         /*
          * NOT "try again shortly". The provider turned the request away on
          * credentials or credit, and neither is something waiting fixes or
-         * the builder can act on. Same shape as the budget reading: say it did
-         * not happen, say somebody is on it, offer no button that cannot work.
+         * the builder can act on.
+         *
+         * AND IT NAMES WHICH KIND, because the two remedies are different
+         * people. Measured 21 SEPTEMBER 2026: every assisted read on this
+         * deployment answered `refused 402` — an account with no credit — and
+         * the sentence a builder got, "the assisted property reader is not
+         * currently able to run for this workspace", describes a broken
+         * feature rather than an unpaid bill and sends nobody anywhere. The
+         * builder still cannot act on it, so the wording stays calm and
+         * blameless; what changes is that it points at the account rather
+         * than at the product, and it no longer claims an alert nothing
+         * sends.
          */
-        message: `We read that ${what}, but the assisted property reader is not currently`
-          + ` able to run for this workspace, so it was not read. Our team has been`
-          + ` alerted.${hint}`,
+        message: `We read that ${what}, but the assisted property reader was turned away`
+          + ` — its account for this workspace needs credentials or credit before it`
+          + ` can run. The attempt is recorded against this stock list for whoever`
+          + ` administers this workspace.${hint}`,
         status: 503,
         retryable: false,
       };
@@ -184,8 +204,9 @@ export function assistedReaderFailure(
          * again before the month turns over produces exactly this.
          */
         message: `We read that ${what}, but the assisted property reader has reached its`
-          + ` monthly limit for this workspace, so it was not read. Our team has been`
-          + ` alerted.${hint}`,
+          + ` monthly limit for this workspace, so it was not read. The attempt is`
+          + ` recorded against this stock list for whoever administers this`
+          + ` workspace.${hint}`,
         status: 503,
         retryable: false,
       };

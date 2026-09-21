@@ -293,7 +293,17 @@ Deno.serve(async (req) => {
      * Record a failure on the source and answer the builder.
      *
      * `error_detail` is the internal diagnosis and is written to the row but
-     * never returned — `get_upload` projects it away.
+     * never returned — `get_upload` projects it away, and so does
+     * `projectUploadListRow`.
+     *
+     * THE CEILING IS 6,000 AND WAS 2,000. The diagnosis now carries the lines
+     * the deterministic reader could not account for, which is the one fact
+     * that turns "this template failed" into a vocabulary fix — and at 2,000
+     * the JSON was truncated before reaching them, so the field would have
+     * recorded a diagnosis with its own evidence cut off. The reader bounds
+     * what it reports (12 lines, 120 characters each), so this is a ceiling
+     * on a bounded payload rather than a licence to copy a document into a
+     * column.
      */
     const failUpload = async (
       uploadId: string, code: string, message: string, detail?: unknown,
@@ -302,7 +312,7 @@ Deno.serve(async (req) => {
         status: 'failed',
         error_code: code,
         error_message: message,
-        error_detail: detail ? { detail: String(detail).slice(0, 2000) } : null,
+        error_detail: detail ? { detail: String(detail).slice(0, 6000) } : null,
         processing_completed_at: new Date().toISOString(),
       }).eq('id', uploadId).eq('organisation_id', activeOrganisationId);
       return json({ success: false, error: message, code }, 400);

@@ -132,6 +132,26 @@ export interface StockExtraction {
    * NAMES only, so it is safe to log.
    */
   deterministicReading?: PdfDeterministicDiagnostics;
+  /**
+   * The record the deterministic reader HAD when it stood down.
+   *
+   * SEPARATE FROM `deterministicReading` ON PURPOSE. That field is the
+   * safe-to-log projection — counts, field names and status words, never a
+   * value the document stated — and putting a read record inside it would put
+   * a builder's price in an import log. This carries the values; nothing logs
+   * it, and only `runStockImport` reads it.
+   *
+   * Empty unless the reader refused AND what it had still identified a
+   * property. See `provisionalFrom` in `pdfDeterministicRows.pure.ts`.
+   */
+  deterministicProvisional?: Array<Record<string, unknown>>;
+  /**
+   * The lines the deterministic reader could not account for, verbatim and
+   * bounded. Document text, so it is kept out of `deterministicReading` (the
+   * safe-to-log projection) and travels only to the upload row's internal
+   * `error_detail`. See the field's note in `pdfDeterministicRows.pure.ts`.
+   */
+  deterministicUnaccounted?: string[];
 }
 
 /**
@@ -875,6 +895,13 @@ export async function extractStockFile(
         reason: reading.reason,
         diagnostics: reading.diagnostics,
       };
+      // Values, kept out of the projection above and read by one caller.
+      if (reading.provisional.length) {
+        result.deterministicProvisional = reading.provisional;
+      }
+      if (reading.unaccounted.length) {
+        result.deterministicUnaccounted = reading.unaccounted;
+      }
       /*
        * `<= MAX_ROWS` rather than a slice. Every other branch truncates at the
        * ceiling and is right to — it has no second reader behind it — but
