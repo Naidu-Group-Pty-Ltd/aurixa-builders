@@ -211,6 +211,28 @@ export interface PdfDeterministicReading {
    * defect.
    */
   unaccounted: string[];
+  /**
+   * The lines this reader SAW and attributed to nothing, verbatim.
+   *
+   * WHY, AND IT IS THE LAST TIME THIS QUESTION COSTS A DEPLOY CYCLE. A field
+   * that does not populate is answerable in exactly one way: what did the
+   * document say, and what did the reader make of it. `diagnostics` carries
+   * counts by contract — it is written to the import log — so "359 ignored
+   * lines" is all production has ever recorded, and every gap has had to be
+   * guessed at or reproduced from a file nobody here can reach.
+   *
+   * MEASURED 21 SEPTEMBER 2026: `LOT 266 Crowlea Estate - CURA 20B TEMPIO B`
+   * imported with no address, no suburb, no state, no estate and no design,
+   * beside 359 ignored lines. Nothing anywhere says whether that brochure
+   * states a street address at all — so whether this is a vocabulary gap or
+   * a document that simply does not carry one cannot be settled.
+   *
+   * These travel to the upload row's `error_detail`, which is internal:
+   * `get_upload` and the upload select both project it away, so no builder is
+   * shown their own document quoted back. Bounded, and NOT in `diagnostics`,
+   * because the log contract stands.
+   */
+  ignored: string[];
   /** Set on `complete` and null otherwise. Recorded as `parse_strategy`. */
   strategy: PdfDeterministicStrategy | null;
   /** Machine-readable, stable, and safe to log. Never a fragment of the document. */
@@ -347,9 +369,11 @@ function refuse(
   diagnostics: PdfDeterministicReading['diagnostics'],
   provisional: Array<Record<string, unknown>> = [],
   unaccounted: string[] = [],
+  ignored: string[] = [],
 ): PdfDeterministicReading {
   return {
     status, rows: [], provisional, strategy: null, reason, diagnostics,
+    ignored: boundLines(ignored),
     // Bounded on both axes: enough to name the gap, never a copy of the page.
     unaccounted: unaccounted.slice(0, MAX_UNACCOUNTED_REPORTED)
       .map((line) => line.slice(0, MAX_UNACCOUNTED_LINE_CHARS)),
@@ -359,6 +383,18 @@ function refuse(
 /** Enough to name a vocabulary gap; never enough to reconstruct a document. */
 const MAX_UNACCOUNTED_REPORTED = 12;
 const MAX_UNACCOUNTED_LINE_CHARS = 120;
+/**
+ * And a wider bound for the lines a reader ATTRIBUTED TO NOTHING, because a
+ * missing address is somewhere among them and twelve lines of a brochure's
+ * several hundred would be a lottery. Still a bound: this is a diagnosis, not
+ * a copy of the document.
+ */
+const MAX_IGNORED_REPORTED = 80;
+
+function boundLines(lines: readonly string[]): string[] {
+  return lines.slice(0, MAX_IGNORED_REPORTED)
+    .map((line) => line.slice(0, MAX_UNACCOUNTED_LINE_CHARS));
+}
 
 // ---------------------------------------------------------------------------
 // The canonical header for each field this module may claim
@@ -1203,8 +1239,33 @@ function splitAddress(claim: Claim): Claim[] {
  */
 const EDGE_SEPARATORS = /^[\s,;:·•\u2013\u2014-]+|[\s,;:·•\u2013\u2014-]+$/g;
 
+/**
+ * A NAME THE DOCUMENT PUT IN BRACKETS IS STILL THE NAME.
+ *
+ * MEASURED 21 SEPTEMBER 2026: `LOT 324 - NEX 20` imported its estate as
+ * `(Watsons Reach Estate)`, brackets and all, and the marketplace drew them.
+ * A brochure brackets an estate where it sits beside something else — the
+ * design, the builder — and the brackets are the document's punctuation, not
+ * part of what the place is called.
+ *
+ * BALANCED ONLY, and stripped as a PAIR. A name opening with a bracket and
+ * not closing one is a name this reader has cut in half somewhere, and
+ * quietly removing the survivor would hide that; it is left exactly as read.
+ */
+const WRAPPING_BRACKETS = /^\((.+)\)$|^\[(.+)\]$/;
+
+function unwrapBrackets(value: string): string {
+  const match = value.trim().match(WRAPPING_BRACKETS);
+  if (!match) return value;
+  const inner = (match[1] ?? match[2] ?? '').trim();
+  // An inner bracket of its own means the pair is not this name's wrapper.
+  if (!inner.length || /[()\[\]]/.test(inner)) return value;
+  return inner;
+}
+
 function trimSeparators(claim: Claim): Claim {
-  const value = claim.value.replace(EDGE_SEPARATORS, '');
+  const value = unwrapBrackets(claim.value.replace(EDGE_SEPARATORS, ''))
+    .replace(EDGE_SEPARATORS, '');
   if (!value.length || value === claim.value) return claim;
   return { ...claim, value };
 }
@@ -2422,6 +2483,12 @@ export function readPdfBrochure(
   const stillUnresolved = placed.filter((line) =>
     blockingFieldNamed(line) !== null && statesAValue(line));
   diagnostics.ignoredLines = placed.length - stillUnresolved.length;
+  /*
+   * The same lines, kept rather than only counted. `placed` is what survived
+   * every attribution rule, so this is precisely "what the document said that
+   * became no field" — the one thing needed to answer why a field is empty.
+   */
+  const ignoredText = placed.filter((line) => !stillUnresolved.includes(line));
 
   diagnostics.fieldsRead = [...claimed.keys()].sort();
   diagnostics.unaccountedLines = stillUnresolved.length;
@@ -2522,7 +2589,7 @@ export function readPdfBrochure(
    */
   if (stillUnresolved.length > 0) {
     return refuse('incomplete', 'unaccounted_specification_lines', diagnostics,
-      provisionalFrom(claimed), stillUnresolved);
+      provisionalFrom(claimed), stillUnresolved, ignoredText);
   }
 
   /*
@@ -2590,6 +2657,11 @@ export function readPdfBrochure(
     // and a complete reading accounted for every line by definition.
     provisional: [],
     unaccounted: [],
+    // What the reader PLACED but could not name. A complete reading still
+    // leaves these behind — a brochure prints far more than a stock row
+    // holds — and they are the only evidence of what the document said in
+    // the space a missing field would have come from.
+    ignored: boundLines(ignoredText),
     rows: [raw],
     strategy: 'pdf_deterministic_brochure',
     reason: 'explicit_fields_read',
@@ -3016,6 +3088,7 @@ export function assemblePdfSchedule(
     // and a complete reading accounted for every line by definition.
     provisional: [],
     unaccounted: [],
+    ignored: [],
     rows: keyed.rows,
     strategy: 'pdf_deterministic_table',
     reason: 'schedule_reconstructed',

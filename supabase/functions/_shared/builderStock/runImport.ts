@@ -137,6 +137,23 @@ export interface RunImportSuccess {
    * other format.
    */
   deterministicReading?: PdfDeterministicDiagnostics | null;
+  /**
+   * The lines the deterministic reader saw and attributed to nothing.
+   *
+   * ON THE SUCCESS PATH, WHICH IS WHERE IT WAS MISSING. A document that fails
+   * to import is diagnosable — the refusal already carries its unaccounted
+   * lines — and a document that imports with five of its twelve fields empty
+   * is not, because the only thing production ever recorded about the rest of
+   * the page was how many lines there were. `LOT 266 Crowlea Estate` imported
+   * with no address, no suburb, no state, no estate and no design beside 359
+   * ignored lines, and nothing anywhere can say whether that brochure states
+   * a street address at all.
+   *
+   * DOCUMENT TEXT, so it never joins `deterministicReading`, which is the
+   * safe-to-log projection. It travels to the upload row's `error_detail`,
+   * which `get_upload` and `projectUploadListRow` both project away.
+   */
+  deterministicIgnored?: string[] | null;
   /** The status the upload row was left in. */
   uploadStatus: 'enriching' | 'partially_complete';
 }
@@ -531,7 +548,11 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
            * document quoted back at them, and it is bounded at the reader.
            */
           deterministic_unaccounted: extraction.deterministicUnaccounted ?? null,
-        }).slice(0, 4000),
+          // And what it DID place and could not name, which is where a field
+          // that the document states in words this reader does not know will
+          // be sitting. Same internal-only channel, same bound at the reader.
+          deterministic_ignored: extraction.deterministicIgnored ?? null,
+        }).slice(0, 15_000),
         status: reading.status,
       };
     }
@@ -789,6 +810,7 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     enrichmentPending: outcome.itemIds.length,
     uploadStatus: outcome.failed > 0 ? 'partially_complete' : 'enriching',
     deterministicReading: extraction.deterministicReading ?? null,
+    deterministicIgnored: extraction.deterministicIgnored ?? null,
   };
 }
 

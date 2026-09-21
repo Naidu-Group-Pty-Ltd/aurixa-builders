@@ -296,14 +296,20 @@ Deno.serve(async (req) => {
      * never returned — `get_upload` projects it away, and so does
      * `projectUploadListRow`.
      *
-     * THE CEILING IS 6,000 AND WAS 2,000. The diagnosis now carries the lines
-     * the deterministic reader could not account for, which is the one fact
-     * that turns "this template failed" into a vocabulary fix — and at 2,000
-     * the JSON was truncated before reaching them, so the field would have
-     * recorded a diagnosis with its own evidence cut off. The reader bounds
-     * what it reports (12 lines, 120 characters each), so this is a ceiling
-     * on a bounded payload rather than a licence to copy a document into a
-     * column.
+     * THE CEILING IS 16,000 AND WAS 2,000, THEN 6,000. The diagnosis carries
+     * the lines the deterministic reader could not account for, which is the
+     * one fact that turns "this template failed" into a vocabulary fix — and
+     * at 2,000 the JSON was truncated before reaching them, so the field
+     * would have recorded a diagnosis with its own evidence cut off. It now
+     * also carries the lines the reader PLACED and could not name, which is
+     * where a field that a document states in words this reader has not
+     * learned will be sitting.
+     *
+     * A CEILING ON A BOUNDED PAYLOAD, never a licence to copy a document
+     * into a column: the reader bounds what it reports at the source (12
+     * unaccounted lines and 80 ignored ones, 120 characters each), and this
+     * sits above the largest payload those bounds can produce so that a
+     * diagnosis is never stored with its own evidence cut off mid-string.
      */
     const failUpload = async (
       uploadId: string, code: string, message: string, detail?: unknown,
@@ -312,7 +318,7 @@ Deno.serve(async (req) => {
         status: 'failed',
         error_code: code,
         error_message: message,
-        error_detail: detail ? { detail: String(detail).slice(0, 6000) } : null,
+        error_detail: detail ? { detail: String(detail).slice(0, 16_000) } : null,
         processing_completed_at: new Date().toISOString(),
       }).eq('id', uploadId).eq('organisation_id', activeOrganisationId);
       return json({ success: false, error: message, code }, 400);
@@ -407,6 +413,29 @@ Deno.serve(async (req) => {
     };
 
     const sourceNotice = sourceAccessNoticeFor(sourceHyperlinks);
+      /*
+       * WHAT THE DOCUMENT SAID THAT BECAME NO FIELD, ON A SUCCESSFUL IMPORT.
+       *
+       * The failure path has carried its diagnosis for a while; the success
+       * path is where it was needed and was not there. A brochure that
+       * imports with an address, a suburb, a state, an estate and a design
+       * all empty is not a failure anything reports — the upload reads
+       * `enriching`, the card draws what there is, and the only record of the
+       * other three hundred lines was a count. Closing that gap has meant
+       * guessing, or asking a builder for a file.
+       *
+       * ADDITIVE AND SUBORDINATE. It is merged into whatever `error_detail`
+       * already carries rather than replacing it, so `sourceNotice`'s
+       * `reason` — which the link-recovery path reads back — is untouched,
+       * and it never invents an `error_code` or an `error_message`: an
+       * import that succeeded still reads as one.
+       */
+      const importDiagnosis = result.deterministicIgnored?.length
+        ? { deterministic_ignored: result.deterministicIgnored }
+        : null;
+      const outcomeDetail = result.summary.failures.length
+        ? { failures: result.summary.failures }
+        : (sourceNotice ? sourceNotice.detail : null);
       const { data: updated } = await supabase.from('builder_stock_uploads').update({
         status: result.uploadStatus,
         records_detected: result.summary.detected,
@@ -414,9 +443,9 @@ Deno.serve(async (req) => {
         records_updated: result.summary.updated,
         records_failed: result.summary.failed,
         error_code: result.summary.failures.length ? null : (sourceNotice?.code ?? null),
-        error_detail: result.summary.failures.length
-          ? { failures: result.summary.failures }
-          : (sourceNotice ? sourceNotice.detail : null),
+        error_detail: (outcomeDetail || importDiagnosis)
+          ? { ...(outcomeDetail ?? {}), ...(importDiagnosis ?? {}) }
+          : null,
         error_message: result.summary.failures.length
           ? `${result.summary.failed} row(s) could not be saved.`
           : (sourceNotice?.message ?? null),
