@@ -25,6 +25,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { SearchInput } from '@/components/ui/search-input';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
+import {
+  describeDistribution,
+  distributionStateOf,
+} from '../../../supabase/functions/_shared/builderStock/distributionState.pure';
 import { BuilderPortalShell } from '@/components/builder-portal/BuilderPortalShell';
 import { ActivationProjectLink } from '@/components/builder-portal/StockActivation';
 import {
@@ -167,6 +171,25 @@ export default function BuilderStockList() {
 
   const records = itemsQuery.data?.records ?? [];
   const pagination = itemsQuery.data?.pagination;
+  /*
+   * The server's reading of where this stock goes. `undefined` while the
+   * query is in flight and `null` where the server could not say — both
+   * resolve to `unknown`, which claims nothing either way.
+   */
+  const distributionReading = useMemo(
+    () => describeDistribution(
+      itemsQuery.data?.distribution
+        ? {
+          state: distributionStateOf(itemsQuery.data.distribution.state),
+          authorisedDestinations: itemsQuery.data.distribution.authorised_destinations,
+          activeStockCount: itemsQuery.data.distribution.active_stock_count,
+          eventsQueued: itemsQuery.data.distribution.events_queued,
+          lastDeliveredAt: itemsQuery.data.distribution.last_delivered_at,
+        }
+        : null,
+    ),
+    [itemsQuery.data?.distribution],
+  );
   /*
    * How many properties on this page the imagery engine still owes something.
    * The list re-reads itself while this is above zero (see
@@ -772,9 +795,24 @@ export default function BuilderStockList() {
                 ? `${pagination.total} ${pagination.total === 1 ? 'property' : 'properties'} on the marketplace`
                 : 'Your stock'}
             </CardTitle>
+            {/*
+              WHAT THIS LIST IS, AND WHERE IT GOES — read from the server.
+
+              This line used to assert "These are what the Command Centre
+              sees" under every builder's properties. For an organisation with
+              no authorised connection that was false, and it was the only
+              place the product could have said so. The reading is the
+              server's; where it cannot be read the sentence falls back to
+              describing the list alone and claims nothing about sharing.
+            */}
             <CardDescription className="mt-1">
-              Properties imported from your stock lists. These are what the Command Centre sees.
+              {distributionReading.detail}
             </CardDescription>
+            {distributionReading.attention ? (
+              <p className="bd-annot mt-2 text-warning">
+                {distributionReading.label}
+              </p>
+            ) : null}
           </div>
           {/*
             One toolbar rather than three stacked controls. The search takes the

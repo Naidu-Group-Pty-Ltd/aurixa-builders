@@ -1573,9 +1573,42 @@ Deno.serve(async (req) => {
       const items = data ?? [];
       const decorated = await decorateItems(supabase, items, activeOrganisationId);
 
+      /*
+       * WHERE THIS STOCK ACTUALLY GOES.
+       *
+       * The list used to be headed "these are what the Command Centre sees"
+       * unconditionally, and for an organisation with no authorised
+       * connection that is false — the whole defect this reading exists to
+       * end. The state is the server's view, and a read that FAILS carries no
+       * state at all rather than reviving the claim: `describeDistribution`
+       * answers `unknown` and the page says nothing about sharing.
+       */
+      let distribution: Record<string, unknown> | null = null;
+      try {
+        const { data: sync } = await supabase
+          .from('builder_network_sync_state')
+          .select('sync_state, authorised_destinations, active_stock_count, '
+            + 'events_queued, last_delivered_at')
+          .eq('builder_organisation_id', activeOrganisationId)
+          .maybeSingle();
+        if (sync) {
+          distribution = {
+            state: sync.sync_state,
+            authorised_destinations: sync.authorised_destinations ?? 0,
+            active_stock_count: sync.active_stock_count ?? 0,
+            events_queued: sync.events_queued ?? 0,
+            last_delivered_at: sync.last_delivered_at ?? null,
+          };
+        }
+      } catch {
+        // A distribution reading is never worth failing a stock list for.
+        distribution = null;
+      }
+
       return json({
         success: true,
         records: decorated,
+        distribution,
         pagination: {
           page, page_size: pageSize, total: count ?? 0,
           total_pages: Math.max(1, Math.ceil((count ?? 0) / pageSize)),

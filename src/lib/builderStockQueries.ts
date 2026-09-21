@@ -39,6 +39,17 @@ export interface StockFilters {
 export interface Paginated<T> {
   records: T[];
   pagination: { page: number; page_size: number; total: number; total_pages: number };
+  /**
+   * Where this stock actually goes, as the server reads it. Absent where the
+   * server could not say, which is deliberately different from "nowhere".
+   */
+  distribution?: {
+    state: string;
+    authorised_destinations: number;
+    active_stock_count: number;
+    events_queued: number;
+    last_delivered_at: string | null;
+  } | null;
 }
 
 /**
