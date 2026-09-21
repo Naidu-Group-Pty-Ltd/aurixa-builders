@@ -3101,6 +3101,44 @@ export function readPdfBrochure(
       for (const claim of found.flatMap(splitAddress).flatMap(splitLocality).map(trimSeparators)) {
         if (suppressDesignations && DESIGNATION_FIELDS.has(claim.field)) continue;
         if (!BROCHURE_CLAIMABLE_FIELDS.has(claim.field)) continue;
+        /*
+         * ================================================================
+         * A VALUE MADE ENTIRELY OF PUNCTUATION IS NOT A VALUE.
+         * ================================================================
+         *
+         * MEASURED 21 SEPTEMBER 2026 on `Lot 37 - Miami 190 - Property
+         * Package.pdf`, the one live upload in this deployment and the
+         * document this whole incident is about. Its refusal, read back out
+         * of its own row once refusals started carrying their evidence:
+         *
+         *     conflicting_values:development_name
+         *     development_name = ·
+         *     development_name = PROPLAUNCH
+         *
+         * The document does not name two estates. It names none: one of the
+         * two "estates" is a BULLET GLYPH. A middle dot was claimed as a
+         * development name, the platform's own branding was claimed as
+         * another, the two disagreed, and a material conflict stood down a
+         * brochure that states its lot, its design and its land size
+         * perfectly — which the same row records as `fields_read`.
+         *
+         * Nothing downstream could have caught it. `development_name` is a
+         * free-text field, so no coercion refuses a dot; the conflict rule
+         * fired on a pair of values only one of which was ever real; and
+         * with the conflict gone a single `·` would simply have been
+         * published as the estate on a builder's card.
+         *
+         * THE TEST IS ALPHANUMERIC, NOT ALPHABETIC, because `lot_number` is
+         * legitimately `12` and `postcode` is legitimately `3338`. A value
+         * carrying no letter AND no digit anywhere states nothing in any
+         * field this vocabulary has — it is a separator, a bullet or a rule
+         * that a layout put where a value goes.
+         *
+         * It is dropped rather than standing the document down: a glyph is
+         * not the document disagreeing with itself, it is this reader having
+         * picked up something that was never a statement.
+         */
+        if (!/[\p{L}\p{N}]/u.test(claim.value)) continue;
         if (DESIGNATION_FIELDS.has(claim.field)
           && !LOT_DESIGNATION.test(claim.value.trim())) {
           /*
