@@ -152,6 +152,41 @@ for ever), and **an error that was ours is superseded by the answer the
 document now gets** (the row still said the model refused it, three
 model-free re-reads later).
 
+## 5a · Lot 37, and what its row finally said
+
+The one live upload in this deployment — every other one has been deleted
+by the builder — and the document this incident is about. It was reported
+first as an unreadable brochure, then as a model account with no credit.
+
+Once the model left the path and refusals began carrying their own
+evidence, the sweep re-read it from its stored bytes, with no upload and no
+"Read again", and the row said:
+
+```
+conflicting_values:development_name
+development_name = ·
+development_name = PROPLAUNCH
+```
+
+**The document does not name two estates. One of the two is a bullet
+glyph.** A middle dot was claimed as a development name, the platform's own
+branding as another, the two disagreed, and a material conflict stood down
+a brochure that states its lot, its design and its land size perfectly.
+
+A value carrying no letter and no digit anywhere is now refused as a value
+— alphanumeric rather than alphabetic, because `lot_number` is legitimately
+`12` and `postcode` is legitimately `3338`.
+
+The row moved on its own across three deploys, which is the evidence that
+the sweep is doing the work rather than a person:
+
+| | before | after |
+|---|---|---|
+| `status` | `imported` | `complete` |
+| `error_code` | `assisted_reader_refused` | `no_properties_found` |
+| detail | `openrouter/…: refused 402` | the reader's own evidence |
+| `reader_settled_version` | 2, re-read every tick for ever | 3, settled |
+
 ## 6 · Supported classes, and the limits
 
 | class | outcome |
