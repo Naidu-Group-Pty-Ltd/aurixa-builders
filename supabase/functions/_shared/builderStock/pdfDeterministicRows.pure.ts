@@ -1542,6 +1542,26 @@ export function readPdfBrochure(
        * value falls through to the pairing readers, and the bare-label rule
        * below is what still catches a label nothing anywhere fills in.
        */
+      /*
+       * ==================================================================
+       * A LABEL WITH NO VALUE AFTER IT IS NOT A LABEL WITH NO VALUE.
+       * ==================================================================
+       *
+       * `Garage:` and `22.59m²` are two cells of one row, so an empty half
+       * falls through to the pairing readers rather than being judged here.
+       * And where nothing pairs with it either — the builder's siting plan
+       * draws `Estate:` and `Email/Phone:` as EMPTY BOXES nobody typed in —
+       * the line simply states nothing. It cannot contradict a fact, cannot
+       * make this a different property and cannot fill a field, so it is
+       * counted as unresolved and answers to the same rule as every other
+       * line: it stands the document down only if it leads with a canonical
+       * label AND states a figure, which a blank by definition does not.
+       *
+       * That was not always so, and it cost a whole document. Lot 717's
+       * estate is `Society 1056`, which carries no field word, so nothing
+       * claimed `development_name` — and page 2's empty `Estate:` box threw
+       * the lot, the street, the design and the price away with it.
+       */
       if (labelled && labelled.value) {
         if (!BROCHURE_CLAIMABLE_FIELDS.has(labelled.field)) {
           /*
@@ -1563,16 +1583,6 @@ export function readPdfBrochure(
           declined.add(labelled.field);
           incidental += 1;
           continue;
-        }
-        if (!labelled.value) {
-          /*
-           * THE DOCUMENT NAMED A FACT AND DID NOT STATE IT. A template whose
-           * values live in form fields reads exactly like this, and importing
-           * the fields it DID fill would publish a property whose own brochure
-           * says it has a land size we do not carry.
-           */
-          diagnostics.fieldsRead = [...claimed.keys()].sort();
-          return refuse('incomplete', `label_without_value:${labelled.field}`, diagnostics);
         }
         found.push(labelled);
       } else {
@@ -1672,35 +1682,27 @@ export function readPdfBrochure(
          */
         const bareLabel = fieldForHeader(line);
         /*
-         * A BARE LABEL REFUSES ONLY WHERE IT NAMES A CANONICAL FIELD THIS
-         * DOCUMENT HAS NOT OTHERWISE STATED.
+         * ================================================================
+         * A LABEL WITH NOTHING THIS READER COULD PAIR TO IT STATES NOTHING.
+         * ================================================================
          *
-         * A floor plan is a page of bare labels: the production brochure
-         * annotates `Bath`, `Garage`, `Ensuite`, `Porch` and `Linen` on its
-         * plan, and `Bath` alone stood the whole document down as a
-         * bathroom count with no value. Those are rooms, not unread facts,
-         * and the counts they name are not fields a property's identity or
-         * its price depends on. What still refuses is the shape this rule
-         * was written for — a template naming `Land Size` or `Price` and
-         * never filling it in.
+         * This refused the document, and the whole class is gone for the
+         * same reason the blank form field is. A floor plan is a page of
+         * bare labels — `Bath`, `Garage`, `Ensuite`, `Porch`, `Linen` — and
+         * a siting plan is a form with empty boxes. A heading with no value
+         * beside it, under it or anywhere the page put it cannot
+         * contradict a fact, cannot make this a different property and
+         * cannot fill a field. The document simply did not say.
+         *
+         * What it must never do is CLAIM anything, and it does not: the
+         * pairing readers refused it precisely because no value they would
+         * accept was there. `DESIGN` over `210 m²` still records no design.
+         *
+         * The line is counted as one the reader could not resolve, and
+         * answers to the same rule as every other: it stands the document
+         * down only if it leads with a canonical label AND states a figure
+         * — which a bare label, by definition, does not.
          */
-        if (bareLabel && BROCHURE_CLAIMABLE_FIELDS.has(bareLabel)
-          && BLOCKING_FIELDS.has(bareLabel) && !claimed.has(bareLabel)) {
-          /*
-           * A LABEL SET ON ITS OWN WITH NOTHING THIS READER COULD PAIR TO IT.
-           * The shape a template whose values live in form fields produces, and
-           * the shape a figure under a descriptive heading produces once the
-           * pairing has refused it. The document named the fact; importing the
-           * rest would publish a record its own brochure contradicts. It is
-           * named in the refusal because it is the one unresolved line this
-           * reader can identify, and that makes the log actionable.
-           */
-          diagnostics.fieldsRead = [...claimed.keys()].sort();
-          diagnostics.unaccountedLines = unresolved.length + 1;
-          diagnostics.incidentalLines = incidental;
-          if (declined.size) diagnostics.declinedFields = [...declined].sort();
-          return refuse('incomplete', `label_without_value:${bareLabel}`, diagnostics);
-        }
         const declinedHere = declinedHeadings(line);
         if (declinedHere) {
           for (const field of declinedHere) declined.add(field);
@@ -1921,15 +1923,25 @@ export function readPdfBrochure(
   }
 
   /*
-   * THE COUNTS MAY BE STATED ONCE, NOT TWICE. A document carrying both
-   * "3 Bed 2 Bath 2 Car" and "Bedrooms: 4" is stating its configuration two
-   * ways, and which one wins inside `normaliseStockRow` would be decided by
-   * key order — a detail of this function, not of the document.
+   * THE COUNTS MAY BE STATED ONCE, NOT TWICE — AND THAT COSTS THE COUNTS.
+   *
+   * A document carrying both `3 Bed 2 Bath 2 Car` and `Bedrooms: 4` states
+   * its configuration two ways, and which one wins inside
+   * `normaliseStockRow` would be decided by key order — a detail of this
+   * function, not of the document. So neither is kept.
+   *
+   * It used to refuse the whole document, which is the same mistake the
+   * measurement conflict made: a configuration says nothing about WHICH
+   * property this is. The room counts are dropped, reported, and the lot,
+   * the design, the estate and the price stand.
    */
   if (claimed.has('bed_bath_car')
     && (claimed.has('bedrooms') || claimed.has('bathrooms') || claimed.has('car_spaces'))) {
-    diagnostics.conflictField = 'bed_bath_car';
-    return refuse('ambiguous', 'counts_stated_two_ways', diagnostics);
+    for (const field of ['bed_bath_car', 'bedrooms', 'bathrooms', 'car_spaces']) {
+      if (claimed.delete(field)) disputed.add(field);
+    }
+    diagnostics.fieldsRead = [...claimed.keys()].sort();
+    diagnostics.disputedFields = [...disputed].sort();
   }
 
   const identity = IDENTITY_FIELDS.filter((field) => claimed.has(field));
