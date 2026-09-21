@@ -123,11 +123,23 @@ async function itemsOnPage(
       const x = Number(transform[4]);
       const y = Number(transform[5]);
       const width = Number(item.width);
+      /*
+       * The run's drawn height, from the transform's vertical scale.
+       *
+       * It is what tells a SUPERSCRIPT from a line of its own: a brochure
+       * writes `321m²` as `321m` and a raised `2` at 58% of the type size,
+       * three units up, and without the height the reader has to guess
+       * whether a run slightly above another is an exponent or a new line.
+       * Absent or unreadable it contributes 0, which makes the superscript
+       * rule decline rather than fire — see `layoutLines`.
+       */
+      const height = Math.abs(Number(transform[3]));
       if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
       items.push({
         text: item.str,
         x,
         y,
+        height: Number.isFinite(height) ? height : 0,
         // A run with no stated advance contributes no width, which can only
         // make a gap look WIDER — so cells split rather than merge, and a
         // split cell is refused by the alignment test rather than imported.
