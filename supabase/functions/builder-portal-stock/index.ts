@@ -79,6 +79,10 @@ import { sha256Hex } from '../_shared/builderStock/rasterPng.ts';
 import { consumeRateLimit } from '../_shared/requestSecurity.ts';
 import type { HyperlinkAvailability } from '../_shared/builderStock/sheetHyperlinks.pure.ts';
 import {
+  BUILDER_SYNC_STATE_SELECT,
+  readSyncStateRow,
+} from '../_shared/builderStock/distributionState.pure.ts';
+import {
   linkDiscoveryFromAvailability,
 } from '../_shared/builderStock/suppliedEvidence.pure.ts';
 import {
@@ -1587,17 +1591,19 @@ Deno.serve(async (req) => {
       try {
         const { data: sync } = await supabase
           .from('builder_network_sync_state')
-          .select('sync_state, authorised_destinations, active_stock_count, '
-            + 'events_queued, last_delivered_at')
+          .select(BUILDER_SYNC_STATE_SELECT)
           .eq('builder_organisation_id', activeOrganisationId)
           .maybeSingle();
-        if (sync) {
+        // Checked rather than cast: this deployment keeps no generated
+        // `Database` type, so the shape is established here or not at all.
+        const reading = readSyncStateRow(sync);
+        if (reading) {
           distribution = {
-            state: sync.sync_state,
-            authorised_destinations: sync.authorised_destinations ?? 0,
-            active_stock_count: sync.active_stock_count ?? 0,
-            events_queued: sync.events_queued ?? 0,
-            last_delivered_at: sync.last_delivered_at ?? null,
+            state: reading.state,
+            authorised_destinations: reading.authorisedDestinations,
+            active_stock_count: reading.activeStockCount,
+            events_queued: reading.eventsQueued,
+            last_delivered_at: reading.lastDeliveredAt,
           };
         }
       } catch {

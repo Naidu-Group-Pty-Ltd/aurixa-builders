@@ -62,6 +62,58 @@
 -- ===========================================================================
 
 -- ---------------------------------------------------------------------------
+-- WHICH WORKSPACES A NEW BUILDER IS FANNED OUT TO, AND WHY NOT ALL OF THEM.
+--
+-- The first cut of this migration provisioned a connection to EVERY row in
+-- `workspace_registry`, and that was wrong. Traced through the code rather
+-- than assumed:
+--
+--   * `workspace_registry` is a DIRECTORY. Its columns are `mc_clone_id`,
+--     `slug`, `display_name`, `last_asserted_at` — there is no state, no
+--     scope, no entitlement and no approval anywhere on it, and
+--     `upsert_workspace` writes a row whenever a clone asserts itself.
+--     `builder-network-admin`'s own header calls it "the workspace
+--     DIRECTORY (MC -> network per §6: registry upserts and connection
+--     minting)".
+--   * The AUTHORISATION is `workspace_connections`, and it is deliberately
+--     two-party: an operator MINTS a connection per (workspace, builder),
+--     and the invite code "travels operator -> builder out of band" for the
+--     BUILDER to accept. A row in the directory is neither half of that.
+--   * The registered clones are independent tenants — this fleet holds
+--     several — so fanning every approved builder out to every directory row
+--     is automatic cross-tenant stock disclosure. It is invisible today only
+--     because one workspace is registered, and it would have become a real
+--     leak the day a second one asserted itself.
+--
+-- So the entitlement this needed did not exist, and this adds the smallest
+-- one that can express it rather than a second approval system:
+-- `catalogue_access` on the directory row, defaulting to `per_builder` —
+-- exactly today's behaviour, where each relationship is minted and accepted
+-- one at a time. A workspace an operator has declared `whole_network`
+-- receives every approved builder, and that declaration is what makes the
+-- provisioning below automatic for it.
+--
+-- FAIL-CLOSED BY DEFAULT is the whole point: a clone that registers
+-- tomorrow, or one nobody has decided about, is `per_builder` and receives
+-- nothing it was not individually granted. Automatic provisioning must never
+-- become automatic cross-tenant disclosure.
+-- ---------------------------------------------------------------------------
+ALTER TABLE public.workspace_registry
+  ADD COLUMN IF NOT EXISTS catalogue_access text NOT NULL DEFAULT 'per_builder';
+
+ALTER TABLE public.workspace_registry
+  DROP CONSTRAINT IF EXISTS workspace_registry_catalogue_access_check;
+ALTER TABLE public.workspace_registry
+  ADD CONSTRAINT workspace_registry_catalogue_access_check
+  CHECK (catalogue_access IN ('per_builder', 'whole_network'));
+
+COMMENT ON COLUMN public.workspace_registry.catalogue_access IS
+  'per_builder (default): this workspace receives only builders an operator '
+  'has minted a connection for and the builder has accepted. whole_network: '
+  'the operator has declared that this workspace receives every approved '
+  'builder, and connections for it are provisioned on approval.';
+
+-- ---------------------------------------------------------------------------
 -- A STOCK ITEM'S BUILDER IS AN INVARIANT.
 --
 -- The supplying organisation follows the item from upload to archive, and no
@@ -83,6 +135,11 @@ BEGIN
   END IF;
   RETURN NEW;
 END $function$;
+
+REVOKE EXECUTE ON FUNCTION public.builder_stock_organisation_is_immutable()
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.builder_stock_organisation_is_immutable()
+  TO service_role;
 
 DROP TRIGGER IF EXISTS trg_builder_stock_items_org_immutable ON public.builder_stock_items;
 CREATE TRIGGER trg_builder_stock_items_org_immutable
@@ -115,7 +172,11 @@ BEGIN
   FROM public.builder_organisations WHERE id = _organisation_id;
   IF v_org.id IS NULL OR v_org.status <> 'active' THEN RETURN 0; END IF;
 
-  FOR v_workspace IN SELECT w.id, w.slug FROM public.workspace_registry w
+  -- ONLY the workspaces whose own declaration says they receive the whole
+  -- network. A directory row is not an entitlement; `catalogue_access` is.
+  FOR v_workspace IN
+    SELECT w.id, w.slug FROM public.workspace_registry w
+    WHERE w.catalogue_access = 'whole_network'
   LOOP
     -- A live connection already answers the question.
     CONTINUE WHEN EXISTS (
@@ -204,6 +265,15 @@ BEGIN
   RETURN v_created;
 END $function$;
 
+-- An operator's instrument and a trigger's, never a browser's. CREATE grants
+-- EXECUTE to PUBLIC and this project's default privileges grant it to `anon`
+-- and `authenticated` directly, so all three are closed; the activation
+-- trigger reaches it as the definer and needs no grant of its own.
+REVOKE EXECUTE ON FUNCTION public.builder_network_provision_connections(uuid)
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.builder_network_provision_connections(uuid)
+  TO service_role;
+
 -- ---------------------------------------------------------------------------
 -- APPROVAL IS THE AUTHORISATION, so approval provisions the route.
 -- ---------------------------------------------------------------------------
@@ -220,6 +290,15 @@ BEGIN
   END IF;
   RETURN NEW;
 END $function$;
+
+-- A trigger function is invoked by the DML that fires it rather than called,
+-- so the browser roles are closed. service_role keeps EXECUTE because this
+-- deployment's baseline proof asserts the service role has not lost it on any
+-- schema-owned function — a lock-out that passed the first half of that proof
+-- and failed the second is exactly what it exists to catch.
+REVOKE EXECUTE ON FUNCTION public.builder_organisation_activated()
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.builder_organisation_activated() TO service_role;
 
 DROP TRIGGER IF EXISTS trg_builder_organisation_activated ON public.builder_organisations;
 CREATE TRIGGER trg_builder_organisation_activated
@@ -328,7 +407,8 @@ END $function$;
 -- migration exists to end. Queryable from production, one row per active
 -- organisation, whether or not it has a route.
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE VIEW public.builder_network_sync_state AS
+CREATE OR REPLACE VIEW public.builder_network_sync_state
+WITH (security_invoker = true) AS
 SELECT
   o.id                                       AS builder_organisation_id,
   COALESCE(o.trading_name, o.legal_name)     AS builder_label,
@@ -388,6 +468,20 @@ COMMENT ON VIEW public.builder_network_sync_state IS
 -- already holds a live connection is skipped, so no builder's route is taken
 -- to give another builder one.
 -- ---------------------------------------------------------------------------
+-- THE ONE-TIME DECLARATION, for the workspaces an operator has ALREADY put
+-- on the builders network through the two-party ceremony. A workspace holding
+-- a live connection has been minted for and accepted by a builder; declaring
+-- it whole-network records the intent the product owner has stated for it,
+-- and it cannot reach a clone that has never been connected. Every clone that
+-- registers after this is `per_builder` and receives nothing it was not
+-- individually granted.
+UPDATE public.workspace_registry w
+   SET catalogue_access = 'whole_network', updated_at = now()
+ WHERE w.catalogue_access = 'per_builder'
+   AND EXISTS (
+     SELECT 1 FROM public.workspace_connections c
+     WHERE c.workspace_id = w.id AND c.state <> 'revoked');
+
 DO $$
 DECLARE v_org record; v_made integer; v_total integer := 0;
 BEGIN

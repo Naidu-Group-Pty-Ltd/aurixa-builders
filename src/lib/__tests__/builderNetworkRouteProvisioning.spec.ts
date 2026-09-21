@@ -21,8 +21,10 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  BUILDER_SYNC_STATE_SELECT,
   describeDistribution,
   distributionStateOf,
+  readSyncStateRow,
 } from '../../../supabase/functions/_shared/builderStock/distributionState.pure';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
@@ -32,6 +34,89 @@ const stripSql = (body: string) => body.replace(/--[^\n]*/g, ' ');
 const MIGRATION = 'supabase/migrations/20260921060000_an_approved_builder_has_a_route.sql';
 const sql = stripSql(read(MIGRATION));
 
+describe('a directory row is not an entitlement', () => {
+  /**
+   * THE EVIDENCE, traced rather than assumed. `workspace_registry` holds
+   * `mc_clone_id`, `slug`, `display_name`, `last_asserted_at` and nothing
+   * else — no state, no scope, no approval — and `upsert_workspace` writes a
+   * row whenever a clone asserts itself. The AUTHORISATION is
+   * `workspace_connections`, and it is two-party: an operator mints it per
+   * (workspace, builder) and the invite "travels operator -> builder out of
+   * band" for the builder to accept.
+   *
+   * The registered clones are independent tenants, so fanning every approved
+   * builder out to every directory row would be automatic cross-tenant stock
+   * disclosure — invisible while one workspace is registered, and a real leak
+   * the day a second asserts itself.
+   */
+  it('fans out only to workspaces declared whole_network', () => {
+    expect(sql).toMatch(
+      /FROM public\.workspace_registry w\s*WHERE w\.catalogue_access = 'whole_network'/,
+    );
+  });
+
+  it('defaults every workspace to per_builder, which is today\u2019s behaviour', () => {
+    expect(sql).toMatch(
+      /ADD COLUMN IF NOT EXISTS catalogue_access text NOT NULL DEFAULT 'per_builder'/,
+    );
+  });
+
+  it('admits no third value', () => {
+    expect(sql).toMatch(/CHECK \(catalogue_access IN \('per_builder', 'whole_network'\)\)/);
+  });
+
+  it('declares only workspaces an operator already put on the network', () => {
+    const declaration = sql.slice(sql.indexOf('UPDATE public.workspace_registry w'));
+    expect(declaration).toMatch(/SET catalogue_access = 'whole_network'/);
+    expect(declaration).toMatch(/WHERE w\.catalogue_access = 'per_builder'/);
+    // It cannot reach a clone that has never been connected.
+    expect(declaration).toMatch(
+      /EXISTS \(\s*SELECT 1 FROM public\.workspace_connections c\s*WHERE c\.workspace_id = w\.id AND c\.state <> 'revoked'\)/,
+    );
+  });
+
+  it('never names a workspace by slug or display name', () => {
+    expect(sql).not.toMatch(/npc-command-centre|command centre/i);
+  });
+});
+
+describe('the new functions are not reachable from a browser', () => {
+  const revoked = (signature: string) =>
+    new RegExp(`REVOKE EXECUTE ON FUNCTION public\\.${signature}[\\s\\S]{0,120}?FROM PUBLIC, anon, authenticated`);
+
+  it('closes the provisioning function to PUBLIC, anon and authenticated', () => {
+    expect(sql).toMatch(revoked('builder_network_provision_connections\\(uuid\\)'));
+    expect(sql).toMatch(/GRANT EXECUTE ON FUNCTION public\.builder_network_provision_connections\(uuid\)\s*TO service_role/);
+  });
+
+  it('closes both trigger functions to the browser roles', () => {
+    expect(sql).toMatch(revoked('builder_organisation_activated\\(\\)'));
+    expect(sql).toMatch(revoked('builder_stock_organisation_is_immutable\\(\\)'));
+  });
+
+  it('keeps service_role\u2019s EXECUTE, which the baseline proof demands', () => {
+    // The proof has two halves: nothing open to anon/authenticated, AND
+    // service_role still holding EXECUTE on every schema-owned function. A
+    // revoke that satisfied only the first would lock the product out of its
+    // own database and pass half a security check.
+    for (const fn of [
+      'builder_network_provision_connections\\(uuid\\)',
+      'builder_organisation_activated\\(\\)',
+      'builder_stock_organisation_is_immutable\\(\\)',
+    ]) {
+      expect(sql).toMatch(
+        new RegExp(`GRANT EXECUTE ON FUNCTION public\\.${fn}\\s*TO service_role`),
+      );
+    }
+  });
+
+  it('reads the state view with the caller\u2019s own rights', () => {
+    expect(sql).toMatch(
+      /CREATE OR REPLACE VIEW public\.builder_network_sync_state\s*WITH \(security_invoker = true\)/,
+    );
+  });
+});
+
 describe('approval provisions the route', () => {
   it('fires on an organisation becoming active, on insert or update', () => {
     expect(sql).toMatch(
@@ -40,8 +125,13 @@ describe('approval provisions the route', () => {
     expect(sql).toMatch(/IF NEW\.status = 'active'\s*AND \(TG_OP = 'INSERT' OR OLD\.status IS DISTINCT FROM 'active'\)/);
   });
 
-  it('reaches every registered workspace, not one remembered id', () => {
-    expect(sql).toMatch(/FOR v_workspace IN SELECT w\.id, w\.slug FROM public\.workspace_registry w/);
+  it('reaches the entitled workspaces from the registry, not one remembered id', () => {
+    // It reads the directory rather than a hard-coded workspace — and reads
+    // the entitlement rather than the whole directory. Both halves matter:
+    // the first is what makes provisioning automatic, the second is what
+    // stops it becoming cross-tenant disclosure.
+    expect(sql).toMatch(/FOR v_workspace IN\s*SELECT w\.id, w\.slug FROM public\.workspace_registry w/);
+    expect(sql).toMatch(/WHERE w\.catalogue_access = 'whole_network'/);
   });
 
   it('is idempotent: a live connection is left exactly as it is', () => {
@@ -214,5 +304,66 @@ describe('the portal never claims a destination the builder does not have', () =
     expect(distributionStateOf('delivered_probably')).toBe('unknown');
     expect(distributionStateOf(undefined)).toBe('unknown');
     expect(distributionStateOf('synced')).toBe('synced');
+  });
+});
+
+describe('the state row is checked, never cast', () => {
+  /**
+   * The strict Deno check failed because supabase-js parses the select list
+   * at the TYPE level and a concatenated `string` it cannot parse degrades
+   * the whole row to `GenericStringError`. The select is one literal now, and
+   * the shape is established by this reader rather than asserted by a cast —
+   * this deployment maintains no generated `Database` type, so a cast would
+   * be a promise nobody checked.
+   */
+  it('spells the projection once, as a literal', () => {
+    expect(BUILDER_SYNC_STATE_SELECT).toBe(
+      'sync_state, authorised_destinations, active_stock_count, events_queued, last_delivered_at',
+    );
+  });
+
+  it('reads a real row', () => {
+    const reading = readSyncStateRow({
+      sync_state: 'synced',
+      authorised_destinations: 2,
+      active_stock_count: 7,
+      events_queued: 0,
+      last_delivered_at: '2026-09-21T05:00:00Z',
+    });
+    expect(reading).toEqual({
+      state: 'synced',
+      authorisedDestinations: 2,
+      activeStockCount: 7,
+      eventsQueued: 0,
+      lastDeliveredAt: '2026-09-21T05:00:00Z',
+    });
+  });
+
+  it('answers null for anything that is not a row, so the page says unknown', () => {
+    for (const value of [null, undefined, 'synced', 42, [], {}]) {
+      expect(readSyncStateRow(value)).toBeNull();
+    }
+    expect(describeDistribution(readSyncStateRow(null)).label)
+      .toBe('Sharing status unavailable');
+  });
+
+  it('never turns an unreadable count into a confident zero', () => {
+    const reading = readSyncStateRow({
+      sync_state: 'no_authorised_connection',
+      authorised_destinations: null,
+      active_stock_count: 'three',
+      events_queued: -1,
+      last_delivered_at: null,
+    });
+    // A count that cannot be read is 0 because it is a COUNT — but the state
+    // beside it is what the page renders, and it says no destination exists.
+    expect(reading?.state).toBe('no_authorised_connection');
+    expect(reading?.activeStockCount).toBe(0);
+    expect(reading?.eventsQueued).toBe(0);
+    expect(reading?.lastDeliveredAt).toBeNull();
+  });
+
+  it('reads an unknown state word as unknown rather than the nearest', () => {
+    expect(readSyncStateRow({ sync_state: 'probably_fine' })?.state).toBe('unknown');
   });
 });
