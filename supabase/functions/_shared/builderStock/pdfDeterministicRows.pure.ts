@@ -2022,6 +2022,18 @@ export function pageExcludesOtherLots(lines: readonly string[]): boolean {
 }
 
 /**
+ * Is this value a word a designer tracked out, rather than a value?
+ *
+ * Exported so the rule can be tested against the shape directly, and so the
+ * floor below is asserted rather than described. See the call site.
+ */
+export function isLetterSpacedType(value: string): boolean {
+  const tokens = String(value ?? '').trim().split(/\s+/).filter(Boolean);
+  if (tokens.length < 4) return false;
+  return tokens.every((token) => token.length === 1 && /\p{L}/u.test(token));
+}
+
+/**
  * Is this line the document talking about itself?
  *
  * Every answer of `true` is a POSITIVE recognition. There is no fall-through
@@ -3139,6 +3151,31 @@ export function readPdfBrochure(
          * picked up something that was never a statement.
          */
         if (!/[\p{L}\p{N}]/u.test(claim.value)) continue;
+        /*
+         * `M A S T E R P L A N` IS A WORD SET IN LETTER-SPACED TYPE.
+         *
+         * MEASURED 21 SEPTEMBER 2026 on the same document, one deploy after
+         * the glyph above and visible only because the record finally carried
+         * the CURRENT reader's evidence:
+         *
+         *     development_name = PROPLAUNCH
+         *     development_name = M A S T E R P L A N
+         *
+         * A designer tracked out a page heading — a normal treatment for one
+         * — and text extraction returns what the page DRAWS, which is nine
+         * separate glyph runs. Read as a value it is not a name at all, and
+         * had it been the only candidate it would have gone onto a builder's
+         * card as the estate.
+         *
+         * FOUR SINGLE LETTERS AT LEAST, and all of them, which is what makes
+         * this a shape rather than a guess: a real name is words. `U 3` is
+         * two tokens and untouched, `Lot 37` is untouched, and an initialism
+         * a document actually spaces (`A B C`) stays under the floor. It is
+         * refused rather than rejoined, because joining would invent a word
+         * the document never set as one — and a heading is not an estate
+         * however it is typeset.
+         */
+        if (isLetterSpacedType(claim.value)) continue;
         if (DESIGNATION_FIELDS.has(claim.field)
           && !LOT_DESIGNATION.test(claim.value.trim())) {
           /*
@@ -4154,9 +4191,45 @@ export function mayHoldSchedule(pageTexts: readonly string[]): boolean {
  * `land_size_sqm` and `building_size_sqm` were in the second list and not
  * the first, which is exactly the inconsistency this replaces.
  */
+/*
+ * ===========================================================================
+ * AND WHY `development_name` IS NOT ON THIS LIST.
+ * ===========================================================================
+ *
+ * It was, and the test above is what takes it off: CAN THIS EVIDENCE MEAN WE
+ * HAVE THE WRONG PROPERTY OR THE WRONG DEAL? Two estate names cannot. An
+ * estate is a PLACE CONTAINING many properties; the lot is what identifies
+ * one, and `lot_number` stays material — so a document that really described
+ * two properties would conflict on the lot and refuse exactly as it does
+ * today. Nothing about the identity guard is weakened by this.
+ *
+ * MEASURED 21 SEPTEMBER 2026 on `Lot 37 - Miami 190 - Property Package.pdf`,
+ * the one live upload in this deployment and the document this whole
+ * incident is about. Its two "estates" are
+ *
+ *     development_name = PROPLAUNCH
+ *     development_name = M A S T E R P L A N
+ *
+ * — a marketing platform's brand mark, and a page heading set in
+ * letter-spaced type. THE DOCUMENT NAMES NO ESTATE. Refusing it outright
+ * because two wrong guesses disagreed is the worst outcome available: its
+ * lot, its land size and its design were never in doubt, and a builder was
+ * told their brochure could not be read.
+ *
+ * This is the correction `land_size_sqm` already forced, applied to the
+ * field whose turn it was. The disputed value is DROPPED rather than chosen
+ * between, the estate reads as not stated, and not stated is exactly what
+ * the document says.
+ *
+ * `project_name` stays material, deliberately and without evidence either
+ * way: it is the closest thing this vocabulary has to a development's own
+ * identifier, and there is no measurement in front of me that says two of
+ * them can be a single property. One field moves, for the reason the
+ * measurement gives.
+ */
 const MATERIAL_FIELDS: ReadonlySet<string> = new Set([
   'external_reference', 'address_line', 'lot_number', 'unit_number',
-  'development_name', 'project_name', 'house_design', 'price',
+  'project_name', 'house_design', 'price',
 ]);
 
 /**

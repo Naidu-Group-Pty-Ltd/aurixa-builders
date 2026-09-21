@@ -177,6 +177,36 @@ A value carrying no letter and no digit anywhere is now refused as a value
 — alphanumeric rather than alphabetic, because `lot_number` is legitimately
 `12` and `postcode` is legitimately `3338`.
 
+**And with the glyph gone, the real pair was finally visible** — which took
+one more deploy, because the row's recorded reason was only rewritten where
+the previous reason had been *ours*, so a stamp saying version 4 sat beside
+a diagnosis produced by version 3. The recorded reason is now always the
+current reader's answer; a source is read once per reader version, so
+"churn" was never the risk.
+
+```
+development_name = PROPLAUNCH
+development_name = M A S T E R P L A N
+```
+
+A marketing platform's brand mark, and a page heading a designer tracked
+out. **The document names no estate.** Two rules follow, and both are
+general:
+
+- **Letter-spaced type is not a value.** Text extraction returns what the
+  page draws, which for tracked-out type is one glyph run per letter. Four
+  single letters at least and all of them, so `U 3` and `Lot 37` are
+  untouched; refused rather than rejoined, because joining invents a word
+  the document never set as one.
+- **`development_name` is no longer material.** The list answers one
+  question — can this evidence mean the wrong property or the wrong deal? An
+  estate is a place *containing* many properties; the lot identifies one and
+  still refuses. So the estate is dropped rather than chosen between, and
+  reads as not stated, which is what the document says.
+
+Three tests asserting *"two estates refuses the whole document"* were
+renegotiated with their reasoning rather than adjusted, and two were added.
+
 The row moved on its own across three deploys, which is the evidence that
 the sweep is doing the work rather than a person:
 
