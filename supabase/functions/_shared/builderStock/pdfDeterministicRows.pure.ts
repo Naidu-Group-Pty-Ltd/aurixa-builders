@@ -768,12 +768,39 @@ function readLabelledNumbers(line: string): Claim[] | null {
  * field the document itself said it had.
  */
 function readLabelledValue(line: string): Claim | null {
-  const match = line.match(/^([^:–—]{1,60}?)\s*[:–—]\s*(.*)$/);
+  const match = line.match(LABELLED_VALUE);
   if (!match) return null;
   const field = fieldForHeader(match[1]);
   if (!field) return null;
   return { field, value: match[2].trim() };
 }
+
+/**
+ * `Titles - Q2 2027` — A SPACED HYPHEN IS A SEPARATOR; A HYPHEN IS NOT.
+ *
+ * The separator class was `:`, an en dash and an em dash, and a plain hyphen
+ * was deliberately outside it because a hyphen lives INSIDE the names this
+ * reader must not cut in half: `ENZO 10.5 - MODERN` is a design, and a rule
+ * that splits on any hyphen renames it `ENZO 10.5`.
+ *
+ * MEASURED ON `LOT 266 Crowlea Estate`, whose whole summary block is written
+ * with one: `Land - $334,000`, `Build - $415,100`, `Titles - Q2 2027`. The
+ * completion date was on the page under a label this vocabulary already
+ * knows and was read by nothing.
+ *
+ * TWO THINGS MAKE IT SAFE, AND THE SECOND WAS ALREADY THERE. The hyphen must
+ * be SPACED on both sides, so `Land-Size: 350` still splits at its colon and
+ * not at its hyphen. And what stands to the left must resolve to a field
+ * this vocabulary names — the guard `readLabelledValue` has always applied —
+ * so `ENZO 10.5 - MODERN` splits to `ENZO 10.5`, resolves to nothing and
+ * falls through to every reader that handled it before, unchanged. So does
+ * `Build - $415,100`, because `Build` is not a heading here, and so does
+ * `Total - $749,100`.
+ *
+ * The left side is lazy and stops at the first separator, so a label may not
+ * itself contain one — which is what it already meant for a colon.
+ */
+const LABELLED_VALUE = /^([^:–—]{1,60}?)\s*(?::|–|—|\s-\s)\s*(.*)$/;
 
 /**
  * The counts written inline — "3 BED 2 BATH 2 CAR", "4 Bed 2 Bath 2 Car".
@@ -1693,23 +1720,64 @@ function unitBeside(units: readonly BrochureUnit[], index: number): number | nul
 }
 
 /**
- * The unit drawn directly BELOW this one, in the same column.
+ * A ROW BAND WITH NOTHING IN THIS COLUMN IS NOT BETWEEN THEM.
  *
- * Only the very next row is considered — a label whose value is three rows
- * down is a label with nothing under it, not a pair — and only a unit whose
- * left edge lines up with this one's. On the flattened reading every unit is
- * at x = 0 on its own row, so this resolves to the next line and the rule is
- * the one that was always there.
+ * How many bands may be crossed to reach the next cell in a column. Two is
+ * enough for a value the page drew one band clear of its label, and short
+ * enough that the bottom of one box cannot pair with the top of the next.
+ */
+const COLUMN_BAND_REACH = 2;
+
+/**
+ * The unit drawn below this one, IN THE SAME COLUMN.
+ *
+ * Only a unit whose left edge lines up with this one's, and only a few row
+ * bands down — a label whose value is half a page away is a label with
+ * nothing under it, not a pair.
+ *
+ * IT USED TO MEAN THE VERY NEXT BAND, AND ON A LAID-OUT PAGE THAT IS NOT
+ * ADJACENCY. A row band spans the WHOLE WIDTH of the page, so anything drawn
+ * anywhere on it occupies it — and a floor plan's room labels, three hundred
+ * units away on the other side of the sheet, were enough to put a band
+ * between a label and the value printed directly beneath it.
+ *
+ * MEASURED ON `LOT 266 Crowlea Estate`, from that document's own geometry:
+ *
+ *     r38  x29   Lot Size
+ *     r39  x486  WIR          r39  x534  Ensuite
+ *     r40  x29   520m2
+ *
+ * `Lot Size` and `520m2` are the same column to the unit, one band apart,
+ * and the band between them holds two room names from the drawing beside.
+ * The property's land size was on the page, exactly under its label, and
+ * unreadable — which is how a card came to show no land size at all.
+ *
+ * THE FLATTENED READING IS UNCHANGED, BYTE FOR BYTE. There every unit sits
+ * at x = 0 on a band of its own, so the first band below always holds a unit
+ * in the column and this returns it without ever skipping, exactly as the
+ * rule that was always there.
+ *
+ * AND NOTHING HERE DECIDES WHAT A PAIR MEANS. `readVerticalPair` still
+ * refuses a heading under a heading, a line ending in its own colon, a line
+ * that states its own label, an identifier with the wrong shape and a bare
+ * measurement in an identity field — which is what keeps `Ground Floor:`
+ * from pairing with `Garage:` two bands below it.
  */
 function unitBelow(units: readonly BrochureUnit[], index: number): number | null {
   const from = units[index];
-  let targetRow: number | null = null;
+  let bandsSeen = 0;
+  let band: number | null = null;
   let best: number | null = null;
   for (let j = index + 1; j < units.length; j++) {
     const unit = units[j];
     if (unit.row === from.row) continue;
-    if (targetRow === null) targetRow = unit.row;
-    if (unit.row !== targetRow) break;
+    if (band === null || unit.row !== band) {
+      // A new band. Whatever the last one offered in this column is the
+      // answer; an empty one costs a step of the reach and nothing else.
+      if (best !== null) return best;
+      if (band !== null && ++bandsSeen >= COLUMN_BAND_REACH) return null;
+      band = unit.row;
+    }
     if (Math.abs(unit.x - from.x) > SAME_COLUMN_TOLERANCE) continue;
     if (best === null || Math.abs(unit.x - from.x) < Math.abs(units[best].x - from.x)) {
       best = j;
