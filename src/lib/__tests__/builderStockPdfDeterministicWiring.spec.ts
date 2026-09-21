@@ -212,8 +212,8 @@ describe('what reaches the assisted reader, and what does not', () => {
      * this line and states a figure, so it is exactly that.
      */
     const reading = readPdfBrochure([
-      ['LOT 315', 'Bedrooms: 4', 'PACKAGE PRICE $863,850',
-        'Land Size 350 m2 approximately per contract'].join('\n'),
+      ['LOT 315', 'Estate: Palomino', 'Bedrooms: 4', 'PACKAGE PRICE $863,850',
+        'Price $375,000 land component'].join('\n'),
     ]);
     expect(reading.status).toBe('incomplete');
     expect(reading.reason).toBe('unaccounted_specification_lines');

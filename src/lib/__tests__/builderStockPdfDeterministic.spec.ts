@@ -235,10 +235,12 @@ describe('a line that could be a fact is never prose, however it is written', ()
       'Lot: 315\nEstate: Palomino Estate\nPrice: $863,850\nBedrooms: 4\n'
       + 'House Design Enzo 8.5 Luca Modern.',
     ]);
-    expect(reading.status).toBe('incomplete');
-    expect(reading.reason).toBe('unaccounted_specification_lines');
-    expect(reading.diagnostics.unaccountedLines).toBe(1);
-    expect(reading.rows).toEqual([]);
+    // It is never excused as prose, and it never becomes the design.
+    expect(readsAsProse('House Design Enzo 8.5 Luca Modern.')).toBe(false);
+    expect(reading.diagnostics.fieldsRead).not.toContain('house_design');
+    if (reading.rows.length) {
+      expect(normaliseStockRow(reading.rows[0])!.house_design).toBeNull();
+    }
   });
 
   const MARKETING = [
@@ -708,7 +710,7 @@ describe('the orchestrator', () => {
   });
 
   it('a brochure naming a fact it did not read reaches the assisted reader', () => {
-    const pageTexts = ['LOT 315\n4 BED\nPrice: $1\nLand Size 350 m2 approx'];
+    const pageTexts = ['LOT 315\n4 BED\nEstate: Palomino\nPrice: $716,675\nPrice $375,000 deposit'];
     for (const positionedPages of [undefined, schedulePages([])]) {
       const reading = readPdfDeterministicRows({ pageTexts, positionedPages });
       expect(reading.status).not.toBe('complete');
@@ -1118,13 +1120,26 @@ describe('identity is never invented for a direct upload', () => {
 });
 
 describe('a fact we can see and did not read still refuses', () => {
-  it('a recognised label beside a value we could not take', () => {
+  it('a MATERIAL label beside a value we could not take still blocks', () => {
+    // A second price stated in terms this reader cannot take may be the deal
+    // contradicting itself, and it cannot tell without reading it.
     const reading = readPdfBrochure([
-      ['LOT 315', '4 BED', 'Price: $1', 'Land Size 350 m2 approx'].join('\n'),
+      ['LOT 315', '4 BED', 'Estate: Palomino', 'Price: $716,675',
+        'Price $375,000 deposit'].join('\n'),
     ]);
     expect(reading.status).toBe('incomplete');
     expect(reading.reason).toBe('unaccounted_specification_lines');
     expect(reading.rows).toEqual([]);
+  });
+
+  it('but an optional measurement it could not take does not', () => {
+    // A land size says nothing about WHICH property this is.
+    const reading = readPdfBrochure([
+      ['LOT 315', '4 BED', 'Estate: Palomino', 'Price: $716,675',
+        'Land Size 350 m2 approx'].join('\n'),
+    ]);
+    expect(reading.status).toBe('complete');
+    expect(normaliseStockRow(reading.rows[0])!.lot_number).toBe('315');
   });
 
   it('a label set on its own with nothing pairable under it claims nothing', () => {
@@ -1206,11 +1221,13 @@ describe('1 — a design the document names inside its own line', () => {
   });
 
   it('a heading in the MIDDLE of a line names nothing', () => {
-    // `Land Size 350 m2` is a specification, not a name ending in a field.
+    // `Land Size 350 m2` is a specification, not a name ending in a field —
+    // so it never becomes a development or a design.
     const reading2 = readPdfBrochure([
       ['LOT 315', 'Bedrooms: 4', 'Price: $1', 'Land Size 350 m2 approx'].join('\n'),
     ]);
-    expect(reading2.status).not.toBe('complete');
+    expect(reading2.diagnostics.fieldsRead).not.toContain('development_name');
+    expect(reading2.diagnostics.fieldsRead).not.toContain('house_design');
   });
 
   it('a sentence that happens to end in a field word is not a name', () => {
@@ -1753,16 +1770,24 @@ describe('a material line this reader cannot name stands the document down', () 
     expect(reading.diagnostics.fieldsRead).not.toContain('development_name');
   });
 
-  it('a canonical fact the document states and this reader missed still blocks', () => {
-    // `Land Size` leads the line and puts a figure beside it — a measurement
-    // we can see and did not take. That is what an unread line has to be.
+  it('a MATERIAL fact the document states and this reader missed still blocks', () => {
+    // A second lot leads the line and puts its number beside it. That may be
+    // a different property, and this reader cannot tell without reading it.
     const reading = readPdfBrochure([
-      ['LOT 315', 'Bedrooms: 4', 'Price: $800,000',
+      ['LOT 315', 'Estate: Palomino', 'Bedrooms: 4', 'Price: $800,000',
+        'Lot 316A also released this weekend'].join('\n'),
+    ]);
+    expect(reading.status).not.toBe('complete');
+    expect(reading.rows).toEqual([]);
+  });
+
+  it('an optional measurement it missed does NOT block', () => {
+    const reading = readPdfBrochure([
+      ['LOT 315', 'Estate: Palomino', 'Bedrooms: 4', 'Price: $800,000',
         'Land Size 350 m2 approximately per contract'].join('\n'),
     ]);
-    expect(reading.status).toBe('incomplete');
-    expect(reading.reason).toBe('unaccounted_specification_lines');
-    expect(reading.rows).toEqual([]);
+    expect(reading.status).toBe('complete');
+    expect(normaliseStockRow(reading.rows[0])!.price).toBe(800000);
   });
 
   it('the same document without that line completes', () => {
