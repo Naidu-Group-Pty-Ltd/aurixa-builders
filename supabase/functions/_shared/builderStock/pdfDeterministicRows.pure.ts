@@ -613,6 +613,7 @@ type ClaimSource =
   | 'lot_heading'
   | 'named_place'
   | 'inline_field_name'
+  | 'leading_field_name'
   | 'beside'
   | 'below'
   | 'caption'
@@ -1203,6 +1204,86 @@ function readsAsAName(value: string): boolean {
  * nothing is stripped, because editing a builder's own name is a judgement
  * this module does not get to make.
  */
+/**
+ * `ESTATE WARRAGUL` — THE DOCUMENT NAMED THE FIELD IN FRONT OF THE VALUE.
+ *
+ * The mirror of `readInlineFieldName`, and it exists because a summary block
+ * writes its rows the other way round. Measured on `LOT 266 Crowlea Estate`:
+ * the page states `Land - $334,000`, `Build - $415,100`, `Titles - Q2 2027`
+ * and then, in the same column with no separator at all, `Estate Warragul`.
+ * The estate was on the page, under a word this vocabulary already resolves,
+ * and read by nothing — and with no estate claimed the filename may not
+ * corroborate a design either, so `Cura 20B` went with it.
+ *
+ * THE VALUE IS WHAT FOLLOWS, WHICH IS THE ONE ASYMMETRY WITH THE MIRROR.
+ * There the heading is the last run and is part of the name — `Estate` is
+ * part of `Palomino Estate`. Here it leads, and a name does not begin with
+ * the word for what it is, so the label is a label and the value is the rest.
+ *
+ * THE SAME GUARDS, AND THEY ARE WHAT KEEPS A SPECIFICATION SHEET OUT. The
+ * line must read as a name, so 300 lines of inclusions prose cannot reach
+ * it; it must not carry a currency or an area, which belongs to the numeric
+ * readers; it must not end in its own colon, which is a label asking for a
+ * value in the next cell; it must not resolve WHOLLY through the alias table,
+ * because `Lot Size` is a heading and not a field beside a name; the field
+ * must be one this reader may claim AND descriptive, so `Bed 3` and
+ * `Garage Double` claim nothing; and what follows must not itself be a
+ * heading, because a heading beside a heading is a layout.
+ *
+ * AND THE LABEL IS AN ALLOW-LIST, BECAUSE THE GUARDS ABOVE WERE NOT ENOUGH.
+ * Driven over all 359 lines that document left unnamed, every guard in place,
+ * this claimed exactly two: `Estate Warragul`, and `House Specifications` as
+ * a house design called "Specifications". The second is a SECTION HEADING —
+ * and so are `Home Design`, `Design Guidelines` and `Kitchen Appliances`. In
+ * a trailing position the word for a thing belongs to the name in front of
+ * it; in a LEADING position it is as likely to be introducing a page as
+ * labelling a value, and no structural test separates the two.
+ *
+ * So only the fields where a leading label is a statement are read, and the
+ * design is not among them — it does not need to be. `Cura 20B` reaches the
+ * record the way it always could: `corroborateDesignFromFilename` confirms a
+ * name the page prints against the name the builder gave the file, and its
+ * one precondition is an estate or project, which is exactly what this
+ * closes. The list may grow, on the same terms it was made: evidence from a
+ * document, not a guess about word order.
+ */
+const LEADING_LABEL_FIELDS: ReadonlySet<string> = new Set([
+  'development_name', 'project_name',
+]);
+function readLeadingFieldName(line: string): Claim | null {
+  const trimmed = String(line ?? '').trim();
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return null;
+  if (!readsAsAName(trimmed)) return null;
+  if (CURRENCY_OR_AREA.test(trimmed)) return null;
+  if (/[:–—]$/.test(trimmed)) return null;
+  if (fieldForHeader(trimmed)) return null;
+  const reach = Math.min(MAX_LABEL_WORDS, tokens.length - 1);
+  for (let length = reach; length >= 1; length--) {
+    const field = fieldForHeader(tokens.slice(0, length).join(' '));
+    if (!field) continue;
+    if (!BROCHURE_CLAIMABLE_FIELDS.has(field)) return null;
+    if (!DESCRIPTIVE_FIELDS.has(field)) return null;
+    if (!LEADING_LABEL_FIELDS.has(field)) return null;
+    const value = tokens.slice(length).join(' ');
+    if (!value.length || fieldForHeader(value)) return null;
+    /*
+     * A LABEL FOLLOWED BY A FIGURE IS AN ENUMERATED DESIGNATION, AND THE
+     * FIGURE BELONGS TO THE LABEL.
+     *
+     * `Stage` and `Release` both resolve to `project_name`, so without this
+     * `Stage 12 Release 4` claims a project called `12 Release 4` — the
+     * label torn off the front of the very designation it names. `Estate
+     * Warragul` is the other shape: a class noun labelling a name that
+     * stands on its own. The number is what tells them apart, and it is the
+     * same shape `readLotHeading` already reads.
+     */
+    if (HAS_DIGIT.test(value.trim()[0] ?? '')) return null;
+    return { field, value };
+  }
+  return null;
+}
+
 function readInlineFieldName(line: string): Claim | null {
   const trimmed = String(line ?? '').trim();
   const tokens = trimmed.split(/\s+/).filter(Boolean);
@@ -2319,8 +2400,16 @@ export function readPdfBrochure(
             else {
               const place = readNamedPlace(line);
               const named = place ? null : readInlineFieldName(line);
+              /*
+               * The established readers first, always. This one is the
+               * mirror of `readInlineFieldName` and never its competitor: a
+               * line it could read has a heading at the END, and a line this
+               * one reads has it at the START.
+               */
+              const leading = place || named ? null : readLeadingFieldName(line);
               if (place) found.push(...via('named_place', place));
               else if (named) found.push(...via('inline_field_name', [named]));
+              else if (leading) found.push(...via('leading_field_name', [leading]));
               else {
                 /*
                  * THE THREE WAYS A PAGE SETS A LABEL BESIDE ITS VALUE, in
