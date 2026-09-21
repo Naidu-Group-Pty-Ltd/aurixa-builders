@@ -7,7 +7,12 @@
  * `CPU Time exceeded`; four completed.
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
+  COMPLETION_BUDGET_MS,
+  COMPLETION_MIN_ROOM_MS,
+  completionDeadlineFrom,
   DISCOVERY_ELAPSED_LIMIT_MS,
   discoveryRefusal,
   IMAGE_BUDGET_MS,
@@ -127,5 +132,97 @@ describe('the storage phase is held to the smaller of two bounds', () => {
       const at = NOW + elapsed;
       expect(storageDeadlineFrom(budget, at)!).toBeLessThanOrEqual(at + IMAGE_BUDGET_MS);
     }
+  });
+});
+
+describe('the field completion is the least important thing an import does', () => {
+  /*
+   * A DEFECT THIS MODULE EXISTED TO PREVENT, COMMITTED THREE MERGES AFTER IT
+   * WAS WRITTEN — by the change that added the completion.
+   *
+   *   08:59:13.663  field completion unavailable — detail: "model_refused"
+   *   08:59:16.717  CPU Time exceeded
+   *
+   * `runStockImport` handed it `Date.now() + MODEL_BUDGET_MS` — ninety
+   * seconds against a thirty-second run bound — at the point where the run is
+   * closest to its ceiling, having already read the document and stored its
+   * imagery. Every attempt on this deployment ends in the same 402, so the
+   * run spent its last seconds discovering something it could not change and
+   * was killed doing it. A whole import lost to filling in a card.
+   */
+  const NOW = 1_758_436_000_000;
+
+  it('does not begin where the run cannot afford it', () => {
+    const budget = openImportBudget(NOW, 1_000_000);
+    const nearlySpent = budget.deadlineAt - (COMPLETION_MIN_ROOM_MS - 1);
+    expect(completionDeadlineFrom(budget, nearlySpent)).toBeNull();
+  });
+
+  it('begins where there is room, and is held to the run', () => {
+    const budget = openImportBudget(NOW, 1_000_000);
+    const at = budget.deadlineAt - (COMPLETION_BUDGET_MS - 1_000);
+    const deadline = completionDeadlineFrom(budget, at)!;
+    expect(deadline).toBe(budget.deadlineAt);
+    expect(deadline).toBeLessThan(at + COMPLETION_BUDGET_MS);
+  });
+
+  it('keeps its own allowance early in a run', () => {
+    const budget = openImportBudget(NOW, 1_000_000);
+    expect(completionDeadlineFrom(budget, NOW)).toBe(NOW + COMPLETION_BUDGET_MS);
+  });
+
+  it('can never outlive the run, at any point in it', () => {
+    const budget = openImportBudget(NOW, 1_000_000);
+    for (const elapsed of [0, 5_000, 15_000, 24_000, 29_000]) {
+      const deadline = completionDeadlineFrom(budget, NOW + elapsed);
+      if (deadline === null) continue;
+      expect(deadline).toBeLessThanOrEqual(budget.deadlineAt);
+    }
+  });
+
+  /*
+   * AND IT IS A FRACTION OF THE READER'S ALLOWANCE, not a copy of it. The
+   * completion fills absences on a record that is already correct and already
+   * about to be written; the reader's ninety seconds are for reading a
+   * document there is otherwise no reading of.
+   */
+  it('is far smaller than the allowance for reading a document', () => {
+    const MODEL_BUDGET_MS = 90_000;
+    expect(COMPLETION_BUDGET_MS).toBeLessThan(MODEL_BUDGET_MS / 4);
+    expect(COMPLETION_MIN_ROOM_MS).toBeLessThan(COMPLETION_BUDGET_MS);
+  });
+});
+
+describe('the import reports what the reader saw before it can be killed', () => {
+  const run = readFileSync(
+    join(process.cwd(), 'supabase/functions/_shared/builderStock/runImport.ts'), 'utf8');
+
+  /*
+   * The import's own telemetry line is written after everything else has run,
+   * so a worker killed later takes the reading's account with it. That is
+   * exactly what upload `6d195db5` did at 08:59 on 21 September 2026: the run
+   * died during the field completion and left NOTHING anywhere saying what
+   * the deterministic reader had made of the document.
+   */
+  it('logs the reading as soon as the extractor returns', () => {
+    const at = run.indexOf("phase: 'deterministic_read'");
+    expect(at).toBeGreaterThan(0);
+    // Before the model path, the completion and the row write — so any kill
+    // after extraction still leaves the account behind.
+    expect(at).toBeLessThan(run.indexOf('const budget = createAiBudget'));
+    expect(at).toBeLessThan(run.indexOf("phase: 'field_completion'"));
+  });
+
+  it('carries what is needed to act, and no value the document stated', () => {
+    const block = run.slice(run.indexOf("phase: 'deterministic_read'"),
+      run.indexOf('// A table is normalised deterministically'));
+    for (const key of ['status', 'reason', 'fields_read', 'visual_only',
+      'count_evidence', 'unaccounted_lines']) {
+      expect(block).toContain(key);
+    }
+    // Names and counts only: `diagnostics` carries no stated value by
+    // contract, and nothing else is read here.
+    expect(block).not.toContain('rows');
+    expect(block).not.toContain('extraction.text');
   });
 });
