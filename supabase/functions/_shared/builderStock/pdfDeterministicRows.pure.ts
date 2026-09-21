@@ -198,6 +198,20 @@ export interface PdfDeterministicReading {
      */
     corroboratedLines?: number;
     /**
+     * Lines the document carries that could not change which property this
+     * is or what is being sold — a floor plan's room names, inclusions
+     * bullets, specification and marketing copy. Counted and reported, and
+     * deliberately not blocking: see the gate in `readPdfBrochure`.
+     */
+    ignoredLines?: number;
+    /**
+     * Optional attributes the document states only in PICTURES. The
+     * production brochure prints `3 2 1` beside bed, bath and car icons,
+     * and the icons are images — so the counts are named here as unread
+     * rather than assigned by the usual order, which would be inference.
+     */
+    visualOnlyFields?: string[];
+    /**
      * Canonical fields the document stated and this reader declines BY
      * POLICY — the four `BROCHURE_CLAIMABLE_FIELDS` names for stated
      * reasons. Named rather than counted, because "we did not take the
@@ -411,6 +425,24 @@ function labelAt(tokens: string[], start: number): { field: string; length: numb
 const COUNT_FIELDS: ReadonlySet<string> = new Set([
   'bedrooms', 'bathrooms', 'car_spaces',
 ]);
+
+/**
+ * A COUNT IS A SMALL WHOLE NUMBER OF ROOMS, NEVER A MEASUREMENT.
+ *
+ * The production brochure states `Garage: 22.59m²` — the garage's AREA,
+ * under a label this vocabulary reads as `car_spaces`. Taken at face value
+ * that is a property with twenty-two car spaces, written by a document that
+ * never said so. A count field's value is therefore checked for being a
+ * count: a small number, optionally a half, and nothing else attached.
+ */
+const COUNT_VALUE = /^\d{1,2}(?:\.5)?$/;
+const MAX_PLAUSIBLE_COUNT = 20;
+
+function statesACount(value: string): boolean {
+  const trimmed = value.trim();
+  if (!COUNT_VALUE.test(trimmed)) return false;
+  return Number(trimmed) <= MAX_PLAUSIBLE_COUNT;
+}
 
 /** Is this label written as more than one of the thing it names? */
 function isPlural(labelTokens: readonly string[]): boolean {
@@ -637,6 +669,8 @@ function readVerticalPair(
 
   // A heading directly under a heading is a layout, not a statement.
   if (fieldForHeader(value)) return null;
+  // Nor is a line that is itself asking for a value.
+  if (/[:–—]$/.test(value.trim())) return null;
 
   const unit = areaUnitOf(value);
   const resolved = (unit ? fieldForHeader(`${label} ${unit}`) : null) ?? bare;
@@ -844,6 +878,15 @@ function readInlineFieldName(line: string): Claim | null {
   if (tokens.length < 2) return null;
   if (!readsAsAName(trimmed)) return null;
   if (CURRENCY_OR_AREA.test(trimmed)) return null;
+  /*
+   * A LINE ENDING IN A COLON IS A LABEL, NOT A NAME. Page 2 of the
+   * production brochure draws its data block as label cells beside value
+   * cells — `Home Design:`, `Site Area:`, `Locality:` — and reading the
+   * label's own words as the name it is asking for wrote `house_design:
+   * "Home Design:"`. The pairing readers take these correctly; this one
+   * must decline them.
+   */
+  if (/[:–—]$/.test(trimmed)) return null;
   const reach = Math.min(MAX_LABEL_WORDS, tokens.length - 1);
   for (let length = reach; length >= 1; length--) {
     const field = fieldForHeader(tokens.slice(tokens.length - length).join(' '));
@@ -856,6 +899,73 @@ function readInlineFieldName(line: string): Claim | null {
     return { field, value: trimmed };
   }
   return null;
+}
+
+/*
+ * A SECTION'S `Total:` IS NOT READ, AND THE DOCUMENT IS WHY.
+ *
+ * The production brochure's first page states its areas as a section —
+ * `House Specifications` over `Enclosed: 91.91m²`, `Garage: 22.59m²`,
+ * `Porch: 3m²`, `Total: 117.50m²` — and a rule was written here to take
+ * that total as the building size, resolving `House` with the value's unit
+ * the way `readVerticalPair` does.
+ *
+ * It was removed because page 2 of the same document states
+ * `Build Area: 119.16 m2` in so many words, and the two disagree. A derived
+ * figure that contradicts a stated one is not a second opinion, it is a
+ * fabrication with an argument attached — and the reader that waits for the
+ * document to say it plainly gets the right number without one. The same
+ * lesson as the locality: this brochure says everything it means somewhere.
+ */
+
+/**
+ * `ARMSTRONG CREEK (3217)` — the locality and its postcode.
+ *
+ * The production brochure's siting block states `Locality: ARMSTRONG CREEK
+ * (3217)`, which is one label over two facts the row keeps in two columns.
+ * Read whole, the suburb carries a bracketed number that is not part of any
+ * suburb's name and the postcode column stays empty beside it.
+ *
+ * Narrow on purpose: a suburb claim alone, a trailing bracket alone, and
+ * exactly four digits in it, which is what an Australian postcode is. Any
+ * other bracket is left where the document put it.
+ */
+const TRAILING_POSTCODE = /^(.*\S)\s*\((\d{4})\)$/;
+
+function splitLocality(claim: Claim): Claim[] {
+  if (claim.field !== 'suburb') return [claim];
+  const match = claim.value.trim().match(TRAILING_POSTCODE);
+  if (!match) return [claim];
+  return [
+    { field: 'suburb', value: match[1] },
+    { field: 'postcode', value: match[2] },
+  ];
+}
+
+/**
+ * `PALOMINO ESTATE, ARMSTRONG CREEK` — the estate, and nothing else.
+ *
+ * The name the document gives its estate is often set with the locality
+ * after a comma, and `readInlineFieldName` requires the field word to END
+ * the line, so the whole thing resolved to nothing. Reading the FIRST
+ * segment on its own is all this does: that segment carries its own field
+ * word, so it is the document labelling itself and not an inference.
+ *
+ * IT DELIBERATELY DOES NOT READ THE TAIL AS THE SUBURB, and the production
+ * brochure is why. A first version took `Armstrong Creek` from the comma on
+ * the argument that an address composition runs from the specific to the
+ * general — which is true, and which was still a guess. Page 2 of that same
+ * document states `Locality: ARMSTRONG CREEK (3217)` in so many words, and
+ * the two readings disagreed. The document says it plainly somewhere; a
+ * reader that waits for it says nothing wrong.
+ */
+function readNamedPlace(line: string): Claim[] | null {
+  const segments = line.split(',').map((part) => part.trim()).filter(Boolean);
+  if (segments.length < 2) return null;
+  const named = readInlineFieldName(segments[0]);
+  if (!named) return null;
+  if (named.field !== 'development_name' && named.field !== 'project_name') return null;
+  return [named];
 }
 
 /**
@@ -886,6 +996,12 @@ function readCaptionedValue(
   const trimmed = String(value ?? '').trim();
   // A heading is a layout, never a value — the same rule the pair reader has.
   if (fieldForHeader(trimmed)) return null;
+  /*
+   * AND A LINE ENDING IN A COLON IS ASKING FOR A VALUE, NOT BEING ONE. The
+   * production brochure's last page draws `Date:` above a field word, and
+   * the caption reading took the question as the answer.
+   */
+  if (/[:–—]$/.test(trimmed)) return null;
   if (BARE_MEASUREMENT.test(trimmed)) return null;
   if (CURRENCY_OR_AREA.test(trimmed)) return null;
   if (!readsAsAName(trimmed)) return null;
@@ -1018,9 +1134,31 @@ export function isIncidentalContent(line: string): boolean {
  */
 function readLotHeading(line: string): Claim | null {
   const tokens = line.trim().split(/\s+/);
-  if (tokens.length !== 2) return null;
+  if (tokens.length < 2) return null;
   if (fieldForHeader(tokens[0]) !== 'lot_number') return null;
   if (!LOT_DESIGNATION.test(tokens[1])) return null;
+  /*
+   * `LOT 315 CENTRAL BOULEVARD` — the lot AND the street it is on.
+   *
+   * The production brochure heads its address block that way, and the
+   * two-token rule refused it: a lot designation this reader could see and
+   * would not take, on the one field that says which property this is.
+   *
+   * What follows the designation is read only to be REFUSED — nothing here
+   * claims a street, because the tail may be anything and this module does
+   * not decide what. It must simply be an address-shaped tail, which is
+   * what stops "Lot 5 of the finest homes in Victoria" claiming lot 5: a
+   * short run of words set as a name, carrying no figure of its own and no
+   * heading this vocabulary would have read differently.
+   */
+  const tail = tokens.slice(2);
+  if (tail.length) {
+    if (tail.length > MAX_NAME_TOKENS) return null;
+    const rest = tail.join(' ');
+    if (HAS_DIGIT.test(rest)) return null;
+    if (!readsAsAName(rest)) return null;
+    if (fieldForHeader(rest)) return null;
+  }
   return { field: 'lot_number', value: tokens[1] };
 }
 
@@ -1177,6 +1315,70 @@ function corroboratedBy(line: string, names: ReadonlyArray<readonly string[]>): 
 }
 
 /**
+ * THE FILENAME MAY CLASSIFY WHAT THE DOCUMENT SAYS. IT MAY NOT SAY IT.
+ *
+ * `LOT 315 - ENZO 8.5 LUCA - BROCHURE V002.pdf` names the lot and one other
+ * thing. The document itself prints `Enzo 8.5` as its largest line and
+ * prints `Palomino Estate` with its own field word, so the estate is settled
+ * from the page and the only identity the page has not labelled is the
+ * design. The filename does not supply that name — the page already did —
+ * it settles which field a name the page already carries belongs to.
+ *
+ * FOUR CONDITIONS, AND EVERY ONE OF THEM REFUSES RATHER THAN GUESSES.
+ *
+ *   • THE LOT MUST AGREE. A filename naming a different lot from the
+ *     document is a file somebody renamed or attached to the wrong record,
+ *     and it answers `ambiguous` rather than being ignored — the one thing
+ *     worse than not reading a filename is trusting a mismatched one.
+ *   • THE NAME MUST BE THE DOCUMENT'S. Only a line the page actually printed
+ *     and this reader could not place is a candidate, and every one of its
+ *     tokens must appear in the filename. A name that is in the filename and
+ *     not on the page can never be claimed.
+ *   • THE ESTATE MUST ALREADY BE SETTLED. Until it is, an unplaced name
+ *     could be either, and choosing is exactly the judgement this module
+ *     does not make.
+ *   • THERE MUST BE EXACTLY ONE CANDIDATE. Two unplaced names both echoed by
+ *     the filename is the document declining to say which is which.
+ */
+export function corroborateDesignFromFilename(input: {
+  filename: string | null | undefined;
+  unresolved: readonly string[];
+  claimed: ReadonlyMap<string, string>;
+}): { claim: Claim; line: string } | 'lot_mismatch' | null {
+  const raw = String(input.filename ?? '').trim();
+  if (!raw) return null;
+  const stem = raw.replace(/\.[A-Za-z0-9]{1,5}$/, '');
+  const fileTokens = nameTokens(stem);
+  if (!fileTokens.length) return null;
+
+  // The lot the filename names, if it names one.
+  for (let index = 0; index < fileTokens.length - 1; index++) {
+    if (fieldForHeader(fileTokens[index]) !== 'lot_number') continue;
+    const stated = fileTokens[index + 1];
+    if (!LOT_DESIGNATION.test(stated)) continue;
+    const held = input.claimed.get('lot_number');
+    if (held && flattenIdentity(held) !== flattenIdentity(stated)) return 'lot_mismatch';
+    break;
+  }
+
+  if (input.claimed.has('house_design')) return null;
+  if (!input.claimed.has('development_name') && !input.claimed.has('project_name')) {
+    return null;
+  }
+
+  const fileSet = new Set(fileTokens);
+  const candidates = input.unresolved.filter((line) => {
+    if (!readsAsAName(line)) return false;
+    const tokens = nameTokens(line);
+    if (tokens.length < 1) return false;
+    return tokens.every((token) => fileSet.has(token));
+  });
+  const distinct = [...new Set(candidates.map((line) => line.trim()))];
+  if (distinct.length !== 1) return null;
+  return { claim: { field: 'house_design', value: distinct[0] }, line: distinct[0] };
+}
+
+/**
  * Read a brochure that STATES its property.
  *
  * Runs on `pageTexts` — the strings `readPdfPageTexts` already produced for
@@ -1196,6 +1398,11 @@ export function readPdfBrochure(
      * to stand the document down. Absent, nothing changes.
      */
     organisationName?: string | null;
+    /**
+     * The name the builder gave the file. Read only to CLASSIFY a name the
+     * document itself printed — see `corroborateDesignFromFilename`.
+     */
+    filename?: string | null;
   } = {},
 ): PdfDeterministicReading {
   const diagnostics: PdfDeterministicReading['diagnostics'] = {
@@ -1259,8 +1466,33 @@ export function readPdfBrochure(
       const line = units[index].text;
       const found: Claim[] = [];
 
+      /*
+       * A SECTION'S TOTAL BELONGS TO THE SECTION.
+       *
+       * The production brochure states the house's area as
+       *
+       *   House Specifications
+       *   Enclosed: 91.91m²   Garage: 22.59m²   Porch: 3m²   Total: 117.50m²
+       *
+       * `Total` names no field — correctly, since a total on its own is a
+       * word and not a measurement of anything in particular. What says what
+       * it measures is the heading it sits under, and the unit says which
+       * reading of that heading applies: `House` is the DESIGN in this
+       * vocabulary and `house m2` is the building's area, which is the same
+       * re-reading `readVerticalPair` already makes for a label over its
+       * value. So the heading and its total are one statement and are
+       * consumed together.
+       */
       const labelled = readLabelledValue(line);
-      if (labelled) {
+      /*
+       * A LABEL WHOSE VALUE IS IN THE NEXT CELL IS NOT A LABEL WITH NO
+       * VALUE. The production brochure draws `Garage:` and `22.59m²` as two
+       * cells of one row, and refusing on the empty half stood the document
+       * down over a label whose value was six units to the right. An empty
+       * value falls through to the pairing readers, and the bare-label rule
+       * below is what still catches a label nothing anywhere fills in.
+       */
+      if (labelled && labelled.value) {
         if (!BROCHURE_CLAIMABLE_FIELDS.has(labelled.field)) {
           /*
            * A LABEL WE KNOW AND DELIBERATELY DO NOT TAKE — `Status: Selling`,
@@ -1303,8 +1535,10 @@ export function readPdfBrochure(
             const lot = readLotHeading(line);
             if (lot) found.push(lot);
             else {
-              const named = readInlineFieldName(line);
-              if (named) found.push(named);
+              const place = readNamedPlace(line);
+              const named = place ? null : readInlineFieldName(line);
+              if (place) found.push(...place);
+              else if (named) found.push(named);
               else {
                 /*
                  * THE THREE WAYS A PAGE SETS A LABEL BESIDE ITS VALUE, in
@@ -1319,8 +1553,10 @@ export function readPdfBrochure(
                  * a column of labels and values can never be read upwards.
                  */
                 const beside = unitBeside(units, index);
-                const alongside = beside !== null && !consumed.has(beside)
-                  ? readVerticalPair(line, units[beside].text) : null;
+                const besideText = beside !== null && !consumed.has(beside)
+                  ? units[beside].text : null;
+                const alongside = besideText !== null
+                  ? readVerticalPair(line, besideText) : null;
                 if (alongside && beside !== null) {
                   found.push(alongside.claim);
                   consumed.add(beside);
@@ -1385,7 +1621,21 @@ export function readPdfBrochure(
          * reachable on a real seven-page document.
          */
         const bareLabel = fieldForHeader(line);
-        if (bareLabel && BROCHURE_CLAIMABLE_FIELDS.has(bareLabel)) {
+        /*
+         * A BARE LABEL REFUSES ONLY WHERE IT NAMES A CANONICAL FIELD THIS
+         * DOCUMENT HAS NOT OTHERWISE STATED.
+         *
+         * A floor plan is a page of bare labels: the production brochure
+         * annotates `Bath`, `Garage`, `Ensuite`, `Porch` and `Linen` on its
+         * plan, and `Bath` alone stood the whole document down as a
+         * bathroom count with no value. Those are rooms, not unread facts,
+         * and the counts they name are not fields a property's identity or
+         * its price depends on. What still refuses is the shape this rule
+         * was written for — a template naming `Land Size` or `Price` and
+         * never filling it in.
+         */
+        if (bareLabel && BROCHURE_CLAIMABLE_FIELDS.has(bareLabel)
+          && BLOCKING_FIELDS.has(bareLabel) && !claimed.has(bareLabel)) {
           /*
            * A LABEL SET ON ITS OWN WITH NOTHING THIS READER COULD PAIR TO IT.
            * The shape a template whose values live in form fields produces, and
@@ -1431,8 +1681,16 @@ export function readPdfBrochure(
         continue;
       }
 
-      for (const claim of found) {
+      for (const claim of found.flatMap(splitLocality)) {
         if (!BROCHURE_CLAIMABLE_FIELDS.has(claim.field)) continue;
+        if (COUNT_FIELDS.has(claim.field) && !statesACount(claim.value)) {
+          /*
+           * `Garage: 22.59m²` is the garage's AREA under a label this
+           * vocabulary reads as `car_spaces`. Refused rather than written,
+           * and the line then answers to the ordinary unresolved rule.
+           */
+          continue;
+        }
         const existing = claimed.get(claim.field);
         if (existing === undefined) {
           claimed.set(claim.field, claim.value);
@@ -1479,13 +1737,60 @@ export function readPdfBrochure(
     .filter(([field]) => IDENTITY_FIELDS.includes(field) || DESCRIPTIVE_FIELDS.has(field))
     .map(([, value]) => nameTokens(value))
     .filter((tokens) => tokens.length > 0);
-  const stillUnresolved = unresolved.filter((line) => !corroboratedBy(line, names));
+  const repeats = unresolved.filter((line) => !corroboratedBy(line, names));
+
+  /*
+   * THE FILENAME'S ONE JOB, taken after every page has been read so the
+   * estate is as settled as the document is going to make it.
+   */
+  const corroborated = corroborateDesignFromFilename({
+    filename: options.filename, unresolved: repeats, claimed,
+  });
+  if (corroborated === 'lot_mismatch') {
+    diagnostics.conflictField = 'lot_number';
+    diagnostics.fieldsRead = [...claimed.keys()].sort();
+    return refuse('ambiguous', 'filename_lot_disagrees_with_document', diagnostics);
+  }
+  if (corroborated) claimed.set('house_design', corroborated.claim.value);
+  const placed = corroborated
+    ? repeats.filter((line) => line.trim() !== corroborated.line)
+    : repeats;
+
+  /*
+   * =====================================================================
+   * WHAT AN UNREAD LINE HAS TO BE BEFORE IT STANDS A DOCUMENT DOWN.
+   * =====================================================================
+   *
+   * `complete` never meant that every line of a seven-page marketing
+   * brochure became a column, and the rule that said so was unreachable on
+   * a real document: the production brochure for Lot 315 carries a floor
+   * plan (`Robe`, `Terrace`, `Kitchen`, `Linen`, `Ensuite`, `LDRY`,
+   * `Porch`), twelve inclusions bullets, five pages of specification copy
+   * and a comparison spread. Forty lines, not one of which could make this
+   * a different property or change what is being sold for how much.
+   *
+   * So the test is what the line WOULD have told us: a line that plainly
+   * names one of `BLOCKING_FIELDS` and that this reader could not place is
+   * a canonical fact left unread, and it still stands the document down.
+   * Everything else is the document's own prose, and it is counted and
+   * reported rather than acted on.
+   *
+   * The conservative half is untouched. Two statements of one field still
+   * answer `ambiguous`, a summary word still cannot be an identity, a
+   * filename that disagrees about the lot still refuses, and no field is
+   * ever filled from a line this reader did not read.
+   */
+  const stillUnresolved = placed.filter((line) =>
+    blockingFieldNamed(line) !== null && statesAValue(line));
+  diagnostics.ignoredLines = placed.length - stillUnresolved.length;
 
   diagnostics.fieldsRead = [...claimed.keys()].sort();
   diagnostics.unaccountedLines = stillUnresolved.length;
   diagnostics.incidentalLines = incidental;
-  diagnostics.corroboratedLines = unresolved.length - stillUnresolved.length;
+  diagnostics.corroboratedLines = unresolved.length - repeats.length;
   if (declined.size) diagnostics.declinedFields = [...declined].sort();
+  const visualOnly = [...COUNT_FIELDS].filter((field) => !claimed.has(field)).sort();
+  if (visualOnly.length) diagnostics.visualOnlyFields = visualOnly;
 
   if (!claimed.size) {
     return refuse('unsupported', 'no_labelled_fields', diagnostics);
@@ -1600,6 +1905,14 @@ export interface PdfTextItem {
   x: number;
   y: number;
   width: number;
+  /**
+   * The run's drawn height, where the reader supplied one.
+   *
+   * Optional, and absent means 0: every rule that reads it declines when it
+   * is missing, so a fixture written before this existed reads exactly as it
+   * did.
+   */
+  height?: number;
 }
 
 export interface PdfTextLayoutPage {
@@ -1625,6 +1938,69 @@ const SAME_LINE_TOLERANCE = 1.8;
  * tests refuse. Both roads end at the assisted reader.
  */
 const MIN_COLUMN_GAP = 6;
+
+/**
+ * A SUPERSCRIPT IS PART OF ITS NUMBER, NOT A LINE OF ITS OWN.
+ *
+ * Measured on the production brochure for Lot 315: the page writes its areas
+ * as `321m` with a raised `2`, and the two are separate runs —
+ *
+ *   "321"  y=168.9  h=10.0      "m"  y=168.9  h=10.0
+ *   "2"    y=172.3  h= 5.8      x=48.9, where "m" ends at 49.0
+ *
+ * — 3.4 units up at 58% of the type size, abutting. Grouped by baseline
+ * alone that `2` becomes a LINE of its own, which breaks `Lot Size` away
+ * from its value and leaves the document unable to state its own land size.
+ * Every area on that page is written this way, so it is the difference
+ * between reading four measurements and reading none.
+ *
+ * IT IS DONE OVER ROWS RATHER THAN RUNS, because a raised run sorts ABOVE
+ * the run it belongs to: in reading order the `2` arrives before the `321`
+ * it modifies, so no pass that compares a run with the one before it can see
+ * the pair. A row that is nothing but small raised runs is folded into the
+ * row beneath it, and the ordinary left-to-right cell assembly then puts
+ * each one back where it was drawn.
+ *
+ * EVERY TEST IS ABOUT THE TYPE, NOT THE TEXT. Nothing here reads `m` or `2`,
+ * so an exponent, a footnote marker and an ordinal all fold the same way and
+ * the reading that follows decides what the fused text means. A run whose
+ * height the reader did not supply declines, so a fixture written before
+ * that field existed is untouched.
+ */
+function foldSuperscriptRows(
+  groups: Array<{ y: number; items: PdfTextItem[] }>,
+): void {
+  for (let index = groups.length - 1; index >= 1; index--) {
+    const raised = groups[index];
+    const base = groups.find((candidate) => candidate !== raised
+      && candidate.y < raised.y
+      && raised.y - candidate.y < SUPERSCRIPT_MAX_RISE);
+    if (!base) continue;
+    const baseHeight = Math.max(...base.items.map((item) => item.height ?? 0));
+    if (!(baseHeight > 0)) continue;
+    if (raised.y - base.y >= baseHeight) continue;
+    const every = raised.items.every((item) => {
+      const height = item.height ?? 0;
+      if (!(height > 0) || height >= baseHeight) return false;
+      return base.items.some((anchor) => {
+        const gap = item.x - (anchor.x + (anchor.width || 0));
+        return gap > -1 && gap < MIN_COLUMN_GAP;
+      });
+    });
+    if (!every) continue;
+    base.items.push(...raised.items);
+    groups.splice(index, 1);
+  }
+}
+
+/**
+ * The most a run may sit above another and still be its superscript.
+ *
+ * A line of body copy is set well beyond this; the measured rise on the
+ * production document is 3.4 units. It is only a first filter — the base
+ * row's own type size is what actually decides, and it is stricter.
+ */
+const SUPERSCRIPT_MAX_RISE = 8;
 
 /**
  * The narrowest gap that is a SPACE rather than the join inside a word.
@@ -1663,6 +2039,8 @@ export function layoutLines(items: readonly PdfTextItem[]): LayoutLine[] {
     if (group) group.items.push(item);
     else groups.push({ y: item.y, items: [item] });
   }
+
+  foldSuperscriptRows(groups);
 
   /*
    * One pass left to right. A run that begins within `MIN_COLUMN_GAP` of where
@@ -1959,6 +2337,93 @@ export function mayHoldSchedule(pageTexts: readonly string[]): boolean {
 }
 
 /**
+ * The fields an unresolved line may NOT leave unread.
+ *
+ * `complete` does not mean every line of a seven-page brochure became a
+ * column. It means the reader established a coherent property and nothing it
+ * failed to read could make that the WRONG property or contradict the
+ * commercial record it did read. So these are the fields where an unread
+ * statement would do exactly that — which property this is, and what is
+ * being sold for how much.
+ *
+ * The counts are deliberately absent. On the production brochure they are
+ * three bare digits beside bed, bath and car ICONS, and the icons are images:
+ * the text layer states `3 2 1` and nothing that says which is which.
+ * Assigning them by the usual order would be inference, and a property is
+ * still Lot 315 / Enzo 8.5 / Palomino Estate at $716,675 without them — so
+ * they are reported as unresolved and optional, and they never stand a
+ * document down.
+ */
+const BLOCKING_FIELDS: ReadonlySet<string> = new Set([
+  'external_reference', 'address_line', 'lot_number', 'unit_number',
+  'development_name', 'project_name', 'house_design',
+  'price', 'land_size_sqm', 'building_size_sqm',
+]);
+
+/**
+ * Does this line state a value at all?
+ *
+ * A heading states none — `House Specifications` names a field this reader
+ * carries and cannot contradict anything, because it says nothing about it.
+ * What blocks is a line that names a canonical field AND puts a figure
+ * beside it, which is a fact the document states and this reader did not
+ * take.
+ */
+function statesAValue(line: string): boolean {
+  return HAS_DIGIT.test(line) || CURRENCY_OR_AREA.test(line);
+}
+
+/**
+ * The field this line states, where it states one plainly.
+ *
+ * TWO ADJACENT HEADINGS ARE A COMPOUND THIS VOCABULARY DOES NOT KNOW. The
+ * production brochure prints `Land Price - $375,000` and `Build Price -
+ * $341,675` beside its package price. Reading `Land` there as a land size —
+ * which the alias table will do, because `Land` is one — turns a component
+ * of the deal into a contradiction of a measurement, and stands down a
+ * document that is stating its price breakdown perfectly clearly. When the
+ * word after a heading is itself a heading, the document is naming something
+ * this vocabulary has no column for, and the honest answer is that it names
+ * nothing rather than the first half of it.
+ */
+function blockingFieldNamed(line: string): string | null {
+  /*
+   * AND THE LABEL HAS TO LEAD THE LINE.
+   *
+   * A statement writes its label first — `Land Size 350 m2`, `Price:
+   * $500,000`. A heading word in the MIDDLE of a sentence is a word, and
+   * reading it as a label is how four lines of the production brochure's
+   * own siting notes came to stand the document down:
+   *
+   *   "500m2 with a maximum setback of 5m to the house."   → house_design
+   *   "500mm fall over building envelope. Allotment up to" → project_name
+   *   "(Geo Plan ID: 813489)"                              → external_reference
+   *   "Build Price - $341,675"                             → price
+   *
+   * Not one of them states a canonical fact, and every one of them carries
+   * a figure, so the value test alone could not tell them apart. A leading
+   * bullet or asterisk is stepped over, because that is punctuation the
+   * page adds rather than part of what the line says.
+   */
+  const tokens = line.trim().replace(/^[•*·\-\u2013\u2014]\s*/, '')
+    .split(/\s+/).filter(Boolean);
+  const reach = Math.min(MAX_LABEL_WORDS, tokens.length);
+  for (let length = reach; length >= 1; length--) {
+    const field = fieldForHeader(tokens.slice(0, length).join(' '));
+    if (!field) continue;
+    /*
+     * TWO ADJACENT HEADINGS ARE A COMPOUND THIS VOCABULARY DOES NOT KNOW.
+     * `Land Price - $375,000` is a component of the deal, not a land size
+     * that contradicts a measurement.
+     */
+    const after = tokens[length];
+    if (after !== undefined && fieldForHeader(after)) return null;
+    return BLOCKING_FIELDS.has(field) ? field : null;
+  }
+  return null;
+}
+
+/**
  * How much of a line must name a column before it is read as a heading row.
  *
  * Derived, not chosen: see the measurement in `mayHoldSchedule`. The real
@@ -1998,12 +2463,14 @@ export function readPdfDeterministicRows(input: {
   pageTexts: readonly string[];
   positionedPages?: readonly PdfTextLayoutPage[] | null;
   organisationName?: string | null;
+  filename?: string | null;
 }): PdfDeterministicReading {
   const pageTexts = input.pageTexts ?? [];
 
   const readBrochure = () => readPdfBrochure(pageTexts, {
     positionedPages: input.positionedPages,
     organisationName: input.organisationName,
+    filename: input.filename,
   });
 
   /*

@@ -204,12 +204,19 @@ describe('what reaches the assisted reader, and what does not', () => {
     expect(!rowsFor(reading).length).toBe(true);
   });
 
-  it('a brochure with an unread identity line reaches the fallback', () => {
+  it('a canonical fact the document states and the reader missed reaches it', () => {
+    /*
+     * The rule is not "every line was read" — a brochure is a floor plan
+     * and an inclusions list too. It is that nothing left unread could make
+     * this the wrong property or contradict the deal. `Land Size` leads
+     * this line and states a figure, so it is exactly that.
+     */
     const reading = readPdfBrochure([
-      ['LOT 315', 'ENZO 8.5 LUCA', 'PALOMINO', '4 BED', '2 BATH', '2 CAR',
-        'LAND', '350 m²', 'PACKAGE PRICE', '$863,850'].join('\n'),
+      ['LOT 315', 'Bedrooms: 4', 'PACKAGE PRICE $863,850',
+        'Land Size 350 m2 approximately per contract'].join('\n'),
     ]);
     expect(reading.status).toBe('incomplete');
+    expect(reading.reason).toBe('unaccounted_specification_lines');
     expect(!rowsFor(reading).length).toBe(true);
   });
 });

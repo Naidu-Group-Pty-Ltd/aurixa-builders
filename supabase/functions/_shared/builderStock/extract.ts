@@ -798,6 +798,11 @@ export async function extractStockFile(
         pageTexts,
         positionedPages,
         organisationName: options.organisationName ?? null,
+        /*
+         * The name the builder gave the file, read only to CLASSIFY a name
+         * the document itself printed. It can fill no field of its own.
+         */
+        filename,
       });
       result.deterministicReading = {
         status: reading.status,
