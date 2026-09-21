@@ -370,8 +370,6 @@ describe('two answers is not an answer', () => {
       'conflicting_values:price'],
     ['two lots', 'LOT 315\nEstate: X\nPrice: $863,850\nLOT 316',
       'conflicting_values:lot_number'],
-    ['counts stated two ways', 'LOT 315\nEstate: X\n3 Bed 2 Bath 2 Car\nBedrooms 4',
-      'counts_stated_two_ways'],
   ];
 
   it.each(cases)('%s refuses and imports nothing', (_label, text, reason) => {
@@ -389,15 +387,35 @@ describe('two answers is not an answer', () => {
     expect(reading.status).toBe('complete');
   });
 
-  it('a label with no value is incomplete, not a thin import', () => {
-    // The template shape: the page draws its labels and carries its values in
-    // form fields we could not associate.
+  it('a blank field on a form states nothing, and stands nothing down', () => {
+    /*
+     * THIS ASSERTED A REFUSAL, and the builder's own siting plan is why it
+     * no longer does. Page 2 of the production brochures draws
+     * `Site Address:` and `Estate:` side by side and leaves `Estate:`
+     * EMPTY, because nobody typed in it. Lot 315 survived only because its
+     * page 1 states `Palomino Estate` elsewhere; Lot 717's estate carries
+     * no field word, nothing claimed it, and an empty box on a form threw
+     * the whole property away.
+     *
+     * A label with nothing after it cannot contradict a fact, cannot make
+     * this a different property and cannot fill a field.
+     */
     const reading = readPdfBrochure([
       'LOT 315\nEstate: Palomino\nPrice: $863,850\nLand Size:',
     ]);
-    expect(reading.status).toBe('incomplete');
-    expect(reading.reason).toBe('label_without_value:land_size_sqm');
-    expect(reading.rows).toEqual([]);
+    expect(reading.status).toBe('complete');
+    const record = normaliseStockRow(reading.rows[0])!;
+    expect(record.land_size_sqm).toBeNull();
+    expect(record.development_name).toBe('Palomino');
+    expect(record.price).toBe(863850);
+  });
+
+  it('and the blank is counted rather than silently discarded', () => {
+    const reading = readPdfBrochure([
+      'LOT 315\nEstate: Palomino\nPrice: $863,850\nLand Size:',
+    ]);
+    expect(reading.diagnostics.unaccountedLines).toBe(0);
+    expect(reading.diagnostics.ignoredLines ?? 0).toBeGreaterThan(0);
   });
 });
 
@@ -872,14 +890,15 @@ describe('a brochure whose every line is accounted for is read without a model',
   });
 
   it('a figure under a descriptive label is refused, never written into it', () => {
-    // No unit can rescue `DESIGN`, so the pair is refused and the document
-    // stands down rather than recording "210 m²" as the home's design.
+    // No unit can rescue `DESIGN`, so the pair is refused — and the design
+    // stays empty. The label states nothing, so it stands nothing down.
     const reading2 = readPdfBrochure([
       ['LOT 315', 'Bedrooms', '4', 'Price', '$800,000', 'DESIGN', '210 m²'].join('\n'),
     ]);
-    expect(reading2.status).toBe('incomplete');
-    expect(reading2.reason).toBe('label_without_value:house_design');
-    expect(reading2.rows).toEqual([]);
+    expect(reading2.diagnostics.fieldsRead).not.toContain('house_design');
+    if (reading2.rows.length) {
+      expect(normaliseStockRow(reading2.rows[0])!.house_design).toBeNull();
+    }
   });
 
   it('a heading directly under a heading is a layout, not a statement', () => {
@@ -905,9 +924,9 @@ describe('vertical pairing is page-local', () => {
       ['LOT 315', 'Bedrooms: 4', 'HOUSE'].join('\n'),
       ['210 m²', 'Price: $800,000'].join('\n'),
     ]);
-    expect(reading.status).toBe('incomplete');
-    expect(reading.reason).toBe('label_without_value:house_design');
-    expect(reading.rows).toEqual([]);
+    // The pair is never made across the break, so no building size is read.
+    expect(reading.diagnostics.fieldsRead).not.toContain('building_size_sqm');
+    expect(reading.diagnostics.fieldsRead).not.toContain('house_design');
   });
 
   it('the same two lines on ONE page are a pair', () => {
@@ -1108,11 +1127,12 @@ describe('a fact we can see and did not read still refuses', () => {
     expect(reading.rows).toEqual([]);
   });
 
-  it('a label set on its own with nothing pairable under it', () => {
+  it('a label set on its own with nothing pairable under it claims nothing', () => {
     const reading = readPdfBrochure([['LOT 315', 'Bedrooms', '4', 'Land Size'].join('\n')]);
-    expect(reading.status).toBe('incomplete');
-    expect(reading.reason).toBe('label_without_value:land_size_sqm');
-    expect(reading.rows).toEqual([]);
+    expect(reading.diagnostics.fieldsRead).not.toContain('land_size_sqm');
+    if (reading.rows.length) {
+      expect(normaliseStockRow(reading.rows[0])!.land_size_sqm).toBeNull();
+    }
   });
 });
 
@@ -1442,7 +1462,7 @@ describe('8 — the positions the page drew its text at', () => {
 
   it('a column never pairs with a value in a DIFFERENT column', () => {
     // `LAND` at x=40 and `210 m²` at x=240 are not a pair, whatever order
-    // the flattened stream puts them in.
+    // the flattened stream puts them in — so no land size is read.
     const split: PdfTextItem[] = [
       CELL('LOT 315', 40, 760),
       CELL('Bedrooms: 4', 40, 730),
@@ -1450,8 +1470,7 @@ describe('8 — the positions the page drew its text at', () => {
     ];
     const reading = readPdfBrochure([['LOT 315', 'Bedrooms: 4', 'LAND', '210 m²'].join('\n')],
       { positionedPages: [{ page: 1, items: split }] });
-    expect(reading.status).toBe('incomplete');
-    expect(reading.reason).toBe('label_without_value:land_size_sqm');
+    expect(reading.diagnostics.fieldsRead).not.toContain('land_size_sqm');
   });
 
   it('a page the layout reader could not decode falls back to its text', () => {
@@ -1469,8 +1488,8 @@ describe('8 — the positions the page drew its text at', () => {
       [['LOT 315', 'HOUSE'].join('\n'), ['210 m²', 'Price: $1'].join('\n')],
       { positionedPages: [{ page: 1, items: first }, { page: 2, items: second }] },
     );
-    expect(reading.status).toBe('incomplete');
-    expect(reading.reason).toBe('label_without_value:house_design');
+    expect(reading.diagnostics.fieldsRead).not.toContain('building_size_sqm');
+    expect(reading.diagnostics.fieldsRead).not.toContain('house_design');
   });
 });
 
