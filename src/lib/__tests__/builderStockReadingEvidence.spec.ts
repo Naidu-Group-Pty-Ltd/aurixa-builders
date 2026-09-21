@@ -81,6 +81,58 @@ describe('a stock item measures what a stock item can measure', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 1a. A price is not a measurement
+// ---------------------------------------------------------------------------
+
+describe('a labelled figure carrying money is not an area', () => {
+  /*
+   * THE DOCUMENT'S OWN ARITHMETIC IS THE EVIDENCE. `LOT 266 Crowlea Estate`
+   * imported `price: 749,100` and `land_size_sqm: 334000` in the same
+   * reading, through `labelled_numbers` — and $334,000 plus a $415,100 build
+   * is exactly $749,100. A house and land package states its two halves, and
+   * `LAND` is a label this vocabulary reads as an area.
+   */
+  const priced = readPdfBrochure([SPEC
+    .replace('Land Size: 350 m2', 'LAND $334,000')
+    .replace('Build Size: 180 m2', 'Build Size: $415,100')]);
+
+  it('claims no area from a priced label', () => {
+    const record = normaliseStockRow(priced.rows[0] ?? {});
+    expect(record?.land_size_sqm ?? null).toBeNull();
+    expect(record?.building_size_sqm ?? null).toBeNull();
+  });
+
+  it('DECLINES it by name rather than dropping it silently', () => {
+    // An import log has to be able to say which statement was refused and
+    // under which rule; a figure that simply vanishes is a second defect.
+    expect(priced.diagnostics.declinedFields ?? [])
+      .toEqual(expect.arrayContaining(['land_size_sqm', 'building_size_sqm']));
+  });
+
+  it('does not stand the document down over it', () => {
+    // The rest of that brochure read perfectly, and a priced label is not a
+    // vocabulary gap a model would close either.
+    expect(priced.status).toBe('complete');
+    expect(normaliseStockRow(priced.rows[0])!.price).toBe(863850);
+  });
+
+  it('leaves a real measurement alone, comma and all', () => {
+    const measured = readPdfBrochure([SPEC.replace(
+      'Land Size: 350 m2', 'Land Size: 1,204 m2')]);
+    expect(normaliseStockRow(measured.rows[0])!.land_size_sqm).toBe(1204);
+  });
+
+  it('asks about the value the document printed, never the size of it', () => {
+    // 334,000 without a currency marker is caught by the plausibility bound
+    // above, not by this rule — two independent guards, because a PDF can
+    // put the dollar sign in a text run of its own.
+    const bare = readPdfBrochure([SPEC.replace('Land Size: 350 m2', 'LAND 334,000')]);
+    expect(bare.diagnostics.declinedFields ?? []).not.toContain('land_size_sqm');
+    expect(normaliseStockRow(bare.rows[0])!.land_size_sqm).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 2. A name the document put in brackets is still the name
 // ---------------------------------------------------------------------------
 
