@@ -58,10 +58,7 @@ interface Expect {
   outcome?: string;
   forbid?: Record<string, unknown>;
   refusal_must_not_be?: string[];
-<<<<<<< HEAD
   known_limit?: string;
-=======
->>>>>>> origin/main
 }
 interface Entry {
   name: string; org: string; filename: string; path: string;
@@ -224,7 +221,6 @@ async function itemsFor(uploadId: string) {
 }
 
 const fails: string[] = [];
-<<<<<<< HEAD
 /*
  * A GAP THIS CORPUS HAS NAMED AND NOT CLOSED.
  *
@@ -241,11 +237,6 @@ const report: any[] = [];
 const fail = (entry: Entry, msg: string) => {
   (entry.expect.known_limit ? limits : fails).push(
     `${entry.name}: ${msg}${entry.expect.known_limit ? ` [known: ${entry.expect.known_limit}]` : ''}`);
-=======
-const report: any[] = [];
-const fail = (entry: Entry, msg: string) => {
-  fails.push(`${entry.name}: ${msg}`);
->>>>>>> origin/main
 };
 
 for (const entry of manifest) {
@@ -359,7 +350,6 @@ for (const entry of manifest) {
     }
   }
 
-<<<<<<< HEAD
   // --- 6e2. REPEAT PROCESSING IS SAFE -------------------------------------
   /*
    * Two different acts, and the product answers them differently on purpose.
@@ -432,8 +422,6 @@ for (const entry of manifest) {
     }
   }
 
-=======
->>>>>>> origin/main
   // --- 6f. measurements --------------------------------------------------
   row.measure = {
     aMs: Math.round(a.ms), bMs: Math.round(b.ms),
@@ -451,7 +439,6 @@ await fileServer.shutdown();
 // ---------------------------------------------------------------------------
 // 7 · The verdict
 // ---------------------------------------------------------------------------
-<<<<<<< HEAD
 console.log(JSON.stringify({ report, fails, limits, modelCallAttempts, urlFetches }, null, 2));
 console.log(`\n${manifest.length} documents · ${fails.length} failures · `
   + `${limits.length} named limits · `
@@ -460,11 +447,6 @@ if (limits.length) {
   console.log('\nNAMED LIMITS (reported every run, do not fail the gate):');
   for (const l of limits) console.log('  ' + l);
 }
-=======
-console.log(JSON.stringify({ report, fails, modelCallAttempts, urlFetches }, null, 2));
-console.log(`\n${manifest.length} documents · ${fails.length} failures · `
-  + `${modelCallAttempts.length} generative-model calls attempted`);
->>>>>>> origin/main
 if (modelCallAttempts.length) {
   console.log('MODEL CALLS ATTEMPTED:'); for (const u of modelCallAttempts) console.log('  ' + u);
 }
