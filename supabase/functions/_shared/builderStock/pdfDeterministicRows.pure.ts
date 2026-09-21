@@ -210,6 +210,11 @@ export interface PdfDeterministicReading {
      */
     disputedFields?: string[];
     /**
+     * Set where a bed/bath/car row of bare numbers was read because the
+     * document's own floor plan named the same number of bedrooms.
+     */
+    countsCorroborated?: boolean;
+    /**
      * Optional attributes the document states only in PICTURES. The
      * production brochure prints `3 2 1` beside bed, bath and car icons,
      * and the icons are images — so the counts are named here as unread
@@ -705,6 +710,28 @@ function readVerticalPair(
   } else if (IDENTITY_FIELDS.includes(resolved) && BARE_MEASUREMENT.test(value)) {
     // An address or a reference is free-form, but it is never a bare figure.
     return null;
+  } else if (resolved === 'external_reference' && !HAS_DIGIT.test(value)) {
+    /*
+     * A REFERENCE CARRIES A NUMBER, AND A FLOOR PLAN IS FULL OF THINGS THAT
+     * DO NOT.
+     *
+     * Production, 21 Sep 2026: a flyer imported with
+     * `external_reference: "D.W"` — the dishwasher, annotated on the plan,
+     * paired with a cell this vocabulary reads as a reference (`REF`, `ID`
+     * and `SKU` all resolve to it). It passed every guard above because it
+     * is neither a measurement nor a name.
+     *
+     * That is the worst field to be wrong in: `external_reference` is what a
+     * later upload MATCHES a property by, so a plan abbreviation two
+     * different builders both draw would merge two different houses into one
+     * row. `MC-0041`, `SKU-99` and `H&L-12` all carry a digit; `D.W`, `W.C`
+     * and `P'TRY` carry none.
+     *
+     * Only the PAIRING path is narrowed. A document that labels its own
+     * reference — `Ref: ABC` — is read by `readLabelledValue` and is
+     * untouched, because there the document said which field it meant.
+     */
+    return null;
   } else if (NUMERIC_VALUE_FIELDS.has(resolved)) {
     if (!HAS_DIGIT.test(value)) return null;
   } else if (DESCRIPTIVE_FIELDS.has(resolved) && BARE_MEASUREMENT.test(value)) {
@@ -975,6 +1002,33 @@ function splitAddress(claim: Claim): Claim[] {
   if (claim.field !== 'address_line') return [claim];
   const lot = readLotHeading(claim.value);
   return lot ? [claim, lot] : [claim];
+}
+
+/**
+ * A VALUE NEVER ENDS IN A SEPARATOR.
+ *
+ * `PALOMINO ESTATE, ARMSTRONG CREEK` read for its estate gives back
+ * `Palomino Estate,` — the comma belonged to the line, not to the name,
+ * and it reaches the stock row as part of the estate. The same is true of
+ * a value a document sets in a list (`Enzo 8.5 Luca;`) and of a label's
+ * own colon surviving a split.
+ *
+ * DELIBERATELY NARROW. Only separators are trimmed, and only from the
+ * ends: a full stop is left exactly where the document put it, because
+ * `Fairweather Ave.` and `St. Leonards` carry theirs as part of the name
+ * and a reader that strips it renames the street. A comma INSIDE a value
+ * is untouched, which is what keeps `$863,850` and `1,204 m2` whole.
+ *
+ * It is applied to every claim, from every reader, at the one point they
+ * all pass through — a trim performed in six readers is a trim that will
+ * be forgotten in the seventh.
+ */
+const EDGE_SEPARATORS = /^[\s,;:·•\u2013\u2014-]+|[\s,;:·•\u2013\u2014-]+$/g;
+
+function trimSeparators(claim: Claim): Claim {
+  const value = claim.value.replace(EDGE_SEPARATORS, '');
+  if (!value.length || value === claim.value) return claim;
+  return { ...claim, value };
 }
 
 function splitLocality(claim: Claim): Claim[] {
@@ -1523,6 +1577,111 @@ function corroborateDevelopmentFromPlace(
 }
 
 /**
+ * ===========================================================================
+ * THE BED / BATH / CAR ROW, WHERE THE DOCUMENT PROVES WHICH IS WHICH.
+ * ===========================================================================
+ *
+ * Almost every builder's brochure states its configuration as three bare
+ * numbers under three ICONS — a bed, a bath, a car. The icons are images, so
+ * the text layer carries `3 2 1` and nothing that says what they count, and
+ * reading them by the usual order would be inference: the counts were left
+ * null and every card showed three dashes.
+ *
+ * THE DOCUMENT SETTLES IT ITSELF. A brochure that draws that row also draws
+ * a FLOOR PLAN, and a floor plan labels its rooms: `Bed 1`, `Bed 2`,
+ * `Bed 3`, `MASTER`. Counting the distinct bedrooms it names is a fact about
+ * the page, and where that count equals the FIRST number of the row, the row
+ * has told us what its first position means. The remaining two then follow
+ * it, in the order the row is written.
+ *
+ * Measured on the production brochure for Lot 315: the plan labels `Bed 1`,
+ * `Bed 2` and `Bed 3`, the row reads `3 2 1`, and the reading is 3 bedrooms,
+ * 2 bathrooms, 1 car — which is what the assisted reader independently made
+ * of the same document on 12 September, and what the builder's own stock
+ * list states under a column headed `BED // BATH // CAR`.
+ *
+ * FIVE GUARDS, AND IT CLAIMS NOTHING WHERE ANY OF THEM FAILS.
+ *
+ *   • EXACTLY ONE candidate row in the whole document. Two rows of three
+ *     bare numbers is a comparison table or a second property, and this
+ *     cannot tell which is the subject.
+ *   • EXACTLY THREE numbers, each a plausible count.
+ *   • The floor plan must name at least one bedroom — no plan, no reading.
+ *   • Its bedroom count must EQUAL the first number. A plan that disagrees
+ *     with the row is a document this reader does not understand.
+ *   • Nothing may already be claimed for any of the three, so a document
+ *     that writes `Bedrooms: 4` in words always wins.
+ */
+const BEDROOM_LABEL = /^(?:bed|bedroom)\s*\d{1,2}$/i;
+const MASTER_LABEL = /^master(?:\s+(?:bed|bedroom|suite))?$/i;
+const COUNT_ROW_SIZE = 3;
+
+/** The distinct bedrooms a page's floor plan names. */
+function bedroomsNamedOn(units: readonly BrochureUnit[]): number {
+  const named = new Set<string>();
+  for (const unit of units) {
+    const text = unit.text.trim();
+    if (BEDROOM_LABEL.test(text)) named.add(text.toLowerCase().replace(/\s+/g, ''));
+    else if (MASTER_LABEL.test(text)) named.add('master');
+  }
+  return named.size;
+}
+
+/**
+ * A row of three bare counts, however the page drew it.
+ *
+ * Positioned, the icons separate the digits into three cells of one row.
+ * Flattened, the same row arrives as one line of three tokens. Both are the
+ * same statement and both are read; anything else is not a candidate.
+ */
+function countRowsOn(units: readonly BrochureUnit[]): number[][] {
+  const found: number[][] = [];
+
+  for (const unit of units) {
+    const tokens = unit.text.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length !== COUNT_ROW_SIZE) continue;
+    if (!tokens.every(statesACount)) continue;
+    found.push(tokens.map(Number));
+  }
+
+  const byRow = new Map<number, BrochureUnit[]>();
+  for (const unit of units) {
+    const row = byRow.get(unit.row);
+    if (row) row.push(unit);
+    else byRow.set(unit.row, [unit]);
+  }
+  for (const row of byRow.values()) {
+    if (row.length !== COUNT_ROW_SIZE) continue;
+    if (!row.every((unit) => statesACount(unit.text))) continue;
+    found.push(row.map((unit) => Number(unit.text.trim())));
+  }
+  return found;
+}
+
+function readIconCountRow(
+  pages: ReadonlyArray<readonly BrochureUnit[]>,
+  claimed: ReadonlyMap<string, string>,
+): Claim[] | null {
+  for (const field of COUNT_FIELDS) if (claimed.has(field)) return null;
+  if (claimed.has('bed_bath_car')) return null;
+
+  const rows = pages.flatMap((units) => countRowsOn(units));
+  const distinct = [...new Set(rows.map((row) => row.join('/')))];
+  if (distinct.length !== 1) return null;
+  const row = distinct[0].split('/').map(Number);
+
+  const bedrooms = Math.max(0, ...pages.map(bedroomsNamedOn));
+  if (bedrooms < 1) return null;
+  if (bedrooms !== row[0]) return null;
+
+  return [
+    { field: 'bedrooms', value: String(row[0]) },
+    { field: 'bathrooms', value: String(row[1]) },
+    { field: 'car_spaces', value: String(row[2]) },
+  ];
+}
+
+/**
  * Read a brochure that STATES its property.
  *
  * Runs on `pageTexts` — the strings `readPdfPageTexts` already produced for
@@ -1833,7 +1992,7 @@ export function readPdfBrochure(
         continue;
       }
 
-      for (const claim of found.flatMap(splitAddress).flatMap(splitLocality)) {
+      for (const claim of found.flatMap(splitAddress).flatMap(splitLocality).map(trimSeparators)) {
         if (!BROCHURE_CLAIMABLE_FIELDS.has(claim.field)) continue;
         if (COUNT_FIELDS.has(claim.field) && !statesACount(claim.value)) {
           /*
@@ -1941,7 +2100,9 @@ export function readPdfBrochure(
     diagnostics.fieldsRead = [...claimed.keys()].sort();
     return refuse('ambiguous', 'filename_lot_disagrees_with_document', diagnostics);
   }
-  if (corroborated) claimed.set('house_design', corroborated.claim.value);
+  if (corroborated) {
+    claimed.set('house_design', trimSeparators(corroborated.claim).value);
+  }
   const afterFilename = corroborated
     ? repeats.filter((line) => line.trim() !== corroborated.line)
     : repeats;
@@ -1951,7 +2112,7 @@ export function readPdfBrochure(
    * locality it states under a label of its own.
    */
   const place = corroborateDevelopmentFromPlace(afterFilename, claimed);
-  if (place) claimed.set('development_name', place.value);
+  if (place) claimed.set('development_name', trimSeparators(place).value);
   const placed = place
     ? afterFilename.filter((line) =>
       flattenIdentity(line.split(',')[0] ?? '') !== flattenIdentity(place.value))
@@ -1990,6 +2151,19 @@ export function readPdfBrochure(
   diagnostics.incidentalLines = incidental;
   diagnostics.corroboratedLines = unresolved.length - repeats.length;
   if (declined.size) diagnostics.declinedFields = [...declined].sort();
+  /*
+   * THE ICON ROW, read only where the floor plan corroborates it. Placed
+   * with the other corroborations because it needs the whole document: the
+   * row is on the cover and the plan that proves it is pages later.
+   */
+  const counts = readIconCountRow(pages, claimed);
+  if (counts) {
+    for (const claim of counts) claimed.set(claim.field, claim.value);
+    diagnostics.countsCorroborated = true;
+    // What was read is what the row carries, and the counts arrive last.
+    diagnostics.fieldsRead = [...claimed.keys()].sort();
+  }
+
   const visualOnly = [...COUNT_FIELDS].filter((field) => !claimed.has(field)).sort();
   if (visualOnly.length) diagnostics.visualOnlyFields = visualOnly;
   if (disputed.size) diagnostics.disputedFields = [...disputed].sort();
@@ -2152,6 +2326,53 @@ const SAME_LINE_TOLERANCE = 1.8;
 const MIN_COLUMN_GAP = 6;
 
 /**
+ * A WORD SPACE GROWS WITH THE TYPE; A CONSTANT DOES NOT.
+ *
+ * Six units is right for body copy and wrong for a headline, and that is not
+ * a tuning question — it is the difference between reading a brochure and
+ * reading a bag of words. A page's display lines are its identity: the lot,
+ * the street, the estate, the titles date. Split them at the spaces and the
+ * document states none of them.
+ *
+ * MEASURED, on the production brochure for Lot 315, over every run gap on all
+ * seven pages. The word spaces are
+ *
+ *   h=24.0  gap 4.12   "Titles:" | "December" | "2026"   ratio 0.17
+ *   h= 9.6  gap 3.09   "1:200" | "@ A4"                  ratio 0.32
+ *   h=10.0  gap 3.95   "Quality" | "Flooring throughout"  ratio 0.40
+ *   h= 7.0  gap 4.58   "Glasswool" | "batts"              ratio 0.65
+ *
+ * and the narrowest gap that genuinely separates two columns is
+ *
+ *   h= 8.9  gap 8.02   "Home Design:" | "ENZO 8.5 - MODERN"   ratio 0.90
+ *   h= 8.9  gap 11.76  "Site Address:" | "Lot 315 CENTRAL …"  ratio 1.32
+ *
+ * — so at 0.6 of the type's own height the two populations do not touch, and
+ * the six-unit floor still carries everything set at ten units or under.
+ *
+ * THE FLOOR IS WHAT MAKES IT A NO-OP ON WHAT ALREADY WORKS. Every line on
+ * that document at h > 10 has its runs either abutting or 29 units apart or
+ * more, so nothing it reads today changes; only display type set loosely
+ * enough to break at its spaces is affected, which is the case this exists
+ * for. And the asymmetry runs the safe way: merging two cells leaves a line
+ * the label readers still resolve, while splitting one destroys the
+ * statement outright.
+ *
+ * A run with no height reported falls back to the floor, so a fixture
+ * written before `height` existed reads exactly as it did.
+ */
+const COLUMN_GAP_PER_UNIT_OF_TYPE = 0.6;
+
+function columnGapFor(left: PdfTextItem, right: PdfTextItem): number {
+  const type = Math.max(
+    Number.isFinite(left.height) ? Number(left.height) : 0,
+    Number.isFinite(right.height) ? Number(right.height) : 0,
+  );
+  if (!(type > 0)) return MIN_COLUMN_GAP;
+  return Math.max(MIN_COLUMN_GAP, type * COLUMN_GAP_PER_UNIT_OF_TYPE);
+}
+
+/**
  * A SUPERSCRIPT IS PART OF ITS NUMBER, NOT A LINE OF ITS OWN.
  *
  * Measured on the production brochure for Lot 315: the page writes its areas
@@ -2264,11 +2485,12 @@ export function layoutLines(items: readonly PdfTextItem[]): LayoutLine[] {
   return groups.map((group) => {
     const cells: LayoutCell[] = [];
     let end = Number.NEGATIVE_INFINITY;
+    let last: PdfTextItem | null = null;
     for (const item of group.items.slice().sort((a, b) => a.x - b.x)) {
       const text = item.text.trim();
       if (!text) continue;
       const previous = cells[cells.length - 1];
-      if (previous && item.x - end < MIN_COLUMN_GAP) {
+      if (previous && last && item.x - end < columnGapFor(last, item)) {
         /*
          * RUNS THAT ABUT ARE ONE WORD, AND THE PAGE SUPPLIES ITS OWN SPACES.
          *
@@ -2303,6 +2525,7 @@ export function layoutLines(items: readonly PdfTextItem[]): LayoutLine[] {
         cells.push({ x: item.x, text });
       }
       end = Math.max(end, item.x + (Number.isFinite(item.width) ? item.width : 0));
+      last = item;
     }
     return { y: group.y, cells };
   });

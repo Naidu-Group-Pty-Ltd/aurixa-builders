@@ -121,11 +121,23 @@ export interface StockExtraction {
    * having no answer. It carries counts, status words and canonical field
    * NAMES only, so it is safe to log.
    */
-  deterministicReading?: {
-    status: PdfDeterministicReading['status'];
-    reason: string;
-    diagnostics: PdfDeterministicReading['diagnostics'];
-  };
+  deterministicReading?: PdfDeterministicDiagnostics;
+}
+
+/**
+ * The diagnostic projection of a deterministic reading, and the WHOLE of what
+ * travels out of this module.
+ *
+ * Named and exported because `runImport` carries it to the import log, and a
+ * caller that restates the shape restates it slightly differently: typing that
+ * field as the full `PdfDeterministicReading` is exactly what CI caught, and
+ * widening this to satisfy it would have pushed `rows` — a builder's own
+ * stated values — into a field whose entire purpose is to be safe to log.
+ */
+export interface PdfDeterministicDiagnostics {
+  status: PdfDeterministicReading['status'];
+  reason: string;
+  diagnostics: PdfDeterministicReading['diagnostics'];
 }
 
 const MAX_ROWS = 5000;

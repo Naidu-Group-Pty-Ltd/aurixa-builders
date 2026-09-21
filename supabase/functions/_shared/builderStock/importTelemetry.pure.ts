@@ -97,6 +97,11 @@ export function safeUrl(value: unknown, limit = 160): string | null {
   }
 }
 
+/** Canonical field names, as one readable value. Never a document's words. */
+function names(list: readonly string[] | null | undefined): string | undefined {
+  return list && list.length ? list.join(',') : undefined;
+}
+
 /** Drop the keys a caller had nothing for, so a line is what is known. */
 function compact(record: Record<string, TelemetryValue | undefined>): TelemetryRecord {
   const out: TelemetryRecord = {};
@@ -126,6 +131,31 @@ export interface UploadTelemetry {
   imageryOutstanding?: boolean | null;
   /** Set only where the import refused, and only with the safe code. */
   outcome?: string | null;
+  /**
+   * WHAT THE DETERMINISTIC READER MADE OF A PDF, ON A RUN THAT SUCCEEDED.
+   *
+   * These were logged only on the FAILURE path, which is exactly backwards
+   * for the question that keeps being asked: a brochure imported, and three
+   * of its fields are empty — why? `fieldsRead` says what was taken,
+   * `disputedFields` says what the document contradicted itself about,
+   * `visualOnlyFields` says what exists only as an icon, and `ignoredLines`
+   * says how much of the page was furniture. Without them a missing field
+   * is indistinguishable from a field the document never stated, and the
+   * only way to tell was to obtain the PDF and run it by hand.
+   *
+   * Safe by construction: counts, status words and canonical field NAMES.
+   * No value a document stated ever appears here.
+   */
+  deterministic?: {
+    status?: string | null;
+    reason?: string | null;
+    fieldsRead?: string[] | null;
+    disputedFields?: string[] | null;
+    visualOnlyFields?: string[] | null;
+    declinedFields?: string[] | null;
+    ignoredLines?: number | null;
+    unaccountedLines?: number | null;
+  } | null;
 }
 
 /**
@@ -155,6 +185,19 @@ export function uploadTelemetry(input: UploadTelemetry): TelemetryRecord {
     with_source_image: input.withSourceImage ?? undefined,
     imagery_outstanding: input.imageryOutstanding ?? undefined,
     outcome: input.outcome ?? undefined,
+    deterministic_status: input.deterministic?.status ?? undefined,
+    deterministic_reason: input.deterministic?.reason ?? undefined,
+    /*
+     * A list of canonical field NAMES travels as one comma-joined string,
+     * because a telemetry value is a scalar here and a name is not a value
+     * the document stated.
+     */
+    deterministic_fields: names(input.deterministic?.fieldsRead),
+    deterministic_disputed: names(input.deterministic?.disputedFields),
+    deterministic_visual_only: names(input.deterministic?.visualOnlyFields),
+    deterministic_declined: names(input.deterministic?.declinedFields),
+    deterministic_ignored_lines: input.deterministic?.ignoredLines ?? undefined,
+    deterministic_unaccounted_lines: input.deterministic?.unaccountedLines ?? undefined,
   });
 }
 

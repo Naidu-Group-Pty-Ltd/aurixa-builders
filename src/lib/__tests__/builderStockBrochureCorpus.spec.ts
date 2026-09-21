@@ -512,3 +512,192 @@ describe('22 · nothing here reaches another architecture', () => {
     expect(reading.rows).toHaveLength(1);
   });
 });
+
+// ===========================================================================
+// PART THREE — what the page states without words
+// ===========================================================================
+
+describe('23 · the icon row, corroborated by the floor plan', () => {
+  /**
+   * Every brochure in this corpus draws `3 2 1` under its design name — the
+   * bed, bath and car icons, whose GLYPHS are pictures and whose ORDER is
+   * the only thing that says which is which. Reading positions 1/2/3 as
+   * bedrooms/bathrooms/cars because that is the common order is an
+   * inference, and this product does not make it.
+   *
+   * What makes it a reading is the floor plan on the same document: it
+   * ANNOTATES its rooms, and the bedrooms it names either agree with the
+   * first number or they do not. Agreement is the document stating the
+   * same fact twice, in two notations, and that is evidence.
+   */
+  const withPlan = (counts: string, ...rooms: string[]) =>
+    read([page('Aspire 24', counts, ...IDENTITY, 'Price: $662,900', ...rooms)]);
+
+  it('reads 3/2/1 where the plan names three bedrooms', () => {
+    const row = rowOf(withPlan('3 2 1', 'Bed 1', 'Bed 2', 'Bed 3', 'Bath'));
+    expect(row.bedrooms).toBe(3);
+    expect(row.bathrooms).toBe(2);
+    expect(row.car_spaces).toBe(1);
+  });
+
+  it('counts a master as a bedroom', () => {
+    const row = rowOf(withPlan('4 2 2', 'Master', 'Bed 2', 'Bed 3', 'Bed 4'));
+    expect(row.bedrooms).toBe(4);
+  });
+
+  it('claims nothing where the plan names a different number', () => {
+    const row = rowOf(withPlan('4 2 2', 'Bed 1', 'Bed 2', 'Bed 3'));
+    expect(row.bedrooms).toBeNull();
+    expect(row.bathrooms).toBeNull();
+    expect(row.car_spaces).toBeNull();
+  });
+
+  it('claims nothing where no floor plan names a bedroom', () => {
+    const row = rowOf(withPlan('3 2 1', 'Kitchen', 'Garage', 'Porch'));
+    expect(row.bedrooms).toBeNull();
+    expect(row.car_spaces).toBeNull();
+  });
+
+  it('claims nothing where the document draws two different rows', () => {
+    const row = rowOf(read([page('Aspire 24', '3 2 1', ...IDENTITY,
+      'Price: $662,900', 'Bed 1', 'Bed 2', 'Bed 3'),
+      page('Aspire 26', '4 2 2')]));
+    expect(row.bedrooms).toBeNull();
+  });
+
+  it('never overrules a count the document states in words', () => {
+    const row = rowOf(read([page('Aspire 24', '3 2 1', ...IDENTITY,
+      'Price: $662,900', 'Bedrooms: 4', 'Bathrooms: 3', 'Car Spaces: 2',
+      'Bed 1', 'Bed 2', 'Bed 3')]));
+    expect(row.bedrooms).toBe(4);
+    expect(row.bathrooms).toBe(3);
+    expect(row.car_spaces).toBe(2);
+  });
+
+  it('reads the row where the page drew it as three separate cells', () => {
+    const items = [
+      run('Aspire 24', 28, 760, 90, 20),
+      run('3', 81, 740, 8), run('2', 165, 740, 8), run('1', 257, 740, 8),
+      run('Lot 208 Fairweather Drive', 28, 700, 220),
+      run('Estate: Northbrook Rise', 28, 680, 200),
+      run('Price: $662,900', 28, 660, 130),
+      run('Bed 1', 400, 640, 40), run('Bed 2', 400, 620, 40),
+      run('Bed 3', 400, 600, 40),
+    ];
+    const reading = readPdfDeterministicRows({
+      pageTexts: [page('Aspire 24', '3 2 1', 'Lot 208 Fairweather Drive',
+        'Estate: Northbrook Rise', 'Price: $662,900',
+        'Bed 1', 'Bed 2', 'Bed 3')],
+      positionedPages: [{ page: 1, items }],
+    });
+    const row = rowOf(reading);
+    expect(row.bedrooms).toBe(3);
+    expect(row.bathrooms).toBe(2);
+    expect(row.car_spaces).toBe(1);
+  });
+});
+
+describe('24 · a value never ends in a separator', () => {
+  it('drops the comma a line left on an estate name', () => {
+    const row = rowOf(read([page('Lot 208 Fairweather Drive',
+      'Northbrook Estate,', 'Home Design: Aspire 24 Grande',
+      'Price: $662,900')]));
+    expect(row.development_name).toBe('Northbrook Estate');
+  });
+
+  it('keeps the commas INSIDE a figure', () => {
+    const row = rowOf(read([page(...IDENTITY, 'Price: $1,204,500',
+      'Land Size 1,204 m2')]));
+    expect(row.price).toBe(1204500);
+    expect(row.land_size_sqm).toBe(1204);
+  });
+
+  it('keeps a full stop, which a street name may own', () => {
+    const row = rowOf(read([page('Site Address: Lot 208 Fairweather Ave.',
+      'Estate: Northbrook Rise', 'Home Design: Aspire 24 Grande',
+      'Price: $662,900')]));
+    expect(row.address_line).toBe('Lot 208 Fairweather Ave.');
+  });
+});
+
+describe('25 · a reference carries a number', () => {
+  const paired = (value: string) => {
+    const items = [
+      run('Lot 208 Fairweather Drive', 28, 700, 220),
+      run('Estate: Northbrook Rise', 28, 680, 200),
+      run('Home Design: Aspire 24 Grande', 28, 660, 240),
+      run('Price: $662,900', 28, 640, 130),
+      run('Ref', 400, 620, 20), run(value, 400, 600, 30),
+    ];
+    return readPdfDeterministicRows({
+      pageTexts: [page('Lot 208 Fairweather Drive', 'Estate: Northbrook Rise',
+        'Home Design: Aspire 24 Grande', 'Price: $662,900', 'Ref', value)],
+      positionedPages: [{ page: 1, items }],
+    });
+  };
+
+  it('refuses a plan abbreviation paired with a reference heading', () => {
+    expect(rowOf(paired('D.W')).external_reference).toBeNull();
+  });
+
+  it('still reads a reference that carries one', () => {
+    expect(rowOf(paired('MC-0041')).external_reference).toBe('MC-0041');
+  });
+
+  it('and a labelled reference is untouched', () => {
+    const row = rowOf(read([page(...IDENTITY, 'Price: $662,900',
+      'Reference: ABC')]));
+    expect(row.external_reference).toBe('ABC');
+  });
+});
+
+describe('26 · display type breaks at its spaces, and a word space grows with it', () => {
+  /**
+   * The same line, set at body size and at headline size. A constant gap
+   * reads the second as three separate cells — an identity line reduced to
+   * `Titles:` with a quarter and a year it cannot reach.
+   */
+  const titles = (size: number, space: number) => {
+    const x = (n: number) => 28 + n;
+    const items = [
+      run('Lot 208 Fairweather Drive', 28, 700, 220, size),
+      run('Estate: Northbrook Rise', 28, 670, 200, size),
+      run('Home Design: Aspire 24 Grande', 28, 640, 240, size),
+      run('Price: $662,900', 28, 610, 130, size),
+      run('Titles:', x(0), 580, 40, size),
+      run('Q1', x(40 + space), 580, 20, size),
+      run('2027', x(40 + space + 20 + space), 580, 40, size),
+    ];
+    return readPdfDeterministicRows({
+      pageTexts: [page('Lot 208 Fairweather Drive', 'Estate: Northbrook Rise',
+        'Home Design: Aspire 24 Grande', 'Price: $662,900', 'Titles: Q1 2027')],
+      positionedPages: [{ page: 1, items }],
+    });
+  };
+
+  it('reads the whole date at headline size', () => {
+    // 30-unit type, a 9-unit word space: past the six-unit floor.
+    expect(rowOf(titles(30, 9)).expected_completion).toBe('Q1 2027');
+  });
+
+  it('reads the whole date at body size', () => {
+    expect(rowOf(titles(10, 4)).expected_completion).toBe('Q1 2027');
+  });
+
+  it('still parts two columns set in the same display type', () => {
+    const items = [
+      run('Lot 208 Fairweather Drive', 28, 700, 220, 10),
+      run('Estate: Northbrook Rise', 28, 670, 200, 10),
+      run('Home Design: Aspire 24 Grande', 28, 640, 240, 10),
+      run('Land', 28, 600, 40, 30), run('402m2', 200, 600, 60, 30),
+      run('Price', 28, 560, 45, 30), run('$662,900', 200, 560, 90, 30),
+    ];
+    const row = rowOf(readPdfDeterministicRows({
+      pageTexts: [page('Lot 208 Fairweather Drive', 'Estate: Northbrook Rise',
+        'Home Design: Aspire 24 Grande', 'Land 402m2', 'Price $662,900')],
+      positionedPages: [{ page: 1, items }],
+    }));
+    expect(row.land_size_sqm).toBe(402);
+    expect(row.price).toBe(662900);
+  });
+});
