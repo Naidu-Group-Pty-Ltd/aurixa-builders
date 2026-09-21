@@ -48,6 +48,7 @@ import {
 } from './settleImageSanitization.ts';
 import { chooseAndStorePrimaryImage } from './primaryImage.ts';
 import { isMarketplaceEligible, servableStoredImage } from './marketplaceEligibility.pure.ts';
+import { isPrimaryRole, readStoredRole } from './sourceImageRole.pure.ts';
 import {
   servableClearanceFor, servableDerivativeFor,
 } from './sanitizedDerivative.pure.ts';
@@ -348,6 +349,20 @@ export async function settleClaimedItem(
         } catch {
           // Unwritten means the queue read keeps it; the next claim retries.
         }
+      } else if (evidence.state === 'held') {
+        /*
+         * THE SOURCE STAGE IS FINISHED AND THE NEXT ONE HAS THE QUESTION.
+         *
+         * This property's own document supplied a designated photograph;
+         * whether it may be shown is `eligibility`'s to decide and, where
+         * that answers `overlay_uncertain`, `sanitization`'s to repair. So
+         * this advances the ladder exactly as a completed stage does rather
+         * than looping back to `source` (there is nothing left to discover)
+         * or dropping to `failed` (nothing has failed).
+         */
+        settlement.progressed = true;
+        settlement.result = describeSuppliedEvidence(evidence);
+        settlement.nextStage = NEXT_STAGE[stage];
       } else if (evidence.state === 'pending' || evidence.state === 'processing') {
         settlement.progressed = true;
         settlement.result = describeSuppliedEvidence(evidence);
@@ -607,6 +622,7 @@ async function readItemSuppliedEvidence(
      * derivative or clearance.
      */
     let builderImageAccepted = false;
+    let heldSourceImages = 0;
     try {
       const { data: supplied, error: suppliedError } = await db
         .from('builder_stock_item_images')
@@ -625,8 +641,27 @@ async function readItemSuppliedEvidence(
        */
       builderImageAccepted = !suppliedError && Array.isArray(supplied)
         && supplied.some((row: any) => servableStoredImage(row));
+      /*
+       * AND THE PICTURES THIS ROW'S OWN DOCUMENT SUPPLIED THAT ARE NOT
+       * SERVABLE YET. A directly uploaded PDF names no branch, so without
+       * this the source stage answers `no_evidence` — "this row names no
+       * source this pipeline can open" — about a property holding a
+       * designated photograph of its own house, and stamps it terminally
+       * failed before the gate that would clear it has run. See the `held`
+       * state in `suppliedEvidence.pure.ts`.
+       *
+       * PRIMARY ONLY. A stored floor plan is not a card image and never
+       * becomes one, so counting it would hide a property that genuinely
+       * needs a person — which is what `no_evidence` is for.
+       */
+      heldSourceImages = !suppliedError && Array.isArray(supplied)
+        ? supplied.filter((row: any) =>
+          isPrimaryRole(readStoredRole(row?.source_detail))
+          && !servableStoredImage(row)).length
+        : 0;
     } catch {
       builderImageAccepted = false;
+      heldSourceImages = 0;
     }
     // The one shared row reader — enforcement in `settleFallbackImages` reads
     // the same function over the same stored row, so routing and enforcement
@@ -637,6 +672,7 @@ async function readItemSuppliedEvidence(
       provenanceVersion: PROVENANCE_VERSION,
       runtimeVersion: RUNTIME_VERSION,
       builderImageAccepted,
+      heldSourceImages,
     });
   } catch {
     return null;

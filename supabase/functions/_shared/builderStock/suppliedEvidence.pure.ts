@@ -107,6 +107,34 @@ export type SuppliedEvidenceState =
   | 'processing'
   /** A builder-supplied image has been accepted for this property. */
   | 'found'
+  /**
+   * THE DOCUMENT SUPPLIED A PICTURE AND NOBODY HAS JUDGED IT YET.
+   *
+   * A branch is a URL found ON the row, so a property whose photograph came
+   * out of the PDF the builder uploaded names no branch at all — and
+   * `no_evidence` was therefore answered about a row holding a stored,
+   * attributed, `primary_property` image of its own house. That answer is
+   * terminal: the invariant routes it to `failed`, where a person is paged,
+   * and it stops the eligibility and sanitization stages that decide whether
+   * the very picture it holds may be shown.
+   *
+   * MEASURED 21 SEPTEMBER 2026 on `LOT 48 - EMBER - FLYER.pdf`. The cover
+   * election had designated the flyer's own facade render, correctly, and the
+   * display gate answered `overlay_uncertain` — one faint line of text at
+   * 4.5% of the height — which is `pending`, not a refusal: the overlay
+   * repair exists for exactly that. The source stage read zero branches,
+   * declared "this row names no source this pipeline can open", and stamped
+   * the property `failed` before the repair could run. The card stayed blank
+   * and the upload stayed unpublished.
+   *
+   * `held` is not `found`, and that distinction is load-bearing: `found`
+   * means DISPLAYABLE (2026-09-15, measured live within the hour that
+   * invariant shipped — six properties settled with NULL primaries because a
+   * ready-but-refused picture read as accepted). `held` means the source
+   * stage has nothing left to discover and the stage after it has a question
+   * to answer.
+   */
+  | 'held'
   /** Every source was OPENED and READ, and none names an image for this row. */
   | 'exhausted'
   /** At least one source ended on a fault of ours rather than an answer. */
@@ -215,6 +243,12 @@ export interface SuppliedEvidenceInput {
    * question about `builder_stock_item_images` and this module reads no rows.
    */
   builderImageAccepted?: boolean;
+  /**
+   * Pictures out of the row's OWN uploaded document that are designated for
+   * this property and are not yet displayable — counted by the caller for the
+   * same reason as above: this module reads no rows. See the `held` state.
+   */
+  heldSourceImages?: number;
   /** What the import managed to see of this row's link layer. */
   linkDiscovery?: RowLinkDiscovery | null;
 }
@@ -345,6 +379,21 @@ export function readSuppliedEvidence(
   const enumerable = discovery?.state !== 'unavailable';
 
   if (!branches.length) {
+    /*
+     * THE ROW'S OWN DOCUMENT, BEFORE ANY STATEMENT THAT IT SUPPLIED NOTHING.
+     *
+     * Asked only where the row names NO branch — the shape a directly
+     * uploaded PDF always has — so no row that names a source changes its
+     * reading by a single field. See `held`.
+     */
+    if ((input.heldSourceImages ?? 0) > 0) {
+      return {
+        state: 'held', total: 0, inspected: 0, operational: 0, open: 0,
+        detail: `${input.heldSourceImages} picture(s) from this row's own `
+          + 'document are designated for it and have not been cleared for '
+          + 'display yet',
+      };
+    }
     if (!enumerable) {
       return {
         state: 'retryable_failure', total: 0, inspected: 0, operational: 0, open: 0,
@@ -454,6 +503,11 @@ export function readSuppliedEvidence(
  * and a property parked in the queue for ever is how the cron never retires.
  */
 export function fallbackMayRun(state: SuppliedEvidenceState): boolean {
+  /*
+   * `held` is deliberately absent, and it is the #2305 rule verbatim: the
+   * ladder may not be bought against a card that is about to receive the
+   * builder's own photograph. A held picture is exactly that card.
+   */
   return state === 'exhausted' || state === 'no_evidence' || state === 'found';
 }
 
@@ -487,6 +541,8 @@ export function readStoredRowEvidence(input: {
   provenanceVersion: number;
   runtimeVersion?: number;
   builderImageAccepted?: boolean;
+  /** See the `held` state. */
+  heldSourceImages?: number;
 }): SuppliedEvidenceReading {
   const row = (input.sourceRow ?? null) as Record<string, unknown> | null;
   const unmapped = (row?.unmapped ?? null) as Record<string, string> | null;
@@ -499,6 +555,7 @@ export function readStoredRowEvidence(input: {
     runtimeVersion: input.runtimeVersion,
     sourceAnchor: anchor,
     builderImageAccepted: input.builderImageAccepted,
+    heldSourceImages: input.heldSourceImages,
     linkDiscovery: readLinkDiscovery(row),
   });
 }
