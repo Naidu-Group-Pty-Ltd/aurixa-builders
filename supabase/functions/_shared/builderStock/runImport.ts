@@ -16,7 +16,7 @@ import { detectDocumentMime, sha256Hex } from '../immutableDocuments.ts';
 import { classifyStockFile, MAX_STOCK_FILE_BYTES } from './fileTypes.pure.ts';
 import type { StockFileClassification } from './fileTypes.pure.ts';
 import { extractStockFile, StockExtractionError } from './extract.ts';
-import type { PdfDeterministicReading } from './pdfDeterministicRows.pure.ts';
+import type { PdfDeterministicDiagnostics } from './extract.ts';
 import { extractStockRowsFromImages, extractStockRowsFromText } from './modelExtract.ts';
 import { StockModelExtractionError, modelFailureFromRouterError } from './modelExtractionFailure.pure.ts';
 import { assistedReaderFailure, SOURCE_HAS_COLUMNS } from './assistedReaderFailure.pure.ts';
@@ -119,7 +119,7 @@ export interface RunImportSuccess {
    * the one telemetry line can say why a field is empty. Absent for every
    * other format.
    */
-  deterministicReading?: PdfDeterministicReading | null;
+  deterministicReading?: PdfDeterministicDiagnostics | null;
   /** The status the upload row was left in. */
   uploadStatus: 'enriching' | 'partially_complete';
 }
