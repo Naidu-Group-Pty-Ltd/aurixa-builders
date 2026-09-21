@@ -19,6 +19,10 @@
  * real failure mode.
  */
 import { keyRowsByHeader, parseDelimited } from './table.pure.ts';
+import {
+  discoveryRefusal, IMAGERY_DEFERRED_WARNING,
+  type DiscoveryRefusal, type ImportBudget,
+} from './importBudget.pure.ts';
 import { attachRowHyperlinks, hyperlinkTargetOf } from './sheetHyperlinks.pure.ts';
 import { MAX_GRID_CELLS } from './sheetGrid.pure.ts';
 import { readHtmlSource } from './htmlSource.pure.ts';
@@ -87,6 +91,12 @@ export interface StockExtraction {
   /** Images to show a vision model, base64 without the data: prefix. */
   visionImages: Array<{ base64: string; contentType: string }>;
   media: ExtractedMedia[];
+  /**
+   * Set when this run declined to decompress the document's images inline
+   * because its budget was spent, so the caller can report the imagery as
+   * outstanding rather than as absent. Absent on every unbudgeted path.
+   */
+  imageryDeferred?: DiscoveryRefusal | null;
   /**
    * Imagery the source published as a URL against ONE of its rows — an `<img>`
    * inside a stock table's row, and the same shape a Notion collection
@@ -442,7 +452,19 @@ export async function extractStockFile(
   bytes: Uint8Array,
   filename: string,
   classification: StockFileClassification,
-  options: { baseUrl?: string; organisationName?: string | null } = {},
+  options: {
+    baseUrl?: string;
+    organisationName?: string | null;
+    /**
+     * The run's own clock, when the caller keeps one.
+     *
+     * ABSENT MEANS UNBUDGETED, and unbudgeted means exactly today's
+     * behaviour — which is what keeps this invisible to the repair sweep,
+     * whose whole invocation is one document and which must never decline
+     * the imagery it exists to attach. See `importBudget.pure.ts`.
+     */
+    budget?: ImportBudget | null;
+  } = {},
 ): Promise<StockExtraction> {
   const result: StockExtraction = {
     strategy: classification.kind,
@@ -676,7 +698,29 @@ export async function extractStockFile(
     // extractor a package PDF reached through a Notion row goes through, so a
     // brochure uploaded here and the same brochure reached through a link
     // cannot disagree about which picture is the property.
-    try {
+    /*
+     * DECOMPRESSING EVERY IMAGE ON EVERY PAGE IS THE MOST EXPENSIVE SINGLE
+     * ACT IN AN IMPORT, AND IT RAN ON NO BUDGET.
+     *
+     * `importStock.ts` has always asked whether there is room BEFORE each
+     * expensive step. This is the step in front of all of them, and the
+     * question was never put to it: on 21 September 2026 a 13.8 MB brochure
+     * was killed inside this pass at 6.4 seconds having written nothing at
+     * all, and a 9.5 MB one reached the end of every phase and died on the
+     * write after them.
+     *
+     * Declining leaves the document's pictures to `repairSourceImagesForUpload`,
+     * which re-reads this same source through this same extractor and attaches
+     * them to the properties this run is about to write — one document per
+     * invocation, behind the decode slot, with a marker that makes a kill
+     * recoverable. The properties still import. See `importBudget.pure.ts`.
+     */
+    const refusal = discoveryRefusal(options.budget, Date.now());
+    if (refusal) {
+      result.imageryDeferred = refusal;
+      result.warnings.push(IMAGERY_DEFERRED_WARNING);
+    } else {
+      try {
       const { discoverPdfSourceAssets } = await import('./pdfSourcePhoto.ts');
       const { pdfPageAnchor } = await import('./pdfRowAnchors.pure.ts');
       /**
@@ -738,11 +782,21 @@ export async function extractStockFile(
           + 'images discovered in this PDF were read; the rest were oversize or fell '
           + 'past the per-file ceiling.');
       }
-    } catch {
-      result.warnings.push('Images inside this PDF could not be read.');
+      } catch {
+        result.warnings.push('Images inside this PDF could not be read.');
+      }
     }
 
-    if (!result.media.length) {
+    /*
+     * AND A DOCUMENT WE DID NOT LOOK AT IS NOT A DOCUMENT WITH NO PHOTOGRAPH.
+     *
+     * This sentence is a finding about the bytes, so it may only be written
+     * where the bytes were read. Drawn over a deferred discovery it states
+     * the opposite of what happened — the pictures are on their way — and it
+     * is the same rule this repository has paid for in the report programme:
+     * an absence may not be reported where nothing asked.
+     */
+    if (!result.media.length && !result.imageryDeferred) {
       // Accurate, and it promises nothing: no other imagery is displayable, so
       // saying where a substitute will come from would be a lie.
       result.warnings.push('No property photograph could be identified in this PDF.');

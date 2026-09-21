@@ -14,6 +14,7 @@
  */
 import { detectDocumentMime, sha256Hex } from '../immutableDocuments.ts';
 import { classifyStockFile, MAX_STOCK_FILE_BYTES } from './fileTypes.pure.ts';
+import { openImportBudget, storageDeadlineFrom } from './importBudget.pure.ts';
 import type { StockFileClassification } from './fileTypes.pure.ts';
 import { extractStockFile, StockExtractionError } from './extract.ts';
 import type { PdfDeterministicDiagnostics } from './extract.ts';
@@ -107,6 +108,8 @@ export interface RunImportSuccess {
     withSourceImage: number;
     /** Pictures the import budget left for the enrichment pass. */
     imageryOutstanding: boolean;
+    /** And why, where the document's images were never decompressed at all. */
+    imageryDeferred?: string | null;
     warnings: string[];
     failures: Array<{ label: string; reason: string }>;
   };
@@ -159,6 +162,7 @@ export async function runStockImport(input: RunImportInput): Promise<RunImportRe
       failed: result.ok ? result.summary.failed : null,
       withSourceImage: result.ok ? result.summary.withSourceImage : null,
       imageryOutstanding: result.ok ? result.summary.imageryOutstanding : null,
+      imageryDeferred: result.ok ? (result.summary.imageryDeferred ?? null) : null,
       // The safe CODE, never the builder-facing sentence and never the detail:
       // a detail is a provider's own words about a document we do not own.
       outcome: result.ok ? 'imported' : result.code,
@@ -188,6 +192,17 @@ export async function runStockImport(input: RunImportInput): Promise<RunImportRe
 async function importOnce(input: RunImportInput): Promise<RunImportResult> {
   const { supabase, upload, bytes, organisationId } = input;
   const sourceKind = input.sourceKind ?? 'file';
+  /*
+   * ONE CLOCK, OPENED HERE, SPENT BY BOTH EXPENSIVE PHASES.
+   *
+   * Reading the document and storing its pictures are two phases of one
+   * invocation and they were budgeted as neither: extraction had no deadline
+   * at all, and the image phase's eight seconds were measured from the moment
+   * IT began — which is after extraction had already spent whatever it spent.
+   * A budget that starts after the unbudgeted phase bounds that phase and
+   * nothing in front of it. See `importBudget.pure.ts`.
+   */
+  const runBudget = openImportBudget(Date.now(), bytes.length);
 
   if (!bytes.length) {
     return fail('empty_file', sourceKind === 'url'
@@ -246,6 +261,7 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
        * reader has been handed it since it was written.
        */
       organisationName: input.organisationName,
+      budget: runBudget,
     });
   } catch (error) {
     if (error instanceof StockExtractionError) {
@@ -441,6 +457,9 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     pageTexts: extraction.pageTexts,
     pageOrderAuthoritative: extraction.pageOrderAuthoritative,
     filename: upload.original_filename,
+    // Derived from the run's own clock rather than restarted here, which is
+    // the half of this defect that had a budget and spent it from zero.
+    imageDeadlineAt: storageDeadlineFrom(runBudget, Date.now()),
   });
 
   if (!outcome.detected) {
@@ -532,7 +551,15 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
       updated: outcome.updated,
       failed: outcome.failed,
       withSourceImage: outcome.withSourceImage,
-      imageryOutstanding: outcome.imageryOutstanding,
+      /*
+       * IMAGERY DECLINED AT DISCOVERY IS IMAGERY OUTSTANDING. The storage
+       * phase raises this flag for what IT declined; a document whose
+       * pictures were never decompressed has the same thing owed to it, and
+       * reporting `false` there would tell a builder their brochure holds no
+       * photograph.
+       */
+      imageryOutstanding: outcome.imageryOutstanding || Boolean(extraction.imageryDeferred),
+      imageryDeferred: extraction.imageryDeferred ?? null,
       warnings,
       failures: outcome.failures,
     },

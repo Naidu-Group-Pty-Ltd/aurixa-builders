@@ -12,6 +12,9 @@
  */
 
 import type { PortalAcknowledgementKey } from './portalAgreement';
+import {
+  isPlatformSilence, UNDETERMINED_ANSWER_CODE, UNDETERMINED_ANSWER_MESSAGE,
+} from './builderPortalAnswer.pure';
 
 /**
  * NETWORK EDITION — the one deliberate difference from the prime's file.
@@ -132,6 +135,26 @@ export async function invokeBuilderFunction<T = any>(
 
     const data = await response.json().catch(() => null);
     if (!response.ok) {
+      /**
+       * A WORKER KILL THAT ARRIVES AS A STATUS CODE IS STILL A WORKER KILL.
+       *
+       * The `catch` below carries this rule for the case where `fetch`
+       * rejects. The platform can also answer FOR a worker it killed, and
+       * then the browser holds an ordinary `Response` — 546 WORKER_LIMIT —
+       * with no body of this function's own. Read as an ordinary refusal it
+       * became `HTTP 546` and a destructive "could not be imported" over an
+       * import that had committed everything. See `builderPortalAnswer.pure`.
+       */
+      if (isPlatformSilence(response.status, data)) {
+        return {
+          data: null,
+          error: {
+            message: UNDETERMINED_ANSWER_MESSAGE,
+            code: UNDETERMINED_ANSWER_CODE,
+            status: response.status,
+          },
+        };
+      }
       return {
         data,
         error: {

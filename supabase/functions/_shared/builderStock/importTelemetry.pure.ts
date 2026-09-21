@@ -129,6 +129,14 @@ export interface UploadTelemetry {
   failed?: number | null;
   withSourceImage?: number | null;
   imageryOutstanding?: boolean | null;
+  /**
+   * WHY the document's pictures were left to the sweep, when they were.
+   *
+   * A flag cannot answer "why did this import take two passes" — the two
+   * reasons send an operator to different places, one to the size ceiling and
+   * one to a run that was slow for some other cause. See `importBudget.pure`.
+   */
+  imageryDeferred?: string | null;
   /** Set only where the import refused, and only with the safe code. */
   outcome?: string | null;
   /**
@@ -186,6 +194,7 @@ export function uploadTelemetry(input: UploadTelemetry): TelemetryRecord {
     properties_failed: input.failed ?? undefined,
     with_source_image: input.withSourceImage ?? undefined,
     imagery_outstanding: input.imageryOutstanding ?? undefined,
+    imagery_deferred: input.imageryDeferred ?? undefined,
     outcome: input.outcome ?? undefined,
     deterministic_status: input.deterministic?.status ?? undefined,
     deterministic_reason: input.deterministic?.reason ?? undefined,
