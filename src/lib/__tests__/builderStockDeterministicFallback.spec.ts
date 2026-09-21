@@ -58,7 +58,7 @@ describe('a refusal carries what it had already read', () => {
     // threw is no reading. Only the document that WAS read and stood down on
     // an unaccounted line has anything worth carrying.
     expect(reader).toMatch(
-      /refuse\('incomplete', 'unaccounted_specification_lines', diagnostics,\s*\n?\s*provisionalFrom\(claimed\), stillUnresolved, ignoredText\)/);
+      /refuse\('incomplete', 'unaccounted_specification_lines', diagnostics,\s*\n?\s*provisionalFrom\(claimed\), stillUnresolved, ignoredText, placedAt\)/);
   });
 });
 
@@ -217,7 +217,7 @@ describe('a vocabulary gap can be closed without the document', () => {
    */
   it('carries the unaccounted lines out with the refusal', () => {
     expect(reader).toMatch(/unaccounted: string\[\];/);
-    expect(reader).toMatch(/provisionalFrom\(claimed\), stillUnresolved, ignoredText\)/);
+    expect(reader).toMatch(/provisionalFrom\(claimed\), stillUnresolved, ignoredText, placedAt\)/);
   });
 
   it('bounds them, because a column is not a place to copy a document', () => {
@@ -252,8 +252,8 @@ describe('a vocabulary gap can be closed without the document', () => {
     // payload now also carries the lines the reader PLACED and could not
     // name (80 at 120 characters), so both ceilings moved with it and the
     // outer one still sits above the inner.
-    expect(run).toContain('.slice(0, 15_000)');
-    expect(fn).toMatch(/String\(detail\)\.slice\(0, 16_000\)/);
+    expect(run).toContain('.slice(0, 120_000)');
+    expect(fn).toMatch(/String\(detail\)\.slice\(0, 128_000\)/);
   });
 });
 

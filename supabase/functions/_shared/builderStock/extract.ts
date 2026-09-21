@@ -158,6 +158,8 @@ export interface StockExtraction {
    * never into `deterministicReading`, which is the safe-to-log projection.
    */
   deterministicIgnored?: string[];
+  /** Where each of those lines was drawn, aligned by index. Numbers only. */
+  deterministicPlacement?: string[];
 }
 
 /**
@@ -910,6 +912,7 @@ export async function extractStockFile(
       }
       if (reading.ignored.length) {
         result.deterministicIgnored = reading.ignored;
+        result.deterministicPlacement = reading.placement;
       }
       /*
        * `<= MAX_ROWS` rather than a slice. Every other branch truncates at the

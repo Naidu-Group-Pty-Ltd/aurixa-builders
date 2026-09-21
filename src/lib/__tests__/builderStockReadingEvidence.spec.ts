@@ -205,12 +205,37 @@ describe('a reading keeps what it attributed to nothing', () => {
   });
 
   it('bounds itself — a diagnosis, never a copy of the document', () => {
-    const noise = Array.from({ length: 400 }, (_, i) =>
+    /*
+     * THE BOUND IS A CEILING ABOVE A WHOLE BROCHURE, NOT A WINDOW ONTO PART
+     * OF ONE. At 80 it was a sample: `LOT 266 Crowlea Estate` left 359 lines
+     * unnamed and the eighty that came back stopped mid-way through the
+     * inclusions list, so the question the capture exists to answer was
+     * answered for page one and cut off for the rest.
+     */
+    const noise = Array.from({ length: 900 }, (_, i) =>
       `${i} Crowlea Drive`).join('\n');
     const large = readPdfBrochure([`${SPEC}\n${noise}`]);
-    expect(large.diagnostics.ignoredLines).toBeGreaterThan(80);
-    expect(large.ignored.length).toBe(80);
+    expect(large.diagnostics.ignoredLines).toBeGreaterThan(400);
+    expect(large.ignored.length).toBe(400);
     for (const line of large.ignored) expect(line.length).toBeLessThanOrEqual(120);
+  });
+
+  it('says where each line was drawn, aligned by index', () => {
+    /*
+     * A FLATTENED LINE CANNOT BE TOLD APART FROM A FLATTENED PAIR, and that
+     * is the whole ambiguity: `Estate Warragul` is either one run naming
+     * something or a label in one column beside its value in another, and
+     * only the geometry says which.
+     */
+    expect(reading.placement).toHaveLength(reading.ignored.length);
+    const at = reading.placement[reading.ignored.indexOf(UNLABELLED_ADDRESS)];
+    expect(at).toMatch(/^p\d+ r\d+ x\d+$/);
+  });
+
+  it('keeps the placement free of document text', () => {
+    // Numbers only. It rides the same internal channel as the lines, but
+    // nothing about it needs to be a fragment of the page.
+    for (const at of reading.placement) expect(at).toMatch(/^(p\d+ r\d+ x\d+)?$/);
   });
 
   it('carries the evidence out of a REFUSAL too', () => {

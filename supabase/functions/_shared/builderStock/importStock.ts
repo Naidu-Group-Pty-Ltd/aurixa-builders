@@ -266,10 +266,58 @@ function referenceKey(item: ExistingItem): string | null {
 const developmentUnitKey = storedRowDevelopmentUnitKey;
 
 /** Only the fields the record actually carries. Null means "the file was silent". */
-function writablePatch(record: NormalisedStockRecord): Record<string, unknown> {
+/**
+ * THE COLUMNS A RE-READ OF THE SAME FILE MAY UNSAY.
+ *
+ * `set` skips a null, and for a NEW source that is right: a stock list that
+ * stops mentioning a column is a list that is silent about it, not one that
+ * has withdrawn it, and a builder must not lose a figure because their next
+ * spreadsheet had fewer columns.
+ *
+ * A RE-READ IS NOT A NEW SOURCE. `reprocess_upload` on a file re-runs today's
+ * parser over the SAME BYTES — that is the whole reason the control exists —
+ * so there is no new silence to respect: every difference is this parser
+ * changing its mind, and keeping the old value means a parser correction can
+ * never reach a row that already holds what it corrects.
+ *
+ * MEASURED, 21 SEPTEMBER 2026. `LOT 266 Crowlea Estate` stored
+ * `land_size_sqm: 334000` from a `LAND $334,000` line. The currency rule that
+ * refuses that line shipped, the builder pressed Read again, the reading
+ * recorded `declined: land_size_sqm` exactly as designed — and the card still
+ * drew `334,000 m²`, because the corrected reading states nothing there and
+ * the skip kept the figure the correction exists to remove. The correction
+ * losing to the document it corrects is #2347 in another costume.
+ *
+ * IDENTITY IS NEVER UNSAID. `external_reference`, `development_name`,
+ * `project_name`, `lot_number` and `unit_number` are what a row is FOUND by —
+ * `stockMatchKeys` and the development/unit key are built from them — so
+ * clearing one would orphan a live property from its own supplier and from
+ * the imagery earned against its id. Those keep the skip on every path.
+ *
+ * AND A BUILDER'S OWN FIGURES ARE OUT OF REACH BY CONSTRUCTION: a stated
+ * override lives in `manual_stats`, which this patch does not name and this
+ * rule therefore cannot touch. That separation is exactly why it exists.
+ */
+const UNSAYABLE_ON_REREAD: ReadonlySet<string> = new Set([
+  'address_line', 'suburb', 'state', 'postcode',
+  'bedrooms', 'bathrooms', 'car_spaces', 'property_type',
+  'land_size_sqm', 'building_size_sqm',
+  'price', 'price_display', 'expected_completion', 'description',
+]);
+
+function writablePatch(
+  record: NormalisedStockRecord,
+  /**
+   * True only where the row being written was last supplied by THIS upload —
+   * the same file, read again. Absent, this is byte-for-byte the patch this
+   * function has always built.
+   */
+  options: { sameSourceReread?: boolean } = {},
+): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
   const set = (column: string, value: unknown) => {
     if (value !== null && value !== undefined && value !== '') patch[column] = value;
+    else if (options.sameSourceReread && UNSAYABLE_ON_REREAD.has(column)) patch[column] = null;
   };
   set('external_reference', record.external_reference);
   set('development_name', record.development_name);
@@ -718,7 +766,14 @@ export async function importStockRecords(
           ? byDevelopmentUnit.get(developmentUnitMatchKey(keys.developmentUnit))
           : undefined);
 
-      const patch = writablePatch(record);
+      /*
+       * The row's supplier BEFORE this import. Where it is this same upload,
+       * the builder is re-reading their own file and today's parser is the
+       * authority on every value it owns — see `UNSAYABLE_ON_REREAD`.
+       */
+      const sameSourceReread = Boolean(existingId)
+        && supplierBefore.get(existingId as string) === input.uploadId;
+      const patch = writablePatch(record, { sameSourceReread });
 
       // Link, never copy.
       const projectName = (record.project_name ?? record.development_name ?? '').trim().toLowerCase();
