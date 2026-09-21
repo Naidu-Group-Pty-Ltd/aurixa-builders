@@ -382,8 +382,6 @@ describe('13-17 · contradictions about the property or the deal', () => {
     ['14 · two addresses', 'Site Address: Lot 208 Halcyon Way',
       'conflicting_values:address_line'],
     ['15 · two designs', 'Home Design: Vantage 30', 'conflicting_values:house_design'],
-    ['16 · two estates', 'Estate: Halcyon Fields',
-      'conflicting_values:development_name'],
     ['17 · two prices', 'Price: $710,000', 'conflicting_values:price'],
   ];
 
@@ -397,6 +395,40 @@ describe('13-17 · contradictions about the property or the deal', () => {
       .toEqual({ status: 'ambiguous', reason });
     expect(reading.rows).toEqual([]);
     expect(reachesTheModel(reading)).toBe(true);
+  });
+
+  /*
+   * 16 · TWO ESTATES IS NOT A CONTRADICTION ABOUT THE PROPERTY — and this
+   * entry moved out of the list above rather than being deleted from it.
+   *
+   * The list's question is the module's own: can this evidence mean we have
+   * the WRONG PROPERTY or the WRONG DEAL? Two lots, two addresses, two
+   * designs and two prices each can. Two estate names cannot: an estate is a
+   * PLACE CONTAINING many properties, the lot is what identifies one, and a
+   * document that really described two properties would conflict on the lot
+   * and refuse there. Nothing about identity is weakened.
+   *
+   * MEASURED ON A REAL DOCUMENT. `Lot 37 - Miami 190 - Property Package.pdf`
+   * names no estate at all — its two candidates are a marketing platform's
+   * brand mark and a page heading set in letter-spaced type — and refusing
+   * it outright because two wrong guesses disagreed threw away a lot, a land
+   * size and a design that were never in doubt.
+   */
+  it('16 · two estates drops the estate and keeps the property', () => {
+    const reading = read([
+      page('Lot 208 Fairweather Drive', 'Site Address: Lot 208 Fairweather Drive',
+        'Estate: Northbrook Rise', 'Home Design: Aspire 24 Grande',
+        'Price: $662,900', 'Estate: Halcyon Fields'),
+    ]);
+    expect(reading.status).toBe('complete');
+    expect(reading.rows).toHaveLength(1);
+    const row = rowOf(reading);
+    // Neither estate is chosen, and none is invented.
+    expect(row.development_name).toBeNull();
+    // Everything that identifies the property and the deal survives.
+    expect(row.lot_number).toBe('208');
+    expect(row.house_design).toBe('Aspire 24 Grande');
+    expect(row.price).toBe(662900);
   });
 });
 

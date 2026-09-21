@@ -1033,12 +1033,11 @@ describe('counts set one per line', () => {
     expect(reading.diagnostics.disputedFields).toEqual(['bedrooms']);
   });
 
-  it('but two prices, two lots, two designs or two estates still refuse', () => {
+  it('but two prices, two lots or two designs still refuse', () => {
     const cases: Array<[string, string]> = [
       ['Price: $863,850\nPrice: $910,000', 'conflicting_values:price'],
       ['LOT 316', 'conflicting_values:lot_number'],
       ['Design: Enzo 8.5\nDesign: Nex 20', 'conflicting_values:house_design'],
-      ['Estate: Society 1056', 'conflicting_values:development_name'],
     ];
     for (const [tail, reason] of cases) {
       const reading = readPdfBrochure([
@@ -1048,6 +1047,23 @@ describe('counts set one per line', () => {
         .toEqual({ tail, status: 'ambiguous', reason });
       expect(reading.rows).toEqual([]);
     }
+  });
+
+  /*
+   * THE ESTATE LEFT THAT LIST. It named a PLACE, not the property and not
+   * the deal, so two of them cannot mean the wrong one of either — and the
+   * lot, which can, still refuses immediately above. The estate is dropped
+   * and the rest of the document stands.
+   */
+  it('and two estates drop the estate instead', () => {
+    const reading = readPdfBrochure([
+      ['LOT 315', 'Estate: Palomino', 'Price: $863,850',
+        'Land Size: 350m2', 'Estate: Society 1056'].join('\n'),
+    ]);
+    expect(reading.status).toBe('complete');
+    expect(reading.rows).toHaveLength(1);
+    expect(reading.rows[0].development_name ?? null).toBeNull();
+    expect(normaliseStockRow(reading.rows[0])!.price).toBe(863850);
   });
 
   it('one measurement written twice at two precisions is one measurement', () => {
@@ -1350,13 +1366,40 @@ describe('4 and 5 — two designs, or two estates, refuse', () => {
     expect(reading.rows).toEqual([]);
   });
 
-  it('two estates likewise', () => {
+  /*
+   * TWO ESTATES IS NOT THE SAME KIND OF DISAGREEMENT, and this assertion was
+   * renegotiated rather than adjusted.
+   *
+   * A design names the HOUSE and a price names the DEAL, so two of either can
+   * mean the wrong one. An estate is a PLACE CONTAINING many properties; the
+   * lot identifies one, and a document describing two properties would
+   * conflict on the lot. So the estate is dropped, nothing is chosen between,
+   * and the estate reads as not stated.
+   *
+   * THE DOCUMENT STILL DOES NOT IMPORT, which is the part worth asserting:
+   * with the estate gone this fixture states a lot and a price and no longer
+   * clears `MIN_BROCHURE_FIELDS`, so it refuses for what it actually lacks
+   * rather than for a contradiction it never had. A thin document is still
+   * refused; it is refused honestly.
+   */
+  it('two estates drop the estate rather than refusing the document', () => {
     const reading = readPdfBrochure([
       ['LOT 315', 'PALOMINO ESTATE', 'SOCIETY RISE ESTATE', 'Price: $1'].join('\n'),
     ]);
-    expect(reading.status).toBe('ambiguous');
-    expect(reading.reason).toBe('conflicting_values:development_name');
+    expect(reading.reason).not.toBe('conflicting_values:development_name');
+    expect(reading.status).toBe('unsupported');
+    expect(reading.reason).toBe('too_few_fields_for_a_specification');
     expect(reading.rows).toEqual([]);
+  });
+
+  it('and where the rest of the document is enough, it imports without one', () => {
+    const reading = readPdfBrochure([
+      ['LOT 315', 'PALOMINO ESTATE', 'SOCIETY RISE ESTATE',
+        'Home Design: Enzo 8.5', 'Land Size: 350m2', 'Price: $662,900'].join('\n'),
+    ]);
+    expect(reading.status).toBe('complete');
+    expect(reading.rows).toHaveLength(1);
+    expect(reading.rows[0].development_name ?? null).toBeNull();
   });
 
   it('the same name stated twice corroborates rather than conflicting', () => {

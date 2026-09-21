@@ -122,7 +122,19 @@
  * raising this does, for every source at once and without touching a single
  * row by hand.
  */
-export const DETERMINISTIC_READER_VERSION = 5;
+/*
+ * VERSION 6 — TWO ESTATES ARE NOT TWO PROPERTIES, AND A TRACKED-OUT HEADING
+ * IS NOT A NAME.
+ *
+ * A change to the READER this time, and both halves come off the same
+ * document. `Lot 37 - Miami 190 - Property Package.pdf` names no estate: its
+ * two candidates are `PROPLAUNCH`, a marketing platform's brand mark, and
+ * `M A S T E R P L A N`, a page heading a designer tracked out. Letter-spaced
+ * type is now refused as a value, and `development_name` has left
+ * `MATERIAL_FIELDS` — an estate is a place containing many properties, the
+ * lot identifies one, and `lot_number` still refuses.
+ */
+export const DETERMINISTIC_READER_VERSION = 6;
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */
 export const READER_SETTLED_VERSION_COLUMN = 'reader_settled_version';
