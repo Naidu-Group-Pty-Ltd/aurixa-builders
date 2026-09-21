@@ -152,6 +152,12 @@ export interface StockExtraction {
    * `error_detail`. See the field's note in `pdfDeterministicRows.pure.ts`.
    */
   deterministicUnaccounted?: string[];
+  /**
+   * The lines the reader attributed to NOTHING, verbatim and bounded. Document
+   * text, so it travels only to the upload row's internal `error_detail` and
+   * never into `deterministicReading`, which is the safe-to-log projection.
+   */
+  deterministicIgnored?: string[];
 }
 
 /**
@@ -901,6 +907,9 @@ export async function extractStockFile(
       }
       if (reading.unaccounted.length) {
         result.deterministicUnaccounted = reading.unaccounted;
+      }
+      if (reading.ignored.length) {
+        result.deterministicIgnored = reading.ignored;
       }
       /*
        * `<= MAX_ROWS` rather than a slice. Every other branch truncates at the

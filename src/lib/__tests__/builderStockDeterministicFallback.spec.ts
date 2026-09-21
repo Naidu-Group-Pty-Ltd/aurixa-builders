@@ -58,7 +58,7 @@ describe('a refusal carries what it had already read', () => {
     // threw is no reading. Only the document that WAS read and stood down on
     // an unaccounted line has anything worth carrying.
     expect(reader).toMatch(
-      /refuse\('incomplete', 'unaccounted_specification_lines', diagnostics,\s*\n?\s*provisionalFrom\(claimed\), stillUnresolved\)/);
+      /refuse\('incomplete', 'unaccounted_specification_lines', diagnostics,\s*\n?\s*provisionalFrom\(claimed\), stillUnresolved, ignoredText\)/);
   });
 });
 
@@ -217,7 +217,7 @@ describe('a vocabulary gap can be closed without the document', () => {
    */
   it('carries the unaccounted lines out with the refusal', () => {
     expect(reader).toMatch(/unaccounted: string\[\];/);
-    expect(reader).toMatch(/provisionalFrom\(claimed\), stillUnresolved\)/);
+    expect(reader).toMatch(/provisionalFrom\(claimed\), stillUnresolved, ignoredText\)/);
   });
 
   it('bounds them, because a column is not a place to copy a document', () => {
@@ -248,8 +248,70 @@ describe('a vocabulary gap can be closed without the document', () => {
 
   it('raises the row ceiling past the payload, or the evidence is cut off', () => {
     // At 2,000 the JSON truncated before reaching the lines, so the field
-    // would have recorded a diagnosis with its own evidence missing.
-    expect(run).toContain('.slice(0, 4000)');
-    expect(fn).toMatch(/String\(detail\)\.slice\(0, 6000\)/);
+    // would have recorded a diagnosis with its own evidence missing. The
+    // payload now also carries the lines the reader PLACED and could not
+    // name (80 at 120 characters), so both ceilings moved with it and the
+    // outer one still sits above the inner.
+    expect(run).toContain('.slice(0, 15_000)');
+    expect(fn).toMatch(/String\(detail\)\.slice\(0, 16_000\)/);
+  });
+});
+
+/**
+ * AND THE SAME EVIDENCE ON THE PATH THAT SUCCEEDED.
+ *
+ * A document that fails to import is diagnosable. A document that imports
+ * with five of its twelve fields empty is not — the upload reads `enriching`,
+ * the card draws what there is, and nothing anywhere says what the other
+ * three hundred lines of the page were. That is the state `LOT 266 Crowlea
+ * Estate` was left in, and closing the gap it names has meant guessing at
+ * the document or asking a builder to send the file.
+ */
+describe('a successful import records what it could not name', () => {
+  const extract = read('supabase/functions/_shared/builderStock/extract.ts');
+  const run = read('supabase/functions/_shared/builderStock/runImport.ts');
+  const fn = read('supabase/functions/builder-portal-stock/index.ts');
+
+  it('carries the lines out of the extraction and out of the run', () => {
+    expect(extract).toMatch(/deterministicIgnored\?: string\[\];/);
+    expect(extract).toContain('result.deterministicIgnored = reading.ignored;');
+    expect(run).toMatch(/deterministicIgnored\?: string\[\] \| null;/);
+    expect(run).toContain('deterministicIgnored: extraction.deterministicIgnored ?? null');
+  });
+
+  it('writes them on the SUCCESS path, which is where they were missing', () => {
+    expect(fn).toContain('deterministic_ignored: result.deterministicIgnored');
+  });
+
+  it('merges into `error_detail` rather than replacing what is there', () => {
+    /*
+     * `sourceNotice.detail` carries a `reason` the link-recovery path reads
+     * back off the row. Overwriting it would silently stop a sheet whose
+     * export permissions were the problem from ever being asked for again.
+     */
+    expect(fn).toMatch(/\.\.\.\(outcomeDetail \?\? \{\}\), \.\.\.\(importDiagnosis \?\? \{\}\)/);
+    expect(fn).toContain('sourceNotice ? sourceNotice.detail : null');
+  });
+
+  it('never invents a failure out of a diagnosis', () => {
+    // An import that succeeded still reads as one: the diagnosis sets no
+    // `error_code` and no `error_message`, so nothing a builder sees moves.
+    const write = fn.slice(fn.indexOf('const importDiagnosis'));
+    const block = write.slice(0, write.indexOf('processing_completed_at'));
+    expect(block).toMatch(/error_code: result\.summary\.failures\.length/);
+    expect(block).toMatch(/error_message: result\.summary\.failures\.length/);
+  });
+
+  it('keeps them off the wire and out of the log', () => {
+    // Document text: internal only, and never in `deterministicReading`,
+    // which is the safe-to-log projection the telemetry line writes.
+    const projection = read('supabase/functions/_shared/builderStock/projection.pure.ts');
+    const select = projection.slice(projection.indexOf('STOCK_UPLOAD_SELECT'));
+    expect(select.slice(0, 600)).not.toContain('error_detail');
+    const reader = read(
+      'supabase/functions/_shared/builderStock/pdfDeterministicRows.pure.ts');
+    const diagnostics = reader.slice(
+      reader.indexOf('  diagnostics: {'), reader.indexOf('function provisionalFrom('));
+    expect(diagnostics).not.toContain('ignored:');
   });
 });

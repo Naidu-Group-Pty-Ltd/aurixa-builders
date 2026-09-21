@@ -612,8 +612,12 @@ export function normaliseStockRow(
       }
       case 'property_type': record.property_type = coercePropertyType(value); break;
       case 'house_design': record.house_design = text(value, 120); break;
-      case 'land_size_sqm': record.land_size_sqm = clampArea(coerceNumber(value)); break;
-      case 'building_size_sqm': record.building_size_sqm = clampArea(coerceNumber(value)); break;
+      case 'land_size_sqm':
+        record.land_size_sqm = clampMeasurement(coerceNumber(value), MAX_LAND_SQM);
+        break;
+      case 'building_size_sqm':
+        record.building_size_sqm = clampMeasurement(coerceNumber(value), MAX_BUILDING_SQM);
+        break;
       case 'price': {
         const priced = coercePrice(value);
         record.price = priced.price;
@@ -763,11 +767,39 @@ function parseBedBathCar(raw: string): {
   return null;
 }
 
-function clampArea(value: number | null): number | null {
+/**
+ * WHAT A BUILDER'S STOCK ITEM CAN PLAUSIBLY MEASURE.
+ *
+ * THE CEILING WAS 1,000,000 m² AND THAT IS NOT A PLAUSIBILITY CHECK — it is
+ * ONE HUNDRED HECTARES, a cattle station rather than a house and land
+ * package. The comment above it had the rule exactly right ("a land size of
+ * 400,000 m² in a residential stock list is a unit error, not a property")
+ * and then set a bound that admits it.
+ *
+ * MEASURED, 21 SEPTEMBER 2026. `LOT 266 Crowlea Estate - CURA 20B TEMPIO B`
+ * imported `land_size_sqm: 334000` and a client's card read
+ * `LAND 334,000 m²` — thirty-three hectares. Every other stock item this
+ * deployment holds measures 143 m², 180 m² or 182.78 m². `coerceNumber`
+ * strips a comma as a thousands separator, so whatever the document printed,
+ * a figure three orders of magnitude out passed a check written to stop
+ * exactly that.
+ *
+ * THE BOUNDS ARE THE DOMAIN'S, AND THEY ARE SEPARATE PER FIELD. A house and
+ * land package is a house on a residential block: an acreage lot in a
+ * builder's estate reaches a couple of hectares and a dwelling does not reach
+ * a thousand square metres. Both ceilings sit far above anything real and far
+ * below a misplaced decimal, which is the only failure they exist to catch.
+ *
+ * AND ABSENT BEATS WRONG. A refused figure reads as not stated — which the
+ * card already renders, and which a builder can correct with the schedule —
+ * where a wrong one is published as fact.
+ */
+const MAX_LAND_SQM = 50_000;
+const MAX_BUILDING_SQM = 2_000;
+
+function clampMeasurement(value: number | null, ceiling: number): number | null {
   if (value === null || value < 0) return null;
-  // A "land size" of 400,000 m² in a residential stock list is a unit error,
-  // not a property. Keeping it would print nonsense on a client's page.
-  if (value > 1_000_000) return null;
+  if (value > ceiling) return null;
   return Math.round(value * 100) / 100;
 }
 
