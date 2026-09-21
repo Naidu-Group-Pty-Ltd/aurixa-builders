@@ -1,0 +1,13 @@
+{
+  "//": "The edge runtime fetches these from esm.sh. Deno here resolves the SAME packages at the SAME pinned versions from npm, which is exactly what the PDF worker's own build.mjs does for unpdf and for the same reason: the shared modules stay byte-identical and nothing in the product learns it is being tested.",
+  "imports": {
+    "https://esm.sh/unpdf@0.12.1": "npm:unpdf@0.12.1",
+    "https://esm.sh/@supabase/supabase-js@2": "npm:@supabase/supabase-js@2.45.4",
+    "https://esm.sh/@supabase/supabase-js@2.45.0": "npm:@supabase/supabase-js@2.45.0",
+    "https://esm.sh/@supabase/supabase-js@2.55.0": "npm:@supabase/supabase-js@2.55.0",
+    "https://esm.sh/xlsx@0.18.5": "npm:xlsx@0.18.5",
+    "https://esm.sh/jszip@3.10.1": "npm:jszip@3.10.1",
+    "https://esm.sh/zod@3.25.76": "npm:zod@3.25.76",
+    "https://esm.sh/bcryptjs@2.4.3": "npm:bcryptjs@2.4.3"
+  }
+}

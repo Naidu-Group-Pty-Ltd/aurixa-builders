@@ -3,3 +3,8 @@ node_modules/
 *.log
 dist/
 *.tsbuildinfo
+
+# Deno resolves the acceptance harness's npm imports from its own global cache
+# (`--node-modules-dir=none`), so this lock is a local artefact of running the
+# gate, not a dependency of the product.
+deno.lock
