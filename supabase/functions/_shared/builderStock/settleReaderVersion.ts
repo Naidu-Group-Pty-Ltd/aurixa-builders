@@ -41,7 +41,8 @@
 import type { runStockImport } from './runImport.ts';
 import {
   DETERMINISTIC_READER_VERSION, READER_SETTLED_VERSION_COLUMN,
-  readerReReadRefusal, stampable, type ReaderSweepUpload,
+  readerReReadRefusal, reReadSettlesAt, OUR_FAILURE_CODES,
+  stampable, type ReaderSweepUpload,
 } from './readerVersion.pure.ts';
 import { TELEMETRY_PREFIX } from './importTelemetry.pure.ts';
 
@@ -274,6 +275,16 @@ export async function settleReaderVersion(
          * nothing". Left OUTSTANDING so a transient fault is retried.
          */
         outcome.failed.push({ uploadId: upload.id, reason: String(result.code) });
+        /*
+         * A VERDICT IS FINISHED; A FAULT IS NOT. See `DOCUMENT_VERDICT_CODES`.
+         * Re-asking the same bytes of the same reader cannot change a verdict,
+         * so the source is stamped and stops being outstanding. A fault is
+         * left exactly as it was, which is the paragraph above.
+         */
+        if (reReadSettlesAt(result.code)) {
+          await supersedeOurFailure(db, upload, result);
+          await stamp(db, upload);
+        }
         continue;
       }
 
@@ -325,6 +336,43 @@ async function tradingName(db: any, organisationId: unknown): Promise<string | n
  * the READ found — the counts and the unnamed lines — so a support question
  * about a swept row has the same answer a builder's own re-read would give.
  */
+/**
+ * REPLACE AN ERROR THAT WAS OURS WITH THE ANSWER THE DOCUMENT NOW GETS.
+ *
+ * `writeImportOutcome` clears a stale failure only where the STATUS is
+ * `failed`, and that missed the case this whole incident is about.
+ * MEASURED 21 SEPTEMBER 2026: `Lot 37 - Miami 190 - Property Package.pdf`
+ * sits at status `imported` with `records_detected: 0` and
+ * `error_code: assisted_reader_refused`, detail
+ * `openrouter/openai/gpt-5.6-luna: refused 402` — an account with no credit.
+ * It has since been re-read repeatedly with no model call at all, and the row
+ * still showed the model's refusal, because the status was never `failed` and
+ * nothing else clears an error.
+ *
+ * So a builder looking at that list is told their brochure failed for a
+ * reason that has not applied since the model left this path.
+ *
+ * NARROW ON PURPOSE. It replaces the recorded reason only where that reason
+ * is one of OURS — a credential, an account, a provider, an allowance, a
+ * crash — because those are the ones that can be superseded by a read that
+ * did not need them. An error already describing the FILE is left alone: the
+ * re-read reached the same kind of answer and rewriting it would churn the
+ * row for nothing. The STATUS is never touched here, for the reason the
+ * branch above gives: rows this source already produced are live stock.
+ */
+async function supersedeOurFailure(
+  db: any, upload: SweepUploadRow, result: any,
+): Promise<void> {
+  if (!OUR_FAILURE_CODES.has(String((upload as any).error_code ?? ''))) return;
+  try {
+    await db.from('builder_stock_uploads').update({
+      error_code: String(result.code),
+      error_message: String(result.message ?? ''),
+      error_detail: result.detail ? { detail: String(result.detail) } : null,
+    }).eq('id', upload.id).eq('organisation_id', upload.organisation_id);
+  } catch { /* the read landed; the record of it is best-effort */ }
+}
+
 async function writeImportOutcome(
   db: any, upload: SweepUploadRow, result: any, statusBefore = '',
 ): Promise<void> {

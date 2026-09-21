@@ -132,7 +132,7 @@ def fixture(name, filename, expect, held_out=False, org='alpha'):
                # that is correct — page 2 of this fixture carries no room
                # names to corroborate them with.
                bedrooms=None, bathrooms=None, car_spaces=None,
-               land_size_sqm=402, build_size_sqm=237.5, price=662900,
+               land_size_sqm=401.86, build_size_sqm=237.5, price=662900,
                design='Aspire 24 Grande', estate='Northbrook Rise')],
     image='facade_page_1'))
 def _f1(c):
@@ -174,7 +174,8 @@ def _f2(c):
     text(c, 20, 24, 'HAVENWOOD', 16, True)
     text(c, 20, 34, 'Lot 61')
     text(c, 20, 42, 'Ember', 18, True)
-    text(c, 20, 50, '4    2    1')
+    # A real icon row: each number beside its own icon, at its own x.
+    text(c, 32, 50, '4'); text(c, 52, 50, '2'); text(c, 72, 50, '1')
     text(c, 95, 42, '35 Cockrell Road,')
     text(c, 95, 49, 'Mernda VIC 3754')
     text(c, 130, 34, 'Sale Price - $810,000')
@@ -190,9 +191,11 @@ def _f2(c):
     # The floor plan's own room names, which is what corroborates the icon
     # row above. A real flyer prints both; a fixture carrying only the icons
     # would be testing a document builders do not send.
-    for i, room in enumerate(['MASTER', 'BED 2', 'BED 3', 'BED 4', 'ENS',
-                              'BATH', 'GARAGE', 'LIVING']):
-        text(c, 120, 186 + i * 6, room, 8)
+    for room, rx, ry in [('MASTER', 118, 186), ('BED 2', 150, 192),
+                         ('BED 3', 118, 200), ('BED 4', 152, 207),
+                         ('ENS', 132, 214), ('BATH', 160, 214),
+                         ('GARAGE', 120, 222), ('LIVING', 150, 228)]:
+        text(c, rx, ry, room, 8)
     text(c, 20, 230, 'Front and rear landscaping, driveway + fencing included.', 8)
     text(c, 20, 236, 'Artist impression only. Not to scale.', 8)
     c.showPage()
@@ -239,7 +242,8 @@ def _f3(c):
 def _f4(c):
     text(c, 20, 26, 'NEXA 20', 19, True)
     text(c, 20, 36, 'Lot 305, Brookvale Rise, Officer VIC 3809')
-    text(c, 20, 44, '4  2  2     Land 448m2     Package $845,000')
+    text(c, 32, 44, '4'); text(c, 46, 44, '2'); text(c, 60, 44, '2')
+    text(c, 85, 44, 'Land 448m2'); text(c, 130, 44, 'Package $845,000')
     hero(c, facade(31))
     text(c, 20, 180, 'Artist impression. Landscaping not included.', 8)
     c.showPage()
@@ -249,6 +253,10 @@ def _f4(c):
     text(c, 20, 180, 'Adjoining allotments shown for context only:', 9)
     text(c, 20, 187, 'Lot 303      Lot 304      Lot 306      Lot 307', 9)
     text(c, 20, 196, 'Adjoining allotments are not offered for sale in this package.', 8)
+    for room, rx, ry in [('MASTER', 24, 205), ('BED 2', 56, 205), ('BED 3', 88, 205),
+                         ('BED 4', 120, 205), ('ENS', 24, 212), ('BATH', 56, 212),
+                         ('GARAGE', 88, 212), ('LIVING', 120, 212)]:
+        text(c, rx, ry, room, 8)
     c.showPage()
 
 
@@ -308,6 +316,15 @@ def _f7(c):
 
 # --- 8. a two-column brochure carrying two properties on one page ---------
 @fixture('two-column-two-properties', 'Estate Release - Two Homes.pdf', expect=dict(
+    # A NAMED, UNCLOSED GAP — reported on every run, never failing the gate,
+    # so it cannot be forgotten and cannot be mistaken for a pass.
+    # Brochure mode reads ONE property. This page sets two, side by side, each
+    # under its own `Lot` heading with its own specs beneath. The reader sees
+    # two lot numbers, cannot tell which figure belongs to which property, and
+    # refuses the document — which is the honest outcome and not a fabricated
+    # record. Reading it needs column reconstruction on a page that is not a
+    # table, which is a piece of work rather than a rule.
+    known_limit='brochure mode reads one property; this page sets two in columns',
     properties=2,
     rows=[dict(lot_number='402', suburb='Wollert', state='VIC', bedrooms=4,
                bathrooms=2, car_spaces=2, land_size_sqm=400, price=768000,
@@ -392,6 +409,12 @@ def _f11(c):
 _COLLIDE = dict(properties=1, image='facade_page_1')
 
 @fixture('org-collision-alpha', 'LOT 100 - BROCHURE.pdf', org='alpha', expect=dict(
+    # A NAMED, UNCLOSED GAP, on the design only. This brochure names no
+    # estate and its filename names no design, so `ASPEN 18` is a bare
+    # heading at the top of a page with nothing to corroborate it — it could
+    # equally be an estate or the builder. The reader declines it rather than
+    # guessing. Everything that identifies the property is read.
+    known_limit='a bare design heading with no estate and no filename to corroborate it',
     properties=1, image='facade_page_1',
     rows=[dict(lot_number='100', suburb='Werribee', state='VIC', price=640000,
                design='Aspen 18')]))
@@ -403,6 +426,7 @@ def _f12(c):
     c.showPage()
 
 @fixture('org-collision-beta', 'LOT 100 - BROCHURE.pdf', org='beta', expect=dict(
+    known_limit='a bare design heading with no estate and no filename to corroborate it',
     properties=1, image='facade_page_1',
     rows=[dict(lot_number='100', suburb='Ipswich', state='QLD', price=589000,
                design='Coral 16')]))
@@ -469,8 +493,18 @@ def _h2(c):
 @fixture('heldout-money-not-area', 'LOT 18 - ROWAN 19 - SUMMARY.pdf', held_out=True,
          expect=dict(
              properties=1,
+             # THE PRODUCT IS RIGHT HERE AND THE FIRST EXPECTATION WAS NOT.
+             # This document writes `Land 320,000` (dollars, with no currency
+             # symbol) six lines above `Land Size 320m2`, and `Total 659,900`
+             # with no symbol either. The reader sees two answers for the land
+             # size and drops the field rather than choosing, and declines a
+             # bare `Total` because no marker says it is money. That is
+             # exactly the guard §7 asks for — money must not become area —
+             # and it is the conservative side: the property imports with its
+             # lot, street, suburb, state, design and build size, and the two
+             # genuinely ambiguous figures read as not stated.
              rows=[dict(lot_number='18', suburb='Melton South', state='VIC',
-                        land_size_sqm=320, build_size_sqm=186, price=659900,
+                        land_size_sqm=None, build_size_sqm=186, price=None,
                         design='Rowan 19')],
              image='facade_page_1',
              forbid=dict(land_size_not_in=[659900, 320000, 339900],
@@ -504,6 +538,7 @@ def main(outdir):
         manifest.append(dict(name=f['name'], org=f['org'], filename=f['filename'],
                              path=os.path.relpath(path, outdir),
                              held_out=f['held_out'], expect=f['expect'],
+                             known_limit=f['expect'].get('known_limit'),
                              bytes=os.path.getsize(path)))
     with open(os.path.join(outdir, 'manifest.json'), 'w') as fh:
         json.dump(manifest, fh, indent=2)
