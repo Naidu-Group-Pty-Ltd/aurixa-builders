@@ -91,6 +91,9 @@ import {
   readItemWorkPending,
 } from '../_shared/builderStock/itemWorkClaim.ts';
 import { settleClaimedItem } from '../_shared/builderStock/settleItemImages.ts';
+import {
+  readerSweepPending, settleReaderVersion,
+} from '../_shared/builderStock/settleReaderVersion.ts';
 
 /*
  * The canonical headers, not a hand-rolled copy.
@@ -1130,12 +1133,63 @@ Deno.serve(async (req: Request) => {
        * this one's. The SQL tick's keep-alive independently holds the cron
        * open while a blocked upload exists.
        */
+      /*
+       * ═══════════════════════════════════════════════════════════════════
+       * AND THE READER SWEEP, WHICH BELONGS EXACTLY HERE.
+       * ═══════════════════════════════════════════════════════════════════
+       *
+       * `pdfDeterministicRows.pure.ts` runs once, at import, and everything
+       * downstream is frozen with it — a property's title, its configuration,
+       * its address, and, because the cover election identifies pages by the
+       * row's own label, WHICH PICTURE LEADS ITS CARD. So every correction to
+       * the reader reached each future upload and not one row that already
+       * existed, and the only repair was a builder pressing "Read again" by
+       * hand, per stock list, for ever. That is the defect this whole function
+       * exists to refuse: "asking a builder to press a button on every source
+       * they have ever uploaded is not a deployment step; it is a defect with
+       * instructions."
+       *
+       * THIS EXIT AND NO OTHER, for the two reasons the fallback phase was
+       * placed here. It is reached only when NO property is claimable and NO
+       * upload owes any of the three image markers, so a re-read cannot race
+       * an import that is still writing — and a re-read is the most expensive
+       * act in this codebase, so it may only have what a quiet tick has to
+       * spare. `settleReaderVersion` takes at most one source per tick and
+       * starts none without `READER_SWEEP_RESERVE_MS` left.
+       *
+       * AND IT DECIDES `complete`. The migration's cron unschedules itself on
+       * that word, so reporting a quiet deployment complete while sources are
+       * still behind the current reader would retire the job that performs the
+       * sweep — the identical fault this branch's own header records for the
+       * per-item queue. `readerSweepPending` is asked AFTER the sweep runs, so
+       * the answer describes what is left rather than what was there.
+       */
+      const readerSweep = await settleReaderVersion(supabase, { deadlineAt });
+      const readerOutstanding = readerSweep.unavailable
+        // The column is not deployed here yet. Not work, and not a reason to
+        // hold the cron open: a marker nothing can write is never satisfied.
+        ? 0
+        : (await readerSweepPending(supabase) ?? 0);
+
+      if (readerSweep.reread || readerSweep.refused.length || readerSweep.failed.length) {
+        console.log('[builder-stock-image-settler] reader sweep', {
+          phase: 'reader_version',
+          considered: readerSweep.considered,
+          reread: readerSweep.reread,
+          refused: readerSweep.refused.length,
+          failed: readerSweep.failed.length,
+          outstanding: readerOutstanding,
+        });
+      }
+
       return json({
         success: true,
         phase: 'fallback_enrichment',
         settled: 0,
         remaining: 0,
-        complete: true,
+        complete: readerOutstanding === 0,
+        readerReread: readerSweep.reread,
+        readerOutstanding,
         deploymentReady: true, eligibilityTarget, sanitizationTarget,
       });
     }
