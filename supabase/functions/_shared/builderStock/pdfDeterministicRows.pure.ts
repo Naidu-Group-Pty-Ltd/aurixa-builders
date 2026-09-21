@@ -631,6 +631,23 @@ const COUNT_FIELDS: ReadonlySet<string> = new Set([
 const COUNT_VALUE = /^\d{1,2}(?:\.5)?$/;
 const MAX_PLAUSIBLE_COUNT = 20;
 
+/**
+ * A MEASUREMENT CARRIES A UNIT; A PRICE CARRIES A CURRENCY.
+ *
+ * The two fields this deployment measures in square metres are the only ones
+ * whose LABEL is also what a package's price list calls its halves — `LAND`
+ * and `HOUSE` — so a currency marker in the value is the document saying
+ * which of the two it meant. Narrow on purpose: it asks about the value the
+ * document printed and never about the size of the number, so a real
+ * `1,204 m2` is untouched and nothing here has to know what land costs.
+ */
+const MEASURED_FIELDS = new Set(['land_size_sqm', 'building_size_sqm']);
+const CURRENCY_MARKER = /[$\u20ac\u00a3\u00a5]|\bAUD\b/i;
+
+function statesAnAmount(value: string): boolean {
+  return CURRENCY_MARKER.test(value);
+}
+
 function statesACount(value: string): boolean {
   const trimmed = value.trim();
   if (!COUNT_VALUE.test(trimmed)) return false;
@@ -2327,6 +2344,28 @@ export function readPdfBrochure(
 
       for (const claim of found.flatMap(splitAddress).flatMap(splitLocality).map(trimSeparators)) {
         if (!BROCHURE_CLAIMABLE_FIELDS.has(claim.field)) continue;
+        if (MEASURED_FIELDS.has(claim.field) && statesAnAmount(claim.value)) {
+          /*
+           * `LAND $334,000` IS WHAT THE LAND COSTS, NOT HOW BIG IT IS.
+           *
+           * A house and land package states its two halves, and `LAND` is a
+           * label this vocabulary reads as an area. Measured on `LOT 266
+           * Crowlea Estate` (21 September 2026): the record took
+           * `land_size_sqm: 334000` through `labelled_numbers` and a client's
+           * card drew `LAND 334,000 m²`. The document's own arithmetic says
+           * what that figure is — the price it imported is $749,100, and
+           * $334,000 plus a $415,100 build is exactly that.
+           *
+           * DECLINED, NOT DROPPED. The field name goes into the diagnostics
+           * the way every other declined statement does, so an import log
+           * says which one was refused and under which rule; and it is
+           * declined rather than standing the document down, because the rest
+           * of that brochure read perfectly and a priced label is not a
+           * vocabulary gap a model would close either.
+           */
+          declined.add(claim.field);
+          continue;
+        }
         if (COUNT_FIELDS.has(claim.field) && !statesACount(claim.value)) {
           /*
            * `Garage: 22.59m²` is the garage's AREA under a label this
