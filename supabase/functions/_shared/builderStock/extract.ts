@@ -145,6 +145,13 @@ export interface StockExtraction {
    * property. See `provisionalFrom` in `pdfDeterministicRows.pure.ts`.
    */
   deterministicProvisional?: Array<Record<string, unknown>>;
+  /**
+   * The lines the deterministic reader could not account for, verbatim and
+   * bounded. Document text, so it is kept out of `deterministicReading` (the
+   * safe-to-log projection) and travels only to the upload row's internal
+   * `error_detail`. See the field's note in `pdfDeterministicRows.pure.ts`.
+   */
+  deterministicUnaccounted?: string[];
 }
 
 /**
@@ -891,6 +898,9 @@ export async function extractStockFile(
       // Values, kept out of the projection above and read by one caller.
       if (reading.provisional.length) {
         result.deterministicProvisional = reading.provisional;
+      }
+      if (reading.unaccounted.length) {
+        result.deterministicUnaccounted = reading.unaccounted;
       }
       /*
        * `<= MAX_ROWS` rather than a slice. Every other branch truncates at the

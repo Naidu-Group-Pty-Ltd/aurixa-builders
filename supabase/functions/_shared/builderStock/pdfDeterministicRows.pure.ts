@@ -184,6 +184,30 @@ export interface PdfDeterministicReading {
    * identified: see `provisionalFrom`.
    */
   provisional: Array<Record<string, unknown>>;
+  /**
+   * The lines this reader could not account for, verbatim.
+   *
+   * WHY THE TEXT AND NOT JUST THE COUNT, when `diagnostics.unaccountedLines`
+   * is deliberately a number. Because the count cannot be acted on. Measured
+   * across 21 SEPTEMBER 2026: nine of twelve brochures imported with no model
+   * call at all, and every one that did not was a template whose vocabulary
+   * this reader had not yet learned — `LOT 717 - ENZO 10.5 MODERN` failed
+   * twice at 03:09 and 03:24 and imported at 04:07 from the SAME 8,425,036
+   * bytes, once the vocabulary widened. Closing the next gap means knowing
+   * which line it is, and a count says only that there was one.
+   *
+   * DELIBERATELY NOT IN `diagnostics`. That object's contract is that it is
+   * safe to log — "no value a document stated ever appears here, because this
+   * is written to the import log and a builder's price is not ours to put in
+   * a log line" — and this is document text. It travels to the upload row's
+   * `error_detail`, which is internal: `get_upload` and
+   * `projectUploadListRow` both project it away, and it is read by whoever
+   * is fixing the reader.
+   *
+   * BOUNDED, because an unbounded copy of a document into a column is its own
+   * defect.
+   */
+  unaccounted: string[];
   /** Set on `complete` and null otherwise. Recorded as `parse_strategy`. */
   strategy: PdfDeterministicStrategy | null;
   /** Machine-readable, stable, and safe to log. Never a fragment of the document. */
@@ -313,9 +337,19 @@ function refuse(
   reason: string,
   diagnostics: PdfDeterministicReading['diagnostics'],
   provisional: Array<Record<string, unknown>> = [],
+  unaccounted: string[] = [],
 ): PdfDeterministicReading {
-  return { status, rows: [], provisional, strategy: null, reason, diagnostics };
+  return {
+    status, rows: [], provisional, strategy: null, reason, diagnostics,
+    // Bounded on both axes: enough to name the gap, never a copy of the page.
+    unaccounted: unaccounted.slice(0, MAX_UNACCOUNTED_REPORTED)
+      .map((line) => line.slice(0, MAX_UNACCOUNTED_LINE_CHARS)),
+  };
 }
+
+/** Enough to name a vocabulary gap; never enough to reconstruct a document. */
+const MAX_UNACCOUNTED_REPORTED = 12;
+const MAX_UNACCOUNTED_LINE_CHARS = 120;
 
 // ---------------------------------------------------------------------------
 // The canonical header for each field this module may claim
@@ -2425,7 +2459,7 @@ export function readPdfBrochure(
    */
   if (stillUnresolved.length > 0) {
     return refuse('incomplete', 'unaccounted_specification_lines', diagnostics,
-      provisionalFrom(claimed));
+      provisionalFrom(claimed), stillUnresolved);
   }
 
   /*
@@ -2489,8 +2523,10 @@ export function readPdfBrochure(
   diagnostics.candidates = 1;
   return {
     status: 'complete',
-    // Nothing provisional on a complete reading: the rows ARE the reading.
+    // Nothing provisional on a complete reading: the rows ARE the reading,
+    // and a complete reading accounted for every line by definition.
     provisional: [],
+    unaccounted: [],
     rows: [raw],
     strategy: 'pdf_deterministic_brochure',
     reason: 'explicit_fields_read',
@@ -2913,8 +2949,10 @@ export function assemblePdfSchedule(
 
   return {
     status: 'complete',
-    // Nothing provisional on a complete reading: the rows ARE the reading.
+    // Nothing provisional on a complete reading: the rows ARE the reading,
+    // and a complete reading accounted for every line by definition.
     provisional: [],
+    unaccounted: [],
     rows: keyed.rows,
     strategy: 'pdf_deterministic_table',
     reason: 'schedule_reconstructed',

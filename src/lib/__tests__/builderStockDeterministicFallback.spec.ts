@@ -49,7 +49,7 @@ describe('a refusal carries what it had already read', () => {
   });
 
   it('is empty on a complete reading, where the rows ARE the reading', () => {
-    const completes = reader.match(/status: 'complete',\n\s*\/\/[^\n]*\n\s*provisional: \[\],/g) ?? [];
+    const completes = reader.match(/status: 'complete',[\s\S]{0,240}?provisional: \[\],\n\s*unaccounted: \[\],/g) ?? [];
     expect(completes.length).toBeGreaterThanOrEqual(2);
   });
 
@@ -58,7 +58,7 @@ describe('a refusal carries what it had already read', () => {
     // threw is no reading. Only the document that WAS read and stood down on
     // an unaccounted line has anything worth carrying.
     expect(reader).toMatch(
-      /refuse\('incomplete', 'unaccounted_specification_lines', diagnostics,\s*\n?\s*provisionalFrom\(claimed\)\)/);
+      /refuse\('incomplete', 'unaccounted_specification_lines', diagnostics,\s*\n?\s*provisionalFrom\(claimed\), stillUnresolved\)/);
   });
 });
 
@@ -195,5 +195,61 @@ describe('the messages do not promise what the product does not do', () => {
     const refused = failure.slice(failure.indexOf("case 'model_refused':"),
       failure.indexOf("case 'model_budget_exhausted':"));
     expect(refused).toMatch(/credentials or credit/);
+  });
+});
+
+describe('a vocabulary gap can be closed without the document', () => {
+  const reader = read(READER);
+  const run = read(RUN);
+  const extract = read(EXTRACT);
+  const fn = read('supabase/functions/builder-portal-stock/index.ts');
+
+  /*
+   * MEASURED ACROSS 21 SEPTEMBER 2026: nine of twelve brochures imported with
+   * NO model call at all. Every one that did not was a template this reader
+   * had not yet learned — `LOT 717 - ENZO 10.5 MODERN - BROCHURE V002.pdf`
+   * failed at 03:09 and 03:24 and imported at 04:07 from the SAME 8,425,036
+   * bytes, once the vocabulary widened. So the pathway is not
+   * model-dependent by design; it is model-dependent exactly where the
+   * vocabulary has a hole, and the only thing needed to close one is knowing
+   * WHICH line. `diagnostics.unaccountedLines` is a count and cannot be
+   * acted on.
+   */
+  it('carries the unaccounted lines out with the refusal', () => {
+    expect(reader).toMatch(/unaccounted: string\[\];/);
+    expect(reader).toMatch(/provisionalFrom\(claimed\), stillUnresolved\)/);
+  });
+
+  it('bounds them, because a column is not a place to copy a document', () => {
+    expect(reader).toContain('MAX_UNACCOUNTED_REPORTED');
+    expect(reader).toContain('MAX_UNACCOUNTED_LINE_CHARS');
+    expect(reader).toMatch(/unaccounted\.slice\(0, MAX_UNACCOUNTED_REPORTED\)/);
+  });
+
+  it('keeps them out of the safe-to-log diagnostics', () => {
+    /*
+     * `diagnostics`' contract is that no value a document stated appears in
+     * it, because it is written to the import log and a builder's price is
+     * not ours to put in a log line. These are document text.
+     */
+    const diagnostics = reader.slice(
+      reader.indexOf('  diagnostics: {'), reader.indexOf('function provisionalFrom('));
+    expect(diagnostics).not.toContain('unaccounted:');
+    expect(extract).toMatch(/deterministicUnaccounted\?: string\[\];/);
+  });
+
+  it('records them only where a builder cannot be shown them', () => {
+    // `error_detail` is projected away by the upload select.
+    expect(run).toContain('deterministic_unaccounted');
+    const projection = read('supabase/functions/_shared/builderStock/projection.pure.ts');
+    const select = projection.slice(projection.indexOf('STOCK_UPLOAD_SELECT'));
+    expect(select.slice(0, 600)).not.toContain('error_detail');
+  });
+
+  it('raises the row ceiling past the payload, or the evidence is cut off', () => {
+    // At 2,000 the JSON truncated before reaching the lines, so the field
+    // would have recorded a diagnosis with its own evidence missing.
+    expect(run).toContain('.slice(0, 4000)');
+    expect(fn).toMatch(/String\(detail\)\.slice\(0, 6000\)/);
   });
 });

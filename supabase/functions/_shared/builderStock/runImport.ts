@@ -465,7 +465,23 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
           diagnosis: failure.diagnosis,
           strategy: extraction.strategy,
           text_length: extraction.text?.length ?? 0,
-        }).slice(0, 1500),
+          /*
+           * AND THE LINES THAT STOOD THE DOCUMENT DOWN.
+           *
+           * The one thing needed to close a vocabulary gap and the one thing
+           * nothing recorded. Nine of twelve brochures on 21 September 2026
+           * imported with no model call; every one that did not was a
+           * template this reader had not learned, and `LOT 717 - ENZO 10.5
+           * MODERN` failed twice and then imported from the same bytes once
+           * it had. Knowing WHICH line is the whole difference between
+           * fixing that and guessing at it.
+           *
+           * Internal only: `error_detail` is projected away by `get_upload`
+           * and by `projectUploadListRow`, so no builder is shown their own
+           * document quoted back at them, and it is bounded at the reader.
+           */
+          deterministic_unaccounted: extraction.deterministicUnaccounted ?? null,
+        }).slice(0, 4000),
         status: reading.status,
       };
     }
