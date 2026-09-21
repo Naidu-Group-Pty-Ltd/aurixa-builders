@@ -27,8 +27,9 @@ import {
 import { parseBuilderAddressLine } from '../builderStockAddress.pure.ts';
 import { IMAGE_BUDGET_MS } from './importBudget.pure.ts';
 import {
-  describeIdentityChange, identityDifferences, stockPropertyIdentity,
-  type StockPropertyIdentity,
+  describeIdentityChange, identityDifferences, reReadHoldsSameProperty,
+  stockPropertyIdentity,
+  type PropertyIdentityFields, type StockPropertyIdentity,
 } from './stockIdentity.pure.ts';
 import {
   lifecycleForMatchedProperty, lifecycleForNewProperty,
@@ -186,6 +187,15 @@ interface AnchoredProperty {
 interface OwnAnchoredProperty extends AnchoredProperty {
   /** So an active row can outrank a staged fork of itself. */
   lifecycle: string | null;
+  /*
+   * THE ROW'S OWN FIELDS, not only the identity they collapse into.
+   *
+   * `identity.lot` is `unit_number ?? lot_number`, so a re-read that CORRECTS
+   * a wrong unit number changes the key that decides whether it is allowed to
+   * correct anything — see `reReadHoldsSameProperty`, and the Lot 48 fork it
+   * is named for.
+   */
+  fields: PropertyIdentityFields;
 }
 
 /**
@@ -705,6 +715,8 @@ export async function importStockRecords(
    * always used.
    */
   const byOwnAnchor = new Map<string, OwnAnchoredProperty>();
+  /** Own-anchor rows this run has already corrected. See the claim below. */
+  const claimedOwnAnchors = new Set<string>();
   /**
    * ARCHIVED rows that still hold a photograph, indexed by anchor.
    *
@@ -765,6 +777,7 @@ export async function importStockRecords(
           id: item.id,
           identity: stockPropertyIdentity(item),
           lifecycle: item.lifecycle_status ?? null,
+          fields: item,
         });
       }
     }
@@ -816,9 +829,23 @@ export async function importStockRecords(
        * on the lot alone — see `byOwnAnchor` for why the five-part guard is
        * the wrong question when only the reader has changed.
        */
-      const ownAnchored = keys.anchor ? byOwnAnchor.get(keys.anchor) : undefined;
+      const ownAnchoredRow = keys.anchor ? byOwnAnchor.get(keys.anchor) : undefined;
+      /*
+       * ASKED OF THE FIELDS, NEVER OF THE COLLAPSED IDENTITY, and that is the
+       * whole of the Lot 48 fix. See `reReadHoldsSameProperty`.
+       *
+       * AND CLAIMED AT MOST ONCE. The index holds one row per anchor, so two
+       * records off one page that both reached this rung would both write to
+       * it and the second would silently overwrite the first. The relaxed rule
+       * already refuses a page stating two units, and this makes the
+       * guarantee structural rather than a property of that rule.
+       */
+      const ownAnchored = ownAnchoredRow
+        && !claimedOwnAnchors.has(keys.anchor as string)
+        ? ownAnchoredRow
+        : undefined;
       const ownLotHolds = Boolean(ownAnchored)
-        && !identityDifferences(ownAnchored!.identity, identity).includes('lot');
+        && reReadHoldsSameProperty(ownAnchored!.fields, record);
 
       const anchored = keys.anchor ? byAnchor.get(keys.anchor) : undefined;
       const anchorDifferences = anchored
@@ -840,7 +867,10 @@ export async function importStockRecords(
         });
       }
 
-      const existingId = (ownAnchored && ownLotHolds ? ownAnchored.id : undefined)
+      const ownAnchorTaken = Boolean(ownAnchored && ownLotHolds);
+      if (ownAnchorTaken) claimedOwnAnchors.add(keys.anchor as string);
+
+      const existingId = (ownAnchorTaken ? ownAnchored!.id : undefined)
         ?? (anchored && !anchorDifferences.length ? anchored.id : undefined)
         ?? (keys.reference ? byReference.get(keys.reference) : undefined)
         ?? (keys.developmentUnit

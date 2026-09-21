@@ -246,6 +246,73 @@ function designTokens(label: string): string[] {
  * lean on. Nothing about this is a similarity score: every test is a statement
  * the document either makes or does not make.
  */
+/**
+ * WHICH of the four tests a page failed, or null where it states the identity.
+ *
+ * `pageStatesIdentity` answers yes or no, and a no is the single most common
+ * reason a builder's own photograph does not reach their card — so the one
+ * thing an operator needs is the thing the record could not say. The refusal
+ * stored against the image read "no page states this property's identity
+ * together with its package information", which is four different findings
+ * and a fifth (too few package facts) wearing one sentence, and on
+ * `LOT 48 - EMBER - FLYER.pdf` it cost a full deploy cycle to narrow by hand
+ * and was still not settled.
+ *
+ * The same rule this repository already answers to elsewhere: a failure says
+ * WHICH KIND it was. Nothing here decides anything — `pageStatesIdentity`
+ * below is unchanged and is still the only authority — this re-states its
+ * tests in order so the first one that fails can be named.
+ */
+export type CoverIdentityRefusal =
+  | 'too few identity tokens'
+  | 'the page does not state this lot'
+  | 'the page states another lot'
+  | 'the page does not state this design'
+  | 'nothing on the page corroborates the lot';
+
+export function coverIdentityRefusal(
+  pageText: string,
+  label: string,
+  identityHints: readonly string[] = [],
+  soleProperty = false,
+): CoverIdentityRefusal | null {
+  const labelTokens = tokenise(label);
+  if (labelTokens.length < MIN_IDENTITY_TOKENS) return 'too few identity tokens';
+
+  const haystack = ` ${tokenise(pageText).join(' ')} `;
+  const states = (token: string) => haystack.includes(` ${token} `);
+
+  const labelLots = lotDesignations(label);
+  if (!labelLots.length) {
+    return labelTokens.slice(0, MAX_IDENTITY_TOKENS).every(states)
+      ? null : 'nothing on the page corroborates the lot';
+  }
+
+  const pageLotReadings = lotDesignationReadings(pageText);
+  const readsAsOurs = (reading: LotReading) =>
+    labelLots.includes(reading.strict) || labelLots.includes(reading.fused);
+  if (!pageLotReadings.some(readsAsOurs)) return 'the page does not state this lot';
+  if (!soleProperty && pageLotReadings.some((reading) => !readsAsOurs(reading))) {
+    return 'the page states another lot';
+  }
+
+  const design = designTokens(label);
+  if (design.length && !design.every(states)) return 'the page does not state this design';
+
+  const corroborating = labelTokens.filter((token) =>
+    token !== 'lot' && token !== 'unit' && !labelLots.includes(token)
+    && !design.includes(token));
+  if (!corroborating.length) return null;
+  if (corroborating.some(states)) return null;
+  return identityHints
+    .flatMap((hint) => tokenise(hint))
+    .filter((token) =>
+      token !== 'lot' && token !== 'unit' && !labelLots.includes(token)
+      && !design.includes(token))
+    .some(states)
+    ? null : 'nothing on the page corroborates the lot';
+}
+
 function pageStatesIdentity(
   pageText: string,
   label: string,
@@ -925,7 +992,10 @@ export function assignPdfMediaRoles(input: {
             ? outcome.reason
             : !covers.length
               ? 'no page states this property\'s identity together with its package '
-                + 'information' + coverSays(input.pageTexts)
+                + 'information'
+                + whyFirstPageRefused(input.pageTexts, input.label,
+                  input.identityHints ?? [], input.soleProperty === true)
+                + coverSays(input.pageTexts)
               : 'the source does not designate a primary image for this property';
 
   return media.map((entry, index) => {
@@ -1137,6 +1207,32 @@ export function statedOtherLotDesignation(
  * would be a second identity judgement made with less evidence than the one
  * that just declined.
  */
+/**
+ * The first page's own refusal, named. See `coverIdentityRefusal`.
+ *
+ * The FIRST page and no other, because that is the page `coverSays` already
+ * quotes and a refusal naming five different pages' five different reasons is
+ * a paragraph nobody reads. Where the identity holds and the page simply does
+ * not carry enough of a package to be a cover, it says that instead — that is
+ * the fifth way this one sentence used to be reached.
+ */
+function whyFirstPageRefused(
+  pageTexts: readonly string[] | undefined,
+  label: string | null | undefined,
+  identityHints: readonly string[],
+  soleProperty: boolean,
+): string {
+  const page = (pageTexts ?? [])[0];
+  if (!page) return '';
+  const refusal = coverIdentityRefusal(page, String(label ?? ''), identityHints, soleProperty);
+  if (refusal) return ` (${refusal})`;
+  const facts = packageFactsOn(page);
+  return facts.length < MIN_PACKAGE_FACTS
+    ? ` (the page states ${facts.length} package fact${facts.length === 1 ? '' : 's'}`
+      + `, and a cover must state ${MIN_PACKAGE_FACTS})`
+    : '';
+}
+
 function coverSays(pageTexts: readonly string[] | undefined): string {
   const quote = coverIdentityQuote((pageTexts ?? [])[0]);
   return quote ? ` — its first page reads “${quote}”` : '';
