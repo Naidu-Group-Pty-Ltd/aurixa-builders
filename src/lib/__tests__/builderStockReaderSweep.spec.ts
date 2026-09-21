@@ -56,10 +56,32 @@ describe('what a reader sweep may act on', () => {
    * only to correct ones that exist.
    */
   it('refuses a source nothing has ever read', () => {
-    expect(readerReReadRefusal({ ...FILE_UPLOAD, status: 'failed' }))
-      .toBe('status:failed');
     expect(readerReReadRefusal({ ...FILE_UPLOAD, status: 'uploaded' }))
       .toBe('status:uploaded');
+  });
+
+  /*
+   * A FAILURE ABOUT THE DOCUMENT IS STILL NOT WORK. This used to read
+   * `status:failed` for every failure, which was right while every failure
+   * was alike. `Lot 37 - Miami 190 - Property Package.pdf` showed the cost:
+   * written off because a model provider's ACCOUNT had no credit — nothing to
+   * do with the file — and nothing would ever have looked at it again.
+   */
+  it('refuses a failure that was about the file', () => {
+    for (const code of ['duplicate_file', 'unsupported_file_type', 'pdf_no_text_layer']) {
+      expect(readerReReadRefusal({ ...FILE_UPLOAD, status: 'failed', error_code: code }))
+        .toBe(`status:failed:${code}`);
+    }
+    expect(readerReReadRefusal({ ...FILE_UPLOAD, status: 'failed' }))
+      .toBe('status:failed:unknown');
+  });
+
+  it('re-reads a failure that was ours', () => {
+    for (const code of ['assisted_reader_refused', 'assisted_reader_timeout',
+      'ai_budget_exhausted', 'processing_failed']) {
+      expect(readerReReadRefusal({ ...FILE_UPLOAD, status: 'failed', error_code: code }))
+        .toBeNull();
+    }
   });
 
   it('never names a status it will not act on as re-readable', () => {
@@ -332,10 +354,22 @@ describe('the sweep is wired where the cron can still reach it', () => {
    * source already produced are live stock; writing `failed` over a healthy
    * list is the defect `49-re-importing-a-linked-stock-list.md` records.
    */
-  it('never writes a status or an error code over an existing list', () => {
+  it('never invents a status for an existing list', () => {
+    // No literal status of its own; the only one it can write is the import's
+    // own answer, on the single transition below.
     expect(sweep).not.toMatch(/status: '(failed|parsing|enriching|complete)'/);
-    expect(sweep).not.toMatch(/error_code:/);
-    expect(sweep).not.toMatch(/error_message:/);
+  });
+
+  /*
+   * THE ONE TRANSITION THAT MUST WRITE ONE. A row stamped `failed` for a
+   * reason that was ours, re-read successfully, would otherwise hide a real
+   * import behind a stale error. Bounded to exactly that: any other prior
+   * status writes no status at all.
+   */
+  it('clears a failure only where the row said failed and the read succeeded', () => {
+    expect(sweep).toMatch(/statusBefore === 'failed'/);
+    expect(sweep).toMatch(/status: result\.uploadStatus/);
+    expect(sweep).toMatch(/error_code: null, error_message: null/);
   });
 });
 

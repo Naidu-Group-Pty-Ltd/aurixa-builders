@@ -68,8 +68,17 @@
  *     refusal was identical before and after the reader was corrected, across
  *     two entirely different labels, and narrowing it by hand cost a deploy
  *     cycle and did not settle it.
+ * 3 — the document became the import. One reader's refusal no longer
+ *     discards another's evidence (`moreEvidencedRefusal`), the deterministic
+ *     reading is taken before any model is considered, and the assisted
+ *     reader is off unless a deployment names it. Every source read under 1
+ *     or 2 was read by a pipeline that deferred to a paid vendor, so every
+ *     one of them can produce a different row from bytes that have not
+ *     changed — which is the only condition under which re-reading buys
+ *     anything, and here it buys the imports that vendor's billing state
+ *     refused.
  */
-export const DETERMINISTIC_READER_VERSION = 2;
+export const DETERMINISTIC_READER_VERSION = 3;
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */
 export const READER_SETTLED_VERSION_COLUMN = 'reader_settled_version';
@@ -84,6 +93,8 @@ export interface ReaderSweepUpload {
   storage_path?: unknown;
   deleted_at?: unknown;
   processing_started_at?: unknown;
+  /** Which failure, where the status is `failed`. See `OUR_FAILURE_CODES`. */
+  error_code?: unknown;
 }
 
 /**
@@ -108,6 +119,49 @@ export const RE_READABLE_STATUSES: ReadonlySet<string> =
   new Set(['complete', 'imported', 'enriching', 'parsing']);
 
 /**
+ * ============================================================================
+ * AND THE FAILURES THAT WERE OURS.
+ * ============================================================================
+ *
+ * `failed` is excluded above because a cron tick may not decide to start
+ * importing a file the builder's own import refused. That reasoning holds for
+ * a document we could not read. It does not hold for a failure that was never
+ * about the document.
+ *
+ * MEASURED 21 SEPTEMBER 2026. `Lot 37 - Miami 190 - Property Package.pdf`:
+ * 7 pages, 3,962 characters of text extracted cleanly, written off `failed`
+ * with `retryable: false` because a model provider answered HTTP 402 — an
+ * account with no credit. Nothing anywhere would ever have looked at it
+ * again, and the only way to collect the outcome was to ask the builder to
+ * upload the same file a second time.
+ *
+ * Every code below is one this pipeline writes about ITSELF: a credential we
+ * do not hold, an account somebody must pay, a provider that was down, an
+ * allowance we set, an answer we could not parse, a run that threw. None is a
+ * statement about the builder's file, so each has a real next action and a
+ * bounded way back — which is what a non-terminal state owes.
+ *
+ * BOUNDED BY THE READER VERSION, like every other source here. A failure is
+ * re-read once per version and then stamped, so a genuinely unreadable
+ * document is attempted once rather than on a loop for ever; raising the
+ * version is what asks again, and that happens only when the pipeline has
+ * changed.
+ *
+ * NOT `duplicate_file`, `unsupported_file_type`, `file_missing`,
+ * `snapshot_failed`, `empty_file` or `pdf_no_text_layer`: those are facts
+ * about the file or about storage, and a re-read reaches the same answer at
+ * the same cost.
+ */
+export const OUR_FAILURE_CODES: ReadonlySet<string> = new Set([
+  'assisted_reader_unavailable',
+  'assisted_reader_timeout',
+  'assisted_reader_invalid_response',
+  'assisted_reader_refused',
+  'ai_budget_exhausted',
+  'processing_failed',
+]);
+
+/**
  * Why this upload will not be read again — or `null`, meaning read it.
  *
  * A reason is not a failure. Every one of them is a FINISHED answer about this
@@ -129,7 +183,13 @@ export function readerReReadRefusal(
   if (upload?.deleted_at) return 'deleted';
 
   const status = String(upload?.status ?? '');
-  if (!RE_READABLE_STATUSES.has(status)) return `status:${status || 'unknown'}`;
+  if (status === 'failed') {
+    // A failure that was OURS is work; a failure about the document is not.
+    const code = String(upload?.error_code ?? '');
+    if (!OUR_FAILURE_CODES.has(code)) return `status:failed:${code || 'unknown'}`;
+  } else if (!RE_READABLE_STATUSES.has(status)) {
+    return `status:${status || 'unknown'}`;
+  }
 
   if (status === 'parsing') {
     const startedAt = Date.parse(String(upload?.processing_started_at ?? ''));

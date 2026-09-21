@@ -27,6 +27,9 @@ import { extractStockRowsFromImages, extractStockRowsFromText } from './modelExt
 import { StockModelExtractionError, modelFailureFromRouterError } from './modelExtractionFailure.pure.ts';
 import { assistedReaderFailure, SOURCE_HAS_COLUMNS } from './assistedReaderFailure.pure.ts';
 import { createAiBudget } from './aiBudget.ts';
+import {
+  assistedReaderDisposition, assistedReaderEnabled,
+} from './assistedReaderPolicy.pure.ts';
 import type { RowLinkDiscovery } from './suppliedEvidence.pure.ts';
 import { importStockRecords } from './importStock.ts';
 import { NOTION_NO_PROPERTIES_MESSAGE } from './urlSource.pure.ts';
@@ -339,26 +342,91 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     } catch { /* a line that cannot be written is not an import failure */ }
   }
 
-  // A table is normalised deterministically. Prose and photographs are read by
-  // a model first, then normalised by exactly the same code.
   let rows = extraction.rows;
   let strategy = extraction.strategy;
+
   /*
-   * THE MONTHLY CEILING, BOUND TO THE CLIENT THIS IMPORT ALREADY HOLDS.
+   * =======================================================================
+   * WHAT THE DOCUMENT STATES IS THE IMPORT.
+   * =======================================================================
    *
-   * Built here rather than inside `modelExtract` so the reader can be tested
-   * against a fake, and so this stays the one place that decides an import
-   * may spend money. It is constructed unconditionally and used only on the
-   * branches below — a deterministic table never reaches it, and a table that
-   * parsed costs nothing to have built.
+   * THE ORDER USED TO BE THE OTHER WAY ROUND, AND THAT WAS THE DEFECT. A
+   * deterministic reading that stood down was treated as NO reading, a model
+   * was asked, and the deterministic evidence was brought back only as a
+   * rescue if the model failed. So a paid vendor account sat between an
+   * ordinary builder brochure and the marketplace, on the ordinary path,
+   * every single time.
+   *
+   * MEASURED. `Lot 37 - Miami 190 - Property Package.pdf`, 21 September 2026:
+   * 7 pages, 3,962 characters of text extracted cleanly, import FAILED with
+   * zero properties because `openrouter/openai/gpt-5.6-luna` answered 402 —
+   * an account with no credit. `LOT 817 - ELARA 18 TEMPIO LIGHT` the same
+   * morning, `LOT 315 - ENZO 8.5 LUCA` the day before.
+   *
+   * `provisional` is what the reader had already read when it stood down, and
+   * every gate below the one that refused has been applied to it: the record
+   * names a property, is not a summary row, carries at least
+   * `MIN_BROCHURE_FIELDS`, maps to canonical headers and survives
+   * `normaliseStockRow`. Each value in it was read off the page by a named
+   * reader. Nothing is inferred, and a field nothing claimed stays absent —
+   * absent is never zero.
+   *
+   * IT IS RECORDED AS WHAT IT IS. `parse_strategy` says the reading was
+   * partial, so a thin record can never be mistaken for a complete one.
    */
-  const budget = createAiBudget(supabase);
+  if (!rows.length) {
+    const standing = extraction.deterministicProvisional ?? [];
+    if (standing.length) {
+      rows = standing;
+      strategy = 'pdf_deterministic_partial';
+      try {
+        console.info(`${TELEMETRY_PREFIX} deterministic reading stands`, {
+          phase: 'deterministic_partial',
+          upload_id: upload.id,
+          organisation_id: organisationId,
+          rows: standing.length,
+          deterministic_reason: extraction.deterministicReading?.reason ?? null,
+          deterministic_fields: extraction.deterministicReading?.diagnostics.fieldsRead ?? null,
+        });
+      } catch { /* a line that cannot be written is not an import failure */ }
+    }
+  }
+
+  /*
+   * =======================================================================
+   * AND THE ASSISTED READER, WHICH IS OPTIONAL AND CANNOT DECIDE ANYTHING.
+   * =======================================================================
+   *
+   * Reached only where the document yielded nothing at all AND an operator
+   * has switched it on by name. Off — which is the default, and the state of
+   * every deployment that has not opted in — this makes no request, reserves
+   * no budget and waits for nothing. See `assistedReaderPolicy.pure.ts`.
+   *
+   * ITS FAILURE IS NEVER THE IMPORT'S. Whatever happens here, the outcome
+   * below is decided by what the document supports: rows, or the honest
+   * `no_properties_found`. A vendor's billing state is not a fact about a
+   * builder's brochure and can no longer be reported as one.
+   */
+  const assistedOn = assistedReaderEnabled(Deno.env);
+  const disposition = assistedReaderDisposition({
+    enabled: assistedOn,
+    deterministicRows: rows.length,
+  });
+  /*
+   * CONSTRUCTED ONLY WHERE IT WILL BE SPENT. It used to be built
+   * unconditionally, which was harmless while it was merely an object — and
+   * is exactly the "reserve no budget" this path must now honour.
+   */
+  const budget = disposition.consulted ? createAiBudget(supabase) : null;
   try {
-    if (!rows.length && extraction.visionImages.length) {
+    if (!disposition.consulted) {
+      // Nothing to do: either the document already answered, or the optional
+      // reader is off. Recorded on the import line, never as a failure.
+    } else if (!rows.length && extraction.visionImages.length) {
       const modelResult = await extractStockRowsFromImages(
         extraction.visionImages,
         { filename: upload.original_filename, organisationName: input.organisationName },
-        { deadlineAt: Date.now() + MODEL_BUDGET_MS, budget },
+        { deadlineAt: Date.now() + MODEL_BUDGET_MS, budget: budget! },
       );
       rows = modelResult.rows;
       strategy = `${strategy}+model`;
@@ -366,7 +434,7 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
       const modelResult = await extractStockRowsFromText(
         extraction.text,
         { filename: upload.original_filename, organisationName: input.organisationName },
-        { deadlineAt: Date.now() + MODEL_BUDGET_MS, budget },
+        { deadlineAt: Date.now() + MODEL_BUDGET_MS, budget: budget! },
       );
       rows = modelResult.rows;
       strategy = `${strategy}+model`;
@@ -505,60 +573,27 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
      * re-reading the source once the assisted reader is available replaces it
      * — `reprocess_upload` exists for exactly that and matches on identity.
      */
-    const provisional = extraction.deterministicProvisional ?? [];
-    if (provisional.length) {
-      rows = provisional;
-      strategy = 'pdf_deterministic_partial';
-      try {
-        console.warn(`${TELEMETRY_PREFIX} assisted reader unavailable, partial reading stands`, {
-          phase: 'deterministic_fallback',
-          upload_id: upload.id,
-          organisation_id: organisationId,
-          failure_code: failure.code,
-          rows: provisional.length,
-          deterministic_reason: extraction.deterministicReading?.reason ?? null,
-          deterministic_fields: extraction.deterministicReading?.diagnostics.fieldsRead ?? null,
-        });
-      } catch { /* a line that cannot be written is not an import failure */ }
-    } else {
-      return {
-        ok: false,
-        code: reading.code,
-        message: reading.message,
-        // Structured, so the row says which models were tried and how each
-        // failed rather than only that some number of them did.
-        detail: JSON.stringify({
-          failure: failure.code,
-          attempts: failure.attemptCount,
-          categories: failure.categories,
-          diagnosis: failure.diagnosis,
-          strategy: extraction.strategy,
-          text_length: extraction.text?.length ?? 0,
-          /*
-           * AND THE LINES THAT STOOD THE DOCUMENT DOWN.
-           *
-           * The one thing needed to close a vocabulary gap and the one thing
-           * nothing recorded. Nine of twelve brochures on 21 September 2026
-           * imported with no model call; every one that did not was a
-           * template this reader had not learned, and `LOT 717 - ENZO 10.5
-           * MODERN` failed twice and then imported from the same bytes once
-           * it had. Knowing WHICH line is the whole difference between
-           * fixing that and guessing at it.
-           *
-           * Internal only: `error_detail` is projected away by `get_upload`
-           * and by `projectUploadListRow`, so no builder is shown their own
-           * document quoted back at them, and it is bounded at the reader.
-           */
-          deterministic_unaccounted: extraction.deterministicUnaccounted ?? null,
-          // And what it DID place and could not name, which is where a field
-          // that the document states in words this reader does not know will
-          // be sitting. Same internal-only channel, same bound at the reader.
-          deterministic_ignored: extraction.deterministicIgnored ?? null,
-          deterministic_placement: extraction.deterministicPlacement ?? null,
-        }).slice(0, 120_000),
-        status: reading.status,
-      };
-    }
+    /*
+     * =====================================================================
+     * AND IT CHANGES NOTHING ABOUT THE IMPORT.
+     * =====================================================================
+     *
+     * This used to `return` a failure here — `assisted_reader_refused`,
+     * status 503 — so a vendor's billing state became the outcome of reading
+     * a builder's document. `Lot 37 - Miami 190 - Property Package.pdf` was
+     * written off that way with seven readable pages in hand.
+     *
+     * The deterministic reading has ALREADY been taken, above, before this
+     * reader was consulted at all. So reaching here means the document
+     * yielded nothing that could be identified, and the honest outcome is the
+     * one the document earns: `no_properties_found`, decided below, which
+     * says we read it and could not find a property in it.
+     *
+     * THE DIAGNOSIS IS STILL RECORDED. Which models were tried and how each
+     * failed is on the `assisted reader failed` line above, with the router's
+     * own per-attempt categories. What it no longer does is speak for the
+     * document.
+     */
   }
 
   /*
@@ -616,14 +651,28 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
    * the run can afford it, and it is held to the smaller of its own allowance
    * and what is left.
    */
-  const completionDeadline = completionDeadlineFrom(runBudget, Date.now());
+  /*
+   * AND IT IS THE OPTIONAL READER TOO, UNDER THE SAME SWITCH.
+   *
+   * This pass is a model call on the ordinary PDF path — the second one, and
+   * the easier to miss, because it runs on a SUCCESSFUL import to fill gaps
+   * in a card. Measured 21 September 2026 on `LOT 266 Crowlea Estate`: every
+   * import logged `field completion unavailable … model_refused` against the
+   * same unpaid account. Nothing was lost, because it is silent by design —
+   * but it is a vendor round trip on every upload, and a wait, for a feature
+   * nobody switched on. Off by default, with everything else. See
+   * `assistedReaderPolicy.pure.ts`.
+   */
+  const completionDeadline = assistedOn
+    ? completionDeadlineFrom(runBudget, Date.now())
+    : null;
   if (completionDeadline !== null
     && rows.length === 1 && completionWorthAsking(rows[0]) && extraction.text) {
     try {
       const completion = await extractStockRowsFromText(
         extraction.text,
         { filename: upload.original_filename, organisationName: input.organisationName },
-        { deadlineAt: completionDeadline, budget },
+        { deadlineAt: completionDeadline, budget: createAiBudget(supabase) },
       );
       if (completionMayMerge(rows, completion.rows)) {
         const merged = mergeCompletion(rows[0], completion.rows[0]);

@@ -209,13 +209,16 @@ describe('the import reports what the reader saw before it can be killed', () =>
     expect(at).toBeGreaterThan(0);
     // Before the model path, the completion and the row write — so any kill
     // after extraction still leaves the account behind.
-    expect(at).toBeLessThan(run.indexOf('const budget = createAiBudget'));
+    expect(at).toBeLessThan(run.indexOf('const budget = disposition.consulted'));
     expect(at).toBeLessThan(run.indexOf("phase: 'field_completion'"));
   });
 
   it('carries what is needed to act, and no value the document stated', () => {
     const block = run.slice(run.indexOf("phase: 'deterministic_read'"),
-      run.indexOf('// A table is normalised deterministically'));
+      // The end of the log call itself. Anchored here rather than on a later
+      // comment so the block is the LINE, not everything before the next
+      // section — which is what this test is about.
+      run.indexOf('let rows = extraction.rows'));
     for (const key of ['status', 'reason', 'fields_read', 'visual_only',
       'count_evidence', 'unaccounted_lines']) {
       expect(block).toContain(key);

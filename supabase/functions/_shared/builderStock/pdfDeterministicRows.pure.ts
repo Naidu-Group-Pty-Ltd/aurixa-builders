@@ -278,6 +278,15 @@ export interface PdfDeterministicReading {
      */
     unaccountedLines?: number;
     /**
+     * THE READING THAT DID NOT WIN, where two readers both refused.
+     *
+     * A stable mode word and a stable reason word, so a document that really
+     * did hold a broken table still says so in the import log even when the
+     * brochure's account is the one returned. Safe to log by the same
+     * contract as everything else here. See `moreEvidencedRefusal`.
+     */
+    alsoTried?: { mode: 'table' | 'brochure' | 'none'; reason: string };
+    /**
      * Lines a document says about ITSELF rather than about the property —
      * a phone number, a website, a copyright or licence line, a page
      * number, a disclaimer, a cue-free marketing sentence. Reported so a
@@ -3794,11 +3803,89 @@ export function readPdfDeterministicRows(input: {
     if (schedule.status === 'complete') return schedule;
     const fallback = readBrochure();
     if (fallback.status === 'complete') return fallback;
-    // The schedule reading is the more informative refusal wherever the
-    // document actually had a table in it.
-    if (schedule.reason !== 'no_schedule_found') return schedule;
-    return fallback;
+    return moreEvidencedRefusal(schedule, fallback);
   }
 
   return readBrochure();
+}
+
+/**
+ * ===========================================================================
+ * WHEN BOTH READERS REFUSE, THE ONE THAT READ SOMETHING IS THE ANSWER.
+ * ===========================================================================
+ *
+ * THE DEFECT THIS CLOSES, MEASURED 21 SEPTEMBER 2026 ON
+ * `Lot 37 - Miami 190 - Property Package.pdf` (1,951,962 bytes, 7 pages,
+ * 3,962 characters of text extracted cleanly):
+ *
+ *     deterministic_status     "ambiguous"
+ *     deterministic_reason     "two_cells_in_one_column"
+ *     deterministic_fields     []
+ *     deterministic_candidates 0
+ *     → assisted reader → refused, HTTP 402: an account with no credit
+ *     → import FAILED, zero properties
+ *
+ * The line above this one used to read `if (schedule.reason !==
+ * 'no_schedule_found') return schedule;` — so the brochure reading was
+ * computed and then THROWN AWAY, with everything in it: its `provisional`
+ * rows, the fields it read, the lines it could not place and where they were
+ * drawn. What survived was a TABLE's refusal about a document that holds no
+ * table, and `runImport`'s deterministic fallback — the one that exists so a
+ * model outage cannot fail a readable import — was handed an empty
+ * `provisional` and had nothing to stand on.
+ *
+ * `mayHoldSchedule` has been hardened against this twice (see its own header:
+ * the Lot 315 disclaimer, then the heading-density floor). Both were right
+ * and neither is sufficient, because they narrow WHICH documents reach the
+ * table parser rather than fixing what happens when it refuses one. A screen
+ * can always be wrong about the next template; a reader that discards
+ * evidence is wrong by construction.
+ *
+ * THE RULE. A refusal is a statement about what could not be established.
+ * Between two of them, the one that established MORE is the more truthful
+ * account of the document, and it is the only one that can carry a
+ * provisional record. So the readings are ranked by what they actually
+ * gathered — provisional records first, then named fields, then candidates —
+ * and the winner is returned WHOLE.
+ *
+ * WHOLE, NEVER MERGED. Two readers' rows are two readings of one page, and
+ * splicing them would invent a record neither reader would stand behind —
+ * the rule `readPdfBrochure` already answers to. Nothing here combines
+ * values; it chooses an account.
+ *
+ * AND THE OTHER ACCOUNT IS NOT LOST. The reading that did not win leaves its
+ * mode and its reason in `diagnostics.alsoTried`, so a document that really
+ * did hold a broken table still says so in the import log. Safe to log by the
+ * same contract as everything else there: a stable machine word and a count,
+ * never a fragment of the document.
+ *
+ * WHERE THEY ARE EQUAL — both empty — the schedule's refusal stands exactly
+ * as it did, because a document the screen says holds a table and which the
+ * table parser then refused is best described by the table parser.
+ */
+export function moreEvidencedRefusal(
+  schedule: PdfDeterministicReading,
+  brochure: PdfDeterministicReading,
+): PdfDeterministicReading {
+  const evidence = (reading: PdfDeterministicReading): [number, number, number] => [
+    reading.provisional.length,
+    reading.diagnostics.fieldsRead.length,
+    reading.diagnostics.candidates,
+  ];
+  const [sP, sF, sC] = evidence(schedule);
+  const [bP, bF, bC] = evidence(brochure);
+
+  const brochureRead = bP > sP
+    || (bP === sP && bF > sF)
+    || (bP === sP && bF === sF && bC > sC);
+
+  const chosen = brochureRead ? brochure : schedule;
+  const other = brochureRead ? schedule : brochure;
+  return {
+    ...chosen,
+    diagnostics: {
+      ...chosen.diagnostics,
+      alsoTried: { mode: other.diagnostics.mode, reason: other.reason },
+    },
+  };
 }
