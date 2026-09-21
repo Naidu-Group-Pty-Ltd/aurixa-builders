@@ -686,6 +686,58 @@ function labelAt(tokens: string[], start: number): { field: string; length: numb
 }
 
 /**
+ * THE MARKER A VALUE CARRIES IS PART OF ITS LABEL — `Build 214m2` IS
+ * `build m2`, AND `Package $749,000` IS `package $`.
+ *
+ * MEASURED 21 SEPTEMBER 2026 across two acceptance documents, on lines whose
+ * every other figure read perfectly:
+ *
+ *     4  2  2     Land 448m2     Package $845,000
+ *     Land 392m2   Build 214m2   Package $749,000
+ *
+ * `Land` resolved and the property imported with its land size, its lot, its
+ * street and its design — and with NO PRICE and NO BUILD SIZE, which on a
+ * marketplace card is the figure a buyer came for. `Build` and `Package` are
+ * not labels on their own; `build m2`, `build sqm`, `package $` and
+ * `package price $` all ARE, and have been since the header vocabulary was
+ * written. The spellings were never missing. What was missing is that a
+ * brochure attaches the marker to the VALUE — `214m2`, `$749,000` — while a
+ * spreadsheet puts it in the column heading, which is the shape the
+ * vocabulary was built from.
+ *
+ * So a bare label that does not resolve is retried ONCE with the marker its
+ * value carries. Nothing new is admitted: a spelling that is not already in
+ * the vocabulary still resolves to nothing, which is why this cannot invent
+ * a field. `Package 3` stays unread, because `package` alone is not a
+ * heading and `3` carries no marker — the bare word never becomes a price.
+ *
+ * ONLY `$` AND THE AREA UNITS, and deliberately not a general suffix rule:
+ * those are the two markers the heading vocabulary actually spells, and a
+ * marker it does not spell would be a guess about what the builder meant.
+ */
+function markerOf(value: string): string | null {
+  const text = String(value ?? '');
+  if (text.includes('$')) return '$';
+  const unit = text.match(/(m2|m²|sqm)\s*$/i);
+  return unit ? unit[1].toLowerCase() : null;
+}
+
+/** `labelAt`, retried with the marker the value beside it carries. */
+function labelAtWithValueMarker(
+  tokens: string[], start: number, value: string,
+): { field: string; length: number } | null {
+  const marker = markerOf(value);
+  if (!marker) return null;
+  const available = Math.min(MAX_LABEL_WORDS, tokens.length - start);
+  for (let length = available; length >= 1; length--) {
+    const phrase = `${tokens.slice(start, start + length).join(' ')} ${marker}`;
+    const field = fieldForHeader(phrase);
+    if (field) return { field, length };
+  }
+  return null;
+}
+
+/**
  * The fields whose label is also the name of a ROOM.
  *
  * Named here because `readLabelledNumbers` must refuse them and nothing else
@@ -761,7 +813,17 @@ function readLabelledNumbers(line: string): Claim[] | null {
   let index = 0;
 
   while (index < tokens.length) {
-    const label = labelAt(tokens, index);
+    /*
+     * The value this label would take, looked at BEFORE the label is
+     * resolved, because the marker it carries is part of the label. See
+     * `labelAtWithValueMarker`.
+     */
+    const bare = labelAt(tokens, index);
+    const label = bare && NUMERIC_VALUE_FIELDS.has(bare.field)
+      ? bare
+      : (labelAtWithValueMarker(tokens, index, tokens[index + 1] ?? '')
+        ?? labelAtWithValueMarker(tokens, index, tokens[index + 2] ?? '')
+        ?? bare);
     if (!label || !NUMERIC_VALUE_FIELDS.has(label.field)) return null;
     /*
      * `BED 3` IS THE THIRD BEDROOM. `BEDROOMS 3` IS THREE BEDROOMS.
@@ -1905,6 +1967,61 @@ export function readsAsPromotion(value: string): boolean {
 }
 
 /**
+ * A DOCUMENT SAYING, IN WORDS, THAT SOME OF THE LOTS ON THIS PAGE ARE NOT
+ * WHAT IT IS SELLING.
+ *
+ * MEASURED 21 SEPTEMBER 2026 on the acceptance corpus's site-plan package.
+ * Its plan page draws
+ *
+ *     Lot 303      Lot 304      Lot 306      Lot 307
+ *     Adjoining allotments are not offered for sale in this package.
+ *
+ * and the reader took `303`, then `304`, saw two answers for a material
+ * field, and refused the whole document — over a brochure whose subject lot,
+ * street, suburb, state, design, land size and price were each stated
+ * exactly once and never in doubt. A site plan that draws its neighbours is
+ * the ordinary shape of a package brochure, so this class refuses a common
+ * document rather than a broken one.
+ *
+ * THE RULE IS THE DOCUMENT'S OWN SENTENCE, NOT A GUESS ABOUT LAYOUT. The
+ * first attempt tried to recognise the SHAPE — a line naming several lots —
+ * and could not: a two-property release draws `Lot 402` and `Lot 407` in
+ * exactly the same shape, on the same band, and that document really does
+ * describe two properties. Nothing geometric separates them. What separates
+ * them is that one of the two says so.
+ *
+ * So designations are suppressed on a page ONLY where that page carries an
+ * explicit exclusion statement AND names more than one of them. A page with
+ * one lot is untouched whatever it says; a page with several and no
+ * statement still refuses, which is why the two-property release is
+ * unaffected and still stands the document down.
+ *
+ * It suppresses rather than selects: the page claims no lot at all, and the
+ * subject property's identity has to come from somewhere the document states
+ * it once — its address block, or another page. A document whose only lot
+ * information is an excluded list therefore still refuses, rather than
+ * importing a property nobody named.
+ *
+ * Closed list, positively recognised, no fall-through — the same doctrine
+ * `isIncidentalContent` answers to.
+ */
+const EXCLUSION_STATEMENT = new RegExp([
+  '\\bnot (?:offered |available )?for sale\\b',
+  '\\bnot included in (?:this|the) (?:package|sale|offer)\\b',
+  '\\bshown for (?:context|reference|illustration|information)\\b',
+  '\\bfor (?:context|reference|illustrative purposes) only\\b',
+  '\\badjoining (?:lots?|allotments?|properties)\\b',
+  '\\bneighbouring (?:lots?|allotments?|properties)\\b',
+  '\\bsurrounding (?:lots?|allotments?)\\b',
+  '\\bother lots? (?:are |is )?(?:not|shown)\\b',
+].join('|'), 'i');
+
+/** Does this page tell the reader that some of the lots on it are not the subject? */
+export function pageExcludesOtherLots(lines: readonly string[]): boolean {
+  return lines.some((line) => EXCLUSION_STATEMENT.test(String(line ?? '')));
+}
+
+/**
  * Is this line the document talking about itself?
  *
  * Every answer of `true` is a POSITIVE recognition. There is no fall-through
@@ -2395,9 +2512,37 @@ function countRowsOn(units: readonly BrochureUnit[]): number[][] {
     else byRow.set(unit.row, [unit]);
   }
   for (const row of byRow.values()) {
-    if (row.length !== COUNT_ROW_SIZE) continue;
-    if (!row.every((unit) => statesACount(unit.text))) continue;
-    found.push(row.map((unit) => Number(unit.text.trim())));
+    /*
+     * THE ICON ROW IS THE THREE COUNTS ON A BAND, NOT A BAND CARRYING
+     * NOTHING ELSE.
+     *
+     * This asked `row.length !== COUNT_ROW_SIZE` — every unit on the band had
+     * to be one of the three counts — so a single other run sharing that band
+     * defeated the whole corroboration. MEASURED 21 SEPTEMBER 2026 on the
+     * acceptance corpus's flyer: its icons sit at x 91, 147 and 204 reading
+     * `4`, `2`, `1`, its floor plan names MASTER, BED 2, BED 3, BED 4, ENS
+     * and BATH, and `countRoomsNamed` answered `{bedrooms: 4, bathrooms: 2}`
+     * — everything the corroboration needs. `soleCountRow` returned null,
+     * because `Build Size - 148sqm` is drawn on the same band as the icons.
+     * The property imported with no bedrooms, no bathrooms and no car spaces,
+     * which on a card is most of what a buyer reads.
+     *
+     * A brochure sets its icon row beside a price or a size constantly; the
+     * production fixture this rule was written against simply happened not
+     * to. So the band is filtered to the units that STATE A COUNT and the row
+     * is those, where there are exactly three of them.
+     *
+     * NOTHING IS LOOSENED DOWNSTREAM, which is what makes this safe rather
+     * than merely permissive. A candidate row still has to be the ONLY
+     * distinct one in the document (`soleCountRow`), and it still claims
+     * nothing until the floor plan's own room names bind it — either every
+     * position (`bindCountRow`) or the bedroom count agreeing with the first
+     * number. Three unrelated small integers on a band therefore buy a
+     * candidate that no plan will confirm, and confirm nothing.
+     */
+    const counts = row.filter((unit) => statesACount(unit.text));
+    if (counts.length !== COUNT_ROW_SIZE) continue;
+    found.push(counts.map((unit) => Number(unit.text.trim())));
   }
   return found;
 }
@@ -2635,6 +2780,21 @@ export function readPdfBrochure(
    */
   for (let pageIndex = 0; pageIndex < pages.length; pageIndex++) {
     const units = pages[pageIndex];
+    /*
+     * Decided once for the page, before any line is read, because the
+     * sentence that excludes the neighbours is usually drawn BELOW them. See
+     * `pageExcludesOtherLots`.
+     */
+    const pageLines = units.map((unit) => unit.text);
+    const excludesOtherLots = pageExcludesOtherLots(pageLines);
+    const designationsOnPage = new Set<string>();
+    if (excludesOtherLots) {
+      for (const line of pageLines) {
+        const heading = readLotHeading(line);
+        if (heading) designationsOnPage.add(flattenIdentity(heading.value));
+      }
+    }
+    const suppressDesignations = excludesOtherLots && designationsOnPage.size > 1;
     /** Units already spent as another unit's value. */
     const consumed = new Set<number>();
     for (let index = 0; index < units.length; index++) {
@@ -2904,7 +3064,42 @@ export function readPdfBrochure(
         continue;
       }
 
+      /*
+       * ==================================================================
+       * A LINE THAT NAMES FOUR LOTS IS NAMING NONE OF THEM.
+       * ==================================================================
+       *
+       * MEASURED 21 SEPTEMBER 2026 on the acceptance corpus's site-plan
+       * package. Its plan page draws
+       *
+       *     Lot 303      Lot 304      Lot 306      Lot 307
+       *
+       * directly above `Adjoining allotments are not offered for sale in
+       * this package.` The reader took `303`, then took `304`, saw two
+       * answers for a material field and refused the whole document — over
+       * a brochure whose subject lot, street, suburb, state, design, land
+       * size and price were each stated exactly once and never in doubt.
+       *
+       * A designation identifies ONE property. A line carrying several of
+       * them is therefore not any property's designation — it is a list: a
+       * site plan's adjoining allotments, a legend, a release index. So the
+       * line claims NOTHING and the document's real identity, stated
+       * elsewhere and stated once, stands.
+       *
+       * THIS IS NOT "PICK THE FIRST ONE", which is the judgement this module
+       * does not make, and it is not a relaxation of the conflict rule: two
+       * lots on two different LINES still refuse the document, because that
+       * really may be two properties. The difference is that a line is a
+       * unit of statement, and a statement of four lots is a statement about
+       * a neighbourhood.
+       *
+       * It is not incidental either — the line stays unresolved and answers
+       * to the ordinary unread-line rule, so a document whose ONLY lot
+       * information is such a list still stands down rather than importing
+       * a property nobody named.
+       */
       for (const claim of found.flatMap(splitAddress).flatMap(splitLocality).map(trimSeparators)) {
+        if (suppressDesignations && DESIGNATION_FIELDS.has(claim.field)) continue;
         if (!BROCHURE_CLAIMABLE_FIELDS.has(claim.field)) continue;
         if (DESIGNATION_FIELDS.has(claim.field)
           && !LOT_DESIGNATION.test(claim.value.trim())) {

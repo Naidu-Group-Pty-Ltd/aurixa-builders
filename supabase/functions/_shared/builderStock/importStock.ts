@@ -207,6 +207,24 @@ interface OwnAnchoredProperty extends AnchoredProperty {
  * `undefined` — which is the one thing that must not happen to an identity
  * field. Verified against the live REST endpoint.
  */
+/**
+ * A row's lot, as a key, or null where it has none.
+ *
+ * Deliberately the DESIGNATION alone — the lot and, where there is one, the
+ * unit — because that is what a schedule identifies a row by and the caller
+ * has already scoped the key to one upload. Nothing else is folded in: adding
+ * the suburb or the design would make a corrected suburb or a design read
+ * from the filename look like a different property, which is the exact
+ * failure `reReadHoldsSameProperty` was written to stop, and that guard is
+ * what runs on the row this key finds.
+ */
+function ownLotKey(item: { lot_number?: unknown; unit_number?: unknown }): string | null {
+  const lot = String(item?.lot_number ?? '').trim().toLowerCase();
+  if (!lot) return null;
+  const unit = String(item?.unit_number ?? '').trim().toLowerCase();
+  return unit ? `${lot}//${unit}` : lot;
+}
+
 const EXISTING_ITEM_SELECT = 'id, external_reference, development_name, project_name, '
   + 'unit_number, lot_number, address_line, suburb, building_size_sqm, '
   + 'lifecycle_status, upload_id, primary_image_id, '
@@ -718,6 +736,39 @@ export async function importStockRecords(
   /** Own-anchor rows this run has already corrected. See the claim below. */
   const claimedOwnAnchors = new Set<string>();
   /**
+   * ==========================================================================
+   * THE SAME UPLOAD'S OWN ROWS, KEYED BY THE LOT — because `pdf:page1` IS NOT
+   * A PROPERTY, AND ON A STOCK LIST IT IS NOT EVEN ONE ROW.
+   * ==========================================================================
+   *
+   * `byOwnAnchor` fixed the single-property brochure: same upload, same
+   * anchor, correct that row. A SCHEDULE breaks it for a different reason —
+   * every row of a one-page stock list anchors at `pdf:page1`, so the index
+   * holds ONE entry for the whole document, the first record claims it, and
+   * every other row of the list falls through to keys it does not have.
+   *
+   * MEASURED 21 SEPTEMBER 2026 on the acceptance corpus's three-property
+   * schedule. A re-read of its own upload produced FIVE properties: lot 12
+   * was corrected, lots 18 and 27 were inserted again. `external_reference`
+   * and `development_name` are both null on a plain stock list — the two
+   * fall-through keys — so nothing else could match them. Every re-read
+   * would have added two more, and the reader-version sweep re-reads every
+   * stored list.
+   *
+   * THE KEY IS THE LOT, SCOPED TO THE UPLOAD, and both halves matter. The
+   * lot is what a schedule identifies a row by, and the module already says
+   * so: "the lot is the identifier and it still has to hold". Scoping it to
+   * the upload is what keeps it safe — two organisations, or two of one
+   * builder's lists, may each carry a Lot 12, and an organisation-wide lot
+   * key would merge them. Within ONE upload being read again, the bytes are
+   * the same document and Lot 12 is the same property.
+   *
+   * It shares `claimedOwnLots` with nothing: a record that takes a row here
+   * removes it, so two records naming one lot cannot both write to it.
+   */
+  const byOwnLot = new Map<string, OwnAnchoredProperty>();
+  const claimedOwnLots = new Set<string>();
+  /**
    * ARCHIVED rows that still hold a photograph, indexed by anchor.
    *
    * Deleting a stock list ARCHIVES its rows and the photographs live ON those
@@ -780,6 +831,29 @@ export async function importStockRecords(
           fields: item,
         });
       }
+    }
+  }
+
+  /*
+   * The lot index, built in its own pass because it must reach rows with NO
+   * anchor at all — the loop above `continue`s on one, and a schedule row
+   * that was never anchored is exactly the row this key exists for.
+   */
+  for (const item of (existingRows ?? []) as ExistingItem[]) {
+    if (item.upload_id !== input.uploadId) continue;
+    if (item.lifecycle_status === 'archived') continue;
+    const lot = ownLotKey(item);
+    if (!lot) continue;
+    const held = byOwnLot.get(lot);
+    const outranks = !held
+      || (item.lifecycle_status === 'active' && held.lifecycle !== 'active');
+    if (outranks) {
+      byOwnLot.set(lot, {
+        id: item.id,
+        identity: stockPropertyIdentity(item),
+        lifecycle: item.lifecycle_status ?? null,
+        fields: item,
+      });
     }
   }
 
@@ -870,7 +944,27 @@ export async function importStockRecords(
       const ownAnchorTaken = Boolean(ownAnchored && ownLotHolds);
       if (ownAnchorTaken) claimedOwnAnchors.add(keys.anchor as string);
 
+      /*
+       * AND THE SAME UPLOAD'S ROW FOR THIS LOT, where the anchor could not
+       * reach it. See `byOwnLot`. It runs only where the anchor did not
+       * already take a row, so a brochure behaves exactly as it does today
+       * and only a document whose rows share one anchor reaches this rung.
+       */
+      const lotKey = ownLotKey(record as unknown as ExistingItem);
+      const ownLotRow = !ownAnchorTaken && lotKey && !claimedOwnLots.has(lotKey)
+        ? byOwnLot.get(lotKey)
+        : undefined;
+      /*
+       * The SAME guard the anchor rung answers to, asked of the fields rather
+       * than of the collapsed identity: a row whose lot matches but which is
+       * plainly a different property is not corrected, it falls through.
+       */
+      const ownLotTaken = Boolean(ownLotRow)
+        && reReadHoldsSameProperty(ownLotRow!.fields, record);
+      if (ownLotTaken) claimedOwnLots.add(lotKey as string);
+
       const existingId = (ownAnchorTaken ? ownAnchored!.id : undefined)
+        ?? (ownLotTaken ? ownLotRow!.id : undefined)
         ?? (anchored && !anchorDifferences.length ? anchored.id : undefined)
         ?? (keys.reference ? byReference.get(keys.reference) : undefined)
         ?? (keys.developmentUnit

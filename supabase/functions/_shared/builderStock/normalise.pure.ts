@@ -248,7 +248,23 @@ alias('land_size_sqm',
   // `builderStockSizeHeaders.test.ts` is what turned that up.
   'block size', 'block size m2', 'block size m²', 'block size sqm',
   'block m2', 'block m²', 'block sqm',
-  'lot size', 'lot size m2', 'lot size m²', 'lot size sqm');
+  'lot size', 'lot size m2', 'lot size m²', 'lot size sqm',
+  /*
+   * `Site Area` — THE SAME HALF-A-LIST, ONE LIST LOWER.
+   *
+   * `build area` was listed and `site area` was not, which is the exact
+   * asymmetry the comment above describes and the comment below it repeats.
+   * MEASURED 21 SEPTEMBER 2026 on the acceptance corpus's mixed
+   * scan-and-text package: its siting page states `Site Area: 375 m2` beside
+   * `Build Area: 201 m2`, and the property imported with the build size and
+   * NO land size — the land line attributed to nothing.
+   *
+   * It is the standard heading on an Australian siting plan and it means the
+   * allotment, never the dwelling: a document stating both states them
+   * together, which is what makes the pair unambiguous.
+   */
+  'site area', 'site area m2', 'site area m²', 'site area sqm',
+  'site size', 'site size m2', 'site size m²', 'site size sqm');
 
 /*
  * THE HOUSE'S AREA IS WRITTEN AS MANY WAYS AS THE LAND'S, AND THIS LIST HAD
