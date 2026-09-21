@@ -14,7 +14,9 @@
  */
 import { detectDocumentMime, sha256Hex } from '../immutableDocuments.ts';
 import { classifyStockFile, MAX_STOCK_FILE_BYTES } from './fileTypes.pure.ts';
-import { openImportBudget, storageDeadlineFrom } from './importBudget.pure.ts';
+import {
+  completionDeadlineFrom, openImportBudget, storageDeadlineFrom,
+} from './importBudget.pure.ts';
 import {
   completionMayMerge, completionWorthAsking, mergeCompletion, missingVitalFields,
 } from './stockFieldCompletion.pure.ts';
@@ -283,6 +285,41 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     throw error;
   }
 
+  /*
+   * WHAT THE READER SAW, REPORTED THE MOMENT IT IS KNOWN.
+   *
+   * The import's own telemetry line is written after everything else has run,
+   * so a worker killed later takes the reading's account with it — which is
+   * exactly what happened on upload `6d195db5` at 08:59 on 21 September 2026:
+   * the run died during the field completion and left NOTHING anywhere saying
+   * what the deterministic reader had made of the document. Two rounds were
+   * then spent guessing at it.
+   *
+   * This is known as soon as `extractStockFile` returns and costs one line.
+   * Safe by construction, the same contract `diagnostics` already carries:
+   * counts, status words and canonical field NAMES, never a value the
+   * document stated.
+   */
+  if (extraction.deterministicReading) {
+    try {
+      console.info(`${TELEMETRY_PREFIX} deterministic reading`, {
+        phase: 'deterministic_read',
+        upload_id: upload.id,
+        organisation_id: organisationId,
+        status: extraction.deterministicReading.status,
+        reason: extraction.deterministicReading.reason,
+        fields_read: extraction.deterministicReading.diagnostics.fieldsRead,
+        visual_only: extraction.deterministicReading.diagnostics.visualOnlyFields ?? null,
+        count_evidence: extraction.deterministicReading.diagnostics.countEvidence ?? null,
+        counts_corroborated:
+          extraction.deterministicReading.diagnostics.countsCorroborated ?? false,
+        unaccounted_lines:
+          extraction.deterministicReading.diagnostics.unaccountedLines ?? 0,
+        ignored_lines: extraction.deterministicReading.diagnostics.ignoredLines ?? 0,
+      });
+    } catch { /* a line that cannot be written is not an import failure */ }
+  }
+
   // A table is normalised deterministically. Prose and photographs are read by
   // a model first, then normalised by exactly the same code.
   let rows = extraction.rows;
@@ -540,12 +577,29 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
    * which is the behaviour this replaces rather than risks.
    */
   let completedFields: string[] = [];
-  if (rows.length === 1 && completionWorthAsking(rows[0]) && extraction.text) {
+  /*
+   * ASKED BEFORE IT STARTS, NEVER AFTER — the rule this file already answers
+   * to twice over, and the one the first cut of this completion broke.
+   *
+   * MEASURED 21 SEPTEMBER 2026: the completion was handed
+   * `Date.now() + MODEL_BUDGET_MS`, ninety seconds against a thirty-second
+   * run bound, at the point where the run is closest to its ceiling. It
+   * failed `model_refused` at 08:59:13.663 and the worker was killed on CPU
+   * at 08:59:16.717 — a whole import lost to filling in a card.
+   *
+   * A completion is the LEAST important thing an import does: the record is
+   * already correct and already about to be written. So it begins only where
+   * the run can afford it, and it is held to the smaller of its own allowance
+   * and what is left.
+   */
+  const completionDeadline = completionDeadlineFrom(runBudget, Date.now());
+  if (completionDeadline !== null
+    && rows.length === 1 && completionWorthAsking(rows[0]) && extraction.text) {
     try {
       const completion = await extractStockRowsFromText(
         extraction.text,
         { filename: upload.original_filename, organisationName: input.organisationName },
-        { deadlineAt: Date.now() + MODEL_BUDGET_MS, budget },
+        { deadlineAt: completionDeadline, budget },
       );
       if (completionMayMerge(rows, completion.rows)) {
         const merged = mergeCompletion(rows[0], completion.rows[0]);

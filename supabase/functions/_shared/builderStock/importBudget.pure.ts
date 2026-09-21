@@ -122,6 +122,34 @@ export const IMAGE_BUDGET_MS = 8_000;
  */
 export const IMPORT_RUN_BUDGET_MS = 30_000;
 
+/**
+ * How long the FIELD COMPLETION may take, and how much room it needs to start.
+ *
+ * MEASURED, 21 SEPTEMBER 2026, and this is a defect this module already
+ * existed to prevent — committed three merges after it was written, by the
+ * change that added the completion.
+ *
+ *   08:59:13.663  field completion unavailable — detail: "model_refused"
+ *   08:59:16.717  CPU Time exceeded
+ *
+ * `runStockImport` handed the completion `Date.now() + MODEL_BUDGET_MS` —
+ * NINETY seconds, three times the whole run's own bound — at the point where
+ * the run is closest to its ceiling, having already read the document and
+ * stored its imagery. Building the request, estimating its tokens and
+ * reserving against the ledger is real CPU, and the chain then attempts two
+ * providers. On this deployment every attempt ends in the same 402, so the
+ * run spent its last seconds discovering something it could not change and
+ * was killed doing it.
+ *
+ * TWO BOUNDS, AND THE FIRST IS THE ONE THAT MATTERS. A phase that cannot
+ * finish inside what remains must not START — the rule `importStock.ts` has
+ * always stated and the reason `room()` is asked before each expensive step,
+ * not after it. `COMPLETION_MIN_ROOM_MS` is what "enough to be worth
+ * beginning" means here.
+ */
+export const COMPLETION_BUDGET_MS = 12_000;
+export const COMPLETION_MIN_ROOM_MS = 6_000;
+
 export interface ImportBudget {
   /** When the run began, by the caller's clock. */
   startedAt: number;
@@ -196,3 +224,25 @@ export function storageDeadlineFrom(
 export const IMAGERY_DEFERRED_WARNING =
   'This document was large enough that its pictures are being read separately. '
   + 'The properties are imported; their images will appear shortly.';
+
+/**
+ * When the field completion must stop, or null where it may not begin.
+ *
+ * THE SMALLER OF ITS OWN ALLOWANCE AND WHAT IS LEFT OF THE RUN, and null
+ * below the floor — because a completion is the least important thing an
+ * import does. It fills absences on a record that is already correct and
+ * already about to be written, so spending the run's last seconds on it
+ * risks the whole import to improve a card, which is a trade this product
+ * should never make.
+ *
+ * `budget` absent means no caller established one, which answers with the
+ * plain allowance: a path that has not opted in behaves as it did.
+ */
+export function completionDeadlineFrom(
+  budget: ImportBudget | null | undefined,
+  now: number,
+): number | null {
+  if (!budget) return now + COMPLETION_BUDGET_MS;
+  if (budget.deadlineAt - now < COMPLETION_MIN_ROOM_MS) return null;
+  return Math.min(now + COMPLETION_BUDGET_MS, budget.deadlineAt);
+}
