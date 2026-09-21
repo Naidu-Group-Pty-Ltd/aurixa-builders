@@ -85,7 +85,7 @@ import { readStage } from '../_shared/builderStock/settleItemImages.ts';
 import { PROVENANCE_VERSION } from '../_shared/builderStock/sourceImages.ts';
 import { enforceStrictPrimaryImages } from '../_shared/builderStock/primaryImage.ts';
 import { storeVerifiedWebImages } from '../_shared/builderStock/webImageStore.ts';
-import { settleCompletedUploads } from '../_shared/builderStock/uploadCompletion.ts';
+import { recoverAbandonedFinalisations, settleCompletedUploads } from '../_shared/builderStock/uploadCompletion.ts';
 import {
   claimOneImageWorkItem, completeItemWork, isMissingCapability, publishUploadIfReady,
   readItemWorkPending,
@@ -239,6 +239,17 @@ async function runTickHousekeeping(
   if (mode.serialised) {
     await runWebImageStorePass(supabase, mode.enforceAfterRetirement);
   }
+  /*
+   * AN IMPORT WHOSE RUN WAS KILLED NEVER WROTE ITS OWN OUTCOME, and until it
+   * does there is nothing for the pass below to complete — `imported` is not
+   * a completable status. So the recovery runs FIRST and hands the row on at
+   * `enriching`, which is the rung the dead run would have written.
+   *
+   * Safe on the unserialised exit: every value it writes is a pure function
+   * of rows it has just read, and its write is conditioned on the row still
+   * being stranded. See `uploadCompletion.ts`.
+   */
+  await recoverAbandonedFinalisations(supabase);
   // An import that finished with nobody watching still has to be recorded as
   // finished, on EVERY exit. See `uploadCompletion.ts`.
   await settleCompletedUploads(supabase);

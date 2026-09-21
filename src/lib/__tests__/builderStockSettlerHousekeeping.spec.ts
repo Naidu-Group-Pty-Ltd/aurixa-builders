@@ -185,6 +185,45 @@ describe('the settler records a finished import on every exit that can', () => {
     expect(body.indexOf('settleCompletedUploads')).toBeGreaterThan(guard);
   });
 
+  /*
+   * AND THE FINALISATION RECOVERY ANSWERS TO BOTH OF THE SAME RULES.
+   *
+   * It is the pass that writes the outcome a KILLED run never wrote, so it is
+   * owed by exactly the exits upload completion is owed by — and it has to run
+   * BEFORE that completion, because a stranded row is `imported` and `imported`
+   * is not a completable status. A recovery placed after the pass that consumes
+   * its output does nothing for a whole tick, silently, with every other test
+   * in this file still green.
+   */
+  it('recovers a stranded finalisation inside the one shared pass, and first', () => {
+    const calls = source.match(/recoverAbandonedFinalisations\s*\(/g) ?? [];
+    expect(
+      calls,
+      'finalisation recovery is called somewhere other than runTickHousekeeping, '
+      + 'so the exits can disagree about whether a killed import is ever recorded',
+    ).toHaveLength(1);
+
+    const body = source.slice(
+      source.indexOf('async function runTickHousekeeping('),
+      source.indexOf('/** Wall clock for one tick'),
+    );
+    expect(body).toContain('recoverAbandonedFinalisations(supabase)');
+
+    const guard = body.indexOf('if (mode.serialised) {');
+    const guarded = body.slice(guard, body.indexOf('}', body.indexOf('runWebImageStorePass')));
+    expect(
+      guarded,
+      'finalisation recovery moved behind the lease guard, so the per-item '
+      + 'exits call the housekeeping and a stranded import stays stranded',
+    ).not.toContain('recoverAbandonedFinalisations');
+
+    expect(
+      body.indexOf('recoverAbandonedFinalisations'),
+      'the recovery runs after the completion it feeds, so a stranded upload '
+      + 'waits a whole extra tick for a status the same tick could have given it',
+    ).toBeLessThan(body.indexOf('settleCompletedUploads'));
+  });
+
   it('makes a new exit state whether it is serialised', () => {
     // A discriminated union with no default: a call site cannot be added
     // without answering the question, and cannot claim `false` and still pass

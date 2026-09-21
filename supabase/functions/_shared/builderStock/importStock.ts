@@ -25,6 +25,7 @@ import {
   type NormalisedStockRecord,
 } from './normalise.pure.ts';
 import { parseBuilderAddressLine } from '../builderStockAddress.pure.ts';
+import { IMAGE_BUDGET_MS } from './importBudget.pure.ts';
 import {
   describeIdentityChange, identityDifferences, stockPropertyIdentity,
   type StockPropertyIdentity,
@@ -399,7 +400,11 @@ async function buildInventoryIndex(db: any, organisationId: string): Promise<{
  * re-reads the source (including re-fetching a Notion page for its row
  * covers) to do it.
  */
-const IMAGE_BUDGET_MS = 8_000;
+/*
+ * The image phase's allowance now lives in `importBudget.pure.ts`, where the
+ * run's other bounds are named — two spellings of one budget is how the two
+ * come to disagree, which is the defect that module exists for.
+ */
 
 /**
  * And a ceiling on the COUNT, because the limit that killed the worker is CPU

@@ -113,6 +113,71 @@ export function parseIsAbandoned(
   return now - startedAt > ABANDONED_PARSE_MS;
 }
 
+/**
+ * Is this `imported` row a run that died before writing its own outcome?
+ *
+ * The same clock and the same reasoning as `parseIsAbandoned`, asked of the
+ * other non-terminal status — and it must be asked, because `imported` is a
+ * LIVE status for the seconds an import spends writing its properties. A pass
+ * that acted on it immediately would race the run that set it and recount a
+ * half-written import.
+ *
+ * Answers false for every other status, including `parsing`: the two
+ * abandonments are recovered by different acts and collapsing them is how one
+ * of them comes to be performed on the other. A `parsing` row has nothing
+ * written and is recovered by READING THE SOURCE AGAIN; an `imported` row has
+ * everything written and is recovered by RECORDING WHAT IS THERE.
+ */
+export function finalisationIsAbandoned(
+  upload: { status?: unknown; processing_started_at?: unknown },
+  now: number = Date.now(),
+): boolean {
+  if (!RECOVERABLE_UPLOAD_STATUSES.includes(String(upload?.status))) return false;
+  const startedAt = Date.parse(String(upload?.processing_started_at ?? ''));
+  if (!Number.isFinite(startedAt)) return true;
+  return now - startedAt > ABANDONED_PARSE_MS;
+}
+
+/**
+ * AND THE STATUS A KILLED IMPORT STRANDS ITS ROW IN.
+ *
+ * `runStockImport` stamps `imported` BEFORE it writes the properties, and
+ * only the caller's `finishImport` moves it on — to `enriching` or
+ * `partially_complete`, with the row counts and `processing_completed_at`
+ * beside it. A worker killed in that window leaves a row nothing can finish:
+ * `imported` is not in `COMPLETABLE_UPLOAD_STATUSES`, so the settler will
+ * never look at it, and `parseIsAbandoned` answers false for it, so the
+ * reprocess door does not recognise it either. It is stranded permanently.
+ *
+ * MEASURED, 21 SEPTEMBER 2026. Upload `5511d2e2` — a 9.5 MB brochure —
+ * answered 546 `CPU Time exceeded` nine milliseconds after logging
+ * `outcome: "imported", properties_imported: 1, with_source_image: 1`. Its
+ * property is live, its nine images are stored and its imagery settled to
+ * provenance 26 out of band. The ROW reads `status: imported`,
+ * `processing_completed_at: null`, `records_detected: 0`,
+ * `records_imported: 0` — an import that found nothing, permanently, beside
+ * the property it found. Upload `44896394` earlier the same morning is in the
+ * identical state, so this is a class and not an incident.
+ *
+ * THE RECOVERY IS NOT THE COMPLETION BESIDE IT, and must not be folded into
+ * it. Completing an upload is a statement about IMAGERY being finished;
+ * this is the finalisation write that never happened, and it has to come
+ * first — after it the row is an ordinary `enriching` row and the existing
+ * pass takes it the rest of the way. One ladder, entered late.
+ */
+export const RECOVERABLE_UPLOAD_STATUSES = ['imported'];
+
+/**
+ * The key under which a recovered finalisation is recorded.
+ *
+ * In `image_stage_summary` because `mergeStageSummary` carries every
+ * non-stage key across by design — the same room `notion_row_assets_version`
+ * already occupies — and because a reader of these counts is owed the fact
+ * that they were RECOUNTED from what landed rather than reported by the run
+ * that landed it.
+ */
+export const RECOVERED_FINALISATION_KEY = 'recovered_finalisation';
+
 export type SettledUploadStatus = 'complete' | 'partially_complete';
 
 export type CompletionRefusal =
@@ -409,6 +474,220 @@ export async function settleCompletedUploads(
     // Housekeeping must never fail the tick it rides in.
     console.warn('[builderStock] upload completion pass failed', {
       phase: 'upload_completion',
+      message: String((error as { message?: string })?.message ?? error).slice(0, 200),
+    });
+  }
+  return outcome;
+}
+
+export type FinalisationRefusal =
+  | 'not_found'
+  | 'not_recoverable'
+  | 'still_running'
+  | 'read_failed';
+
+export interface FinalisationRecovery {
+  /** What was written, or null when nothing was. */
+  counts: { detected: number; imported: number; updated: number } | null;
+  refusal?: FinalisationRefusal;
+}
+
+/**
+ * Split the properties this upload supplied into the ones it CREATED and the
+ * ones it MATCHED, from the clock alone.
+ *
+ * The run that could have told us is dead, so this is derived from effect:
+ * an item whose row was created at or after the moment this upload began
+ * reading is one this import wrote, and an item older than that is one it
+ * matched and re-pointed. `upload_id` is re-pointed on a match — which is why
+ * the item is here at all — so the distinction is not otherwise recoverable.
+ *
+ * EXPORTED AND PURE so the rule is testable without a database, and so the
+ * one place that decides it is named.
+ */
+export function splitRecoveredCounts(
+  items: Array<{ created_at?: unknown }>,
+  processingStartedAt: unknown,
+): { detected: number; imported: number; updated: number } {
+  const startedAt = Date.parse(String(processingStartedAt ?? ''));
+  let imported = 0;
+  let updated = 0;
+  for (const item of items) {
+    const createdAt = Date.parse(String(item?.created_at ?? ''));
+    /*
+     * AN UNREADABLE CLOCK COUNTS AS A MATCH, which is the conservative side:
+     * `imported` is the stronger claim — this import brought a property into
+     * existence — and a count that cannot be established must not make it.
+     * Both land in `detected` either way, so nothing is lost from the total.
+     */
+    if (Number.isFinite(startedAt) && Number.isFinite(createdAt) && createdAt >= startedAt) {
+      imported += 1;
+    } else {
+      updated += 1;
+    }
+  }
+  return { detected: items.length, imported, updated };
+}
+
+/**
+ * Write the finalisation a killed run never wrote, for ONE upload.
+ *
+ * Recounted from the properties that actually landed — this repository's own
+ * rule, paid for by the retention purge and the verification self-test alike:
+ * asserted by its EFFECT, never by its configuration, and here there is no
+ * configuration left to read because the run that held it is gone.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO.
+ *
+ *   - It does not re-run the import. Every property, image and price this
+ *     upload wrote is already committed; reading the source again would
+ *     re-import a list that imported.
+ *   - It does not invent `records_failed`. A row that failed to save left no
+ *     property behind, so nothing here can see it, and writing 0 would state
+ *     that nothing failed rather than that nothing is known. The column is
+ *     left exactly as it stands — which is what `finalUploadStatus` then
+ *     reads, so a run that HAD recorded failures before it died still settles
+ *     to `partially_complete`.
+ *   - It does not settle the upload. It writes `enriching`, which is the rung
+ *     `finishImport` would have written, and the ordinary completion pass
+ *     takes it from there once its imagery is finished. One ladder, entered
+ *     late; a second route to `complete` is a second opinion about when an
+ *     import is over.
+ *
+ * Never throws, and safe to run unserialised: every value written is a pure
+ * function of rows just read, so two racing passes write the same numbers and
+ * the loser has overwritten nothing.
+ */
+export async function recoverAbandonedFinalisation(
+  db: any,
+  params: { uploadId: string; organisationId?: string | null; now?: number },
+): Promise<FinalisationRecovery> {
+  const uploadId = String(params.uploadId ?? '');
+  if (!uploadId) return { counts: null, refusal: 'not_found' };
+
+  try {
+    let uploadQuery = db
+      .from('builder_stock_uploads')
+      .select('id, organisation_id, status, records_failed, deleted_at, '
+        + 'image_stage_summary, processing_started_at, processing_completed_at')
+      .eq('id', uploadId);
+    if (params.organisationId) {
+      uploadQuery = uploadQuery.eq('organisation_id', params.organisationId);
+    }
+    const { data: upload, error: uploadError } = await uploadQuery.maybeSingle();
+    if (uploadError) return { counts: null, refusal: 'read_failed' };
+    if (!upload) return { counts: null, refusal: 'not_found' };
+    if (upload.deleted_at) return { counts: null, refusal: 'not_recoverable' };
+    if (!RECOVERABLE_UPLOAD_STATUSES.includes(String(upload.status))) {
+      return { counts: null, refusal: 'not_recoverable' };
+    }
+    if (!finalisationIsAbandoned(upload, params.now ?? Date.now())) {
+      return { counts: null, refusal: 'still_running' };
+    }
+
+    /*
+     * A FAILED READ IS NOT AN IMPORT THAT FOUND NOTHING — the rule the
+     * completion pass beside this one already answers to. Writing recovered
+     * counts from a database fault produces a permanent, wrong record of an
+     * import that found nothing, which is the exact falsehood this function
+     * exists to remove.
+     */
+    const itemPage = await readAllRows<{ id: unknown; created_at: unknown }>(
+      () => db
+        .from('builder_stock_items')
+        .select('id, created_at')
+        .eq('organisation_id', upload.organisation_id)
+        .eq('upload_id', uploadId)
+        .order('id', { ascending: true }));
+    if (itemPage.failed) return { counts: null, refusal: 'read_failed' };
+
+    const counts = splitRecoveredCounts(itemPage.rows, upload.processing_started_at);
+    const summary = mergeStageSummary(upload.image_stage_summary, {});
+    summary[RECOVERED_FINALISATION_KEY] = {
+      recounted_at: new Date().toISOString(),
+      detected: counts.detected,
+      imported: counts.imported,
+      updated: counts.updated,
+    };
+
+    const { error: writeError } = await db
+      .from('builder_stock_uploads')
+      .update({
+        status: 'enriching',
+        records_detected: counts.detected,
+        records_imported: counts.imported,
+        records_updated: counts.updated,
+        processing_completed_at: new Date().toISOString(),
+        image_stage_summary: summary,
+      })
+      .eq('id', uploadId)
+      /*
+       * AND ONLY WHILE IT IS STILL STRANDED. The read above and this write are
+       * not one statement, so a run that woke up and finalised itself between
+       * them must win: this predicate is what makes that true rather than
+       * hoped for.
+       */
+      .eq('status', 'imported');
+    if (writeError) return { counts: null, refusal: 'read_failed' };
+
+    console.info('[builderStock] finalisation recovered', {
+      phase: 'finalisation_recovery', upload_id: uploadId,
+      detected: counts.detected, imported: counts.imported, updated: counts.updated,
+    });
+    return { counts };
+  } catch (error) {
+    console.warn('[builderStock] finalisation recovery failed', {
+      phase: 'finalisation_recovery', upload_id: uploadId,
+      message: String((error as { message?: string })?.message ?? error).slice(0, 200),
+    });
+    return { counts: null, refusal: 'read_failed' };
+  }
+}
+
+export interface FinalisationPassOutcome {
+  inspected: number;
+  recovered: number;
+}
+
+/**
+ * Recover every stranded finalisation — the pass the settler runs.
+ *
+ * Enumerates its own work for the reason `settleCompletedUploads` does: an
+ * upload whose run died is, by definition, an upload nobody is going to hand
+ * anybody a queue about.
+ */
+export async function recoverAbandonedFinalisations(
+  db: any,
+  params: { organisationId?: string | null; limit?: number; now?: number } = {},
+): Promise<FinalisationPassOutcome> {
+  const outcome: FinalisationPassOutcome = { inspected: 0, recovered: 0 };
+  try {
+    let query = db
+      .from('builder_stock_uploads')
+      .select('id')
+      .is('deleted_at', null)
+      .in('status', RECOVERABLE_UPLOAD_STATUSES)
+      .order('created_at', { ascending: true })
+      .limit(Math.max(1, params.limit ?? MAX_UPLOADS_PER_PASS));
+    if (params.organisationId) {
+      query = query.eq('organisation_id', params.organisationId);
+    }
+    const { data: rows, error } = await query;
+    if (error || !rows?.length) return outcome;
+
+    for (const row of rows as Array<{ id: string }>) {
+      outcome.inspected += 1;
+      const recovered = await recoverAbandonedFinalisation(db, {
+        uploadId: String(row.id),
+        organisationId: params.organisationId ?? null,
+        now: params.now,
+      });
+      if (recovered.counts) outcome.recovered += 1;
+    }
+  } catch (error) {
+    // Housekeeping must never fail the tick it rides in.
+    console.warn('[builderStock] finalisation recovery pass failed', {
+      phase: 'finalisation_recovery',
       message: String((error as { message?: string })?.message ?? error).slice(0, 200),
     });
   }
