@@ -79,7 +79,7 @@ describe('the rows already forked are repaired, not deleted', () => {
   it('matches a fork on its upload, its anchor AND its lot', () => {
     expect(repair).toContain('a.upload_id = f.upload_id');
     expect(repair).toContain("a.source_row->>'source_anchor'");
-    expect(repair).toContain('lower(trim(a.lot_number))');
+    expect(repair).toContain('lower(btrim(a.lot_number))');
     expect(repair).toContain('a.created_at < f.created_at');
   });
 
@@ -89,13 +89,13 @@ describe('the rows already forked are repaired, not deleted', () => {
     // one this whole day has been about.
     for (const column of ['development_name', 'land_size_sqm', 'building_size_sqm',
       'price', 'expected_completion', 'bedrooms']) {
-      expect(repair).toContain(`coalesce(f.${column}, a.${column})`);
+      expect(repair).toContain(`coalesce(r.${column}, a.${column})`);
     }
   });
 
   it('never copies an identity column', () => {
     for (const column of ['lot_number', 'unit_number', 'external_reference']) {
-      expect(repair).not.toContain(`coalesce(f.${column}, a.${column})`);
+      expect(repair).not.toContain(`coalesce(r.${column}, a.${column})`);
     }
   });
 
@@ -106,6 +106,32 @@ describe('the rows already forked are repaired, not deleted', () => {
 
   it('keeps the serving row\'s id, so its photograph stays with it', () => {
     // The same reason the importer patches a row rather than replacing it.
-    expect(repair).toContain('WHERE a.id = fork.active_id');
+    expect(repair).toContain('WHERE a.id = r.active_id');
+  });
+
+  it('makes the fork release the identity BEFORE the correction lands', () => {
+    /*
+     * THE DATABASE TAUGHT ME THIS ONE. The first version did both halves in
+     * one statement and CI refused it:
+     *
+     *   23505 duplicate key … builder_stock_items_org_development_unit_design_key
+     *   Key (…, watsons reach estate, 324, nex 20) already exists.
+     *
+     * That index is partial on the development and the unit being PRESENT
+     * and on nothing else, so an archived row still holds its identity. The
+     * two rows exist today only BECAUSE they disagree, and the instant the
+     * correction is carried they agree — so one of them has to let go first.
+     */
+    const releaseAt = repair.indexOf('development_name = NULL');
+    const carryAt = repair.indexOf('coalesce(r.development_name, a.development_name)');
+    expect(releaseAt).toBeGreaterThan(-1);
+    expect(releaseAt).toBeLessThan(carryAt);
+  });
+
+  it('loops, so a fork is identified before it is changed', () => {
+    // A set-based pair of statements cannot see the fork after the first one
+    // has archived it; the cursor's snapshot is what makes the order safe.
+    expect(repair).toMatch(/FOR r IN\s/);
+    expect(repair).toContain('END LOOP;');
   });
 });
