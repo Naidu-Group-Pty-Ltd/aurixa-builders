@@ -376,7 +376,10 @@ describe('the sweep', () => {
     });
     expect(outcome.reread).toBe(0);
     expect(outcome.failed).toEqual([{ uploadId: 'u-file', reason: 'no_properties_found' }]);
-    expect(updates).toEqual([{ reader_settled_version: DETERMINISTIC_READER_VERSION }]);
+    // The verdict is recorded and then the version is stamped: the row says
+    // what this reader answered, and stops being outstanding.
+    expect(updates[0]).toMatchObject({ error_code: 'no_properties_found' });
+    expect(updates[1]).toEqual({ reader_settled_version: DETERMINISTIC_READER_VERSION });
   });
 
   it('replaces an error that was ours with the answer the document now gets', async () => {
@@ -394,14 +397,28 @@ describe('the sweep', () => {
     expect(updates[1]).toEqual({ reader_settled_version: DETERMINISTIC_READER_VERSION });
   });
 
-  it('leaves an error that was already about the FILE exactly as it is', async () => {
+  /*
+   * AND IT REWRITES AN ERROR THAT WAS ALREADY ABOUT THE FILE TOO.
+   *
+   * The first version of this rule left those alone, on the argument that the
+   * re-read had reached the same KIND of answer. Measured on the next deploy:
+   * `Lot 37` was re-read at version 4 by a reader that no longer claims a
+   * bullet glyph as an estate, and the row went on displaying the version-3
+   * evidence — the stamp said 4 and the diagnosis said 3. A source is read
+   * once per reader version, so this writes once per version and "churn" was
+   * never the risk.
+   */
+  it('rewrites the recorded reason even where it already described the file', async () => {
     const { updates } = await sweepOver(
       { ...SWEPT, status: 'imported', error_code: 'pdf_no_text_layer' },
-      { ok: false, code: 'no_properties_found', message: 'nothing to list' },
+      { ok: false, code: 'no_properties_found', message: 'nothing to list', detail: 'fresh' },
     );
-    // Stamped so the loop ends, and nothing rewritten: the re-read reached the
-    // same kind of answer and churning the row would say something happened.
-    expect(updates).toEqual([{ reader_settled_version: DETERMINISTIC_READER_VERSION }]);
+    expect(updates[0]).toMatchObject({
+      error_code: 'no_properties_found',
+      error_detail: { detail: 'fresh' },
+    });
+    expect(Object.keys(updates[0])).not.toContain('status');
+    expect(updates[1]).toEqual({ reader_settled_version: DETERMINISTIC_READER_VERSION });
   });
 });
 
