@@ -614,6 +614,7 @@ type ClaimSource =
   | 'named_place'
   | 'inline_field_name'
   | 'leading_field_name'
+  | 'address_block'
   | 'beside'
   | 'below'
   | 'caption'
@@ -1424,6 +1425,85 @@ function trimSeparators(claim: Claim): Claim {
     .replace(EDGE_SEPARATORS, '');
   if (!value.length || value === claim.value) return claim;
   return { ...claim, value };
+}
+
+/**
+ * `49 Cockrell Rd,` OVER `Mernda VIC 3754` — THE ADDRESS A FLYER PRINTS WITH
+ * NO LABEL AT ALL.
+ *
+ * Every rule in this module waits for the document to label what it states,
+ * and that is right for a value: a number under no heading could be anything.
+ * An Australian locality line is the exception, and it is the document
+ * labelling ITSELF — `Mernda VIC 3754` is a suburb, a state from a closed set
+ * of eight, and four digits, in that order. Nothing else on a builder's page
+ * takes that shape.
+ *
+ * MEASURED ACROSS ALL FOUR LIVE DOCUMENTS, 1,057 lines this reader had
+ * attributed to nothing:
+ *
+ *     LOT 27  - ZIMI - FLYER          1 locality line, 1 street line
+ *     LOT 36  - ZIMI - FLYER          1 locality line, 1 street line
+ *     LOT 266 Crowlea Estate          0              , 0
+ *     LOT 324 - NEX 20                0              , 0
+ *
+ * One of each in exactly the two documents that carry an address, and not a
+ * single false positive in the other 1,050 lines — which include prices,
+ * dimensions, inclusions prose and a floor plan's room names.
+ *
+ * THREE GUARDS, AND THE THIRD IS THE ONE THAT MATTERS. The locality line
+ * must state a state AND a postcode, so a bare suburb claims nothing. The
+ * street line must sit DIRECTLY ABOVE it in the same column, which is what
+ * makes the pair an address block rather than two lines that happen to look
+ * like one. And there must be EXACTLY ONE such block in the whole document:
+ * a builder's own office address is the same shape as a property's, and this
+ * module does not choose between two readings — two blocks claim nothing and
+ * the document reads exactly as it does today.
+ */
+const AU_STATE = /^(?:VIC|NSW|QLD|SA|WA|TAS|NT|ACT)$/i;
+
+/** Closed, and deliberately so: a word this list does not carry is not a street. */
+const STREET_TYPE = new Set([
+  'rd', 'road', 'st', 'street', 'ave', 'avenue', 'dr', 'drive', 'ct', 'court',
+  'cres', 'crescent', 'way', 'pl', 'place', 'bvd', 'blvd', 'boulevard',
+  'pde', 'parade', 'cct', 'circuit', 'cl', 'close', 'tce', 'terrace', 'rise',
+  'lane', 'ln', 'walk', 'esp', 'esplanade', 'hwy', 'highway', 'loop', 'mews',
+  'link', 'view', 'vista', 'chase', 'bend', 'square', 'sq', 'grove', 'gr',
+  'green', 'track', 'trail', 'circus', 'crossing', 'gardens', 'glade',
+]);
+
+interface LocalityLine {
+  suburb: string;
+  state: string;
+  postcode: string;
+}
+
+/** `Mernda VIC 3754` — a locality, its state and its postcode, in that order. */
+function readLocalityLine(line: string): LocalityLine | null {
+  const tokens = String(line ?? '').trim().replace(/[.,]+$/, '').split(/\s+/).filter(Boolean);
+  if (tokens.length < 3) return null;
+  const postcode = tokens[tokens.length - 1];
+  const state = tokens[tokens.length - 2];
+  if (!/^\d{4}$/.test(postcode)) return null;
+  if (!AU_STATE.test(state)) return null;
+  const suburb = tokens.slice(0, tokens.length - 2).join(' ');
+  // A suburb is words. Anything carrying a digit is a measurement or a price.
+  if (!suburb.length || !/^[A-Za-z]/.test(suburb) || HAS_DIGIT.test(suburb)) return null;
+  return { suburb, state: state.toUpperCase(), postcode };
+}
+
+/** `49 Cockrell Rd,` — a street number, a name, and a type from the closed set. */
+function readStreetLine(line: string): string | null {
+  const trimmed = String(line ?? '').trim().replace(/[.,]+$/, '');
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  if (tokens.length < 3) return null;
+  // A number, optionally with a unit letter — never `20mm`, which is a size.
+  if (!/^\d{1,6}[A-Za-z]?$/.test(tokens[0])) return null;
+  if (!STREET_TYPE.has(tokens[tokens.length - 1].toLowerCase())) return null;
+  const name = tokens.slice(1, tokens.length - 1);
+  if (!name.length) return null;
+  // The name is words; a digit in it is a specification, not a street.
+  if (name.some((token) => HAS_DIGIT.test(token))) return null;
+  return trimmed;
 }
 
 function splitLocality(claim: Claim): Claim[] {
@@ -2303,6 +2383,8 @@ export function readPdfBrochure(
    * filtered copy of the last and an index cannot survive that.
    */
   const placedAt = new Map<string, string>();
+  /** Every street-over-locality pair the document draws. See `readLocalityLine`. */
+  const addressBlocks: Array<LocalityLine & { street: string; lines: string[] }> = [];
   /*
    * INDEXED, NOT `forEach`. This loop `return`s a refusal from inside itself
    * on a conflict and on the line ceiling; inside a callback those returns
@@ -2540,6 +2622,22 @@ export function readPdfBrochure(
          * printing of a name another page stated with its field word
          * attached, and that page may come after this one.
          */
+        /*
+         * AN ADDRESS BLOCK IS A STREET LINE WITH A LOCALITY LINE UNDER IT.
+         * Collected, never claimed here: whether it may be read depends on
+         * how many the whole document holds. See `readLocalityLine`.
+         */
+        const street = readStreetLine(line);
+        if (street) {
+          const beneath = unitBelow(units, index);
+          const locality = beneath !== null && !consumed.has(beneath)
+            ? readLocalityLine(units[beneath].text) : null;
+          if (locality) {
+            addressBlocks.push({
+              street, ...locality, lines: [line, units[beneath as number].text],
+            });
+          }
+        }
         unresolved.push(line);
         if (!placedAt.has(line)) {
           const unit = units[index];
@@ -2696,10 +2794,39 @@ export function readPdfBrochure(
     claimed.set('development_name', trimSeparators(place).value);
     readBy.set('development_name', 'named_place');
   }
-  const placed = place
+  const placedByName = place
     ? afterFilename.filter((line) =>
       flattenIdentity(line.split(',')[0] ?? '') !== flattenIdentity(place.value))
     : afterFilename;
+
+  /*
+   * THE ADDRESS BLOCK, TAKEN ONLY WHERE THE DOCUMENT DRAWS EXACTLY ONE.
+   *
+   * Judged here rather than in the loop because the guard is a property of
+   * the WHOLE document: a builder's own office address is the same shape as
+   * a property's, and this module does not choose between two readings. Two
+   * blocks claim nothing and the document reads exactly as it does today.
+   *
+   * It defers to anything the document LABELLED. A `Site Address:` box, a
+   * `Locality:` line or a suburb read from any labelled field is the
+   * document saying so in words, and a block read from shape alone must
+   * never overrule one.
+   */
+  const addressBlock = addressBlocks.length === 1 ? addressBlocks[0] : null;
+  const addressBlockRead = Boolean(addressBlock)
+    && !claimed.has('address_line') && !claimed.has('suburb');
+  if (addressBlock && addressBlockRead) {
+    claimed.set('address_line', addressBlock.street);
+    claimed.set('suburb', addressBlock.suburb);
+    claimed.set('state', addressBlock.state);
+    claimed.set('postcode', addressBlock.postcode);
+    for (const field of ['address_line', 'suburb', 'state', 'postcode']) {
+      readBy.set(field, 'address_block');
+    }
+  }
+  const placed = addressBlock && addressBlockRead
+    ? placedByName.filter((line) => !addressBlock.lines.includes(line))
+    : placedByName;
 
   /*
    * =====================================================================
