@@ -153,6 +153,8 @@ export interface UploadTelemetry {
     disputedFields?: string[] | null;
     visualOnlyFields?: string[] | null;
     declinedFields?: string[] | null;
+    /** `field:reader` for each field claimed — how, not just what. */
+    readBy?: string[] | null;
     ignoredLines?: number | null;
     unaccountedLines?: number | null;
   } | null;
@@ -196,6 +198,7 @@ export function uploadTelemetry(input: UploadTelemetry): TelemetryRecord {
     deterministic_disputed: names(input.deterministic?.disputedFields),
     deterministic_visual_only: names(input.deterministic?.visualOnlyFields),
     deterministic_declined: names(input.deterministic?.declinedFields),
+    deterministic_read_by: names(input.deterministic?.readBy),
     deterministic_ignored_lines: input.deterministic?.ignoredLines ?? undefined,
     deterministic_unaccounted_lines: input.deterministic?.unaccountedLines ?? undefined,
   });

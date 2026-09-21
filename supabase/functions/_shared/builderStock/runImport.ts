@@ -175,6 +175,7 @@ export async function runStockImport(input: RunImportInput): Promise<RunImportRe
           disputedFields: result.deterministicReading.diagnostics.disputedFields ?? null,
           visualOnlyFields: result.deterministicReading.diagnostics.visualOnlyFields ?? null,
           declinedFields: result.deterministicReading.diagnostics.declinedFields ?? null,
+          readBy: result.deterministicReading.diagnostics.readBy ?? null,
           ignoredLines: result.deterministicReading.diagnostics.ignoredLines ?? null,
           unaccountedLines: result.deterministicReading.diagnostics.unaccountedLines ?? null,
         }

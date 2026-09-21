@@ -229,6 +229,13 @@ export interface PdfDeterministicReading {
      * an import log should be able to tell them apart.
      */
     declinedFields?: string[];
+    /**
+     * `field:reader` for every field claimed, in this module's own reader
+     * vocabulary. A log that says WHAT was read and not HOW cannot tell a
+     * figure the document spelled out from one inferred off a position, and
+     * that distinction is the whole difference between the readings here.
+     */
+    readBy?: string[];
   };
 }
 
@@ -408,6 +415,33 @@ interface Claim {
   field: string;
   /** Verbatim, as the document wrote it. Coercion is `normaliseStockRow`'s. */
   value: string;
+  /**
+   * WHICH READING PRODUCED THIS, for the import log and nothing else.
+   *
+   * A stock item imported with `bathrooms: 9` took a day to explain, because
+   * the log could say which fields were read and not how — and the readers
+   * differ enormously in how much they prove. It is a fixed vocabulary of
+   * this module's own reader names, so it carries nothing a document said.
+   */
+  via?: ClaimSource;
+}
+
+type ClaimSource =
+  | 'labelled'
+  | 'labelled_numbers'
+  | 'inline_counts'
+  | 'lot_heading'
+  | 'named_place'
+  | 'inline_field_name'
+  | 'beside'
+  | 'below'
+  | 'caption'
+  | 'filename'
+  | 'icon_row';
+
+/** Stamp a reader's name on what it produced, without rewriting the reader. */
+function via(source: ClaimSource, claims: readonly Claim[]): Claim[] {
+  return claims.map((claim) => ({ ...claim, via: claim.via ?? source }));
 }
 
 /**
@@ -732,6 +766,36 @@ function readVerticalPair(
      * untouched, because there the document said which field it meant.
      */
     return null;
+  } else if (COUNT_FIELDS.has(resolved)) {
+    /*
+     * ==================================================================
+     * A COUNT IS NEVER READ OUT OF A POSITION.
+     * ==================================================================
+     *
+     * Production, 21 Sep 2026: a one-page flyer imported with
+     * `bathrooms: 9` on a card whose own icon row reads `3 2.5 1`. Nine
+     * bathrooms was then printed to the builder, and it did a second harm
+     * — a count already claimed suppresses the icon row, so the figure the
+     * document really states was never reached.
+     *
+     * The counts are the only fields whose label also names a ROOM, and
+     * this module has now paid for that twice: `Bed 3` is the third
+     * bedroom rather than three bedrooms, and `Garage: 22.59m²` is an area
+     * rather than a car space. A plan that draws `BATH` in one cell and a
+     * figure in the next is stating a dimension, a grid reference or a
+     * schedule line — the adjacency is the plan's layout, not a sentence.
+     *
+     * So positional evidence no longer reaches a count at all. What still
+     * does is every form where the document itself joins the word to the
+     * number: `Bedrooms: 3`, `Bedrooms 3`, `3 BED 2 BATH 1 CAR` — and the
+     * icon row, which is corroborated against the plan's own bedrooms
+     * before it may claim anything.
+     *
+     * The direction of the loss is the one this product already chose
+     * everywhere else: a count nobody can prove is null, and the builder
+     * is told it was not stated.
+     */
+    return null;
   } else if (NUMERIC_VALUE_FIELDS.has(resolved)) {
     if (!HAS_DIGIT.test(value)) return null;
   } else if (DESCRIPTIVE_FIELDS.has(resolved) && BARE_MEASUREMENT.test(value)) {
@@ -1001,7 +1065,8 @@ const TRAILING_POSTCODE = /^(.*\S)\s*\((\d{4})\)$/;
 function splitAddress(claim: Claim): Claim[] {
   if (claim.field !== 'address_line') return [claim];
   const lot = readLotHeading(claim.value);
-  return lot ? [claim, lot] : [claim];
+  // A part split out of a value was read the way the whole was.
+  return lot ? [claim, { ...lot, via: claim.via }] : [claim];
 }
 
 /**
@@ -1036,8 +1101,8 @@ function splitLocality(claim: Claim): Claim[] {
   const match = claim.value.trim().match(TRAILING_POSTCODE);
   if (!match) return [claim];
   return [
-    { field: 'suburb', value: match[1] },
-    { field: 'postcode', value: match[2] },
+    { field: 'suburb', value: match[1], via: claim.via },
+    { field: 'postcode', value: match[2], via: claim.via },
   ];
 }
 
@@ -1658,6 +1723,59 @@ function countRowsOn(units: readonly BrochureUnit[]): number[][] {
   return found;
 }
 
+/** The one row of three counts the document draws, if it draws exactly one. */
+function soleCountRow(
+  pages: ReadonlyArray<readonly BrochureUnit[]>,
+): number[] | null {
+  const rows = pages.flatMap((units) => countRowsOn(units));
+  const distinct = [...new Set(rows.map((row) => row.join('/')))];
+  if (distinct.length !== 1) return null;
+  return distinct[0].split('/').map(Number);
+}
+
+/**
+ * A COUNT THE DOCUMENT'S OWN ROW DOES NOT CARRY IS CONTRADICTED BY IT.
+ *
+ * The icon row is the page's statement of its counts. It does not say which
+ * number is which — that is the whole reason for the corroboration above —
+ * but it does say WHICH NUMBERS THE PROPERTY HAS, and that much needs no
+ * order at all. A claimed `9` against a row reading `3 2.5 1` is the
+ * document disagreeing with itself, and this module's standing answer to
+ * that is to drop the field rather than choose.
+ *
+ * Deliberately weak on purpose, so it can only ever remove a figure:
+ *
+ *   • It runs only where the document draws EXACTLY ONE candidate row, so
+ *     a comparison spread or a second property judges nothing.
+ *   • It asks only whether the value APPEARS in the row, never where. An
+ *     explicit `Bedrooms: 3` beside `3 2.5 1` is untouched, and so is a
+ *     `Bathrooms: 2.5` — the order is still never read.
+ *   • It writes nothing. A field it removes is reported as disputed and
+ *     reads as not stated, which is what an unprovable count is.
+ *
+ * The one real figure it can cost is a total the row states per dwelling —
+ * a dual-key `Bedrooms: 6` against a row of `3 2 1`. Losing that to null is
+ * the direction this product takes everywhere: the builder is told it was
+ * not stated, and can state it.
+ */
+function countsContradictedByRow(
+  pages: ReadonlyArray<readonly BrochureUnit[]>,
+  claimed: ReadonlyMap<string, string>,
+): string[] {
+  const row = soleCountRow(pages);
+  if (!row) return [];
+  const stated = new Set(row.map((value) => String(value)));
+  const contradicted: string[] = [];
+  for (const field of COUNT_FIELDS) {
+    const held = claimed.get(field);
+    if (held === undefined) continue;
+    const number = Number(held.trim());
+    if (!Number.isFinite(number)) continue;
+    if (!stated.has(String(number))) contradicted.push(field);
+  }
+  return contradicted;
+}
+
 function readIconCountRow(
   pages: ReadonlyArray<readonly BrochureUnit[]>,
   claimed: ReadonlyMap<string, string>,
@@ -1665,10 +1783,8 @@ function readIconCountRow(
   for (const field of COUNT_FIELDS) if (claimed.has(field)) return null;
   if (claimed.has('bed_bath_car')) return null;
 
-  const rows = pages.flatMap((units) => countRowsOn(units));
-  const distinct = [...new Set(rows.map((row) => row.join('/')))];
-  if (distinct.length !== 1) return null;
-  const row = distinct[0].split('/').map(Number);
+  const row = soleCountRow(pages);
+  if (!row) return null;
 
   const bedrooms = Math.max(0, ...pages.map(bedroomsNamedOn));
   if (bedrooms < 1) return null;
@@ -1719,6 +1835,8 @@ export function readPdfBrochure(
    * with itself about.
    */
   const disputed = new Set<string>();
+  /** Which reading produced each claimed field. For the import log only. */
+  const readBy = new Map<string, ClaimSource>();
   /*
    * Lines that may be property information and that this reader did not
    * resolve. ANY ONE OF THEM REFUSES THE DOCUMENT. A COUNT, never the text:
@@ -1843,21 +1961,21 @@ export function readPdfBrochure(
           incidental += 1;
           continue;
         }
-        found.push(labelled);
+        found.push(...via('labelled', [labelled]));
       } else {
         const numbers = readLabelledNumbers(line);
-        if (numbers) found.push(...numbers);
+        if (numbers) found.push(...via('labelled_numbers', numbers));
         else {
           const counts = readInlineCounts(line);
-          if (counts) found.push(...counts);
+          if (counts) found.push(...via('inline_counts', counts));
           else {
             const lot = readLotHeading(line);
-            if (lot) found.push(lot);
+            if (lot) found.push(...via('lot_heading', [lot]));
             else {
               const place = readNamedPlace(line);
               const named = place ? null : readInlineFieldName(line);
-              if (place) found.push(...place);
-              else if (named) found.push(named);
+              if (place) found.push(...via('named_place', place));
+              else if (named) found.push(...via('inline_field_name', [named]));
               else {
                 /*
                  * THE THREE WAYS A PAGE SETS A LABEL BESIDE ITS VALUE, in
@@ -1877,20 +1995,20 @@ export function readPdfBrochure(
                 const alongside = besideText !== null
                   ? readVerticalPair(line, besideText) : null;
                 if (alongside && beside !== null) {
-                  found.push(alongside.claim);
+                  found.push(...via('beside', [alongside.claim]));
                   consumed.add(beside);
                 } else {
                   const below = unitBelow(units, index);
                   const under = below !== null && !consumed.has(below)
                     ? readVerticalPair(line, units[below].text) : null;
                   if (under && below !== null) {
-                    found.push(under.claim);
+                    found.push(...via('below', [under.claim]));
                     consumed.add(below);
                   } else {
                     const caption = below !== null && !consumed.has(below)
                       ? readCaptionedValue(line, units[below].text) : null;
                     if (caption && below !== null) {
-                      found.push(caption.claim);
+                      found.push(...via('caption', [caption.claim]));
                       consumed.add(below);
                     }
                   }
@@ -2005,6 +2123,7 @@ export function readPdfBrochure(
         const existing = claimed.get(claim.field);
         if (existing === undefined) {
           claimed.set(claim.field, claim.value);
+          if (claim.via) readBy.set(claim.field, claim.via);
           continue;
         }
         if (disputed.has(claim.field)) continue;
@@ -2102,6 +2221,7 @@ export function readPdfBrochure(
   }
   if (corroborated) {
     claimed.set('house_design', trimSeparators(corroborated.claim).value);
+    readBy.set('house_design', 'filename');
   }
   const afterFilename = corroborated
     ? repeats.filter((line) => line.trim() !== corroborated.line)
@@ -2112,7 +2232,10 @@ export function readPdfBrochure(
    * locality it states under a label of its own.
    */
   const place = corroborateDevelopmentFromPlace(afterFilename, claimed);
-  if (place) claimed.set('development_name', trimSeparators(place).value);
+  if (place) {
+    claimed.set('development_name', trimSeparators(place).value);
+    readBy.set('development_name', 'named_place');
+  }
   const placed = place
     ? afterFilename.filter((line) =>
       flattenIdentity(line.split(',')[0] ?? '') !== flattenIdentity(place.value))
@@ -2156,13 +2279,29 @@ export function readPdfBrochure(
    * with the other corroborations because it needs the whole document: the
    * row is on the cover and the plan that proves it is pages later.
    */
+  /*
+   * A count the document's own row does not carry goes first, because a
+   * figure nothing supports must not survive into the reading — and while
+   * it stands it also suppresses the row that could have replaced it.
+   */
+  for (const field of countsContradictedByRow(pages, claimed)) {
+    disputed.add(field);
+    claimed.delete(field);
+    readBy.delete(field);
+  }
   const counts = readIconCountRow(pages, claimed);
   if (counts) {
-    for (const claim of counts) claimed.set(claim.field, claim.value);
+    for (const claim of counts) {
+      claimed.set(claim.field, claim.value);
+      readBy.set(claim.field, 'icon_row');
+    }
     diagnostics.countsCorroborated = true;
-    // What was read is what the row carries, and the counts arrive last.
-    diagnostics.fieldsRead = [...claimed.keys()].sort();
   }
+  // What was read is what the row carries, and the counts settle last.
+  diagnostics.fieldsRead = [...claimed.keys()].sort();
+  const provenance = [...claimed.keys()].sort()
+    .map((field) => `${field}:${readBy.get(field) ?? 'unknown'}`);
+  if (provenance.length) diagnostics.readBy = provenance;
 
   const visualOnly = [...COUNT_FIELDS].filter((field) => !claimed.has(field)).sort();
   if (visualOnly.length) diagnostics.visualOnlyFields = visualOnly;

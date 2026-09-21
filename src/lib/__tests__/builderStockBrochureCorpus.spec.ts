@@ -566,11 +566,11 @@ describe('23 · the icon row, corroborated by the floor plan', () => {
   });
 
   it('never overrules a count the document states in words', () => {
-    const row = rowOf(read([page('Aspire 24', '3 2 1', ...IDENTITY,
-      'Price: $662,900', 'Bedrooms: 4', 'Bathrooms: 3', 'Car Spaces: 2',
+    const row = rowOf(read([page('Aspire 24', '4 2 2', ...IDENTITY,
+      'Price: $662,900', 'Bedrooms: 4', 'Bathrooms: 2', 'Car Spaces: 2',
       'Bed 1', 'Bed 2', 'Bed 3')]));
     expect(row.bedrooms).toBe(4);
-    expect(row.bathrooms).toBe(3);
+    expect(row.bathrooms).toBe(2);
     expect(row.car_spaces).toBe(2);
   });
 
@@ -699,5 +699,113 @@ describe('26 · display type breaks at its spaces, and a word space grows with i
     }));
     expect(row.land_size_sqm).toBe(402);
     expect(row.price).toBe(662900);
+  });
+});
+
+
+describe('27 · a count the document\u2019s own row does not carry', () => {
+  /**
+   * Production, 21 Sep 2026: a flyer whose icon row reads `3 2.5 1`
+   * imported with `bathrooms: 9`, and nine bathrooms was printed to the
+   * builder. The row does not say WHICH number is which — that is what the
+   * floor-plan corroboration is for — but it does say which numbers the
+   * property has, and nine is not among them.
+   */
+  const flyer = (...extra: string[]) =>
+    read([page('Zimi', '3 2.5 1', 'Lot 27', 'Sale Price - $699,000',
+      'Land Size - 143sqm', 'Build Size - 180sqm', ...extra)]);
+
+  it('drops a figure the row contradicts rather than printing it', () => {
+    const row = rowOf(flyer('Bathrooms: 9'));
+    expect(row.bathrooms).toBeNull();
+    expect(row.bedrooms).toBeNull();
+    expect(row.car_spaces).toBeNull();
+    expect(row.price).toBe(699000);
+    expect(row.lot_number).toBe('27');
+  });
+
+  it('reports it as disputed rather than silently', () => {
+    const reading = flyer('Bathrooms: 9');
+    expect(reading.diagnostics.disputedFields).toContain('bathrooms');
+  });
+
+  it('keeps a figure the row carries', () => {
+    expect(rowOf(flyer('Bathrooms: 2.5')).bathrooms).toBe(2.5);
+  });
+
+  it('judges nothing where the document draws two different rows', () => {
+    const reading = read([page('Zimi', '3 2.5 1', 'Lot 27',
+      'Sale Price - $699,000', 'Bathrooms: 9'), page('Aspire', '4 2 2')]);
+    expect(rowOf(reading).bathrooms).toBe(9);
+  });
+});
+
+describe('28 · a count is never read out of a position', () => {
+  const planned = (label: string, value: string) => {
+    const items = [
+      run('Lot 208 Fairweather Drive', 28, 700, 220),
+      run('Estate: Northbrook Rise', 28, 680, 200),
+      run('Home Design: Aspire 24 Grande', 28, 660, 240),
+      run('Price: $662,900', 28, 640, 130),
+      run(label, 400, 620, 40), run(value, 460, 620, 30),
+    ];
+    return readPdfDeterministicRows({
+      pageTexts: [page('Lot 208 Fairweather Drive', 'Estate: Northbrook Rise',
+        'Home Design: Aspire 24 Grande', 'Price: $662,900',
+        `${label} ${value}`)],
+      positionedPages: [{ page: 1, items }],
+    });
+  };
+
+  it('refuses a plan room label paired with a figure beside it', () => {
+    expect(rowOf(planned('BATH', '9')).bathrooms).toBeNull();
+  });
+
+  it('refuses it below as well', () => {
+    const items = [
+      run('Lot 208 Fairweather Drive', 28, 700, 220),
+      run('Estate: Northbrook Rise', 28, 680, 200),
+      run('Home Design: Aspire 24 Grande', 28, 660, 240),
+      run('Price: $662,900', 28, 640, 130),
+      run('BATH', 400, 620, 40), run('9', 400, 600, 10),
+    ];
+    const row = rowOf(readPdfDeterministicRows({
+      pageTexts: [page('Lot 208 Fairweather Drive', 'Estate: Northbrook Rise',
+        'Home Design: Aspire 24 Grande', 'Price: $662,900', 'BATH', '9')],
+      positionedPages: [{ page: 1, items }],
+    }));
+    expect(row.bathrooms).toBeNull();
+  });
+
+  it('but a measurement paired the same way is still read', () => {
+    expect(rowOf(planned('LAND', '402m2')).land_size_sqm).toBe(402);
+  });
+
+  it('and the inline forms are untouched', () => {
+    const row = rowOf(read([page(...IDENTITY, 'Price: $662,900',
+      '4 Bed 2 Bath 2 Car')]));
+    expect(row.bedrooms).toBe(4);
+    expect(row.bathrooms).toBe(2);
+    expect(row.car_spaces).toBe(2);
+  });
+});
+
+describe('29 · the log says how a field was read, not only that it was', () => {
+  it('names the reading behind each claim', () => {
+    const reading = read([page('Aspire 24', '3 2 1', ...IDENTITY,
+      'Price: $662,900', 'Bed 1', 'Bed 2', 'Bed 3')]);
+    expect(reading.status).toBe('complete');
+    const readBy = reading.diagnostics.readBy ?? [];
+    expect(readBy).toContain('price:labelled');
+    expect(readBy).toContain('bedrooms:icon_row');
+    expect(readBy).toContain('bathrooms:icon_row');
+    expect(readBy).toContain('lot_number:lot_heading');
+  });
+
+  it('carries no value a document stated', () => {
+    const reading = read([page(...IDENTITY, 'Price: $662,900')]);
+    for (const entry of reading.diagnostics.readBy ?? []) {
+      expect(entry).toMatch(/^[a-z_]+:[a-z_]+$/);
+    }
   });
 });
