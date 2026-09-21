@@ -16,6 +16,7 @@ import { detectDocumentMime, sha256Hex } from '../immutableDocuments.ts';
 import { classifyStockFile, MAX_STOCK_FILE_BYTES } from './fileTypes.pure.ts';
 import type { StockFileClassification } from './fileTypes.pure.ts';
 import { extractStockFile, StockExtractionError } from './extract.ts';
+import type { PdfDeterministicReading } from './pdfDeterministicRows.pure.ts';
 import { extractStockRowsFromImages, extractStockRowsFromText } from './modelExtract.ts';
 import { StockModelExtractionError, modelFailureFromRouterError } from './modelExtractionFailure.pure.ts';
 import { assistedReaderFailure, SOURCE_HAS_COLUMNS } from './assistedReaderFailure.pure.ts';
@@ -113,6 +114,12 @@ export interface RunImportSuccess {
   detectedMime: string | null;
   byteSize: number;
   enrichmentPending: number;
+  /**
+   * What the deterministic PDF reader made of the document, carried out so
+   * the one telemetry line can say why a field is empty. Absent for every
+   * other format.
+   */
+  deterministicReading?: PdfDeterministicReading | null;
   /** The status the upload row was left in. */
   uploadStatus: 'enriching' | 'partially_complete';
 }
@@ -155,6 +162,23 @@ export async function runStockImport(input: RunImportInput): Promise<RunImportRe
       // The safe CODE, never the builder-facing sentence and never the detail:
       // a detail is a provider's own words about a document we do not own.
       outcome: result.ok ? 'imported' : result.code,
+      /*
+       * AND WHY A FIELD IS EMPTY, on a run that SUCCEEDED. Logged only on
+       * the failure path before, which left "it imported but the land size
+       * is blank" answerable in no way except by obtaining the PDF.
+       */
+      deterministic: result.ok && result.deterministicReading
+        ? {
+          status: result.deterministicReading.status,
+          reason: result.deterministicReading.reason,
+          fieldsRead: result.deterministicReading.diagnostics.fieldsRead,
+          disputedFields: result.deterministicReading.diagnostics.disputedFields ?? null,
+          visualOnlyFields: result.deterministicReading.diagnostics.visualOnlyFields ?? null,
+          declinedFields: result.deterministicReading.diagnostics.declinedFields ?? null,
+          ignoredLines: result.deterministicReading.diagnostics.ignoredLines ?? null,
+          unaccountedLines: result.deterministicReading.diagnostics.unaccountedLines ?? null,
+        }
+        : null,
     }));
   } catch { /* a line that cannot be written is not an import failure */ }
   return result;
@@ -516,6 +540,7 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     byteSize: bytes.length,
     enrichmentPending: outcome.itemIds.length,
     uploadStatus: outcome.failed > 0 ? 'partially_complete' : 'enriching',
+    deterministicReading: extraction.deterministicReading ?? null,
   };
 }
 
