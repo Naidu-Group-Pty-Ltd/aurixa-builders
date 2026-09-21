@@ -675,6 +675,9 @@ const MAX_PLAUSIBLE_COUNT = 20;
  * `1,204 m2` is untouched and nothing here has to know what land costs.
  */
 const MEASURED_FIELDS = new Set(['land_size_sqm', 'building_size_sqm']);
+
+/** The two fields that say WHICH property this is, and must look like it. */
+const DESIGNATION_FIELDS = new Set(['lot_number', 'unit_number']);
 const CURRENCY_MARKER = /[$\u20ac\u00a3\u00a5]|\bAUD\b/i;
 
 function statesAnAmount(value: string): boolean {
@@ -2007,6 +2010,11 @@ function corroboratedBy(line: string, names: ReadonlyArray<readonly string[]>): 
  *   • THERE MUST BE EXACTLY ONE CANDIDATE. Two unplaced names both echoed by
  *     the filename is the document declining to say which is which.
  */
+/** An identity a document states about ITSELF, beyond the lot every one has. */
+const FILENAME_CORROBORATION_ANCHORS = [
+  'development_name', 'project_name', 'address_line', 'external_reference',
+] as const;
+
 export function corroborateDesignFromFilename(input: {
   filename: string | null | undefined;
   unresolved: readonly string[];
@@ -2029,7 +2037,22 @@ export function corroborateDesignFromFilename(input: {
   }
 
   if (input.claimed.has('house_design')) return null;
-  if (!input.claimed.has('development_name') && !input.claimed.has('project_name')) {
+  /*
+   * THE DOCUMENT MUST HAVE ESTABLISHED WHICH PROPERTY IT IS, BEYOND ITS LOT.
+   *
+   * The gate was `development_name || project_name`, which is one way a
+   * document does that and not the only one. MEASURED ON THE HAVENWOOD
+   * FLYERS: they name no estate anywhere — `HAVENWOOD` is set alone at the
+   * top of the page with nothing labelling it — but they state a street, a
+   * suburb, a state and a postcode, and they print the design as a bare name
+   * (`Ember`, `Zimi`) that the builder ALSO put in the filename. Two
+   * independent sources agreeing is exactly what this function exists to act
+   * on, and it was refusing because the third source was absent.
+   *
+   * THE LOT IS NOT ON THE LIST, deliberately: every document states one, so
+   * admitting it would remove the gate rather than widen it.
+   */
+  if (!FILENAME_CORROBORATION_ANCHORS.some((field) => input.claimed.has(field))) {
     return null;
   }
 
@@ -2648,6 +2671,36 @@ export function readPdfBrochure(
 
       for (const claim of found.flatMap(splitAddress).flatMap(splitLocality).map(trimSeparators)) {
         if (!BROCHURE_CLAIMABLE_FIELDS.has(claim.field)) continue;
+        if (DESIGNATION_FIELDS.has(claim.field)
+          && !LOT_DESIGNATION.test(claim.value.trim())) {
+          /*
+           * `UNIT: 115.30m² 12.41sq` IS A FLOOR AREA, NOT A UNIT NUMBER.
+           *
+           * MEASURED ON `LOT 48 - EMBER - FLYER`, 21 SEPTEMBER 2026, and it
+           * is the single defect that produced BOTH reported symptoms. The
+           * flyer's floor plan carries an AREA SCHEDULE — `GARAGE:`,
+           * `PORCH:`, `COURT:`, `TOTAL:` and `UNIT:` — and `Unit` is a
+           * heading this vocabulary reads as an identifier, so
+           * `readLabelledValue` claimed `unit_number: "115.30m 12.41sq"`.
+           *
+           * That is not merely an ugly field. `stockRecordLabel` puts the
+           * designation FIRST, so the card's title became `Unit 115.30m
+           * 12.41sq, 35 Cockrell Rd` — and the same label is what
+           * `pageStatesIdentity` matches a page against, so no page could
+           * state this property's identity and the election refused the
+           * builder's own render. One wrong read, a broken title and a blank
+           * card.
+           *
+           * AN IDENTIFIER HAS A SHAPE, and `readVerticalPair` has demanded it
+           * since `LOT` over `350 m²` wrote a land size into the field that
+           * says WHICH PROPERTY this is. The hole was that it demanded it in
+           * ONE reader. Here it is asked of every claim from every reader, at
+           * the point they all pass through, which is the only place a rule
+           * like this cannot be forgotten by the next one.
+           */
+          declined.add(claim.field);
+          continue;
+        }
         if (MEASURED_FIELDS.has(claim.field) && statesAnAmount(claim.value)) {
           /*
            * `LAND $334,000` IS WHAT THE LAND COSTS, NOT HOW BIG IT IS.
@@ -2766,11 +2819,48 @@ export function readPdfBrochure(
   const repeats = unresolved.filter((line) => !corroboratedBy(line, names));
 
   /*
+   * THE ADDRESS BLOCK, TAKEN ONLY WHERE THE DOCUMENT DRAWS EXACTLY ONE.
+   *
+   * Judged here rather than in the loop because the guard is a property of
+   * the WHOLE document: a builder's own office address is the same shape as
+   * a property's, and this module does not choose between two readings. Two
+   * blocks claim nothing and the document reads exactly as it does today.
+   *
+   * It defers to anything the document LABELLED. A `Site Address:` box, a
+   * `Locality:` line or a suburb read from any labelled field is the
+   * document saying so in words, and a block read from shape alone must
+   * never overrule one.
+   *
+   * AND IT IS TAKEN BEFORE THE FILENAME IS CONSULTED, which is where it
+   * belongs and is not where it was first written. The filename may
+   * corroborate a design only on a document that has established WHICH
+   * property it is, and on a flyer that names no estate the address IS that
+   * establishment — so claiming it afterwards left the corroboration with
+   * nothing to anchor to and the design unread. What the DOCUMENT says is
+   * settled first; the filename is a second opinion and speaks second.
+   */
+  const addressBlock = addressBlocks.length === 1 ? addressBlocks[0] : null;
+  const addressBlockRead = Boolean(addressBlock)
+    && !claimed.has('address_line') && !claimed.has('suburb');
+  if (addressBlock && addressBlockRead) {
+    claimed.set('address_line', addressBlock.street);
+    claimed.set('suburb', addressBlock.suburb);
+    claimed.set('state', addressBlock.state);
+    claimed.set('postcode', addressBlock.postcode);
+    for (const field of ['address_line', 'suburb', 'state', 'postcode']) {
+      readBy.set(field, 'address_block');
+    }
+  }
+  const afterAddress = addressBlock && addressBlockRead
+    ? repeats.filter((line) => !addressBlock.lines.includes(line))
+    : repeats;
+
+  /*
    * THE FILENAME'S ONE JOB, taken after every page has been read so the
    * estate is as settled as the document is going to make it.
    */
   const corroborated = corroborateDesignFromFilename({
-    filename: options.filename, unresolved: repeats, claimed,
+    filename: options.filename, unresolved: afterAddress, claimed,
   });
   if (corroborated === 'lot_mismatch') {
     diagnostics.conflictField = 'lot_number';
@@ -2782,8 +2872,8 @@ export function readPdfBrochure(
     readBy.set('house_design', 'filename');
   }
   const afterFilename = corroborated
-    ? repeats.filter((line) => line.trim() !== corroborated.line)
-    : repeats;
+    ? afterAddress.filter((line) => line.trim() !== corroborated.line)
+    : afterAddress;
 
   /*
    * THE ESTATE THE DOCUMENT NAMES WITHOUT THE WORD, confirmed by the
@@ -2799,34 +2889,7 @@ export function readPdfBrochure(
       flattenIdentity(line.split(',')[0] ?? '') !== flattenIdentity(place.value))
     : afterFilename;
 
-  /*
-   * THE ADDRESS BLOCK, TAKEN ONLY WHERE THE DOCUMENT DRAWS EXACTLY ONE.
-   *
-   * Judged here rather than in the loop because the guard is a property of
-   * the WHOLE document: a builder's own office address is the same shape as
-   * a property's, and this module does not choose between two readings. Two
-   * blocks claim nothing and the document reads exactly as it does today.
-   *
-   * It defers to anything the document LABELLED. A `Site Address:` box, a
-   * `Locality:` line or a suburb read from any labelled field is the
-   * document saying so in words, and a block read from shape alone must
-   * never overrule one.
-   */
-  const addressBlock = addressBlocks.length === 1 ? addressBlocks[0] : null;
-  const addressBlockRead = Boolean(addressBlock)
-    && !claimed.has('address_line') && !claimed.has('suburb');
-  if (addressBlock && addressBlockRead) {
-    claimed.set('address_line', addressBlock.street);
-    claimed.set('suburb', addressBlock.suburb);
-    claimed.set('state', addressBlock.state);
-    claimed.set('postcode', addressBlock.postcode);
-    for (const field of ['address_line', 'suburb', 'state', 'postcode']) {
-      readBy.set(field, 'address_block');
-    }
-  }
-  const placed = addressBlock && addressBlockRead
-    ? placedByName.filter((line) => !addressBlock.lines.includes(line))
-    : placedByName;
+  const placed = placedByName;
 
   /*
    * =====================================================================
