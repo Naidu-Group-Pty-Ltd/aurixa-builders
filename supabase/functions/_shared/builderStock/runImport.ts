@@ -15,6 +15,9 @@
 import { detectDocumentMime, sha256Hex } from '../immutableDocuments.ts';
 import { classifyStockFile, MAX_STOCK_FILE_BYTES } from './fileTypes.pure.ts';
 import { openImportBudget, storageDeadlineFrom } from './importBudget.pure.ts';
+import {
+  completionMayMerge, completionWorthAsking, mergeCompletion, missingVitalFields,
+} from './stockFieldCompletion.pure.ts';
 import type { StockFileClassification } from './fileTypes.pure.ts';
 import { extractStockFile, StockExtractionError } from './extract.ts';
 import type { PdfDeterministicDiagnostics } from './extract.ts';
@@ -110,6 +113,15 @@ export interface RunImportSuccess {
     imageryOutstanding: boolean;
     /** And why, where the document's images were never decompressed at all. */
     imageryDeferred?: string | null;
+    /**
+     * Fields the deterministic reader could not prove and a model supplied.
+     *
+     * Named rather than counted, and reported on the SUCCESS path, because
+     * "read off the page" and "completed from the same page by a model" are
+     * different provenance for the same figure and a record that cannot tell
+     * them apart cannot be audited.
+     */
+    completedFields?: string[];
     warnings: string[];
     failures: Array<{ label: string; reason: string }>;
   };
@@ -163,6 +175,7 @@ export async function runStockImport(input: RunImportInput): Promise<RunImportRe
       withSourceImage: result.ok ? result.summary.withSourceImage : null,
       imageryOutstanding: result.ok ? result.summary.imageryOutstanding : null,
       imageryDeferred: result.ok ? (result.summary.imageryDeferred ?? null) : null,
+      completedFields: result.ok ? (result.summary.completedFields ?? null) : null,
       // The safe CODE, never the builder-facing sentence and never the detail:
       // a detail is a provider's own words about a document we do not own.
       outcome: result.ok ? 'imported' : result.code,
@@ -487,6 +500,81 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     }
   }
 
+  /*
+   * =======================================================================
+   * WHAT THE READER COULD NOT PROVE IS ASKED FOR BY NAME.
+   * =======================================================================
+   *
+   * THE DETERMINISTIC READER STAYS THE AUTHORITY AND STOPS BEING THE ONLY
+   * READER. It reads what the document labels; what it could not prove is a
+   * SHORT LIST OF NAMED FIELDS, and those go to the model instead of the
+   * whole document going to the model. Nothing it claimed can be overwritten
+   * — `mergeCompletion` has no branch that replaces a held value — so this
+   * cannot cost accuracy, only fill absence.
+   *
+   * MEASURED, 21 SEPTEMBER 2026, over every property this deployment holds:
+   * bedrooms, bathrooms and car spaces were absent on SEVEN OF EIGHT, and the
+   * gaps disagreed between template families — the NEX 20 carried an address
+   * and no price, the ZIMI a price and no address. That is the inconsistency
+   * a reader sees on the marketplace, card beside card.
+   *
+   * AND IT IS NOT A VOCABULARY GAP. The brochure prints `3 2.5 1` beside bed,
+   * bath and car ICONS, and an icon is an image: the text says which numbers
+   * the property has and never which is which. Assuming the conventional
+   * order is what wrote `bathrooms: 9` onto a real property that morning, so
+   * `readIconCountRow` accepts the row only where the floor plan NAMES its
+   * bedrooms as text — true of one flyer here and of nothing else. Teaching
+   * the reader more words cannot close it, which is why this is not more
+   * words.
+   *
+   * WHY THIS IS THE GENERAL FIX. It needs nothing known in advance about any
+   * template: a design nobody has seen completes exactly as a familiar one
+   * does, and a template whose vocabulary is later learned simply asks for
+   * less. The ordering this product insists on is unchanged — deterministic
+   * first, the model last, and now only for the residue rather than for the
+   * document.
+   *
+   * IT CAN NEVER FAIL THE IMPORT. Every refusal below is silent and the
+   * reading stands: no budget, no credential, a provider down, a timeout, two
+   * rows on either side. The card is then exactly as complete as it is today,
+   * which is the behaviour this replaces rather than risks.
+   */
+  let completedFields: string[] = [];
+  if (rows.length === 1 && completionWorthAsking(rows[0]) && extraction.text) {
+    try {
+      const completion = await extractStockRowsFromText(
+        extraction.text,
+        { filename: upload.original_filename, organisationName: input.organisationName },
+        { deadlineAt: Date.now() + MODEL_BUDGET_MS, budget },
+      );
+      if (completionMayMerge(rows, completion.rows)) {
+        const merged = mergeCompletion(rows[0], completion.rows[0]);
+        if (merged.completed.length) {
+          rows = [merged.row];
+          completedFields = merged.completed;
+          strategy = `${strategy}+completed`;
+        }
+      }
+    } catch (error) {
+      /*
+       * SILENT, AND THE READING STANDS. This is the last resort filling an
+       * absence, not the reader of the document: a builder whose brochure was
+       * read has nothing to do about a model that could not be reached, and
+       * telling them the import failed over it would undo the whole point of
+       * the fallback shipped beside this.
+       */
+      try {
+        console.warn(`${TELEMETRY_PREFIX} field completion unavailable`, {
+          phase: 'field_completion',
+          upload_id: upload.id,
+          organisation_id: organisationId,
+          missing: missingVitalFields(rows[0]),
+          detail: String((error as { code?: string })?.code ?? 'unknown'),
+        });
+      } catch { /* a line that cannot be written is not an import failure */ }
+    }
+  }
+
   const { error: stampError } = await supabase.from('builder_stock_uploads').update({
     status: 'imported',
     detected_content_type: detection.mime,
@@ -637,6 +725,7 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
        */
       imageryOutstanding: outcome.imageryOutstanding || Boolean(extraction.imageryDeferred),
       imageryDeferred: extraction.imageryDeferred ?? null,
+      completedFields,
       warnings,
       failures: outcome.failures,
     },
