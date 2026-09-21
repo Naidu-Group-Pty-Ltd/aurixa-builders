@@ -205,6 +205,11 @@ export interface PdfDeterministicReading {
      */
     ignoredLines?: number;
     /**
+     * Fields the document stated two different ways. Dropped rather than
+     * chosen between — see the conflict gate in `readPdfBrochure`.
+     */
+    disputedFields?: string[];
+    /**
      * Optional attributes the document states only in PICTURES. The
      * production brochure prints `3 2 1` beside bed, bath and car icons,
      * and the icons are images — so the counts are named here as unread
@@ -1175,6 +1180,45 @@ function readLotHeading(line: string): Claim | null {
  * removed, which is the comparison `normaliseHeader` already makes for
  * headings.
  */
+/** How many digits a value is written to. `321` is 0, `320.72` is 2. */
+function decimalsIn(value: string): number {
+  const match = value.match(/\d[\d,\s]*\.(\d+)/);
+  return match ? match[1].length : 0;
+}
+
+/**
+ * ARE THESE TWO FIGURES THE SAME MEASUREMENT, WRITTEN TWICE?
+ *
+ * A brochure states its land size on the marketing page and again on the
+ * siting plan, and the two are almost never the same STRING: the front page
+ * rounds and the plan is exact. Measured on the production brochure for Lot
+ * 315, one document says
+ *
+ *   page 1   Lot Size   321m²
+ *   page 2   Site Area: 320.72 m²
+ *
+ * — the same lot, to the nearest square metre and to the centimetre. Reading
+ * that as two answers is how a perfectly consistent document came to be
+ * called `ambiguous`, and it is why the sibling brochure for Lot 717 failed
+ * on `conflicting_values:land_size_sqm` while its land size (271 m²) was
+ * never in doubt. Lot 315 escaped only because `Site Area` happens not to
+ * resolve through the alias table; one word different in the builder's
+ * template and it would have failed too.
+ *
+ * THE TEST IS THE COARSER FIGURE'S OWN PRECISION. Round the finer one to the
+ * number of decimals the coarser one is written to; if they agree, the
+ * document said one thing twice and the FINER reading is kept. `321` and
+ * `320.72` agree. `321` and `450` do not, and neither do `117.50` and
+ * `119.16` — a disagreement in a digit the coarser figure actually states is
+ * a real disagreement and still refuses.
+ */
+function sameMeasurement(left: number, right: number, a: string, b: string): boolean {
+  if (left === right) return true;
+  const places = Math.min(decimalsIn(a), decimalsIn(b));
+  const factor = 10 ** places;
+  return Math.round(left * factor) === Math.round(right * factor);
+}
+
 function sameValue(field: string, a: string, b: string): boolean {
   if (field === 'price') {
     const left = coercePrice(a);
@@ -1184,7 +1228,7 @@ function sameValue(field: string, a: string, b: string): boolean {
   if (NUMERIC_VALUE_FIELDS.has(field)) {
     const left = coerceNumber(a);
     const right = coerceNumber(b);
-    if (left !== null && right !== null) return left === right;
+    if (left !== null && right !== null) return sameMeasurement(left, right, a, b);
   }
   const flatten = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
   return flatten(a) === flatten(b);
@@ -1410,6 +1454,12 @@ export function readPdfBrochure(
   };
 
   const claimed = new Map<string, string>();
+  /**
+   * Fields the document stated two ways. Dropped rather than chosen between,
+   * and reported, so a builder can see which figure their brochure disagrees
+   * with itself about.
+   */
+  const disputed = new Set<string>();
   /*
    * Lines that may be property information and that this reader did not
    * resolve. ANY ONE OF THEM REFUSES THE DOCUMENT. A COUNT, never the text:
@@ -1696,16 +1746,54 @@ export function readPdfBrochure(
           claimed.set(claim.field, claim.value);
           continue;
         }
+        if (disputed.has(claim.field)) continue;
         if (!sameValue(claim.field, existing, claim.value)) {
           /*
-           * TWO ANSWERS IS NOT AN ANSWER. Two prices, two lots, two bedroom
-           * counts — whether that is a dual-key home, a page per release or a
-           * catalogue of six designs, this reader cannot tell them apart, and
-           * separating them is precisely the judgement it does not make.
+           * ================================================================
+           * TWO ANSWERS IS NOT AN ANSWER — ABOUT THAT FIELD.
+           * ================================================================
+           *
+           * Two lots, two designs, two estates or two prices are a document
+           * this reader cannot resolve into ONE property, and separating
+           * them is the judgement it does not make. Those still refuse the
+           * whole document.
+           *
+           * EVERYTHING ELSE LOSES ONLY ITSELF, and that is the correction
+           * the sibling brochure forced. Lot 717 failed outright on
+           * `conflicting_values:land_size_sqm` — its lot, its street, its
+           * design, its estate and its price were never in doubt, and a
+           * disagreement about one measurement threw all of them away and
+           * sent a perfectly legible document to a model that was not
+           * available. Refusing the FIELD keeps every guarantee that matters:
+           * nothing is invented, nothing is chosen between, and an absent
+           * measurement is the one state this product already treats as
+           * honest everywhere else. Importing Lot 717 with no land size is
+           * strictly better than importing nothing and telling the builder
+           * their brochure could not be read.
+           *
+           * The disputed field is DROPPED rather than left at its first
+           * reading — whichever came first is an accident of page order, and
+           * keeping it would be choosing.
            */
-          diagnostics.conflictField = claim.field;
-          diagnostics.fieldsRead = [...claimed.keys()].sort();
-          return refuse('ambiguous', `conflicting_values:${claim.field}`, diagnostics);
+          if (DISPUTE_REFUSES_DOCUMENT.has(claim.field)) {
+            diagnostics.conflictField = claim.field;
+            diagnostics.fieldsRead = [...claimed.keys()].sort();
+            return refuse('ambiguous', `conflicting_values:${claim.field}`, diagnostics);
+          }
+          disputed.add(claim.field);
+          claimed.delete(claim.field);
+          continue;
+        }
+        /*
+         * THE SAME MEASUREMENT, WRITTEN MORE PRECISELY. Where two readings
+         * reconcile, the finer one is the document being exact rather than
+         * the document repeating itself: `Site Area: 320.72 m²` is what
+         * `Lot Size 321m²` rounds. Keeping the first would make the answer
+         * depend on page order.
+         */
+        if (NUMERIC_VALUE_FIELDS.has(claim.field)
+          && decimalsIn(claim.value) > decimalsIn(existing)) {
+          claimed.set(claim.field, claim.value);
         }
       }
     }
@@ -1791,6 +1879,7 @@ export function readPdfBrochure(
   if (declined.size) diagnostics.declinedFields = [...declined].sort();
   const visualOnly = [...COUNT_FIELDS].filter((field) => !claimed.has(field)).sort();
   if (visualOnly.length) diagnostics.visualOnlyFields = visualOnly;
+  if (disputed.size) diagnostics.disputedFields = [...disputed].sort();
 
   if (!claimed.size) {
     return refuse('unsupported', 'no_labelled_fields', diagnostics);
@@ -2335,6 +2424,23 @@ export function mayHoldSchedule(pageTexts: readonly string[]): boolean {
   }
   return false;
 }
+
+/**
+ * The fields where two different statements refuse the WHOLE document.
+ *
+ * These are the ones that say which property this is and what it costs. Two
+ * lots, two designs, two estates, two addresses or two prices mean the
+ * document is describing more than one thing, or describing one thing
+ * wrongly, and no rule here can pick. Everything else — a land size, a
+ * build size, a room count — is a description OF the property, and a
+ * document that disagrees with itself about one of those still says
+ * perfectly clearly which property it is. That field is dropped and the
+ * rest stands.
+ */
+const DISPUTE_REFUSES_DOCUMENT: ReadonlySet<string> = new Set([
+  'external_reference', 'address_line', 'lot_number', 'unit_number',
+  'development_name', 'project_name', 'house_design', 'price',
+]);
 
 /**
  * The fields an unresolved line may NOT leave unread.

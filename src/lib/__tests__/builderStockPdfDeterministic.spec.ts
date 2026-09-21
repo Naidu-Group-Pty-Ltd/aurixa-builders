@@ -370,8 +370,6 @@ describe('two answers is not an answer', () => {
       'conflicting_values:price'],
     ['two lots', 'LOT 315\nEstate: X\nPrice: $863,850\nLOT 316',
       'conflicting_values:lot_number'],
-    ['two bedroom counts', 'LOT 315\nEstate: X\nBedrooms 4\nBedrooms 3',
-      'conflicting_values:bedrooms'],
     ['counts stated two ways', 'LOT 315\nEstate: X\n3 Bed 2 Bath 2 Car\nBedrooms 4',
       'counts_stated_two_ways'],
   ];
@@ -997,11 +995,62 @@ describe('counts set one per line', () => {
     expect([record.bedrooms, record.bathrooms]).toEqual([4, 2]);
   });
 
-  it('the same count stated twice with two figures still conflicts', () => {
-    const reading = readPdfBrochure([['LOT 315', '4 BED', 'Price: $1', '3 BED'].join('\n')]);
-    expect(reading.status).toBe('ambiguous');
-    expect(reading.reason).toBe('conflicting_values:bedrooms');
-    expect(reading.rows).toEqual([]);
+  it('the same count stated twice with two figures loses the count, not the property', () => {
+    /*
+     * THIS BLOCK ASSERTED A REFUSAL, and the sibling brochure for Lot 717 is
+     * why it no longer does. A disagreement about a DESCRIPTION of the
+     * property says nothing about WHICH property it is, and throwing the lot,
+     * the street, the design, the estate and the price away over it sent a
+     * legible document to a model. The count is dropped rather than chosen
+     * between — whichever came first is an accident of page order.
+     */
+    const reading = readPdfBrochure([
+      ['LOT 315', 'Estate: Palomino', '4 BED', 'Price: $1', '3 BED'].join('\n'),
+    ]);
+    expect(reading.status).toBe('complete');
+    expect(normaliseStockRow(reading.rows[0])!.bedrooms).toBeNull();
+    expect(reading.diagnostics.disputedFields).toEqual(['bedrooms']);
+  });
+
+  it('but two prices, two lots, two designs or two estates still refuse', () => {
+    const cases: Array<[string, string]> = [
+      ['Price: $863,850\nPrice: $910,000', 'conflicting_values:price'],
+      ['LOT 316', 'conflicting_values:lot_number'],
+      ['Design: Enzo 8.5\nDesign: Nex 20', 'conflicting_values:house_design'],
+      ['Estate: Society 1056', 'conflicting_values:development_name'],
+    ];
+    for (const [tail, reason] of cases) {
+      const reading = readPdfBrochure([
+        ['LOT 315', 'Estate: Palomino', 'Price: $863,850', tail].join('\n'),
+      ]);
+      expect({ tail, status: reading.status, reason: reading.reason })
+        .toEqual({ tail, status: 'ambiguous', reason });
+      expect(reading.rows).toEqual([]);
+    }
+  });
+
+  it('one measurement written twice at two precisions is one measurement', () => {
+    /*
+     * THE DEFECT THE SIBLING BROCHURE FOUND. A builder's marketing page
+     * rounds and the siting plan is exact — Lot 315 states `Lot Size 321m²`
+     * and `Site Area: 320.72 m²` about the same lot. The finer reading is
+     * kept; a disagreement in a digit the coarser figure actually states is
+     * still a disagreement.
+     */
+    const agree = readPdfBrochure([
+      ['LOT 315', 'Estate: Palomino', 'Price: $1',
+        'Land Size: 321 m2', 'Land Size: 320.72 m2'].join('\n'),
+    ]);
+    expect(agree.status).toBe('complete');
+    expect(normaliseStockRow(agree.rows[0])!.land_size_sqm).toBe(320.72);
+    expect(agree.diagnostics.disputedFields).toBeUndefined();
+
+    const differ = readPdfBrochure([
+      ['LOT 315', 'Estate: Palomino', 'Price: $1',
+        'Build Size: 117.50 m2', 'Build Size: 119.16 m2'].join('\n'),
+    ]);
+    expect(normaliseStockRow(differ.rows[0])!.building_size_sqm).toBeNull();
+    expect(differ.diagnostics.disputedFields).toEqual(['building_size_sqm']);
   });
 
   it('a line naming more than one count still goes to the shared parser', () => {
