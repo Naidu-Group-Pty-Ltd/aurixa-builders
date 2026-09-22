@@ -30,6 +30,18 @@ import { serveStockImage } from '../../supabase/functions/_shared/builderStock/s
 import { closeRefusedUpload } from '../../supabase/functions/_shared/builderStock/closeRefusedUpload.ts';
 import { sourceDocumentName } from '../../supabase/functions/_shared/builderStock/documentName.pure.ts';
 /*
+ * AND THE COUNTS AN IMPORT THAT SUCCEEDED WRITES DOWN, the other half of the
+ * same rule. The gate wrote none, so every URL import left
+ * `records_detected: 0` on a row holding a correctly imported property — the
+ * incident's own symptom, produced by the gate that exists to detect it.
+ */
+import { recordImportCounts } from '../../supabase/functions/_shared/builderStock/recordImportOutcome.ts';
+/*
+ * AND THE IDENTITY THE IMPORTER ITSELF MATCHES ON, so the gate's fork count
+ * asks the product's question rather than a plausible-looking one of its own.
+ */
+import { stockPropertyIdentity } from '../../supabase/functions/_shared/builderStock/stockIdentity.pure.ts';
+/*
  * THE IMAGE PIPELINE, driven the way the settler drives it. `runStockImport`
  * leaves every property at `image_work_stage: 'source'` with no photograph —
  * imagery is asynchronous in production and a cron function does it. A gate
@@ -449,6 +461,11 @@ async function routeA(entry: Entry, bytes: Uint8Array, tag = 'A') {
       code: String((result as { code?: string }).code ?? 'import_failed'),
       message: String((result as { message?: string }).message ?? ''),
     });
+  } else {
+    await recordImportCounts(db, {
+      uploadId: upload.id, organisationId: orgs[entry.org].id,
+      summary: result.summary,
+    });
   }
   return { result, uploadId: upload.id, ms: performance.now() - t0,
            rssDelta: rss() - m0, transferred: downloaded.length };
@@ -524,6 +541,17 @@ async function routeB(entry: Entry, bytes: Uint8Array) {
       contentDisposition: response.headers.get('content-disposition'),
     }),
   });
+  if (result.ok) {
+    await recordImportCounts(db, {
+      uploadId: upload.id, organisationId: orgs[twin].id, summary: result.summary,
+    });
+  } else {
+    await closeRefusedUpload(db, {
+      uploadId: upload.id, organisationId: orgs[twin].id,
+      code: String((result as { code?: string }).code ?? 'import_failed'),
+      message: String((result as { message?: string }).message ?? ''),
+    });
+  }
   return { result, uploadId: upload.id, ms: performance.now() - t0,
            rssDelta: rss() - m0, transferred: fetched.length,
            documentName: sourceDocumentName({ finalUrl: sourceUrl }) };
@@ -591,6 +619,8 @@ for (const entry of manifest) {
   if (!a) { fail(entry, `route A threw: ${row.routeAThrew}`); report.push(row); continue; }
   if (!b) { fail(entry, `route B threw: ${row.routeBThrew}`); report.push(row); continue; }
 
+  row.uploadIdA = a.uploadId;
+  row.uploadIdB = b.uploadId;
   row.a = { ok: a.result.ok, code: (a.result as any).code, ms: Math.round(a.ms),
             strategy: (a.result as any).strategy };
   row.b = { ok: b.result.ok, code: (b.result as any).code, ms: Math.round(b.ms),
@@ -1500,8 +1530,11 @@ const invariants: Record<string, unknown> = {};
         message: String((result as any).message ?? ''),
       });
     } else {
+      await recordImportCounts(db, {
+        uploadId: upload.id, organisationId: org.id, summary: result.summary,
+      });
       await db.from('builder_stock_uploads').update({
-        status: 'completed', processing_completed_at: new Date().toISOString(),
+        status: result.uploadStatus,
       }).eq('id', upload.id);
     }
     return { result, uploadId: upload.id, orgId: org.id };
@@ -2049,6 +2082,199 @@ const invariants: Record<string, unknown> = {};
 await fileServer.shutdown();
 
 // ---------------------------------------------------------------------------
+// ===========================================================================
+// 9 · THE NUMBERS, AND THE ZEROES THAT MUST BE ZERO
+// ===========================================================================
+/*
+ * `unaccounted_lines: 0` IS NOT COMPLETENESS, AND THIS IS WHAT IS INSTEAD.
+ *
+ * That diagnostic counts lines of the document the reader could not PLACE.
+ * Zero of them means the reader had an account of everything it looked at —
+ * which is a statement about the reader's own bookkeeping and says nothing
+ * about whether the fields a property needs came out. A brochure whose price
+ * the reader correctly declined as unproven has `unaccounted_lines: 0` and a
+ * missing price, and so does one that read every field perfectly.
+ *
+ * COMPLETENESS IS MEASURED AGAINST THE MANIFEST'S OWN EXPECTATIONS, which is
+ * the only thing in this system that knows what a document SHOULD yield: a
+ * person read each fixture and wrote down what it states. Every field named
+ * there is one the product is supposed to extract, so the measure is the
+ * share of them it did — counted, named where missing, and split by whether
+ * the miss is one this corpus has already named as a limit.
+ *
+ * A FIELD EXPECTED TO BE ABSENT IS NOT A FIELD. `bedrooms: null` on the
+ * package brochure means "this document does not support a count and the
+ * reader must not invent one" — it is a prohibition, judged in 6c, and
+ * counting it as an extraction would inflate the measure with refusals.
+ */
+{
+  const totals = {
+    documentsTested: manifest.length,
+    documentClasses: [...new Set(manifest.map((e: any) =>
+      e.expect.properties === 0 ? 'refused'
+        : (e.expect.properties > 1 ? 'multi-property' : 'single-property')))].sort(),
+    propertiesExpected: 0,
+    propertiesCreated: 0,
+    fieldsExpected: 0,
+    fieldsDelivered: 0,
+    fieldsMissing: [] as string[],
+    fieldsMissingNamedLimit: [] as string[],
+  };
+
+  for (const entry of manifest) {
+    totals.propertiesExpected += entry.expect.properties ?? 0;
+    const row = report.find((r: any) => r.name === entry.name);
+    totals.propertiesCreated += row?.propertiesA ?? 0;
+    const expectRows = entry.expect.rows ?? [];
+    for (let i = 0; i < expectRows.length; i += 1) {
+      for (const [field, want] of Object.entries(expectRows[i])) {
+        if (want === null) continue;          // a prohibition, not a field
+        totals.fieldsExpected += 1;
+        const key = FIELD_COLUMN[field] ?? field;
+        const got = (row?.items ?? [])[i]?.[key] ?? null;
+        const same = got !== null && (key === 'address_line'
+          ? String(got).toLowerCase().includes(String(want).toLowerCase())
+          : String(got).toLowerCase() === String(want).toLowerCase());
+        if (same) totals.fieldsDelivered += 1;
+        else {
+          (entry.expect.known_limit ? totals.fieldsMissingNamedLimit : totals.fieldsMissing)
+            .push(`${entry.name}.${i}.${key}`);
+        }
+      }
+    }
+  }
+
+  /*
+   * THE ZEROES THE CONTRACT NAMES, each read from the database this run
+   * actually wrote rather than from anything the gate remembers. A count
+   * derived from the harness's own bookkeeping would agree with the harness;
+   * these ask the rows.
+   */
+  const zero: Record<string, unknown> = {};
+
+  const { data: allItems } = await db.from('builder_stock_items')
+    .select('id, organisation_id, upload_id, lot_number, unit_number, '
+      + 'address_line, development_name, project_name, building_size_sqm, '
+      + 'source_row, lifecycle_status, primary_image_id, pending_patch, '
+      + 'pending_upload_id');
+  const { data: allUploads } = await db.from('builder_stock_uploads')
+    .select('id, organisation_id, status, error_code, published_at, '
+      + 'records_detected, deleted_at');
+  const items = allItems ?? [];
+  const uploads = allUploads ?? [];
+  const uploadOrg = new Map(uploads.map((u: any) => [u.id, u.organisation_id]));
+
+  // 1 · WRONG ORGANISATION — a row whose supplying upload belongs elsewhere.
+  zero.wrongOrganisation = items.filter((i: any) =>
+    i.upload_id && uploadOrg.has(i.upload_id)
+    && uploadOrg.get(i.upload_id) !== i.organisation_id).length;
+
+  /*
+   * 2 · DUPLICATE FORK — two live rows the PRODUCT would call one property.
+   *
+   * Keyed on the lot alone this read 2, and both were correct: Alpha Homes
+   * holds a lot 18 in Tarneit and a lot 18 on Hollybank Crescent, Melton
+   * South. A lot number is a builder's own numbering within an estate and is
+   * not unique across one, so two documents naming lot 18 are two properties
+   * — which is invariant 7c, and asserting the opposite here would have
+   * reported a correct behaviour as a fork.
+   *
+   * `stockPropertyIdentity` is what the importer itself matches on, so it is
+   * what this counts: development, lot, street, design and building size,
+   * under the module's own rule that a part only ONE side states is not a
+   * difference. Archived rows are excluded — a replacement legitimately
+   * leaves one behind.
+   */
+  const liveByIdentity = new Map<string, any[]>();
+  for (const i of items as any[]) {
+    if (i.lifecycle_status === 'archived') continue;
+    const identity = stockPropertyIdentity({
+      lot_number: i.lot_number, unit_number: i.unit_number,
+      address_line: i.address_line, development_name: i.development_name,
+      project_name: i.project_name, house_design: i.source_row?.house_design ?? null,
+      building_size_sqm: i.building_size_sqm,
+    } as any);
+    const key = `${i.organisation_id}/${JSON.stringify(identity)}`;
+    liveByIdentity.set(key, [...(liveByIdentity.get(key) ?? []), i]);
+  }
+  zero.duplicateForks = [...liveByIdentity.values()].filter((g) => g.length > 1).length;
+
+  // 3 · STRANDED PATCH — a change held back on a row whose own replacement
+  //     upload has already published. Publication is what APPLIES a patch, so
+  //     a patch surviving it is a correction that will never reach anybody.
+  const publishedUploads = new Set(uploads.filter((u: any) => u.published_at)
+    .map((u: any) => u.id));
+  zero.strandedPatches = items.filter((i: any) =>
+    i.pending_patch && i.pending_upload_id && publishedUploads.has(i.pending_upload_id)).length;
+
+  // 4 · IMPOSSIBLE LIFECYCLE — a row on the marketplace with no photograph.
+  //     `enforceStrictPrimaryImages` exists to make this impossible, so a
+  //     non-zero here is that sweep having failed rather than a taste
+  //     question. Counted only where the corpus expected a photograph, so a
+  //     document that honestly carries none is not read as a broken row.
+  const imagedUploads = new Set(report
+    .filter((r: any) => manifest.find((e: any) => e.name === r.name)?.expect?.image === 'facade_page_1')
+    .map((r: any) => r.uploadIdA).filter(Boolean));
+  zero.activeWithoutPhotograph = items.filter((i: any) =>
+    i.lifecycle_status === 'active' && !i.primary_image_id
+    && imagedUploads.has(i.upload_id)).length;
+
+  // 5 · MID-FLIGHT — an error written on a status meaning "still working",
+  //     and an upload left at `parsing` with nothing coming. Both are the
+  //     state that spun sixteen rows through the reader sweep for ever.
+  zero.uploadsMidFlight = uploads.filter((u: any) =>
+    !u.deleted_at && u.status === 'parsing' && u.error_code).length;
+
+  // 6 · FALSE "NOTHING IMPORTED" — an upload reporting zero records for a
+  //     document the corpus says states properties. The original incident's
+  //     own symptom, asked of the database rather than of the reader.
+  const expectedByUpload = new Map<string, { want: number; named: boolean }>();
+  for (const r of report as any[]) {
+    const entry = manifest.find((e: any) => e.name === r.name);
+    if (!entry) continue;
+    const want = { want: entry.expect.properties ?? 0, named: !!entry.expect.known_limit };
+    if (r.uploadIdA) expectedByUpload.set(r.uploadIdA, want);
+    if (r.uploadIdB) expectedByUpload.set(r.uploadIdB, want);
+  }
+  zero.falseNothingImported = uploads.filter((u: any) => {
+    const want = expectedByUpload.get(u.id);
+    // A named limit is a gap this corpus has already accounted for; counting
+    // it here would report the same thing twice and under a harsher name.
+    return !!want && want.want > 0 && !want.named
+      && Number(u.records_detected ?? 0) === 0;
+  }).length;
+
+  // 7 · WRONG PROPERTY — a created property whose lot the corpus never named.
+  //     The strongest of the seven: it is the one that would put somebody
+  //     else's house on a builder's marketplace.
+  const expectedLots = new Set<string>();
+  for (const e of manifest as any[]) {
+    for (const r of (e.expect.rows ?? [])) {
+      if (r.lot_number) expectedLots.add(String(r.lot_number));
+    }
+  }
+  zero.wrongProperties = items.filter((i: any) =>
+    i.lot_number && !expectedLots.has(String(i.lot_number))).length;
+
+  invariants.totals = totals;
+  invariants.zero = zero;
+
+  for (const [name, count] of Object.entries(zero)) {
+    invariant(`zero/${name}`, Number(count) === 0, String(count));
+  }
+  /*
+   * AND THE COMPLETENESS NUMBER ITSELF IS ASSERTED, not merely printed.
+   * Every expected field must be delivered except those a named limit
+   * already accounts for — which is the same standard 6c holds each field
+   * to, restated as one number so a regression in coverage is visible as a
+   * number rather than as a longer failure list.
+   */
+  invariant('every-expected-field-was-extracted',
+    totals.fieldsMissing.length === 0,
+    JSON.stringify({ expected: totals.fieldsExpected, delivered: totals.fieldsDelivered,
+      missing: totals.fieldsMissing, namedLimits: totals.fieldsMissingNamedLimit }));
+}
+
 // 7 · The verdict
 // ---------------------------------------------------------------------------
 console.log(JSON.stringify({ report, invariants, fails, limits, modelCallAttempts, urlFetches }, null, 2));

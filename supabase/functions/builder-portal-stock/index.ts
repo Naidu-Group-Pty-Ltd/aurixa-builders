@@ -61,6 +61,7 @@ import {
 import { googleSheetsRef } from '../_shared/builderStock/googleSheetsSource.pure.ts';
 import { serveStockImage } from '../_shared/builderStock/serveStockImage.ts';
 import { closeRefusedUpload } from '../_shared/builderStock/closeRefusedUpload.ts';
+import { importCountColumns } from '../_shared/builderStock/recordImportOutcome.ts';
 import {
   isTraversableBranch, rowSourceBranches,
 } from '../_shared/builderStock/sourceBranches.pure.ts';
@@ -446,12 +447,17 @@ Deno.serve(async (req) => {
       const outcomeDetail = result.summary.failures.length
         ? { failures: result.summary.failures }
         : (sourceNotice ? sourceNotice.detail : null);
+      /*
+       * THE COUNTS ARE THE SAME FACT HOWEVER THE IMPORT WAS REACHED, so they
+       * are named once — in `recordImportOutcome.ts`, which the acceptance
+       * gate calls too. This write states them inline because it also writes
+       * the status and the source notice, which are NOT alike across callers
+       * and must not be made alike; `IMPORT_COUNT_COLUMNS` is what keeps the
+       * shared function and this one from naming different columns.
+       */
       const { data: updated } = await supabase.from('builder_stock_uploads').update({
         status: result.uploadStatus,
-        records_detected: result.summary.detected,
-        records_imported: result.summary.imported,
-        records_updated: result.summary.updated,
-        records_failed: result.summary.failed,
+        ...importCountColumns(result.summary),
         error_code: result.summary.failures.length ? null : (sourceNotice?.code ?? null),
         error_detail: (outcomeDetail || importDiagnosis)
           ? { ...(outcomeDetail ?? {}), ...(importDiagnosis ?? {}) }
