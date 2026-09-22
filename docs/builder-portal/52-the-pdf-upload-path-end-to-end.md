@@ -344,6 +344,22 @@ bug produced.
 2,952,873 bytes, `application/gzip` — the exact count `languageData.ts`
 asserts before it will use it.
 
+**Re-verified after background settlement**, which is a separate reading and
+not a repeat of the first one. Seven minutes later the row is `complete`,
+published, reader 12, `building_size_sqm` still 190.00, no `pending_patch`,
+image work `settled` with the photograph attached, and the settler's ticks read
+`claimed: 0, claimable: 0, outstanding: 0` — quiescent.
+
+**One thing moved between the two reads and it is worth writing down.** The
+upload's counts went from `imported: 0, updated: 1` to `imported: 1,
+updated: 0`, and the status from `imported` to `complete`. Nothing re-imported:
+the log names it — `finalisation recovered`, then `upload settled`. The two
+counts answer different questions. The sweep's describe **that run**, which
+updated a row that already existed; the recovery's describe the **upload's
+standing state**, which is that it supplies one property. Reading either as the
+other is the "two counters counting different things" mistake this codebase has
+already paid for once, in `sectionCountForTier`.
+
 ---
 
 ## 10 · The deploy that reported success and shipped a mixture
