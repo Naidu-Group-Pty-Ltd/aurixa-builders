@@ -33,7 +33,10 @@ import {
   claimOneImageWorkItem, completeItemWork,
 } from '../../supabase/functions/_shared/builderStock/itemWorkClaim.ts';
 import { settleClaimedItem } from '../../supabase/functions/_shared/builderStock/settleItemImages.ts';
-import { settleUploadSourceImages } from '../../supabase/functions/_shared/builderStock/settleSourceImages.ts';
+import {
+  readOutstandingUploads, runSettlementTick, settleUploadSourceImages,
+} from '../../supabase/functions/_shared/builderStock/settleSourceImages.ts';
+import { publishUploadIfReady } from '../../supabase/functions/_shared/builderStock/itemWorkClaim.ts';
 import { enforceStrictPrimaryImages } from '../../supabase/functions/_shared/builderStock/primaryImage.ts';
 
 // ---------------------------------------------------------------------------
@@ -211,28 +214,124 @@ const fileServer = Deno.serve({ port: 54996, onListen: () => {} }, (req) => {
  * BOUNDED, because a gate that can spin is a gate nobody runs. The bound is
  * generous enough for the ladder and small enough to notice.
  */
-const IMAGERY_MAX_CLAIMS = 40;
+const IMAGERY_MAX_CLAIMS = 200;
+const IMAGERY_MAX_ROUNDS = 12;
+/** How many times one property may be worked before the gate gives up on it. */
+const IMAGERY_MAX_PER_ITEM = 10;
 
+/**
+ * ===========================================================================
+ * RUN THE SETTLER THE WAY THE SETTLER RUNS.
+ * ===========================================================================
+ *
+ * Every function here is the one `builder-stock-image-settler` calls, in the
+ * order it calls them: claim a property's image work, settle the claimed
+ * stage, record the completion; then take the uploads that are actually
+ * OUTSTANDING and settle those; then enforce the primary pointers; then
+ * publish what is ready.
+ *
+ * THE MARKER GATE IS THE LOAD-BEARING PART, and leaving it out was a real
+ * defect in this harness. The first version called `settleUploadSourceImages`
+ * unconditionally on every round, where production asks
+ * `readOutstandingUploads` first and settles only what is behind. Twelve
+ * unconditional rounds re-extracted the document's media twelve times and left
+ * THIRTY-ONE image rows describing TWO pictures — a duplication the product
+ * does not produce, in a harness that exists to detect duplication.
+ *
+ * ONE DEVIATION, STATED. Production rotates one phase per tick
+ * (`choosePhase`), so provenance, eligibility and sanitization take turns and
+ * none starves; this drives all three each round, bounded by the same
+ * candidate flags. It reaches the same end state in fewer rounds and cannot
+ * reach a state the rotation could not, because the flags — not the rotation —
+ * are what decide whether there is work.
+ */
 async function settleImagery(organisationId: string, uploadId: string) {
-  const worked: string[] = [];
-  for (let i = 0; i < IMAGERY_MAX_CLAIMS; i += 1) {
-    const claim = await claimOneImageWorkItem(db, { leaseSeconds: 120, organisationId });
-    if (!claim.available || !claim.item) break;
-    const item = claim.item;
-    const settlement = await settleClaimedItem(db, item, {
-      deadlineAt: Date.now() + 20_000,
-    });
-    await completeItemWork(db, item.id, {
-      nextStage: settlement.nextStage,
-      result: settlement.result,
-      progressed: settlement.progressed,
-    });
-    worked.push(`${item.id}:${settlement.stage}->${settlement.nextStage}`);
-    if (!settlement.progressed) break;
+  const rounds: string[] = [];
+  const attempts = new Map<string, number>();
+  let previous = '';
+  for (let round = 0; round < IMAGERY_MAX_ROUNDS; round += 1) {
+    for (let i = 0; i < IMAGERY_MAX_CLAIMS; i += 1) {
+      const claim = await claimOneImageWorkItem(db, { leaseSeconds: 120, organisationId });
+      if (!claim.available || !claim.item) break;
+      const item = claim.item;
+      /*
+       * TERMINATION IS THE HARNESS'S PROBLEM, NOT THE ROW'S. An earlier
+       * version bounded the loop by writing `retryAfterSeconds: 3600` on any
+       * quiet pass, which parked a property for an hour on the first quiet
+       * pass of the `source` stage — the ladder never reached `eligibility`
+       * and eleven documents reported no photograph. Production does not do
+       * that: the cron comes back in a minute. So the delay is the product's
+       * own and the bound is a count this loop keeps.
+       */
+      const seen = (attempts.get(item.id) ?? 0) + 1;
+      attempts.set(item.id, seen);
+      if (seen > IMAGERY_MAX_PER_ITEM) {
+        await completeItemWork(db, item.id, {
+          result: 'acceptance harness: attempt ceiling reached',
+          progressed: false, retryAfterSeconds: 3600,
+        });
+        continue;
+      }
+      const settlement = await settleClaimedItem(db, item, {
+        deadlineAt: Date.now() + 20_000,
+      });
+      await completeItemWork(db, item.id, {
+        nextStage: settlement.nextStage,
+        result: settlement.result,
+        progressed: settlement.progressed,
+      });
+    }
+
+    // Only what is genuinely behind, exactly as the tick decides it.
+    const outstanding = await readOutstandingUploads(db, { limit: 50 });
+    const mine = (outstanding.rows ?? []).filter((c: any) => c.id === uploadId);
+    if (mine.length) {
+      await runSettlementTick(mine, { maxSettled: 6, deadlineAt: Date.now() + 40_000 },
+        (candidate: any) => settleUploadSourceImages(db, {
+          organisationId: candidate.organisation_id,
+          uploadId: candidate.id,
+          deadlineAt: Date.now() + 30_000,
+          needsProvenance: candidate.needsProvenance,
+          needsEligibility: candidate.needsEligibility,
+          needsSanitization: candidate.needsSanitization,
+        }));
+    }
+    await enforceStrictPrimaryImages(db, organisationId);
+    /*
+     * PUBLICATION IS PART OF THE TICK, and a gate that never publishes proves
+     * nothing about a card a customer can open.
+     */
+    try { await publishUploadIfReady(db, uploadId); } catch { /* reported by state */ }
+
+    /*
+     * QUIESCENT IS A PROPERTY OF EVERYTHING THE PIPELINE WRITES, not of the
+     * table that happens to be convenient to read. Sanitization and the
+     * overlay clearance write to `builder_stock_item_images`, so a shape read
+     * from the items alone stopped changing while image work was outstanding.
+     */
+    const { data } = await db.from('builder_stock_items')
+      .select('id, image_work_stage, primary_image_id, lifecycle_status')
+      .eq('upload_id', uploadId);
+    const { data: imgRows } = await db.from('builder_stock_item_images')
+      .select('id, processing_status, source_detail').eq('upload_id', uploadId);
+    const { data: up } = await db.from('builder_stock_uploads')
+      .select('published_at, publication_blocked_reason').eq('id', uploadId).maybeSingle();
+    const shape = JSON.stringify([
+      (data ?? []).map((r: any) =>
+        [r.id, r.image_work_stage, r.primary_image_id, r.lifecycle_status]).sort(),
+      (imgRows ?? []).map((r: any) => [
+        r.id, r.processing_status,
+        r.source_detail?.marketplace_eligibility_state ?? null,
+        r.source_detail?.sanitization_clearance ? 'cleared' : null,
+        r.source_detail?.sanitization_failure ? 'failed' : null,
+      ]).sort(),
+      [up?.published_at ?? null, up?.publication_blocked_reason ?? null],
+    ]);
+    rounds.push(`r${round}:${(data ?? []).map((r: any) => r.image_work_stage).join(',')}`);
+    if (shape === previous) break;
+    previous = shape;
   }
-  await settleUploadSourceImages(db, { organisationId, uploadId });
-  await enforceStrictPrimaryImages(db, organisationId);
-  return worked;
+  return rounds;
 }
 
 // ---------------------------------------------------------------------------

@@ -35,6 +35,7 @@ import {
   roleDetail, type SourceImageRoleAssignment,
 } from './sourceImageRole.pure.ts';
 import { carriedSanitizationFor } from './sourceImages.ts';
+import { stockImageUpsertKey } from './stockImageUpsertKey.pure.ts';
 
 /** What a caller must give us, and nothing it can decide for itself. */
 export interface AttachBuilderImageInput {
@@ -167,7 +168,7 @@ export async function attachBuilderImage(
      * corrected photograph REPLACES the one before it instead of leaving it in the
      * gallery, still eligible, still competing for the card.
      */
-  }, { onConflict: 'stock_item_id,source_stage,source_reference' }).select('id').maybeSingle();
+  }, { onConflict: stockImageUpsertKey(input.stockItemId) }).select('id').maybeSingle();
 
   if (error || !data) {
     return { error: String((error as { message?: string })?.message ?? 'the image could not be stored') };

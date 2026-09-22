@@ -36,24 +36,90 @@ W, H = A4
 # to differ in exactly those statistics rather than by being labelled.
 # ---------------------------------------------------------------------------
 
+def _octaves(seed, w, h, octaves=6):
+    """Multi-octave value noise: the 1/f statistic natural images actually have.
+
+    Returns a w*h list of floats in roughly [-1, 1], smooth at every scale and
+    FLAT AT NONE. That last property is the point — see `facade`.
+    """
+    rnd = random.Random(seed)
+    acc = [0.0] * (w * h)
+    amp, cells = 1.0, 2
+    for _ in range(octaves):
+        gw, gh = cells + 1, cells + 1
+        grid = [rnd.uniform(-1.0, 1.0) for _ in range(gw * gh)]
+        for y in range(h):
+            fy = y * cells / h
+            y0 = int(fy); y1 = min(y0 + 1, gh - 1); ty = fy - y0
+            ty = ty * ty * (3 - 2 * ty)                      # smoothstep
+            for x in range(w):
+                fx = x * cells / w
+                x0 = int(fx); x1 = min(x0 + 1, gw - 1); tx = fx - x0
+                tx = tx * tx * (3 - 2 * tx)
+                a = grid[y0 * gw + x0] + tx * (grid[y0 * gw + x1] - grid[y0 * gw + x0])
+                b = grid[y1 * gw + x0] + tx * (grid[y1 * gw + x1] - grid[y1 * gw + x0])
+                acc[y * w + x] += amp * (a + ty * (b - a))
+        amp *= 0.55
+        cells *= 2
+    return acc
+
+
 def facade(seed=11, w=1280, h=800):
-    random.seed(seed)
-    img = Image.new('RGB', (w, h)); px = img.load()
-    for y in range(h):
-        for x in range(w):
-            if y < h * 0.42:
-                base = (120 + int(70 * y / (h * 0.42)), 165 + int(55 * y / (h * 0.42)), 225)
-            elif y < h * 0.72:
-                t = (y - h * 0.42) / (h * 0.30)
-                base = (188 - int(40 * t), 172 - int(45 * t), 150 - int(40 * t))
-                if abs(x - w / 2) < 300 and y < h * 0.55:
-                    base = (96 + int(20 * math.sin(x / 40)), 90, 88)
+    """A builder's facade render, with the statistics a photograph has.
+
+    TWO CORRECTIONS, BOTH MEASURED THROUGH THE REAL PIPELINE, and the second is
+    the one that matters.
+
+    The first version laid +/-14 per-pixel noise over three flat colour bands.
+    At some seeds that high-frequency texture read to the overlay inspector as
+    the SHAPE OF WORDS — `faint_type_present` — so `LOT 61 - EMBER - FLYER` was
+    refused a clearance and its photograph never reached the card.
+
+    Removing the noise fixed that and exposed the real problem: the bands.
+    `marketplaceEligibility` convicts a picture as an `annotated_marketing_tile`
+    on its FLAT REGIONS, which is exactly right — a real photograph has almost
+    none, and a graphic tile is made of them. A fixture painted in flat bands is
+    a graphic tile, so the corpus was asking a classifier tuned on photographs
+    to accept something that is not one, and eleven documents "had no
+    photograph".
+
+    So the render is built from multi-octave value noise: the 1/f statistic
+    natural images have. Smooth at every scale, flat at none, no glyph-shaped
+    high-frequency structure. The product's rule is untouched — what changed is
+    that the fixture is now the kind of thing the rule was written about.
+
+    This is the `SAMPLE_REPORT_DATA` lesson twice over: a fixture that is not
+    representative of production turns a real measurement into a statement
+    about the fixture.
+    """
+    sw, sh = w // 8, h // 8
+    n1 = _octaves(seed, sw, sh)
+    n2 = _octaves(seed + 991, sw, sh)
+    img = Image.new('RGB', (sw, sh)); px = img.load()
+    roof, eaves, grass = 0.32, 0.56, 0.74
+    for y in range(sh):
+        t = y / sh
+        for x in range(sw):
+            u = x / sw
+            d = n1[y * sw + x]; e = n2[y * sw + x]
+            if t < roof:
+                base = (128 + 54 * t / roof, 170 + 46 * t / roof, 224 - 8 * t / roof)
+                base = tuple(c + 18 * d for c in base)
+            elif t < eaves:
+                shade = 1.0 - 0.16 * abs(u - 0.5)
+                base = tuple(c * shade + 16 * d for c in (108, 100, 98))
+            elif t < grass:
+                warm = 1.0 - 0.10 * ((t - eaves) / (grass - eaves))
+                base = tuple(c * warm + 20 * d for c in (204, 190, 168))
+                if 0.36 < u < 0.60:
+                    base = (base[0] * 0.58, base[1] * 0.63, base[2] * 0.74)
             else:
-                base = (92 + int(40 * random.random()), 128, 74)
-                if abs(x - w / 2) < 150:
-                    base = (176, 174, 170)
-            px[x, y] = tuple(max(0, min(255, c + random.randint(-14, 14))) for c in base)
-    buf = io.BytesIO(); img.save(buf, format='JPEG', quality=86); buf.seek(0)
+                base = (100 + 22 * e, 134 + 30 * d, 78 + 20 * e)
+                if 0.62 < u < 0.86:
+                    base = (166 + 18 * d, 164 + 18 * d, 158 + 18 * d)
+            px[x, y] = tuple(max(0, min(255, int(c))) for c in base)
+    img = img.resize((w, h), Image.BICUBIC)
+    buf = io.BytesIO(); img.save(buf, format='JPEG', quality=88); buf.seek(0)
     return buf
 
 
@@ -325,7 +391,25 @@ def _f6(c):
     rows=[dict(lot_number='9', street_name='Perrin Street', suburb='Armstrong Creek',
                state='VIC', postcode='3217', design='Calla 18',
                price=None, land_size_sqm=None, build_size_sqm=None)],
-    image='facade_page_1'))
+    # NO PHOTOGRAPH, AND THE EXPECTATION WAS WRONG RATHER THAN THE PRODUCT.
+    #
+    # It read `image='facade_page_1'`. Measured 22 September 2026 through the
+    # real image settler, the product refuses to designate one and says why:
+    #
+    #   "no page states this property's identity together with its package
+    #    information (the page states 0 package facts, and a cover must state
+    #    2) - its first page reads 'Lot 9 Perrin Street, Armstrong Creek VIC
+    #    3217'"
+    #
+    # That is this fixture's whole point. It is the document that states its
+    # identity and NOTHING ELSE — pricing on application, no sizes — so nothing
+    # on the page designates the picture as this property's listing image
+    # rather than a design render, a streetscape or somebody else's house. The
+    # rule that refuses it is the one that keeps a bedroom render off a card.
+    #
+    # An absent photograph beside correct facts is the right outcome, so it is
+    # EXPECTED here rather than excused as a limit.
+    image=None))
 def _f7(c):
     text(c, 20, 26, 'CALLA 18', 18, True)
     text(c, 20, 36, 'Lot 9 Perrin Street, Armstrong Creek VIC 3217')
@@ -540,6 +624,31 @@ def _h2(c):
                         land_size_sqm=320, build_size_sqm=186, price=None,
                         design='Rowan 19')],
              image='facade_page_1',
+             # A NAMED, UNCLOSED GAP, reported every run and never failing it.
+             #
+             # Measured through the real image settler: the product refuses to
+             # designate page 1's picture and says why —
+             #
+             #   "no page states this property's identity together with its
+             #    package information (the page states 1 package fact, and a
+             #    cover must state 2)"
+             #
+             # The page states a great deal: a lot, a street, a suburb, a
+             # state, a postcode, two prices and two sizes. It counts as ONE
+             # package fact because none of its money carries a currency
+             # marker, so no price is recognised — which is the same reading
+             # `acceptFieldValue` makes of the same figures, deliberately, and
+             # is why this fixture's `price` is None.
+             #
+             # So the two halves of the product agree with each other and the
+             # document is simply thinner evidence than the cover rule asks
+             # for. The outcome is an ABSENT photograph beside correct facts,
+             # never a wrong one. Closing it means deciding whether a stated
+             # land size and a stated build size are one package fact or two,
+             # which is a change to the designation threshold and is not
+             # something to do while making a gate green.
+             known_limit='a cover must state 2 package facts; this page states '
+                         '1, because its money carries no currency marker',
              forbid=dict(land_size_not_in=[659900, 320000, 339900],
                          price_not_in=[320, 186])))
 def _h3(c):

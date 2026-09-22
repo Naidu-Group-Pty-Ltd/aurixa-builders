@@ -25,6 +25,7 @@ import {
   type NormalisedStockRecord,
 } from './normalise.pure.ts';
 import { parseBuilderAddressLine } from '../builderStockAddress.pure.ts';
+import { stockImageUpsertKey } from './stockImageUpsertKey.pure.ts';
 import { IMAGE_BUDGET_MS } from './importBudget.pure.ts';
 import {
   describeIdentityChange, identityDifferences, reReadHoldsSameProperty,
@@ -1619,7 +1620,7 @@ export async function attachDocumentMedia(
           // about these exact bytes — and only ever the keys that stage owns.
           ...carried,
         },
-      }, { onConflict: 'stock_item_id,source_stage,source_reference' });
+      }, { onConflict: stockImageUpsertKey(stockItemId) });
       attached.push({
         reference: media.name.slice(0, 400),
         stockItemId,
