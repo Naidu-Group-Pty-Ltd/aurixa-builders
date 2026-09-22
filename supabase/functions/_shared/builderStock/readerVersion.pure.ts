@@ -184,7 +184,7 @@
  * Every document already imported is read again, because a document whose
  * headings were unreadable was read without them.
  */
-export const DETERMINISTIC_READER_VERSION = 11;
+export const DETERMINISTIC_READER_VERSION = 12;
 
 /*
  * VERSION 11 — A PHRASE'S OWN WORDS ARE HEADINGS TOO.
@@ -198,6 +198,33 @@ export const DETERMINISTIC_READER_VERSION = 11;
  *
  * Re-read, because a row carrying a page heading as its estate is worse than a
  * row carrying no estate at all.
+ */
+/*
+ * VERSION 12 — THREE THINGS THE READER NOW SEES THAT IT COULD NOT.
+ *
+ * A QUANTIFIER TURNS A THING INTO A MEASURE OF IT. `TOTAL HOME AREA` is the
+ * building size and `TOTAL LAND` is the land size, read at the label layer
+ * for every measured field rather than as vocabulary entries — so a heading
+ * no alias table lists is still understood, and `TOTAL HOUSE` does not become
+ * the design.
+ *
+ * A PAGE WITH NO TEXT LAYER IS READ. `pdf_no_text_layer` was a refusal and is
+ * now a seam: the page is recognised and the SAME deterministic layers are
+ * asked the same questions. A document that was reported unreadable may now
+ * carry every field it always stated.
+ *
+ * AND A URL'S DISPLAY LABEL IS NO LONGER EVIDENCE. The reader corroborates an
+ * unplaced page line against the document's NAME, and a linked source was
+ * handing it `host/…/segment` — so a hostname could settle a house design,
+ * and a link with no filename lost a corroboration the same bytes had as an
+ * upload. See `documentName.pure.ts`.
+ *
+ * Every stored document is read again, and the first two are why: this
+ * version is the difference between a field the page states and a field the
+ * record holds. MEASURED on the production row for
+ * `Lot 37 - Miami 190 - Property Package.pdf`, settled at version 11 and
+ * carrying no building size, no price and no design while the page sets all
+ * three in tracked-out display type.
  */
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */
