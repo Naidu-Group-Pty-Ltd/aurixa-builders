@@ -140,6 +140,40 @@ Normalisation made two headings legible and a reader downstream read their
 legibility as evidence. Headings are now kept out of the candidate pool, once,
 where every reader draws from it.
 
+### And a phrase's own words are headings — measured on the deployed reader
+
+The guard above shipped and was **wrong within the hour**, on the very document
+it was written for. Read out of the import log, not out of the code:
+
+```
+deterministic_read_by: "… development_name:leading_field_name …"
+```
+
+and the builder's card carried `MASTERPLAN` as the estate, on a document whose
+address line says `Sandpiper Estate`. The page is the estate's masterplan
+drawing; `MASTERPLAN` is its heading.
+
+**One join and one split, each correct.** The page sets `E S T A T E` and
+`M A S T E R P L A N` side by side. The phrase rule joins them — which is how
+the page reads, and is what makes `ESTATE` legible as a label at all. Then
+`readLeadingFieldName` does exactly its job: a line opening with a field name,
+the rest its value. The guard held only the joined phrase `ESTATE MASTERPLAN`
+and did not recognise the half handed back.
+
+So every **word** the page set as display type is recorded, not only the phrase
+they were assembled into. A reader may legitimately take a phrase apart, and
+what it hands back is still type a designer tracked out. Both transports are
+covered and both are asserted, because they assemble the phrase differently:
+positioned runs give two units the phrase rule joins, flattened text gives one
+string with the wider word gap inside it.
+
+The lesson is the one this programme keeps paying for: **read the production
+log before modelling the production behaviour.** Nothing about this was visible
+from the source, the specs or the acceptance corpus — the corpus fixture tracks
+out `T O T A L  P A C K A G E`, where the label and the value are not both
+display type, so it could not have caught it. What found it was one query
+against `function_logs` naming the reader.
+
 ## 7 · One gate. Readers discover evidence; they do not set the standard
 
 Whether a value *belongs* to a field is discovery, and it is each reader's

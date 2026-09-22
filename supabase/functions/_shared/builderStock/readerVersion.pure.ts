@@ -184,7 +184,21 @@
  * Every document already imported is read again, because a document whose
  * headings were unreadable was read without them.
  */
-export const DETERMINISTIC_READER_VERSION = 10;
+export const DETERMINISTIC_READER_VERSION = 11;
+
+/*
+ * VERSION 11 — A PHRASE'S OWN WORDS ARE HEADINGS TOO.
+ *
+ * Version 10 wrote `development_name = MASTERPLAN` onto a builder's card,
+ * measured on the deployed reader minutes after it shipped. The page sets
+ * `E S T A T E` and `M A S T E R P L A N` side by side; the phrase rule joined
+ * them, `readLeadingFieldName` split the phrase into a label and a value, and
+ * the guard held only the joined phrase. One join and one split, each correct,
+ * and the display type came out the other side as a value.
+ *
+ * Re-read, because a row carrying a page heading as its estate is worse than a
+ * row carrying no estate at all.
+ */
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */
 export const READER_SETTLED_VERSION_COLUMN = 'reader_settled_version';

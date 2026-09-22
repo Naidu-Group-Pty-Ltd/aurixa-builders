@@ -398,3 +398,74 @@ describe('a tracked-out LAND + BUILD heading over a package price', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// 5 · The heading that reached a builder's card
+// ---------------------------------------------------------------------------
+
+/**
+ * `development_name = MASTERPLAN`, MEASURED ON THE DEPLOYED READER.
+ *
+ * Read out of the import log on 22 September 2026, minutes after the
+ * normalisation layer shipped:
+ *
+ *     deterministic_read_by: "... development_name:leading_field_name ..."
+ *
+ * and the builder's card carried `MASTERPLAN` as the estate, on a document
+ * whose address line says `Sandpiper Estate`. The page is the estate's
+ * masterplan drawing; `MASTERPLAN` is its heading.
+ *
+ * ONE JOIN AND ONE SPLIT, EACH CORRECT. The page sets `E S T A T E` and
+ * `M A S T E R P L A N` side by side; the phrase rule joins them, which is how
+ * the page reads and is what makes `ESTATE` legible as a label at all. Then
+ * `readLeadingFieldName` does exactly its job — a line opening with a field
+ * name, the rest its value. The guard held only the joined phrase, so the
+ * display type came out the other side as a value.
+ */
+describe('a tracked-out label beside a tracked-out heading', () => {
+  const page: Array<[string, number, number]> = [
+    ['E S T A T E', 56.7, 62.0],
+    ['M A S T E R P L A N', 130.0, 188.0],
+  ];
+  const units = () => normaliseUnits(
+    page.map(([text, x, width]) => ({ text, x, row: 0, width })));
+
+  it('reads as one phrase, because that is how the page reads', () => {
+    expect(units().map((u) => u.text)).toEqual(['ESTATE MASTERPLAN']);
+    expect(units()[0].normalisation?.rule).toBe('letter_spaced_phrase');
+  });
+
+  it('records the phrase AND each word the page set as display type', () => {
+    // A reader may legitimately take a phrase apart; what it hands back is
+    // still type a designer tracked out.
+    expect([...trackedOutHeadings(units())].sort())
+      .toEqual(['ESTATE', 'ESTATE MASTERPLAN', 'MASTERPLAN']);
+  });
+
+  it('NEVER writes the heading onto a property as its estate', () => {
+    // Both transports, because they assemble the phrase differently: the
+    // flattened page carries one string with the wider word gap inside it,
+    // the positioned page carries two runs the phrase rule joins.
+    const flat = readPdfBrochure([[
+      'E S T A T E  M A S T E R P L A N',
+      'Lot 37, Sandpiper Estate, Tweed Heads NSW',
+    ].join('\n')]);
+    expect(JSON.stringify(flat.rows ?? [])).not.toContain('MASTERPLAN');
+
+    const positioned = readPdfBrochure(
+      ['ESTATE MASTERPLAN\nLot 37, Sandpiper Estate, Tweed Heads NSW'],
+      {
+        positionedPages: [{
+          page: 1,
+          items: [
+            { text: 'E S T A T E', x: 56.7, y: 700, width: 62 },
+            { text: 'M A S T E R P L A N', x: 130, y: 700, width: 188 },
+            { text: 'Lot 37, Sandpiper Estate, Tweed Heads NSW',
+              x: 56.7, y: 680, width: 240 },
+          ],
+        }],
+      },
+    );
+    expect(JSON.stringify(positioned.rows ?? [])).not.toContain('MASTERPLAN');
+  });
+});
