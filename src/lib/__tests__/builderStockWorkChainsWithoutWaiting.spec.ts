@@ -216,6 +216,16 @@ describe('no delay is written on a path where nothing failed', () => {
      */
     expect(release).toContain('.then(() => {}, () => {});');
     expect(release).not.toContain('void db.rpc(');
+    /*
+     * AND IT NAMES NO STAGE. The completion reads a null `p_next_stage` as
+     * "leave the stage where it is". Passing the stage the claim was taken at
+     * is stale the instant the settler's own completion resolves, and a
+     * release firing in that window would write the old rung back and walk
+     * the property DOWN its ladder. A release hands back a lease; it has no
+     * opinion about which stage a property is on.
+     */
+    expect(release).toContain('p_next_stage: null,');
+    expect(release).not.toContain('p_next_stage: held.stage');
   });
 });
 
