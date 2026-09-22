@@ -161,7 +161,15 @@
  * field it was thought not to state was in them, either side of a middle
  * dot. A separator read as a word is why. See `splitOnFieldSeparators`.
  */
-export const DETERMINISTIC_READER_VERSION = 8;
+/*
+ * VERSION 9 — AN ADDRESS LINE WITH NO POSTCODE, AND THE ESTATE INSIDE IT.
+ *
+ * `Lot 37, Sandpiper Estate, Tweed Heads NSW` stood a document down for want
+ * of four digits, while naming its lot, its estate, its suburb and its state.
+ * Version 8 also DROPPED that document's provisional row by disputing the
+ * estate; this restores it and corrects it. See `readComposedLocality`.
+ */
+export const DETERMINISTIC_READER_VERSION = 9;
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */
 export const READER_SETTLED_VERSION_COLUMN = 'reader_settled_version';
