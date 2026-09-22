@@ -11,6 +11,15 @@ CORPUS=${CORPUS:-/var/tmp/corpus}
 node scripts/stock-acceptance/build-database.mjs
 python3 scripts/stock-acceptance/make-corpus.py "$CORPUS"
 rm -rf /var/tmp/acceptance-storage
+# THE OCR MODEL IS AN ASSET NOW, NOT A MODULE — it answered 413 inside the
+# functions' deploy request and moved to the project's own storage, where
+# `languageData.ts` GETs it. The deploy workflow ships it to production; this
+# is the same act against the acceptance stack's object store, so the gate
+# proves OCR through the path production uses rather than around it. Placed
+# after the wipe, because the wipe is what makes a run start from nothing.
+OCR_OBJ=/var/tmp/acceptance-storage/builder-stock-lists/system/ocr/4.0.0_best_int
+mkdir -p "$OCR_OBJ"
+cp assets/ocr/eng.traineddata.gz "$OCR_OBJ/eng.traineddata.gz"
 curl -s -X POST "http://localhost:54998/rpc/nonexistent" >/dev/null 2>&1 || true
 # PostgREST caches the catalogue; a rebuilt database needs it reloaded.
 psql -h localhost -p 54999 -U postgres -d stock_acceptance -c "NOTIFY pgrst, 'reload schema'" >/dev/null
