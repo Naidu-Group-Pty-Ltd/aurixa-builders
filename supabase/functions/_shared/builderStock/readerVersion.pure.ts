@@ -169,7 +169,22 @@
  * Version 8 also DROPPED that document's provisional row by disputing the
  * estate; this restores it and corrects it. See `readComposedLocality`.
  */
-export const DETERMINISTIC_READER_VERSION = 9;
+/*
+ * VERSION 10 — TYPOGRAPHY IS NORMALISED ONCE, AND A VALUE IS TYPED ONCE.
+ *
+ * Two layers, one seam. `documentNormalisation.pure.ts` turns raw glyph and
+ * layout evidence into canonical units before any reader is asked a question —
+ * the field separator, the letter-spaced heading, the word gap inside it, and
+ * the tracked run that reaches the layout reader as ONE CELL PER GLYPH. And
+ * `fieldTypes.pure.ts` is the one gate every claim passes through, so money
+ * cannot become an area, an area cannot become an identifier and a room
+ * dimension cannot become a bedroom count — six rules that were written in
+ * four places in the reader and in three readers besides.
+ *
+ * Every document already imported is read again, because a document whose
+ * headings were unreadable was read without them.
+ */
+export const DETERMINISTIC_READER_VERSION = 10;
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */
 export const READER_SETTLED_VERSION_COLUMN = 'reader_settled_version';

@@ -113,6 +113,13 @@
  * label beside it.
  */
 import {
+  normaliseUnits,
+  trackedOutHeadings,
+  type NormalisedUnit,
+  type RawUnit,
+} from './documentNormalisation.pure.ts';
+import { acceptFieldValue, readsAsACount } from './fieldTypes.pure.ts';
+import {
   coerceNumber,
   coercePrice,
   fieldForHeader,
@@ -339,6 +346,16 @@ export interface PdfDeterministicReading {
      * an import log should be able to tell them apart.
      */
     declinedFields?: string[];
+    /**
+     * `field:reason` for every declined field the gate named a reason for, in
+     * `fieldTypes.pure.ts`'s own fixed vocabulary.
+     *
+     * A field name alone says a statement was refused and not what was wrong
+     * with it — `land_size_sqm` declined reads as a brochure with a missing
+     * measurement until the log can say `money_is_not_an_area`. The vocabulary
+     * is this product's, never a document's words, so it is safe to log.
+     */
+    declinedBecause?: string[];
     /**
      * `field:reader` for every field claimed, in this module's own reader
      * vocabulary. A log that says WHAT was read and not HOW cannot tell a
@@ -748,43 +765,20 @@ const COUNT_FIELDS: ReadonlySet<string> = new Set([
   'bedrooms', 'bathrooms', 'car_spaces',
 ]);
 
-/**
- * A COUNT IS A SMALL WHOLE NUMBER OF ROOMS, NEVER A MEASUREMENT.
+/*
+ * WHAT A COUNT, AN AMOUNT AND A DESIGNATION LOOK LIKE MOVED OUT OF THIS FILE.
  *
- * The production brochure states `Garage: 22.59m²` — the garage's AREA,
- * under a label this vocabulary reads as `car_spaces`. Taken at face value
- * that is a property with twenty-two car spaces, written by a document that
- * never said so. A count field's value is therefore checked for being a
- * count: a small number, optionally a half, and nothing else attached.
+ * `COUNT_VALUE`, `MAX_PLAUSIBLE_COUNT`, `statesACount`, `statesAnAmount`,
+ * `MEASURED_FIELDS`, `LOT_DESIGNATION`'s shape and the letter-spaced-value
+ * guard were six rules about WHAT A VALUE IS, written here because this is
+ * where the claims are. They are `fieldTypes.pure.ts`'s now, asked once at the
+ * one gate every claim passes through — and `readsAsACount` is imported back
+ * for the icon-row reader, which asks the same question while DISCOVERING
+ * rather than while deciding.
  */
-const COUNT_VALUE = /^\d{1,2}(?:\.5)?$/;
-const MAX_PLAUSIBLE_COUNT = 20;
 
-/**
- * A MEASUREMENT CARRIES A UNIT; A PRICE CARRIES A CURRENCY.
- *
- * The two fields this deployment measures in square metres are the only ones
- * whose LABEL is also what a package's price list calls its halves — `LAND`
- * and `HOUSE` — so a currency marker in the value is the document saying
- * which of the two it meant. Narrow on purpose: it asks about the value the
- * document printed and never about the size of the number, so a real
- * `1,204 m2` is untouched and nothing here has to know what land costs.
- */
-const MEASURED_FIELDS = new Set(['land_size_sqm', 'building_size_sqm']);
-
-/** The two fields that say WHICH property this is, and must look like it. */
+/** The two fields that say WHICH property this is. Suppression reads it. */
 const DESIGNATION_FIELDS = new Set(['lot_number', 'unit_number']);
-const CURRENCY_MARKER = /[$\u20ac\u00a3\u00a5]|\bAUD\b/i;
-
-function statesAnAmount(value: string): boolean {
-  return CURRENCY_MARKER.test(value);
-}
-
-function statesACount(value: string): boolean {
-  const trimmed = value.trim();
-  if (!COUNT_VALUE.test(trimmed)) return false;
-  return Number(trimmed) <= MAX_PLAUSIBLE_COUNT;
-}
 
 /** Is this label written as more than one of the thing it names? */
 function isPlural(labelTokens: readonly string[]): boolean {
@@ -1600,19 +1594,43 @@ function readLocalityLine(line: string): LocalityLine | null {
   return { suburb, state: state.toUpperCase(), postcode };
 }
 
-/** `49 Cockrell Rd,` — a street number, a name, and a type from the closed set. */
+/**
+ * `49 Cockrell Rd,` — a street number, a name, and a type from the closed set.
+ *
+ * OR `Lot 37 Fairweather Drive`, which is how builder stock is written before
+ * a street number exists. `readComposedAddressLine` has accepted that form on
+ * a ONE-LINE address since it was written (`Lot 9 Perrin Street, Armstrong
+ * Creek VIC 3217`); this reader, which takes the same address set on two
+ * lines, did not — so the identical address read completely in one shape and
+ * not at all in the other. The lot is dropped from the street, exactly as the
+ * composed reader drops it, because the field says WHERE and a lot says WHICH.
+ *
+ * THE WORD IS REQUIRED. A bare leading number is a street number here and a
+ * LOT on builder stock, and nothing in a line can tell them apart — measured
+ * in `builderStockAddress`, of 44 rows opening with a number that also carry a
+ * lot number it equals the lot in 44 and differs in none. So this reads `Lot`
+ * only where the document wrote it.
+ */
 function readStreetLine(line: string): string | null {
   const trimmed = String(line ?? '').trim().replace(/[.,]+$/, '');
-  const tokens = trimmed.split(/\s+/).filter(Boolean);
-  if (tokens.length < 3) return null;
-  // A number, optionally with a unit letter — never `20mm`, which is a size.
-  if (!/^\d{1,6}[A-Za-z]?$/.test(tokens[0])) return null;
+  let tokens = trimmed.split(/\s+/).filter(Boolean);
+  if (tokens.length >= 4 && /^lots?$/i.test(tokens[0])
+    && LOT_DESIGNATION.test(tokens[1])) {
+    tokens = tokens.slice(2);
+  } else {
+    // A number, optionally with a unit letter — never `20mm`, which is a size.
+    if (tokens.length < 3) return null;
+    if (!/^\d{1,6}[A-Za-z]?$/.test(tokens[0])) return null;
+    tokens = tokens.slice(1);
+    tokens.unshift('');
+  }
+  if (tokens.length < 2) return null;
   if (!STREET_TYPE.has(tokens[tokens.length - 1].toLowerCase())) return null;
-  const name = tokens.slice(1, tokens.length - 1);
-  if (!name.length) return null;
+  const name = tokens.filter(Boolean);
+  if (name.length < 2) return null;
   // The name is words; a digit in it is a specification, not a street.
   if (name.some((token) => HAS_DIGIT.test(token))) return null;
-  return trimmed;
+  return tokens[0] === '' ? trimmed : name.join(' ');
 }
 
 /**
@@ -2072,18 +2090,6 @@ export function pageExcludesOtherLots(lines: readonly string[]): boolean {
 }
 
 /**
- * Is this value a word a designer tracked out, rather than a value?
- *
- * Exported so the rule can be tested against the shape directly, and so the
- * floor below is asserted rather than described. See the call site.
- */
-export function isLetterSpacedType(value: string): boolean {
-  const tokens = String(value ?? '').trim().split(/\s+/).filter(Boolean);
-  if (tokens.length < 4) return false;
-  return tokens.every((token) => token.length === 1 && /\p{L}/u.test(token));
-}
-
-/**
  * Is this line the document talking about itself?
  *
  * Every answer of `true` is a POSITIVE recognition. There is no fall-through
@@ -2245,78 +2251,65 @@ function sameValue(field: string, a: string, b: string): boolean {
  * and BELOW is always the next line — byte for byte the reading this module
  * has always made.
  */
-interface BrochureUnit {
-  text: string;
-  x: number;
-  row: number;
-}
+/*
+ * A unit is `NormalisedUnit` and nothing else. Everything downstream reads
+ * `text` exactly as it always did; what it gains is `raw` — the page's own
+ * string — and `normalisation`, which says which rule produced the reading and
+ * from what. See `documentNormalisation.pure.ts`.
+ */
+type BrochureUnit = NormalisedUnit;
 
 /** How far apart two cells may start and still be one column. */
 const SAME_COLUMN_TOLERANCE = 12;
 
 /**
  * ===========================================================================
- * A MIDDLE DOT BETWEEN TWO FIELDS IS A SEPARATOR, NOT A WORD.
+ * THE ONE SEAM. RAW EVIDENCE IN, CANONICAL UNITS OUT.
  * ===========================================================================
  *
- * MEASURED 22 SEPTEMBER 2026 on `Lot 37 - Miami 190 - Property Package.pdf`,
- * read out of the 176 lines its own row recorded as attributed to nothing.
- * The document is dot-delimited throughout, and every field it was thought
- * not to state is sitting in one of those runs:
+ * A PDF reaches this reader two ways — page text and positioned runs — and
+ * both become units here. Everything after this point reads units, so this is
+ * where a document's TYPOGRAPHY stops being any reader's problem: the dot that
+ * separates two fields, the heading a designer tracked out, the word gap
+ * inside it. All three are resolved once, for both transports, in
+ * `documentNormalisation.pure.ts`, and none of them is a rule about a field.
  *
- *     Miami 190 · Spectral
- *     Sandpiper · Tweed Heads NSW
- *     190.38 m² · 4 bed · 2 bath · double garage
- *     LAND PRICE $780,000 · REGISTERING Q1 2027
- *
- * Read as whole lines, none of them matches anything: a design followed by a
- * facade name, an estate followed by a locality, and a specification run are
- * each one long string the vocabulary has no entry for. Split on the dot,
- * every segment is an ordinary statement this reader already understands —
- * measured on those lines, the reading goes from
- * `unsupported / too_few_fields_for_a_specification` to `complete`, and the
- * bedroom and bathroom counts arrive.
- *
- * It is the SAME character the reader was claiming as an estate one commit
- * ago. That is not a coincidence: a designer using it as a separator leaves
- * it standing alone wherever a segment either side is empty, and reading it
- * as a value was the first symptom of not reading it as punctuation.
- *
- * ONLY WHERE IT SEPARATES, which is what keeps this from cutting words. The
- * dot must have whitespace on BOTH sides, so `Ph 1300·555·020` and a decimal
- * are untouched, and a segment that ends up empty is dropped rather than
- * becoming a unit. The bullet `•` is deliberately NOT included: it opens a
- * list item rather than separating two fields, and the inclusions lists every
- * brochure carries are full of them.
+ * WHAT WAS HERE BEFORE was a copy of the separator rule and a per-field guard
+ * against letter-spaced type, which is how one idea comes to be written five
+ * times. The rules moved; the call sites did not have to.
  */
-const FIELD_SEPARATOR = /\s+[·–—]\s+/;
-
-function splitOnFieldSeparators(text: string): string[] {
-  return text.split(FIELD_SEPARATOR).map((part) => part.trim()).filter(Boolean);
-}
-
 function unitsFromPageText(page: string): BrochureUnit[] {
-  return String(page ?? '')
-    .split(/\r?\n/)
-    .map((line) => line.replace(/\s+/g, ' ').trim())
-    .filter(Boolean)
-    .flatMap((line) => splitOnFieldSeparators(line))
-    .map((text, row) => ({ text, x: 0, row }));
+  /*
+   * WITHOUT POSITIONS NOTHING CHANGES, and that is asserted rather than hoped.
+   * A flattened page produces one unit per line, every one at `x = 0` on a row
+   * of its own — so BESIDE is always absent and BELOW is always the next line,
+   * byte for byte the reading this module has always made. Normalisation is
+   * therefore run PER LINE and the rows are numbered afterwards: a line that
+   * splits into three statements contributes three rows, not one row of three.
+   */
+  const units: BrochureUnit[] = [];
+  for (const line of String(page ?? '').split(/\r?\n/)) {
+    for (const unit of normaliseUnits([{ text: line, x: 0, row: 0 }])) {
+      units.push({ ...unit, x: 0, row: units.length });
+    }
+  }
+  return units;
 }
 
 function unitsFromLayout(items: readonly PdfTextItem[]): BrochureUnit[] {
-  const units: BrochureUnit[] = [];
+  /*
+   * The cells carry their own set widths, so the phrase rule is measured here
+   * rather than guessed: `T O T A L` joins `H O M E` because the gap between
+   * them is of the order of the run's own width, and does not join a
+   * tracked-out word in the next column.
+   */
+  const raw: RawUnit[] = [];
   layoutLines(items).forEach((line, row) => {
     for (const cell of line.cells) {
-      const text = String(cell.text ?? '').replace(/\s+/g, ' ').trim();
-      // Split HERE rather than at the reader, so both ways of building a unit
-      // see the same statements. See `splitOnFieldSeparators`.
-      for (const part of splitOnFieldSeparators(text)) {
-        units.push({ text: part, x: cell.x, row });
-      }
+      raw.push({ text: cell.text, x: cell.x, row, width: cell.width });
     }
   });
-  return units;
+  return normaliseUnits(raw);
 }
 
 /** The unit drawn beside this one, on the same visual line. */
@@ -2609,7 +2602,7 @@ function countRowsOn(units: readonly BrochureUnit[]): number[][] {
   for (const unit of units) {
     const tokens = unit.text.trim().split(/\s+/).filter(Boolean);
     if (tokens.length !== COUNT_ROW_SIZE) continue;
-    if (!tokens.every(statesACount)) continue;
+    if (!tokens.every(readsAsACount)) continue;
     found.push(tokens.map(Number));
   }
 
@@ -2648,7 +2641,7 @@ function countRowsOn(units: readonly BrochureUnit[]): number[][] {
      * number. Three unrelated small integers on a band therefore buy a
      * candidate that no plan will confirm, and confirm nothing.
      */
-    const counts = row.filter((unit) => statesACount(unit.text));
+    const counts = row.filter((unit) => readsAsACount(unit.text));
     if (counts.length !== COUNT_ROW_SIZE) continue;
     found.push(counts.map((unit) => Number(unit.text.trim())));
   }
@@ -2833,6 +2826,14 @@ export function readPdfBrochure(
   let incidental = 0;
   /** Canonical fields the document stated and this reader declines by policy. */
   const declined = new Set<string>();
+  /**
+   * AND WHY. A field name alone says a statement was refused and not what was
+   * wrong with it — `land_size_sqm` declined is a builder's brochure with a
+   * missing measurement until the log can say `money_is_not_an_area`.
+   * Vocabulary from `fieldTypes.pure.ts`; never a document's own words, so
+   * this is safe to log.
+   */
+  const declinedBecause = new Map<string, string>();
   const organisation = nameTokens(options.organisationName ?? '');
 
   /*
@@ -2868,6 +2869,16 @@ export function readPdfBrochure(
     return laid && laid.length ? laid : unitsFromPageText(page);
   });
   if (positioned.size) diagnostics.mode = 'brochure';
+
+  /*
+   * THE WORDS THIS DOCUMENT SET AS DISPLAY TYPE. Computed once, over every
+   * page, because a heading tracked out on page 1 is still a heading where
+   * page 4 repeats it. See `trackedOutHeadings`.
+   */
+  const headings = new Set<string>();
+  for (const page of pages) {
+    for (const heading of trackedOutHeadings(page)) headings.add(heading);
+  }
 
   let scanned = 0;
   /*
@@ -3046,6 +3057,95 @@ export function readPdfBrochure(
         }
       }
 
+      /*
+       * ======================================================================
+       * AN ADDRESS BLOCK IS A PROPERTY OF THE PAGE'S LINES.
+       * ======================================================================
+       *
+       * A street line with a locality line under it, and the same address set
+       * as one comma-separated line. Collected for EVERY line, never claimed
+       * here: whether a block may be read depends on how many the whole
+       * document holds, and that is judged once at the end.
+       *
+       * IT USED TO BE COLLECTED ONLY FOR A LINE NOTHING ELSE COULD READ, and
+       * that is the defect the letter-spaced fixture found. A builder writes
+       *
+       *     Lot 37 Fairweather Drive
+       *     Sandpiper Estate, Tweed Heads NSW 2485
+       *
+       * and the first line is a LOT HEADING — read, claimed, and therefore
+       * never offered to the address reader, so the street, the suburb, the
+       * state and the postcode were all absent on a document that prints them
+       * in full. Whether a line names a lot and whether it names a street are
+       * two different questions about the same words, and only one of them was
+       * being asked. The whole-document guard is unchanged: two blocks still
+       * claim nothing.
+       */
+      {
+        const street = readStreetLine(line);
+        if (street) {
+          const beneath = unitBelow(units, index);
+          const under = beneath !== null && !consumed.has(beneath)
+            ? units[beneath].text : null;
+          /*
+           * THE LOCALITY LINE, READ BY WHICHEVER READER READS IT BETTER.
+           *
+           * `readLocalityLine` takes everything before the state as the
+           * suburb, so `Sandpiper Estate, Tweed Heads NSW 2485` gives the
+           * suburb `Sandpiper Estate, Tweed Heads` — a suburb no register
+           * has. The composed reader already knows that a comma before the
+           * locality separates an ESTATE from it, and says which is which, so
+           * it is asked first and the simpler reader is the fallback.
+           */
+          const composedUnder = under ? readComposedAddressLine(under) : null;
+          const locality = composedUnder && composedUnder.suburb
+            ? {
+                suburb: composedUnder.suburb,
+                state: composedUnder.state,
+                postcode: composedUnder.postcode,
+              }
+            : (under ? readLocalityLine(under) : null);
+          if (locality && under !== null) {
+            addressBlocks.push({
+              street, ...locality,
+              development: composedUnder?.development ?? null,
+              lines: [line, under],
+            });
+          }
+        }
+        /*
+         * AND THE SAME ADDRESS SET AS ONE LINE. It joins the SAME list, so
+         * the whole-document guard counts both shapes together and a document
+         * carrying one of each still claims nothing.
+         *
+         * A COMPOSED READING THAT NAMES NEITHER A STREET NOR A LOT IS NOT AN
+         * ADDRESS BLOCK. It is a locality line — and on a two-line address it
+         * is the SECOND line of a block already collected above, so pushing it
+         * made one address look like two, the whole-document guard refused
+         * them both, and a brochure printing its street, suburb, state and
+         * postcode in full imported none of them. The guard was right; it was
+         * being handed the same address twice.
+         *
+         * THE LOT COUNTS, and that is not a detail. `Lot 37, Sandpiper Estate,
+         * Tweed Heads NSW` is the production document's own address line and
+         * carries no street at all: the lot IS how it says which property it
+         * is. Requiring a street would have thrown that whole line away, which
+         * is the defect this reader was written to close.
+         */
+        const composed = street ? null : readComposedAddressLine(line);
+        if (composed && (composed.street || composed.lot)) {
+          addressBlocks.push({
+            street: composed.street,
+            suburb: composed.suburb,
+            state: composed.state,
+            postcode: composed.postcode,
+            lot: composed.lot,
+            development: composed.development,
+            lines: [line],
+          });
+        }
+      }
+
       if (!found.length) {
         /*
          * ===============================================================
@@ -3133,39 +3233,6 @@ export function readPdfBrochure(
          * printing of a name another page stated with its field word
          * attached, and that page may come after this one.
          */
-        /*
-         * AN ADDRESS BLOCK IS A STREET LINE WITH A LOCALITY LINE UNDER IT.
-         * Collected, never claimed here: whether it may be read depends on
-         * how many the whole document holds. See `readLocalityLine`.
-         */
-        const street = readStreetLine(line);
-        if (street) {
-          const beneath = unitBelow(units, index);
-          const locality = beneath !== null && !consumed.has(beneath)
-            ? readLocalityLine(units[beneath].text) : null;
-          if (locality) {
-            addressBlocks.push({
-              street, ...locality, lines: [line, units[beneath as number].text],
-            });
-          }
-        }
-        /*
-         * AND THE SAME ADDRESS SET AS ONE LINE. It joins the SAME list, so
-         * the whole-document guard above counts both shapes together and a
-         * document carrying one of each still claims nothing.
-         */
-        const composed = street ? null : readComposedAddressLine(line);
-        if (composed) {
-          addressBlocks.push({
-            street: composed.street,
-            suburb: composed.suburb,
-            state: composed.state,
-            postcode: composed.postcode,
-            lot: composed.lot,
-            development: composed.development,
-            lines: [line],
-          });
-        }
         unresolved.push(line);
         if (!placedAt.has(line)) {
           const unit = units[index];
@@ -3248,90 +3315,72 @@ export function readPdfBrochure(
          * not the document disagreeing with itself, it is this reader having
          * picked up something that was never a statement.
          */
-        if (!/[\p{L}\p{N}]/u.test(claim.value)) continue;
         /*
-         * `M A S T E R P L A N` IS A WORD SET IN LETTER-SPACED TYPE.
+         * ==================================================================
+         * ONE GATE. READERS DISCOVER EVIDENCE; THEY DO NOT SET THE STANDARD.
+         * ==================================================================
          *
-         * MEASURED 21 SEPTEMBER 2026 on the same document, one deploy after
-         * the glyph above and visible only because the record finally carried
-         * the CURRENT reader's evidence:
+         * Whether a value BELONGS to a field is discovery, and it is each
+         * reader's business. Whether what was found is the KIND of thing the
+         * field holds is not, and it used to be answered here in four
+         * separate tests and in three readers besides — a count guard one
+         * reader made, an area guard another made, a designation shape a
+         * third made. Scattered standards are how `Garage: 22.59m²` became
+         * twenty-two car spaces and how `LAND $334,000` became a land size of
+         * three hundred and thirty-four thousand square metres.
+         *
+         * `acceptFieldValue` is now the only answer, it is typed, and every
+         * refusal names its reason. See `fieldTypes.pure.ts` — in particular
+         * the case it exists for, which this document states:
+         *
+         *     T O T A L  P A C K A G E · L A N D + B U I L D · I N C .  G S T
+         *                                                          $1,327,407
+         *
+         * Normalisation makes `LAND` and `BUILD` legible, correctly, because
+         * they ARE those words. Money is still not an area.
+         *
+         * WHAT PROOF THE STRUCTURE OFFERS travels with the question. A label
+         * drawn near a value is weak evidence, so a price must SAY it is
+         * money; a column under a heading is strong, and that path asks with
+         * `column`. A figure that might be an area, a reference or a year
+         * must never become a price because it was large.
+         */
+        const verdict = acceptFieldValue(claim.field, claim.value, 'label');
+        if (!verdict.accepted) {
+          /*
+           * A GLYPH IS DROPPED; A STATEMENT IS DECLINED. The difference is
+           * whether the document said anything: `·` in a value slot is this
+           * reader picking up punctuation, and `LAND $334,000` is the
+           * document stating a fact this reader refuses to read as an area.
+           * The second is worth naming in the import log; the first would
+           * fill it with noise.
+           */
+          if (verdict.reason !== 'no_alphanumeric_content'
+            && verdict.reason !== 'empty') {
+            declined.add(claim.field);
+            declinedBecause.set(claim.field, verdict.reason);
+          }
+          continue;
+        }
+        /*
+         * `M A S T E R P L A N` IS A HEADING THIS DOCUMENT TRACKED OUT.
+         *
+         * MEASURED 21 SEPTEMBER 2026 on the same document:
          *
          *     development_name = PROPLAUNCH
          *     development_name = M A S T E R P L A N
          *
          * A designer tracked out a page heading — a normal treatment for one
-         * — and text extraction returns what the page DRAWS, which is nine
-         * separate glyph runs. Read as a value it is not a name at all, and
-         * had it been the only candidate it would have gone onto a builder's
-         * card as the estate.
-         *
-         * FOUR SINGLE LETTERS AT LEAST, and all of them, which is what makes
-         * this a shape rather than a guess: a real name is words. `U 3` is
-         * two tokens and untouched, `Lot 37` is untouched, and an initialism
-         * a document actually spaces (`A B C`) stays under the floor. It is
-         * refused rather than rejoined, because joining would invent a word
-         * the document never set as one — and a heading is not an estate
-         * however it is typeset.
+         * — and had it been the only candidate it would have gone onto a
+         * builder's card as the estate. The guard that caught it refused any
+         * letter-spaced VALUE, which worked only because nothing had made it
+         * legible; now that normalisation has, the FACT travels instead.
+         * Letter-spacing is applied to the words that label things and never
+         * to the thing itself, so a word this page set as display type is its
+         * heading and no field may hold one. Numbers are excluded by
+         * construction: `3 7` is the lot the heading above it introduces.
          */
-        if (isLetterSpacedType(claim.value)) continue;
-        if (DESIGNATION_FIELDS.has(claim.field)
-          && !LOT_DESIGNATION.test(claim.value.trim())) {
-          /*
-           * `UNIT: 115.30m² 12.41sq` IS A FLOOR AREA, NOT A UNIT NUMBER.
-           *
-           * MEASURED ON `LOT 48 - EMBER - FLYER`, 21 SEPTEMBER 2026, and it
-           * is the single defect that produced BOTH reported symptoms. The
-           * flyer's floor plan carries an AREA SCHEDULE — `GARAGE:`,
-           * `PORCH:`, `COURT:`, `TOTAL:` and `UNIT:` — and `Unit` is a
-           * heading this vocabulary reads as an identifier, so
-           * `readLabelledValue` claimed `unit_number: "115.30m 12.41sq"`.
-           *
-           * That is not merely an ugly field. `stockRecordLabel` puts the
-           * designation FIRST, so the card's title became `Unit 115.30m
-           * 12.41sq, 35 Cockrell Rd` — and the same label is what
-           * `pageStatesIdentity` matches a page against, so no page could
-           * state this property's identity and the election refused the
-           * builder's own render. One wrong read, a broken title and a blank
-           * card.
-           *
-           * AN IDENTIFIER HAS A SHAPE, and `readVerticalPair` has demanded it
-           * since `LOT` over `350 m²` wrote a land size into the field that
-           * says WHICH PROPERTY this is. The hole was that it demanded it in
-           * ONE reader. Here it is asked of every claim from every reader, at
-           * the point they all pass through, which is the only place a rule
-           * like this cannot be forgotten by the next one.
-           */
-          declined.add(claim.field);
-          continue;
-        }
-        if (MEASURED_FIELDS.has(claim.field) && statesAnAmount(claim.value)) {
-          /*
-           * `LAND $334,000` IS WHAT THE LAND COSTS, NOT HOW BIG IT IS.
-           *
-           * A house and land package states its two halves, and `LAND` is a
-           * label this vocabulary reads as an area. Measured on `LOT 266
-           * Crowlea Estate` (21 September 2026): the record took
-           * `land_size_sqm: 334000` through `labelled_numbers` and a client's
-           * card drew `LAND 334,000 m²`. The document's own arithmetic says
-           * what that figure is — the price it imported is $749,100, and
-           * $334,000 plus a $415,100 build is exactly that.
-           *
-           * DECLINED, NOT DROPPED. The field name goes into the diagnostics
-           * the way every other declined statement does, so an import log
-           * says which one was refused and under which rule; and it is
-           * declined rather than standing the document down, because the rest
-           * of that brochure read perfectly and a priced label is not a
-           * vocabulary gap a model would close either.
-           */
-          declined.add(claim.field);
-          continue;
-        }
-        if (COUNT_FIELDS.has(claim.field) && !statesACount(claim.value)) {
-          /*
-           * `Garage: 22.59m²` is the garage's AREA under a label this
-           * vocabulary reads as `car_spaces`. Refused rather than written,
-           * and the line then answers to the ordinary unresolved rule.
-           */
+        if (headings.has(claim.value.replace(/\s+/g, ' ').trim().toUpperCase())) {
           continue;
         }
         const existing = claimed.get(claim.field);
@@ -3441,7 +3490,36 @@ export function readPdfBrochure(
     .filter(([field]) => IDENTITY_FIELDS.includes(field) || DESCRIPTIVE_FIELDS.has(field))
     .map(([, value]) => nameTokens(value))
     .filter((tokens) => tokens.length > 0);
-  const repeats = unresolved.filter((line) => !corroboratedBy(line, names));
+  /*
+   * ======================================================================
+   * A HEADING IS A LABEL CANDIDATE. IT IS NOT A CANDIDATE FOR ANYTHING.
+   * ======================================================================
+   *
+   * `unresolved` is what the readers below draw their candidates from —
+   * `corroborateDesignFromFilename` takes a line whose words all appear in the
+   * filename, `readPlaceNamedWithoutTheWord` takes `<name>, <place>`. Both ask
+   * `readsAsAName`, and a word set in capitals reads as one.
+   *
+   * MEASURED on `Lot 37 - Miami 190 - Property Package.pdf`, the first run
+   * after normalisation reached this file. The filename corroborator had one
+   * candidate — `Miami 190`, the design, drawn bare on the page — and now had
+   * three, because `L O T` and `P A C K A G E` had become `LOT` and `PACKAGE`,
+   * both of which are words in that filename. Three candidates is ambiguity,
+   * so it took none, and a design the document and the filename BOTH named was
+   * lost. Normalisation made two headings legible and a reader downstream read
+   * their legibility as evidence.
+   *
+   * THIS IS THE RULE THE WHOLE LAYER TURNS ON. A phrase a designer tracked out
+   * may become a LABEL — that is what made `B E D` and `T O T A L  H O M E`
+   * worth resolving at all — and it may never become a VALUE, a name, or a
+   * candidate for one. The claim gate says the same thing about `claimed`; this
+   * says it about every reader that goes looking.
+   */
+  const notAHeading = (line: string) =>
+    !headings.has(String(line ?? '').replace(/\s+/g, ' ').trim().toUpperCase());
+  const repeats = unresolved
+    .filter((line) => !corroboratedBy(line, names))
+    .filter(notAHeading);
 
   /*
    * THE ADDRESS BLOCK, TAKEN ONLY WHERE THE DOCUMENT DRAWS EXACTLY ONE.
@@ -3574,7 +3652,20 @@ export function readPdfBrochure(
   diagnostics.unaccountedLines = stillUnresolved.length;
   diagnostics.incidentalLines = incidental;
   diagnostics.corroboratedLines = unresolved.length - repeats.length;
-  if (declined.size) diagnostics.declinedFields = [...declined].sort();
+  if (declined.size) {
+    diagnostics.declinedFields = [...declined].sort();
+    /*
+     * THE NAMES ARE THE CONTRACT; THE REASONS ARE BESIDE THEM. Widening
+     * `declinedFields` into `field:reason` would have been a quieter change
+     * to make and a worse one: `importTelemetry` projects that list into the
+     * import log and three specs read it as names, so every one of them would
+     * have kept passing while meaning something else.
+     */
+    const reasons = [...declined].sort()
+      .filter((field) => declinedBecause.has(field))
+      .map((field) => `${field}:${declinedBecause.get(field)}`);
+    if (reasons.length) diagnostics.declinedBecause = reasons;
+  }
   /*
    * THE ICON ROW, read only where the floor plan corroborates it. Placed
    * with the other corroborations because it needs the whole document: the
@@ -3925,7 +4016,13 @@ const COLUMN_SLACK = 2;
 /** How far down a page a header may sit, matching `keyRowsByHeader`'s own scan. */
 const MAX_HEADER_SCAN = 15;
 
-interface LayoutCell { x: number; text: string }
+/**
+ * `width` is where the cell ENDS minus where it starts — the sum of its runs'
+ * advances plus the gaps it absorbed. Supplied because the phrase rule in
+ * `documentNormalisation` measures a gap against the run before it, and a cell
+ * with no width falls back to bare adjacency.
+ */
+interface LayoutCell { x: number; text: string; width?: number }
 interface LayoutLine { y: number; cells: LayoutCell[] }
 
 /**
@@ -4002,6 +4099,8 @@ export function layoutLines(items: readonly PdfTextItem[]): LayoutLine[] {
       }
       end = Math.max(end, item.x + (Number.isFinite(item.width) ? item.width : 0));
       last = item;
+      const current = cells[cells.length - 1];
+      if (current) current.width = Math.max(0, end - current.x);
     }
     return { y: group.y, cells };
   });

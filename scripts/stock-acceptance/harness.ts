@@ -348,6 +348,28 @@ for (const entry of manifest) {
     if (forbid.price_not_in && (forbid.price_not_in as number[]).includes(Number(it.price))) {
       fail(entry, `area became money: price=${it.price}`);
     }
+    if (forbid.build_size_not_in
+      && (forbid.build_size_not_in as number[]).includes(Number(it.building_size_sqm))) {
+      fail(entry, `money became area: building_size_sqm=${it.building_size_sqm}`);
+    }
+    /*
+     * A HEADING THE PAGE SET AS DISPLAY TYPE MAY NOT REACH ANY FIELD.
+     *
+     * Asked of the WHOLE record rather than of a named column, because the
+     * point is not which field a heading would land in — it is that
+     * normalisation made these words legible and legibility is not evidence.
+     * Both spellings are checked: the glyphs as the page drew them, and the
+     * word they collapse to.
+     */
+    if (forbid.nothing_containing) {
+      const record = JSON.stringify(it).toUpperCase();
+      for (const word of forbid.nothing_containing as string[]) {
+        if (record.includes(String(word).toUpperCase())) {
+          fail(entry, `a heading the document set as display type became a `
+            + `value: ${word} in ${JSON.stringify(it)}`);
+        }
+      }
+    }
   }
 
   // --- 6e2. REPEAT PROCESSING IS SAFE -------------------------------------

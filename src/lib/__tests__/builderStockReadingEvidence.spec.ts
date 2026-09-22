@@ -123,11 +123,29 @@ describe('a labelled figure carrying money is not an area', () => {
   });
 
   it('asks about the value the document printed, never the size of it', () => {
-    // 334,000 without a currency marker is caught by the plausibility bound
-    // above, not by this rule — two independent guards, because a PDF can
-    // put the dollar sign in a text run of its own.
+    /*
+     * 334,000 with no currency marker is refused for being an implausible
+     * AREA rather than for being money — two independent guards, because a
+     * PDF can put the dollar sign in a text run of its own.
+     *
+     * RENEGOTIATED 22 SEPTEMBER 2026, and the previous assertion is worth
+     * recording. It read `.not.toContain('land_size_sqm')`, because the
+     * plausibility bound used to live in `normaliseStockRow` — so the reader
+     * claimed the figure, the coercion nulled it downstream, and the import
+     * log said nothing at all. Both guards now sit in `acceptFieldValue`, so
+     * the statement is declined where it is made and the log can say which
+     * of the two refused it. The measurement is still absent, which is the
+     * property that matters and is asserted below unchanged.
+     */
     const bare = readPdfBrochure([SPEC.replace('Land Size: 350 m2', 'LAND 334,000')]);
-    expect(bare.diagnostics.declinedFields ?? []).not.toContain('land_size_sqm');
+    expect(bare.diagnostics.declinedFields ?? []).toContain('land_size_sqm');
+    expect(bare.diagnostics.declinedBecause ?? [])
+      .toContain('land_size_sqm:area_out_of_range');
+    // And NOT as money: the document printed no currency marker, so the
+    // reason has to be about the magnitude and not about a dollar sign
+    // nothing drew.
+    expect(bare.diagnostics.declinedBecause ?? [])
+      .not.toContain('land_size_sqm:money_is_not_an_area');
     expect(normaliseStockRow(bare.rows[0])!.land_size_sqm).toBeNull();
   });
 });

@@ -96,6 +96,27 @@ def text(c, x, y, s, size=11, bold=False):
     c.drawString(x * mm, H - y * mm, s)
 
 
+def tracked(c, x, y, s, size=11, space=4.2, bold=True):
+    """Type the way a designer sets a display heading: letter-spaced.
+
+    Drawn with the PDF's OWN character spacing rather than by typing spaces
+    into the string, because that is what a real brochure does and it is the
+    difference the whole normalisation layer exists for. Extraction sees the
+    glyph positions the page drew, not a string somebody spelled out.
+    """
+    obj = c.beginText(x * mm, H - y * mm)
+    obj.setFont('Helvetica-Bold' if bold else 'Helvetica', size)
+    obj.setCharSpace(space)
+    obj.textOut(s)
+    obj.setCharSpace(0)
+    c.drawText(obj)
+    # reportlab carries the text object's char spacing back onto the canvas,
+    # so without this every LATER line on the page is tracked out too — which
+    # is a page no designer would set and would make this fixture prove
+    # nothing about a heading.
+    c._charSpace = 0
+
+
 def hero(c, buf, top=165, height=110):
     c.drawImage(ImageReader(buf), 20 * mm, H - top * mm,
                 width=W - 40 * mm, height=height * mm,
@@ -493,18 +514,30 @@ def _h2(c):
 @fixture('heldout-money-not-area', 'LOT 18 - ROWAN 19 - SUMMARY.pdf', held_out=True,
          expect=dict(
              properties=1,
-             # THE PRODUCT IS RIGHT HERE AND THE FIRST EXPECTATION WAS NOT.
-             # This document writes `Land 320,000` (dollars, with no currency
-             # symbol) six lines above `Land Size 320m2`, and `Total 659,900`
-             # with no symbol either. The reader sees two answers for the land
-             # size and drops the field rather than choosing, and declines a
-             # bare `Total` because no marker says it is money. That is
-             # exactly the guard §7 asks for — money must not become area —
-             # and it is the conservative side: the property imports with its
-             # lot, street, suburb, state, design and build size, and the two
-             # genuinely ambiguous figures read as not stated.
+             # THE PRODUCT IS RIGHT HERE AND THE FIRST TWO EXPECTATIONS WERE
+             # NOT. This document writes `Land 320,000` (dollars, with no
+             # currency symbol) six lines above `Land Size 320m2`, and
+             # `Total 659,900` with no symbol either.
+             #
+             # The FIRST expectation was that 320,000 would be imported as the
+             # land size. It was not: money must never become area, which is
+             # the guard the whole §7 programme turns on.
+             #
+             # The SECOND was that the land size would be ABSENT — because the
+             # reader saw two answers for one field and dropped it rather than
+             # choosing between them. That was the conservative side of a
+             # conflict that should never have existed. Since the typed gate
+             # (`fieldTypes.pure.ts`) 320,000 is refused as an AREA before it
+             # can dispute anything — `area_out_of_range`, a figure that is not
+             # a measurement of anything — so the one real reading is left
+             # standing and the document's own `Land Size 320m2` is imported.
+             #
+             # Both facts the fixture exists to prove are unchanged and are
+             # asserted below: the dollar figure is not in the land size, and
+             # the bare `Total` is not a price, because no marker says it is
+             # money and ABSENT IS BETTER THAN WRONG.
              rows=[dict(lot_number='18', suburb='Melton South', state='VIC',
-                        land_size_sqm=None, build_size_sqm=186, price=None,
+                        land_size_sqm=320, build_size_sqm=186, price=None,
                         design='Rowan 19')],
              image='facade_page_1',
              forbid=dict(land_size_not_in=[659900, 320000, 339900],
@@ -518,6 +551,55 @@ def _h3(c):
     text(c, 20, 190, 'Total         659,900')
     text(c, 20, 200, 'Land Size     320m2')
     text(c, 20, 207, 'Build Size    186m2')
+    c.showPage()
+
+
+# --- 17. HELD OUT: a brochure typeset in letter-spaced display type --------
+#
+# THE DOCUMENT CLASS THIS WHOLE LAYER EXISTS FOR, and the one the corpus did
+# not cover. `Lot 37 - Miami 190 - Property Package.pdf` is typeset with
+# tracked-out headings throughout, so extraction returns the glyphs the page
+# drew — `L O T`, `E S T A T E`, `B E D` — and not one of them matched a
+# vocabulary entry. Five separate field readers were about to grow a rule
+# apiece; instead it is resolved once, in `documentNormalisation.pure.ts`.
+#
+# TWO THINGS ARE PROVED HERE AND THE SECOND IS THE IMPORTANT ONE. The headings
+# must become legible, and the tracked-out `L A N D` and `B U I L D` must NOT
+# turn the package price into a land size — legibility is exactly what puts two
+# AREA labels beside money, which no reader could have done before.
+@fixture('heldout-letter-spaced', 'LOT 37 - MIAMI 190 - PACKAGE.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='37', street_name='Fairweather Drive',
+                        suburb='Tweed Heads', state='NSW', postcode='2485',
+                        land_size_sqm=563, build_size_sqm=190.38,
+                        price=1327407, design='Miami 190')],
+             image='facade_page_1',
+             # The package price must never reach a size field, and no heading
+             # the page tracked out may reach a field at all.
+             forbid=dict(land_size_not_in=[1327407, 547407, 780000],
+                         build_size_not_in=[1327407, 547407],
+                         # The four words this page set as DISPLAY TYPE. Not
+                         # `ESTATE`, which the page also writes as ordinary
+                         # copy inside the estate's real name — the rule is
+                         # about the type, not about the word.
+                         nothing_containing=['T O T A L', 'MASTERPLAN',
+                                             'PACKAGE', 'TOTAL HOME'])))
+def _h4(c):
+    tracked(c, 20, 20, 'M A S T E R P L A N', 13)
+    text(c, 20, 30, 'MIAMI 190', 18, True)
+    text(c, 20, 38, 'Lot 37 Fairweather Drive')
+    text(c, 20, 45, 'Sandpiper Estate, Tweed Heads NSW 2485')
+    hero(c, facade(37))
+    tracked(c, 20, 180, 'T O T A L   P A C K A G E', 11)
+    tracked(c, 20, 187, 'L A N D   +   B U I L D', 11)
+    text(c, 20, 195, 'Package Price - $1,327,407', 12, True)
+    text(c, 20, 202, 'Land Price - $780,000')
+    text(c, 20, 209, 'Build Price - $547,407')
+    tracked(c, 20, 220, 'T O T A L   H O M E', 11)
+    text(c, 20, 228, 'Lot Size    563m2')
+    text(c, 20, 235, 'Build Area  190.38m2')
+    text(c, 20, 245, 'Artist impression. Prices subject to change.', 8)
     c.showPage()
 
 
