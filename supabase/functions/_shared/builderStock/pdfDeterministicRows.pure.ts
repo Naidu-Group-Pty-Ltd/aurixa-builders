@@ -1704,6 +1704,43 @@ const LEADING_LOT = /^lot\s*[:.]?\s*(\d{1,5}[A-Za-z]?)\b[\s,.-]*/i;
 interface ComposedAddress extends LocalityLine {
   street: string;
   lot: string | null;
+  /** The segment between the lot and the locality that named a place, if any. */
+  development: string | null;
+}
+
+/**
+ * `Tweed Heads NSW` — A LOCALITY INSIDE A COMPOSED LINE, WHERE THE POSTCODE
+ * IS OPTIONAL AND ONLY THERE.
+ *
+ * `readLocalityLine` requires a postcode and is right to: it judges a line
+ * standing on its own, where `Mernda VIC` could be a heading, a column or a
+ * caption, and four digits are what make it unmistakable.
+ *
+ * MEASURED 22 SEPTEMBER 2026 on `Lot 37 - Miami 190 - Property Package.pdf`.
+ * Its address is one line and carries no postcode:
+ *
+ *     Lot 37, Sandpiper Estate, Tweed Heads NSW
+ *
+ * so the whole document stood down on that single unaccounted line — while
+ * naming its lot, its estate, its suburb and its state in it.
+ *
+ * The postcode is dispensable HERE because the line has already proved
+ * itself: it is comma-separated, it opens with a lot designation or a street,
+ * and this segment is its last. A state from the closed set of eight ending
+ * the final segment of such a line is the document saying where the property
+ * is. A bare `Tweed Heads NSW` on its own line still claims nothing, because
+ * this function is never asked about one.
+ */
+function readComposedLocality(segment: string): LocalityLine | null {
+  const exact = readLocalityLine(segment);
+  if (exact) return exact;
+  const tokens = String(segment ?? '').trim().replace(/[.,]+$/, '').split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return null;
+  const state = tokens[tokens.length - 1];
+  if (!AU_STATE.test(state)) return null;
+  const suburb = tokens.slice(0, tokens.length - 1).join(' ');
+  if (!suburb.length || !/^[A-Za-z]/.test(suburb) || HAS_DIGIT.test(suburb)) return null;
+  return { suburb, state: state.toUpperCase(), postcode: '' };
 }
 
 /**
@@ -1722,7 +1759,7 @@ export function readComposedAddressLine(line: string): ComposedAddress | null {
   const segments = raw.split(',').map((s) => s.trim()).filter(Boolean);
   if (segments.length < 2) return null;
 
-  const locality = readLocalityLine(segments[segments.length - 1]);
+  const locality = readComposedLocality(segments[segments.length - 1]);
   if (!locality) return null;
 
   let head = segments.slice(0, -1).join(', ').trim();
@@ -1734,13 +1771,26 @@ export function readComposedAddressLine(line: string): ComposedAddress | null {
   }
   if (!head) return null;
 
+  /*
+   * `Sandpiper Estate` — THE SEGMENT BETWEEN THE LOT AND THE LOCALITY.
+   *
+   * On `Lot 37, Sandpiper Estate, Tweed Heads NSW` the middle segment is not
+   * a street and never will be: it ends in the word ESTATE, which is the one
+   * thing in this vocabulary that says outright what it is. Taken only where
+   * it says so — a segment that merely looks like a name stays unread, and
+   * the alternative on that document was `PROPLAUNCH`, read off a caption.
+   */
+  const named = head.match(/^(.*\S)\s+(estate|rise|park|grove|gardens|village|waters|heights)$/i);
+  const development = named ? `${named[1]} ${named[2]}` : null;
+  if (development) return { street: '', lot, development, ...locality };
+
   // Either shape of street is acceptable, and both are the existing rules:
   // numbered streets answer to `readStreetLine`, unnumbered ones to
   // `readStreetName`. Neither invents a number the line does not carry.
   const street = readStreetLine(head) ?? readStreetName(head);
   if (!street) return null;
 
-  return { street, lot, ...locality };
+  return { street, lot, development: null, ...locality };
 }
 
 function splitLocality(claim: Claim): Claim[] {
@@ -2829,7 +2879,8 @@ export function readPdfBrochure(
   const placedAt = new Map<string, string>();
   /** Every street-over-locality pair the document draws. See `readLocalityLine`. */
   const addressBlocks: Array<LocalityLine
-    & { street: string; lines: string[]; lot?: string | null }> = [];
+    & { street: string; lines: string[]; lot?: string | null;
+        development?: string | null }> = [];
   /*
    * INDEXED, NOT `forEach`. This loop `return`s a refusal from inside itself
    * on a conflict and on the line ceiling; inside a callback those returns
@@ -3111,6 +3162,7 @@ export function readPdfBrochure(
             state: composed.state,
             postcode: composed.postcode,
             lot: composed.lot,
+            development: composed.development,
             lines: [line],
           });
         }
@@ -3416,12 +3468,22 @@ export function readPdfBrochure(
   const addressBlockRead = Boolean(addressBlock)
     && !claimed.has('address_line') && !claimed.has('suburb');
   if (addressBlock && addressBlockRead) {
-    claimed.set('address_line', addressBlock.street);
+    if (addressBlock.street) claimed.set('address_line', addressBlock.street);
     claimed.set('suburb', addressBlock.suburb);
     claimed.set('state', addressBlock.state);
     claimed.set('postcode', addressBlock.postcode);
+    if (!addressBlock.postcode) claimed.delete('postcode');
     for (const field of ['address_line', 'suburb', 'state', 'postcode']) {
-      readBy.set(field, 'address_block');
+      if (claimed.has(field)) readBy.set(field, 'address_block');
+    }
+    /*
+     * The estate the line itself named, and only where the line SAID so.
+     * It outranks nothing: a document that labelled its estate has already
+     * claimed the field and this leaves it alone.
+     */
+    if (addressBlock.development && !claimed.has('development_name')) {
+      claimed.set('development_name', addressBlock.development);
+      readBy.set('development_name', 'address_block');
     }
     /*
      * The lot the address line itself carried — taken ONLY where the document
