@@ -184,7 +184,7 @@
  * Every document already imported is read again, because a document whose
  * headings were unreadable was read without them.
  */
-export const DETERMINISTIC_READER_VERSION = 12;
+export const DETERMINISTIC_READER_VERSION = 13;
 
 /*
  * VERSION 11 — A PHRASE'S OWN WORDS ARE HEADINGS TOO.
@@ -225,6 +225,37 @@ export const DETERMINISTIC_READER_VERSION = 12;
  * `Lot 37 - Miami 190 - Property Package.pdf`, settled at version 11 and
  * carrying no building size, no price and no design while the page sets all
  * three in tracked-out display type.
+ */
+/*
+ * VERSION 13 — A PAGE CAN HOLD MORE THAN ONE PROPERTY, AND A PROPERTY CAN
+ * HOLD MORE THAN ONE PICTURE.
+ *
+ * TWO CHANGES, AND EACH ONE ON ITS OWN MEETS THE BAR THIS VERSION EXISTS
+ * FOR: a different row, or a different picture, from bytes that have not
+ * changed.
+ *
+ * A PAGE CARRYING SEVERAL PROPERTY CARDS IS READ AS SEVERAL DOCUMENTS.
+ * Every reader before this one read a document as a stream of lines, and a
+ * stream of lines has no columns in it — so a sheet of three cards was read
+ * as ONE property, and where the cards state different fields that did not
+ * refuse: it COMPLETED, as one property wearing three properties' facts. A
+ * stored document of that shape produces a different row now, and the
+ * difference is between a wrong import and a right one.
+ *
+ * AND THE ROLE ELECTION SURVIVES THE FIRST SETTLER TICK. The ordinary repair
+ * branch settled a PDF's image roles with the CONTAINER helper, which
+ * designates a primary only where a property has exactly one attributed
+ * picture — so a property holding a facade and a floor plan lost the hero its
+ * own import had elected, on the first tick, along with the eligibility
+ * verdict beside it. A stored document of that shape keeps a different
+ * picture now, and re-reading is the only thing that asks a settled source
+ * again.
+ *
+ * A single-property document read under 12 produces a byte-identical row
+ * under 13 — `segmentPropertyRegions` answers null for every page that does
+ * not carry property-level evidence in more than one band — so this costs a
+ * re-read and changes nothing for the documents that were already right.
+ * That is what makes it safe to raise for all of them at once.
  */
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */

@@ -420,11 +420,174 @@ Three things worth keeping from it:
 
 ---
 
-## 11 · What is still open, named rather than hidden
+## 11 · One page, several properties
 
-* **A page that sets two properties in columns** reads as one. Brochure mode is
-  single-property by construction; a column-aware mode is a different reader,
-  not a patch to this one.
+The limit this section replaces read: *"a page that sets two properties in
+columns reads as one. Brochure mode is single-property by construction; a
+column-aware mode is a different reader, not a patch to this one."* The second
+sentence was right and the reader is now written.
+
+### Why it mattered more than it looked
+
+Reading a two-card page as one property is not a missing import. Where the two
+cards state DIFFERENT fields it does not refuse — it **completes**, as one
+property wearing both properties' facts: one lot, the other's price, either
+land size. That is the only shape in this subsystem that can put one builder's
+price on another builder's house, and no gate below the reader can see it,
+because the row it produces is perfectly well formed.
+
+### Geometry proposes, evidence disposes
+
+`propertyRegions.pure.ts` answers one question — how many independent property
+regions does this page carry — and answers `null` for every page that carries
+one, which is every document this reader has ever handled. A caller that gets
+`null` behaves exactly as it did.
+
+**The gutters are sought beneath the page's furniture.** A run that spans most
+of the content, or that is several times the page's own median run, is a
+heading or a footer rather than a cell and is kept out of the search. It is
+put back immediately: **what a run is worth and where it BELONGS are two
+different decisions**, and the second is purely geometric — a run overlapping
+exactly one band is that band's, one overlapping two or none is the page's. So
+a long address line inside one card stays that card's, and a heading crossing
+the gutter becomes shared.
+
+**A band is a property only on property-level evidence.** Two property-local
+fields, at least one identity (`lot_number`, `unit_number`, `price`,
+`house_design`), and no identity kind stated more than twice — which is what
+tells a property CARD from a schedule COLUMN without knowing anything about
+tables, since a column of eight prices states one kind eight times. Two bands
+naming the same property are one property drawn twice. Fewer than two
+qualifying bands and the page is left whole, which is the guard that protects
+every brochure in the corpus: text on the left and a render on the right
+splits into two bands of which exactly one states a lot.
+
+**The same question is asked on the other axis**, so a grid of six cards is six
+regions — but only where the horizontal pass already found more than one band,
+because splitting a single-column page by its own paragraph gaps would cut one
+property into its sections.
+
+**A band that did not qualify is SHARED, never discarded and never given to a
+neighbour.** Shared is the only safe home for evidence that belongs to no one
+region.
+
+### The reading, and the bar it has to clear
+
+Each region is read by the ORDINARY brochure reader over a synthetic document
+of the page's shared runs followed by that region's own — so the estate, the
+stage, the builder's name and the footer disclaimer are read into every
+candidate, and every candidate has to account for them. There is no second
+vocabulary, no second gate and no second set of typed validators.
+
+**Every page must be accounted for.** A page that segmented contributes one
+candidate per region; a page that did not contributes one, which is the whole
+page; and if any candidate refuses, the WHOLE segmented reading is abandoned
+and the document is read exactly as it is read today. That is harsher than it
+needs to be and harsh in the only direction that is safe: the alternative is
+completing around content nobody read, which is the rule this module's own
+header opens with.
+
+**The filename is not passed.** A document naming several properties has a name
+that describes the document; letting it corroborate one region would make it
+contradict all the others.
+
+A fallback is never silent — `regionsFound` and `regionsAbandoned` reach the
+import log, because a page that segmented and then fell back is otherwise
+indistinguishable from one that never segmented.
+
+### The pictures follow the cards, or they follow nobody
+
+A raster's drawn rectangle travels beside its page number now, and **only where
+the page's own `/MediaBox` starts at the origin and it carries no rotation** —
+a content stream's user space and pdf.js's normalised space are the same space
+only there, and comparing them anywhere else attaches a picture to whichever
+property the arithmetic lands on.
+
+A picture overlapping exactly one region's column is that region's. A page-wide
+banner, a logo in the margin, a graphic straddling two cards and a whole-page
+crop all overlap two regions or none, lose their anchor, and are kept against
+the upload and shown against nobody. **A wrong image is worse than no image.**
+
+Once a page has been divided, **the property's page IS its region** for every
+question the imagery path asks about it — does the page state this property's
+identity, does it state package facts, how many pictures does it draw. Asked of
+the sheet, all three answers are about all three cards, and
+`pageStatesIdentity`'s rule 2 refuses a page naming any lot but ours, which is
+exactly right for a page read whole and exactly wrong for a card.
+
+### Two things measurement found that no hand-written fixture would have
+
+**A line of small print may not close a gutter.** On a three-card release sheet
+the footer is 208.5 points wide against 425.8 of content — 49%, UNDER the 55%
+share that keeps a heading out of the search — so its span merged with the
+first column's and reached past the second column's origin. The first gutter
+vanished, the page came back as one property, and that property wore three
+lots. What separates that footer from a cell is not the page's width: it is
+that it is five times any other run on the sheet. Measured over both shapes,
+the widest CELL is 1.6× the page's median run and the narrowest FURNITURE is
+5.1×, so three sits between them with room on both sides.
+
+**A repair may not reach a different conclusion from the import.** On a page
+with a facade and a floor plan in each card's own column the import elected
+both heroes correctly and the first settler tick erased them:
+
+```
+after import   lot 19  primary=set   #4 role=primary_property eligible
+first tick     lot 19  primary=null  #4 role=unknown  eligibility gone
+→ ladder walks to `fallback` → "no source this pipeline can open" → `failed`
+```
+
+The ordinary repair branch called `attachDocumentMedia` with no page evidence,
+so the roles were settled by `settleContainerMediaRoles` — right for a
+spreadsheet or a Notion row, and it designates a primary only where a property
+has EXACTLY ONE attributed picture, because a container that hands you two has
+not said which is the listing image. A PAGE has said. And the upsert replaces
+`source_detail` wholesale, so the wrong helper did not merely fail to elect: it
+ERASED the election and the eligibility verdict beside it, on the first tick
+after every import.
+
+It was invisible while every PDF property had at most one attributed picture —
+a second picture on the page belonged to the page, and a page anchor two
+properties claim is attributed to neither. A floor plan beside a facade inside
+one card's own column is all it takes. `repairPdfUpload` has passed the page
+evidence since it was written, under a comment saying a repair must not reach
+a different conclusion from the import; that rule was true of one of the two
+repair paths and is true of both now.
+
+### It stays inside the PDF
+
+Segmentation operates on document evidence after a PDF has been obtained, and
+nothing about it reaches a transport. `propertyRegions.pure.ts` is imported by
+the deterministic reader and by `extract.ts` and by nothing else; a row that
+arrived with its own anchor keeps it (`if (!record.source_anchor && …)` is
+unchanged); a Notion row id, a sheet cell, a docx row and a slide are answered
+`null` by every anchor reader here; and the Google Sheets CSV and HTML
+readings are compared field by field against what they produced before.
+`builderStockSegmentationStaysInThePdf.spec.ts` is that guard.
+
+### What it does not claim
+
+A page whose text was **recognised** is never divided. Its positioned runs
+describe only whatever native fragment happened to share the sheet, so the
+gutters they suggest are gutters in a fragment; such a page is read whole,
+from the text recognition produced. A scanned multi-property page is therefore
+outside this, and the corpus says so on the fixture rather than leaving it to
+be discovered.
+
+## 12 · What is still open, named rather than hidden
+
+* **A scanned page carrying several cards** is read whole. Recognition returns
+  a page of lines and the layout reader sees only the native fragment, so there
+  is no geometry to divide. Named on the fixture and in the log.
+* **A shared line no region can account for stands the document down.** On
+  `Estate Release - Two Homes.pdf` segmentation divides the page correctly into
+  two regions and the heading `RELEASE 6 - WOLLERT` parses as a label and its
+  value; `WOLLERT` is corroborated by the suburb in both cards and `RELEASE 6`
+  names no field this vocabulary knows. It carries a digit, so it can never be
+  dismissed as prose. The document imports zero properties before and after the
+  segmentation work — this is a vocabulary gap, and closing it by teaching the
+  alias table that a "Release" is a stage is the per-document parser patch this
+  subsystem is frozen against.
 * **A bare design heading with no estate and no filename** is left absent. The
   corroborator requires the document to have established which property it is
   beyond its lot, and refusing is the conservative side.
@@ -432,5 +595,5 @@ Three things worth keeping from it:
   facts about the fixture generator rather than about the pipeline, and both are
   stated with the evidence that says so.
 
-None of the three is a wrong value. Every one is a refusal or an absence, which
+None of the four is a wrong value. Every one is a refusal or an absence, which
 is the standard a named limit has to meet.

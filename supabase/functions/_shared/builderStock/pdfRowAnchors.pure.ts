@@ -38,6 +38,29 @@ export function pdfAnchorPage(anchor: string | null | undefined): number | null 
   return match ? Number(match[1]) : null;
 }
 
+/**
+ * The page a PAGE anchor or a REGION anchor names.
+ *
+ * WHY BOTH, AND WHY SEPARATELY FROM `pdfAnchorPage`. Once a page can be
+ * divided there are two anchors that mean "this picture came off page 3", and
+ * the callers want different things from them. Deciding WHOSE a picture is
+ * needs the strict reading — a region anchor names one card and a page anchor
+ * names the sheet, and treating them alike is the cross-assignment this file
+ * exists to prevent. Deciding WHETHER THE DOCUMENT ANCHORED ITS PICTURES AT
+ * ALL wants this one: a region anchor is the document speaking at least as
+ * precisely as a page anchor, so a document that produced them has spoken, and
+ * the counting fallback must stay switched off.
+ *
+ * That distinction is not cosmetic. `attachDocumentMedia` reads exactly that
+ * question, and with the strict reading alone a segmented document would have
+ * answered "no picture carries an anchor" and handed every card's render to
+ * the count-by-order fallback.
+ */
+export function pdfAnchorPageOrRegion(anchor: string | null | undefined): number | null {
+  const match = /^pdf:page(\d+)(?:#r\d+)?$/.exec(String(anchor ?? ''));
+  return match ? Number(match[1]) : null;
+}
+
 /** Tokens of a label, in order, punctuation and case removed. */
 function tokenise(value: string): string[] {
   return String(value ?? '')

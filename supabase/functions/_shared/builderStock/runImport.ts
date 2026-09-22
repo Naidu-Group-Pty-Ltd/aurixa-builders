@@ -775,6 +775,9 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     // A PDF's properties come out of prose and carry no anchor of their own;
     // these are what lets one be tied back to the page it was described on.
     pageTexts: extraction.pageTexts,
+    // And where on a page each property was drawn, for the documents whose
+    // pages carry more than one. Absent everywhere else.
+    pdfRegions: extraction.pdfRegions,
     pageOrderAuthoritative: extraction.pageOrderAuthoritative,
     filename: upload.original_filename,
     // Derived from the run's own clock rather than restarted here, which is

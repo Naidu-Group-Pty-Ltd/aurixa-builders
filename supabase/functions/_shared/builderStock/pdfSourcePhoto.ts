@@ -418,6 +418,8 @@ interface RawCandidate {
   flate: boolean;
   pageAreaShare: number;
   placementsOnPage: number;
+  /** See `PdfMediaPlacement.drawn`. Null where the spaces cannot be compared. */
+  drawn: { x: number; y: number; width: number; height: number } | null;
 }
 
 /**
@@ -454,10 +456,23 @@ async function discoverCandidates(
     const drawn = await collectDrawnImages(
       bytes, page, content, IDENTITY, 0, { forms: 0 }, page.widgets);
 
+    /*
+     * Can a rectangle from this page's content stream be compared with a run
+     * of text pdf.js read off the same page? Only where the box starts at the
+     * origin and the page is not turned. See `PdfMediaPlacement.drawn`.
+     */
+    const comparable = page.origin.x === 0 && page.origin.y === 0 && page.rotate === 0;
     for (const candidate of qualifyingPhotographsFrom(drawn, page.width, page.height)) {
       const key = `${candidate.image.objectNumber}:${candidate.image.name}`;
       pagesDrawnOn.set(key, (pagesDrawnOn.get(key) ?? 0) + 1);
       perPage.push({
+        drawn: comparable
+          ? {
+            x: candidate.placement.drawn.x, y: candidate.placement.drawn.y,
+            width: candidate.placement.drawn.width,
+            height: candidate.placement.drawn.height,
+          }
+          : null,
         page: index + 1,
         key,
         objectNumber: candidate.image.objectNumber,
@@ -891,6 +906,9 @@ async function discoverPdfSourceAssetsHoldingSlot(
         pagesDrawnOn: 1,
         // The cover's own statement of emphasis, carried to the role decision.
         pageAreaShare: candidate.pageAreaShare,
+        // And where it sits, for the one question a page number cannot answer:
+        // which of the properties on this page is it a picture of.
+        drawn: candidate.drawn,
       },
       role: noPrimaryEvidence('the role of this image has not been settled yet'),
     });

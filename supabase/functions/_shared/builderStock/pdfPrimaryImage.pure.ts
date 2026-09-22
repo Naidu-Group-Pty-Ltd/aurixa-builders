@@ -775,6 +775,23 @@ export interface PdfMediaPlacement {
   pagesDrawnOn: number;
   /** How much of its page the document gives it, 0..1, where measurable. */
   pageAreaShare?: number | null;
+  /**
+   * WHERE ON THE PAGE IT WAS DRAWN, in the SAME SPACE the text reader reports.
+   *
+   * Set only where that can be PROVED — a page whose `/MediaBox` starts at the
+   * origin and which carries no rotation. A drawn rectangle comes out of the
+   * content stream in the page's raw user space and a run of text comes out of
+   * pdf.js in the page's normalised space; on any other page those two differ
+   * by an offset or a quarter turn, and comparing them would attach a picture
+   * to whichever property happened to land where the arithmetic put it.
+   *
+   * NULL IS THE ORDINARY ANSWER — for a page crop, which is the whole page and
+   * therefore nobody's, and for any page that rule cannot vouch for. Its one
+   * reader, `regionForImage`, treats null as "ownership could not be
+   * established", which leaves the picture against the upload and against no
+   * property. A wrong image is worse than no image.
+   */
+  drawn?: { x: number; y: number; width: number; height: number } | null;
 }
 
 /**
@@ -1057,6 +1074,23 @@ export function assignPdfMediaRolesPerProperty(input: {
   /** The document produced exactly ONE property. See `pageStatesIdentity`. */
   soleProperty?: boolean;
   pageTexts: string[];
+  /**
+   * The pages as ONE property sees them, where the document's pages and the
+   * property's differ.
+   *
+   * THE CASE THIS EXISTS FOR. A sheet of three property cards is one page,
+   * and every question below is asked of "this property's page": does it
+   * state the identity, does it state package facts, how many pictures does
+   * it draw. Asked of the sheet, all three answers are about all three
+   * properties — and rule 2 of `pageStatesIdentity` refuses a page naming any
+   * lot but ours, which is correct for a page read whole and wrong for a
+   * card. Where the reader divided the page, the caller substitutes the
+   * property's own region for it and leaves every other page alone.
+   *
+   * Absent, or absent for a property, and `pageTexts` is used exactly as it
+   * always was.
+   */
+  pageTextsByItemId?: Map<string, string[]>;
   pageOrderAuthoritative: boolean;
   /** What each picture IS, index-aligned with `media`. See `assignPdfMediaRoles`. */
   visualKinds?: Array<VisualKind | null>;
@@ -1081,7 +1115,7 @@ export function assignPdfMediaRolesPerProperty(input: {
       identityHints: input.identityHintsByItemId?.get(itemId) ?? [],
       design: input.designByItemId?.get(itemId) ?? null,
       soleProperty: input.soleProperty === true,
-      pageTexts: input.pageTexts,
+      pageTexts: input.pageTextsByItemId?.get(itemId) ?? input.pageTexts,
       pageOrderAuthoritative: input.pageOrderAuthoritative,
       media: indexes.map((index) => media[index].placement ?? {
         // A picture with no placement was not read by the page reader, so

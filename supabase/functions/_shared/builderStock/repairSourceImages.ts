@@ -70,7 +70,7 @@ import {
 import {
   DriveListingCache, recoverPackageImage, type PackageFetcher, type PackageOutcome,
 } from './packageImages.ts';
-import { attachDocumentMedia } from './importStock.ts';
+import { attachDocumentMedia, regionPageViews } from './importStock.ts';
 import { designOfRecordOrRow } from './builderSuppliedImage.pure.ts';
 import {
   countBranchLinkRows, linkSharedWithOtherRows,
@@ -507,6 +507,15 @@ export async function repairSourceImagesForUpload(
   let rowAssets: AnchoredAssets[] = [];
   let media: ExtractedMedia[] = [];
   let pageTexts: string[] = [];
+  /**
+   * The property regions a page carried, where the reader divided one.
+   *
+   * Carried for the same reason `pageTexts` is: the role decision below has
+   * to be the one the IMPORT made, and on a divided page a property's page is
+   * its region. See the `paginated` argument at `attachDocumentMedia`.
+   */
+  let pdfRegions: Array<{ page: number; index: number; anchor: string; text: string }>
+    | undefined;
   let pageOrderAuthoritative = true;
 
   const sourceUrl: string | null = upload.final_url || upload.source_url || null;
@@ -665,6 +674,7 @@ export async function repairSourceImagesForUpload(
       rowAssets = extraction.rowAssets;
       media = extraction.media;
       pageTexts = extraction.pageTexts ?? [];
+      pdfRegions = extraction.pdfRegions;
       pageOrderAuthoritative = extraction.pageOrderAuthoritative !== false;
     }
   } catch (error) {
@@ -834,6 +844,19 @@ export async function repairSourceImagesForUpload(
      */
     expectedRows: storedRowByItem.size || null,
   });
+  /*
+   * WHAT A PAGINATED SOURCE NEEDS THE ROLE DECISION TO KNOW.
+   *
+   * `repairPdfUpload` has built these since it was written, under a comment
+   * saying "the SAME role decision the import makes ... so a repair cannot
+   * reach a different conclusion about which picture is this property's than
+   * the upload that created it did". THIS path did not, and that is the
+   * defect recorded at the `attachDocumentMedia` call below.
+   */
+  const labelByItemId = new Map<string, string>();
+  const identityHintsByItemId = new Map<string, readonly string[]>();
+  const designByItemId = new Map<string, string | null>();
+
   /** Properties whose imagery this run actually re-fetched. The CPU bound. */
   let restored = 0;
   /** Of those, the ones that cost a whole PDF parse. The tighter bound. */
@@ -884,6 +907,16 @@ export async function repairSourceImagesForUpload(
     if (all.length) outcome.rowsWithImagery += 1;
 
     if (!itemId) continue;
+    /*
+     * RECORDED FOR EVERY MATCHED ROW, ABOVE THE `onlyItemId` NARROWING and
+     * for the same reason the anchor map is: the role decision is made over
+     * the whole document, and a per-item settlement that saw only its own row
+     * would answer a different question from the import that wrote it.
+     */
+    labelByItemId.set(itemId, stockRecordLabel(record));
+    identityHintsByItemId.set(itemId, stockIdentityHints(record));
+    designByItemId.set(itemId, record.house_design ?? null);
+
     // Identity was resolved above for EVERY row, so the fingerprint queue and
     // the anchor map are byte-identical to an unscoped run. Only the work below
     // belongs to one property.
@@ -1737,6 +1770,50 @@ export async function repairSourceImagesForUpload(
       },
       itemIdsInOrder,
       itemIdByAnchor,
+      /*
+       * ==================================================================
+       * A PAGINATED SOURCE IS JUDGED BY ITS PAGES HERE TOO.
+       * ==================================================================
+       *
+       * MEASURED 22 SEPTEMBER 2026, on `CARRINGTON - TWO PACKAGES.pdf` — one
+       * page, two property cards, a facade and a floor plan in each card's
+       * own column. The import elected each card's facade correctly:
+       *
+       *   after import   lot 19 primary=set   #4 role=primary_property eligible
+       *                  lot 24 primary=set   #5 role=primary_property eligible
+       *   first tick     lot 19 primary=null  #4 role=unknown  elig=-
+       *                  lot 24 primary=null  #5 role=unknown  elig=-
+       *
+       * This argument was ABSENT, so `attachDocumentMedia` settled the roles
+       * with `settleContainerMediaRoles` — which gives a primary only where a
+       * property has EXACTLY ONE attributed picture, correctly, because a
+       * container that hands you two pictures has not said which is the
+       * listing image. A PAGE has said: `assignPdfMediaRolesPerProperty`
+       * reads the cover, the identity and the drawn emphasis. The upsert
+       * replaces `source_detail` wholesale, so the wrong helper did not
+       * merely fail to elect — it ERASED the election and the eligibility
+       * verdict beside it, on the first settler tick after every import.
+       *
+       * The property was invisible while every PDF property had at most one
+       * picture: one picture is the case `settleContainerMediaRoles` gets
+       * right. A second picture on the same property — a floor plan beside a
+       * facade, which is an ordinary brochure — is all it takes.
+       *
+       * `repairPdfUpload` passes this and always has, under a comment saying
+       * a repair must not reach a different conclusion from the import. That
+       * rule was true of one of the two repair paths.
+       */
+      pageTexts.length
+        ? {
+          labelByItemId,
+          identityHintsByItemId,
+          designByItemId,
+          soleProperty: documentRows === 1,
+          pageTexts,
+          pageTextsByItemId: regionPageViews(pdfRegions, pageTexts, itemIdByAnchor),
+          pageOrderAuthoritative,
+        }
+        : null,
     );
     for (const itemId of itemIdsInOrder) touched.add(itemId);
   }
