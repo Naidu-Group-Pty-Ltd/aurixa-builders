@@ -22,6 +22,11 @@ import {
 } from './stockFieldCompletion.pure.ts';
 import type { StockFileClassification } from './fileTypes.pure.ts';
 import { extractStockFile, StockExtractionError } from './extract.ts';
+import {
+  countIn, ledgerTotalMs, recordStage,
+  type ImportStageLedger,
+} from './importStageLedger.pure.ts';
+import { watchImportTermination } from './importTermination.ts';
 import type { PdfDeterministicDiagnostics } from './extract.ts';
 import { extractStockRowsFromImages, extractStockRowsFromText } from './modelExtract.ts';
 import { StockModelExtractionError, modelFailureFromRouterError } from './modelExtractionFailure.pure.ts';
@@ -46,6 +51,16 @@ export interface RunImportInput {
   builderUserId: string;
   upload: { id: string; original_filename: string };
   bytes: Uint8Array;
+  /**
+   * The stage ledger this run continues, where it continues one.
+   *
+   * Present on a RESUMED import: the stages this invocation runs are added to
+   * the account of the ones a previous invocation ran, rather than opening a
+   * second account of the same upload. Absent — which is every caller that
+   * does not resume — starts a fresh ledger and behaves exactly as before.
+   * See `importStageLedger.pure.ts`.
+   */
+  ledger?: Record<string, unknown> | null;
   /**
    * WHAT THE DOCUMENT IS CALLED, as distinct from what this upload is LABELLED.
    *
@@ -257,6 +272,57 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
    */
   const runBudget = openImportBudget(Date.now(), bytes.length);
 
+  /*
+   * ═══════════════════════════════════════════════════════════════════════
+   * THE LEDGER, AND WHY IT IS COMMITTED AT EVERY STAGE RATHER THAN AT THE END
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * MEASURED 22 September 2026: `LOT 550 - ENZO 8.5 MODERN- BROCHURE V002.pdf`
+   * (8,530,307 bytes) reached `POST builder-portal-stock -> 546  CPU Time
+   * exceeded` eight seconds into processing, and the row it left behind read
+   * `stage_timings: null`. The run that survives tells you what it spent; the
+   * run that DIES tells you nothing, and the run that dies is the only one
+   * worth measuring.
+   *
+   * So each stage commits before the next one starts. One small UPDATE per
+   * stage, awaited, and a worker killed anywhere leaves a row naming the last
+   * stage that finished and what every finished stage cost — the stage after
+   * the last entry is the one that killed it.
+   *
+   * BEST-EFFORT AND NEVER FATAL: a deployment whose migration has not been
+   * dispatched has no column for this, and an import must not fail over a
+   * diagnostic. See `importStageLedger.pure.ts`.
+   */
+  const ledger: ImportStageLedger = (input.ledger as ImportStageLedger | undefined) ?? {};
+  /*
+   * AND IF THE RUNTIME TAKES THE WORKER, IT SAYS WHICH RESOURCE IT TOOK IT
+   * FOR. `546` means the worker went away and nothing else; the last
+   * completed stage plus the reason is the whole diagnosis. See
+   * `importTermination.ts`.
+   */
+  const termination = watchImportTermination('builderStock');
+  termination.watch(ledger);
+  const commitLedger = async (current: ImportStageLedger): Promise<void> => {
+    try {
+      await supabase.from('builder_stock_uploads')
+        .update({ stage_timings: { ...current, total_ms: ledgerTotalMs(current) } })
+        .eq('id', upload.id)
+        .eq('organisation_id', organisationId);
+    } catch { /* a diagnostic never fails the deliverable */ }
+  };
+  /** Run one of THIS module's stages into the same ledger the extractor uses. */
+  const stage = async <T>(
+    name: Parameters<typeof recordStage>[1], run: () => Promise<T>,
+  ): Promise<T> => {
+    const startedAt = Date.now();
+    try {
+      return await run();
+    } finally {
+      recordStage(ledger, name, Date.now() - startedAt);
+      await commitLedger(ledger);
+    }
+  };
+
   if (!bytes.length) {
     return fail('empty_file', sourceKind === 'url'
       ? 'That address returned an empty document.'
@@ -268,7 +334,8 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
 
   // `sha256Hex` is typed for a plain-ArrayBuffer view; a Uint8Array that
   // reached us through a stream reader carries the wider `ArrayBufferLike`.
-  const sha = await sha256Hex(bytes as Uint8Array<ArrayBuffer>);
+  const sha = await stage('document_open',
+    () => sha256Hex(bytes as Uint8Array<ArrayBuffer>));
 
   // Duplicate guard. The same BYTES from the same organisation have already
   // produced whatever they were going to — which is why a URL is not the key:
@@ -327,6 +394,10 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
        */
       organisationName: input.organisationName,
       budget: runBudget,
+      // ONE ACCOUNT OF ONE RUN: the extractor records its stages into the
+      // same ledger and commits through the same hook.
+      ledger,
+      onStage: commitLedger,
     });
   } catch (error) {
     if (error instanceof StockExtractionError) {
@@ -784,35 +855,34 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     // Derived from the run's own clock rather than restarted here, which is
     // the half of this defect that had a budget and spent it from zero.
     imageDeadlineAt: storageDeadlineFrom(runBudget, Date.now()),
+    // ONE ACCOUNT OF ONE RUN. The raster half of that call records itself.
+    ledger,
+    onStage: commitLedger,
   });
-  const dbWriteMs = Date.now() - recordsStartedAt;
+  /*
+   * THE ROW WRITES ARE WHAT IS LEFT ONCE THE RASTER WORK IS TAKEN OUT.
+   *
+   * `importStockRecords` does two different kinds of work in one call and
+   * only one of them is expensive per byte. Timing the whole call as
+   * `db_write` would put the photographs' cost under a metadata heading and
+   * hide the thing the measurement is for; subtracting what the raster stage
+   * already recorded is the same rule the reader and the segmenter answer to
+   * one level up.
+   */
+  const imageStoreMs = typeof ledger.image_store_ms === 'number' ? ledger.image_store_ms : 0;
+  recordStage(ledger, 'db_write',
+    Math.max(0, (Date.now() - recordsStartedAt) - imageStoreMs));
+  await commitLedger(ledger);
 
   /*
-   * WHAT THIS RUN SPENT, WRITTEN DOWN WHERE SOMEBODY CAN READ IT LATER.
-   *
-   * DIAGNOSTICS ONLY — milliseconds and counts, never a byte of the builder's
-   * document, and nothing branches on it. It exists because the 22 September
-   * 2026 latency investigation had to reconstruct every stage of this pipeline
-   * from log-line coincidence, and got the resource wrong twice before the
-   * runtime named it. `document_parses` is the one to watch: a single import
-   * legitimately opens the PDF three times (text layer, layout, images), and
-   * anything above that is a stage running twice.
-   *
-   * BEST-EFFORT, exactly as the kick below is: a deployment whose migration
-   * has not been dispatched has no column for this and must not fail an
-   * import over a diagnostic.
+   * WHAT THIS RUN SPENT IS ALREADY WRITTEN DOWN — this block used to do it
+   * here, at the end, and that is exactly why the 22 September CPU kill left
+   * `stage_timings: null` on an import that had spent eight seconds. The
+   * ledger is committed at every stage boundary now; what is added here is
+   * only what this point of the run knows and the stages did not.
    */
-  try {
-    await supabase.from('builder_stock_uploads').update({
-      stage_timings: {
-        ...(extraction.timings ?? {}),
-        db_write_ms: dbWriteMs,
-        total_ms: Date.now() - runBudget.startedAt,
-        strategy,
-        rows_detected: outcome.detected,
-      },
-    }).eq('id', upload.id).eq('organisation_id', organisationId);
-  } catch { /* a diagnostic never fails the deliverable */ }
+  countIn(ledger, 'rows_detected', outcome.detected);
+  ledger.strategy = strategy;
 
   if (!outcome.detected) {
     /**
@@ -923,6 +993,7 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
    * BEST-EFFORT BY DESIGN: the every-minute tick reaches the same queue, so
    * a deployment mid-migration or a pg_net hiccup costs latency, never work.
    */
+  const kickStartedAt = Date.now();
   try {
     const { error: kickError } = await input.supabase
       .rpc('builder_stock_kick_image_work', { p_upload_id: input.upload.id });
@@ -933,6 +1004,9 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
       });
     }
   } catch { /* the cron tick is the guarantee */ }
+  recordStage(ledger, 'initial_image_work', Date.now() - kickStartedAt);
+  await commitLedger(ledger);
+  const finalisationStartedAt = Date.now();
 
   /*
    * AND ASK WHETHER THIS UPLOAD CAN BE PUBLISHED, BECAUSE NOTHING ELSE WILL
@@ -967,6 +1041,13 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
       p_upload_id: input.upload.id,
     });
   } catch { /* the settler and the cron tick both ask again */ }
+  recordStage(ledger, 'finalisation', Date.now() - finalisationStartedAt);
+  await commitLedger(ledger);
+  /*
+   * THE RUN IS OVER, so a termination from here on is the ordinary end-of-
+   * request drop and must not be reported as an import dying mid-stage.
+   */
+  termination.done();
 
   return {
     ok: true,

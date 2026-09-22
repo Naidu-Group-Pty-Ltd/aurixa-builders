@@ -8,3 +8,4 @@ dist/
 # (`--node-modules-dir=none`), so this lock is a local artefact of running the
 # gate, not a dependency of the product.
 deno.lock
+__pycache__/

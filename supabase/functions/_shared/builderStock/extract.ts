@@ -45,6 +45,9 @@ import {
   SOURCE_ANCHOR_HEADER, settleRowAssetRoles, type AnchoredAssets,
 } from './sourceAssets.pure.ts';
 import { noPrimaryEvidence } from './sourceImageRole.pure.ts';
+import {
+  countIn, recordStage, type ImportStage, type ImportStageLedger,
+} from './importStageLedger.pure.ts';
 import type { PdfPhotoProvenance } from './pdfSourcePhoto.ts';
 import type { PdfMediaPlacement } from './pdfPrimaryImage.pure.ts';
 import type {
@@ -92,43 +95,21 @@ export interface ExtractedMedia {
 }
 
 /**
- * WHAT THIS RUN SPENT, AND HOW MANY TIMES IT DID THE EXPENSIVE THING.
+ * WHAT AN IMPORT SPENDS IS RECORDED BY `importStageLedger.pure.ts`.
  *
- * DIAGNOSTICS ONLY. Nothing reads it to make a decision, no branch is taken
- * on it, and it carries no document content — milliseconds and counts.
+ * `ExtractionTimings` used to be declared here, flat: `document_extract_ms`
+ * covered the text layer AND the positioned layout, which are two different
+ * costs over the same bytes with no way to tell which one is expensive. The
+ * 22 September CPU kill needed exactly that distinction, so the ledger is now
+ * shared with `runImport` and split at the stage boundaries — one account of
+ * one run rather than two that have to be reconciled.
  *
- * WHY THE COUNTS AND NOT JUST THE MILLISECONDS. The 22 September 2026 latency
- * investigation found the same PDF parsed TWICE for one import — once by the
- * import and once again by an upload-level sweep four minutes later — and the
- * only reason anybody noticed is that the second parse happened to log a line.
- * A duration tells you a stage was slow; a count tells you the stage ran when
- * it should not have run at all, which is the more expensive defect and the
- * one nothing here could see.
+ * DIAGNOSTICS AND PROGRESS ONLY. Milliseconds, counts and stage names; never
+ * a byte of the customer's document.
  */
-export interface ExtractionTimings {
-  /** Reading the container: the PDF text layer, the zip, the workbook. */
-  document_extract_ms?: number;
-  /** Recognition, where any page needed it. Absent means none did. */
-  ocr_ms?: number;
-  /** Pulling the pictures out of the document and deciding what they are. */
-  image_extract_ms?: number;
-  /** The deterministic reader, segmentation included. */
-  reader_ms?: number;
-  /** The region segmentation alone, where a page was divided. */
-  segmentation_ms?: number;
-  /** How many times this run opened the document itself. Should be 1. */
-  document_parses?: number;
-  /** Pages rasterised, which is only ever for recognition. */
-  rasterisations?: number;
-  /** Pages actually put through recognition. */
-  ocr_pages?: number;
-  /** Pictures taken out of the document. */
-  images_extracted?: number;
-}
-
 export interface StockExtraction {
-  /** See `ExtractionTimings`. Diagnostics; never read for a decision. */
-  timings?: ExtractionTimings;
+  /** See `importStageLedger.pure.ts`. Diagnostics and progress; never a decision. */
+  timings?: ImportStageLedger;
   /** Recorded on the upload row so a support question has an answer. */
   strategy: string;
   rows: Array<Record<string, unknown>>;
@@ -592,6 +573,23 @@ export async function extractStockFile(
      * the imagery it exists to attach. See `importBudget.pure.ts`.
      */
     budget?: ImportBudget | null;
+    /**
+     * The run's ledger, when the caller keeps one across stages.
+     *
+     * A RESUMED import passes the ledger it already has, so the stages this
+     * invocation runs are added to the account of the ones a previous
+     * invocation ran rather than starting a second one. Absent means a fresh
+     * run, which is every caller that does not resume.
+     */
+    ledger?: ImportStageLedger | null;
+    /**
+     * Commit the ledger. Awaited at every stage boundary; see `timed`.
+     *
+     * Absent means nothing is persisted and the extraction behaves exactly as
+     * it did — which is what keeps the repair sweep, the re-read and every
+     * test caller unchanged.
+     */
+    onStage?: ((ledger: ImportStageLedger) => Promise<void>) | null;
   } = {},
 ): Promise<StockExtraction> {
   const result: StockExtraction = {
@@ -602,16 +600,25 @@ export async function extractStockFile(
     media: [],
     rowAssets: [],
     warnings: [],
-    timings: {},
+    timings: options.ledger ?? {},
   };
   const timings = result.timings!;
-  /** Time one awaited phase into the run's ledger, adding to what is there. */
-  const timed = async <T>(key: keyof ExtractionTimings, run: () => Promise<T>): Promise<T> => {
+  /**
+   * Run one stage, record what it cost, and COMMIT the ledger before the next
+   * one starts.
+   *
+   * The commit is the whole point and it is awaited. A worker killed inside
+   * the next stage must leave a row saying this one finished and what it
+   * spent — which is the difference between an eight-second CPU kill you can
+   * account for and the `stage_timings: null` the 22 September one left.
+   */
+  const timed = async <T>(stage: ImportStage, run: () => Promise<T>): Promise<T> => {
     const startedAt = Date.now();
     try {
       return await run();
     } finally {
-      timings[key] = (timings[key] ?? 0) + (Date.now() - startedAt);
+      recordStage(timings, stage, Date.now() - startedAt);
+      if (options.onStage) await options.onStage(timings);
     }
   };
 
@@ -812,8 +819,8 @@ export async function extractStockFile(
       // uploaded here and the same brochure reached through a row's own link
       // cannot number their pages differently. See `pdfText.ts`.
       const { readPdfPageTexts } = await import('./pdfText.ts');
-      const pages = await timed('document_extract_ms', async () => {
-        timings.document_parses = (timings.document_parses ?? 0) + 1;
+      const pages = await timed('native_text', async () => {
+        countIn(timings, 'document_parses');
         return await readPdfPageTexts(bytes);
       });
       if (!pages.length) throw new Error('no text layer');
@@ -857,8 +864,15 @@ export async function extractStockFile(
       try {
         const { extractPdfPhotosByPage } = await import('./pdfSourcePhoto.ts');
         const wanted = new Set(plan.pages);
-        const photos = await timed('image_extract_ms', async () => {
-          timings.document_parses = (timings.document_parses ?? 0) + 1;
+        /*
+         * COUNTED AS `ocr` RATHER THAN AS IMAGE WORK, because that is what it
+         * is: these rasters exist only to be recognised and are thrown away
+         * afterwards. Filing them under image extraction was the flat
+         * ledger's doing and it made a scanned document look like one with
+         * lots of pictures.
+         */
+        const photos = await timed('ocr', async () => {
+          countIn(timings, 'document_parses');
           return await extractPdfPhotosByPage(bytes, { maxPages: OCR_MAX_PAGES });
         });
         const rasters = photos
@@ -869,12 +883,12 @@ export async function extractStockFile(
             width: entry.photo.provenance.sourceWidth,
             height: entry.photo.provenance.sourceHeight,
           }));
-        timings.rasterisations = (timings.rasterisations ?? 0) + rasters.length;
-        const reading = await timed('ocr_ms', () => recogniseScannedPages(rasters, {
+        countIn(timings, 'rasterisations', rasters.length);
+        const reading = await timed('ocr', () => recogniseScannedPages(rasters, {
           deadlineAt: options.budget
             ? storageDeadlineFrom(options.budget, Date.now()) : undefined,
         }));
-        timings.ocr_pages = (timings.ocr_pages ?? 0) + reading.text.size;
+        countIn(timings, 'ocr_pages', reading.text.size);
         result.ocr = {
           attempted: plan.pages.length,
           read: reading.text.size,
@@ -953,8 +967,8 @@ export async function extractStockFile(
        * before anything had asked what they were. Discovery now hands over all
        * of them and the role is settled where the property is known.
        */
-      const found = await timed('image_extract_ms', async () => {
-        timings.document_parses = (timings.document_parses ?? 0) + 1;
+      const found = await timed('image_discovery', async () => {
+        countIn(timings, 'document_parses');
         return await discoverPdfSourceAssets(bytes);
       });
       result.pageOrderAuthoritative = found.pageOrderAuthoritative;
@@ -1082,8 +1096,8 @@ export async function extractStockFile(
        */
       const pageTexts = result.pageTexts ?? [];
       const { readPdfTextLayout } = await import('./pdfTextLayout.ts');
-      const layout = await timed('document_extract_ms', async () => {
-        timings.document_parses = (timings.document_parses ?? 0) + 1;
+      const layout = await timed('positioned_layout', async () => {
+        countIn(timings, 'document_parses');
         return await readPdfTextLayout(bytes);
       });
       const positionedPages: PdfTextLayoutPage[] | null = layout.ok ? layout.pages : null;
@@ -1111,11 +1125,21 @@ export async function extractStockFile(
           ? (options.documentName ?? '')
           : filename,
       });
-      timings.reader_ms = (timings.reader_ms ?? 0) + (Date.now() - readerStartedAt);
-      if (typeof reading.diagnostics.segmentationMs === 'number') {
-        timings.segmentation_ms = (timings.segmentation_ms ?? 0)
-          + reading.diagnostics.segmentationMs;
-      }
+      /*
+       * SEGMENTATION IS SUBTRACTED FROM THE READER RATHER THAN NESTED IN IT.
+       * The two run in one synchronous call, so timing them as parent and
+       * child would double-count the child against the run's total — and the
+       * total is what decides whether a stage boundary is needed.
+       */
+      const segmentationMs = typeof reading.diagnostics.segmentationMs === 'number'
+        ? reading.diagnostics.segmentationMs : 0;
+      const normalisationMs = typeof reading.diagnostics.normalisationMs === 'number'
+        ? reading.diagnostics.normalisationMs : 0;
+      recordStage(timings, 'segmentation', segmentationMs);
+      recordStage(timings, 'normalisation', normalisationMs);
+      recordStage(timings, 'property_reader',
+        Math.max(0, (Date.now() - readerStartedAt) - segmentationMs - normalisationMs));
+      if (options.onStage) await options.onStage(timings);
       result.deterministicReading = {
         status: reading.status,
         reason: reading.reason,
@@ -1196,7 +1220,7 @@ export async function extractStockFile(
        * warning, because a builder has nothing to do about it.
        */
     }
-    timings.images_extracted = result.media.length;
+    countIn(timings, 'images_extracted', result.media.length);
     return result;
   }
 

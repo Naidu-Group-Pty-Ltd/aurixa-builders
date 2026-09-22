@@ -26,6 +26,9 @@ import {
 } from './normalise.pure.ts';
 import { parseBuilderAddressLine } from '../builderStockAddress.pure.ts';
 import { stockImageUpsertKey } from './stockImageUpsertKey.pure.ts';
+import {
+  recordStage, type ImportStageLedger,
+} from './importStageLedger.pure.ts';
 import { IMAGE_BUDGET_MS } from './importBudget.pure.ts';
 import {
   describeIdentityChange, identityDifferences, reReadHoldsSameProperty,
@@ -524,6 +527,18 @@ export async function importStockRecords(
     builderUserId: string | null;
     rows: Array<Record<string, unknown>>;
     media: ExtractedMedia[];
+    /**
+     * The run's stage ledger, when the caller keeps one.
+     *
+     * Present, the RASTER half of this function — decoding, classifying and
+     * storing the document's photographs — is timed apart from the row writes
+     * it sits beside. A single figure covering both cannot say which one is
+     * near the CPU ceiling, and that is the question the 22 September kill
+     * asked. Absent everywhere else, and absent changes nothing.
+     */
+    ledger?: ImportStageLedger | null;
+    /** Commit the ledger; awaited at the raster boundary. */
+    onStage?: ((ledger: ImportStageLedger) => Promise<void>) | null;
     /** Imagery the source published against one of its own rows. */
     rowAssets?: AnchoredAssets[];
     /**
@@ -1242,6 +1257,18 @@ export async function importStockRecords(
     }, { fetchImage: deps.fetchImage });
   }
 
+  /*
+   * ATTACHING THE DOCUMENT'S PICTURES IS THE RASTER CLASS, AND IT IS TIMED
+   * APART FROM THE ROW WRITES IT SITS BESIDE.
+   *
+   * `importStockRecords` does two different kinds of work in one call and
+   * only one of them is expensive per byte: it writes property rows, which is
+   * metadata, and it decodes, classifies and stores photographs, which is the
+   * most expensive thing an import does. One `db_write_ms` covering both
+   * cannot say which is near the CPU ceiling, and that is the question the
+   * 22 September kill asked.
+   */
+  const attachStartedAt = Date.now();
   if (input.media.length && !room()) {
     // The document's own media is the same expensive work by another route.
     // Left whole for the enrichment pass rather than half-attributed here:
@@ -1280,6 +1307,10 @@ export async function importStockRecords(
       }
       : null,
   );
+  if (input.ledger) {
+    recordStage(input.ledger, 'image_store', Date.now() - attachStartedAt);
+    if (input.onStage) await input.onStage(input.ledger);
+  }
 
   /**
    * SETTLE THE POINTER. An import that stores a photograph and does not say
