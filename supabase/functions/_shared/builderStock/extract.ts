@@ -512,6 +512,23 @@ export async function extractStockFile(
     baseUrl?: string;
     organisationName?: string | null;
     /**
+     * WHAT THE DOCUMENT IS CALLED, as distinct from `filename`, which is the
+     * upload's display label and is what a URL import shows in a list.
+     *
+     * Only the deterministic PDF reader takes this, and it takes it because
+     * it uses a name as EVIDENCE. `filename` still serves everything that
+     * merely wants an extension — a bare image's content type and its media
+     * name — where a display label is perfectly good and a missing document
+     * name would be a regression.
+     *
+     * Absent falls back to `filename`, which is correct for every caller
+     * that holds a real file (the repair sweep, re-reads) and is why this is
+     * additive: only the URL import states it, and it states the truth,
+     * including the truth that a URL named no document. See
+     * `documentName.pure.ts`.
+     */
+    documentName?: string | null;
+    /**
      * The run's own clock, when the caller keeps one.
      *
      * ABSENT MEANS UNBUDGETED, and unbudgeted means exactly today's
@@ -1004,8 +1021,14 @@ export async function extractStockFile(
         /*
          * The name the builder gave the file, read only to CLASSIFY a name
          * the document itself printed. It can fill no field of its own.
+         *
+         * The DOCUMENT'S name, never the upload's display label — those are
+         * the same string for a file and are not for a URL, where the label
+         * carries the publisher's hostname. See `documentName.pure.ts`.
          */
-        filename,
+        filename: options.documentName !== undefined
+          ? (options.documentName ?? '')
+          : filename,
       });
       result.deterministicReading = {
         status: reading.status,

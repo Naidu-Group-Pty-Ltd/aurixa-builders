@@ -28,6 +28,7 @@ import { serveStockImage } from '../../supabase/functions/_shared/builderStock/s
  * caller, so it writes one too, through the same function.
  */
 import { closeRefusedUpload } from '../../supabase/functions/_shared/builderStock/closeRefusedUpload.ts';
+import { sourceDocumentName } from '../../supabase/functions/_shared/builderStock/documentName.pure.ts';
 /*
  * THE IMAGE PIPELINE, driven the way the settler drives it. `runStockImport`
  * leaves every property at `image_work_stage: 'source'` with no photograph —
@@ -184,6 +185,17 @@ for (const [key, legal] of [
    * is tested where it belongs, above.
    */
   ['inv', 'Invariant Homes Pty Ltd'], ['inv:other', 'Invariant Rivals Pty Ltd'],
+  /*
+   * AND TWO FOR 7i, for the same reason one more time. That invariant imports
+   * one document TWICE — once from an address that names it and once from an
+   * address that does not — and both are the same bytes, so they cannot share
+   * an organisation without the second being refused as a duplicate. Which is
+   * how the first version of it failed: `rows[0]` was undefined on the second
+   * import and the invariant reported a difference the duplicate guard had
+   * created.
+   */
+  ['name:named', 'Named Address Homes Pty Ltd'],
+  ['name:nameless', 'Nameless Address Homes Pty Ltd'],
 ]) {
   const { data: org, error } = await db.from('builder_organisations')
     .insert({ legal_name: legal, org_type: 'builder' }).select('id').single();
@@ -414,19 +426,55 @@ async function routeA(entry: Entry, bytes: Uint8Array, tag = 'A') {
            rssDelta: rss() - m0, transferred: downloaded.length };
 }
 
-/** Route B — the same bytes, obtained over HTTP first. */
+/**
+ * Route B — the same bytes, obtained over HTTP first.
+ *
+ * THE ADDRESS CARRIES THE DOCUMENT'S OWN NAME, because a builder linking a
+ * brochure links the brochure. What that name then COUNTS FOR is decided by
+ * `sourceDocumentName`, the same rule `prepareLinkedStockSource` applies in
+ * production — never by this harness, which would otherwise be asserting its
+ * own opinion about a transport rather than the product's.
+ */
 async function routeB(entry: Entry, bytes: Uint8Array) {
-  const key = `${entry.org}/${entry.name}.pdf`;
+  const key = `${entry.org}/${encodeURIComponent(entry.filename)}`;
   served.set(key, bytes);
   const t0 = performance.now(); const m0 = rss();
   const response = await realFetch(`http://localhost:54996/${key}`);
   const fetched = new Uint8Array(await response.arrayBuffer());
 
   const twin = `${entry.org}:b`;
+  const sourceUrl = `http://localhost:54996/${key}`;
   const storagePath = `${orgs[twin].id}/B-${crypto.randomUUID()}.pdf`;
+  /*
+   * THE SNAPSHOT, WHICH IS NOT OPTIONAL AND WAS MISSING.
+   *
+   * `add_url_source` stores the fetched bytes in the same bucket an uploaded
+   * file goes to BEFORE it imports, and that stored copy is what the image
+   * pipeline re-opens later. Route B set a `storage_path` and put nothing at
+   * it, so every image stage answered "this row names no source this pipeline
+   * can open" — and because the settler treats that as retryable, it spun:
+   * `image_work_attempts: 11` against route A's 0.
+   *
+   * Found by the equivalence assertion itself, on its first honest run. This
+   * is exactly the shape of infidelity the assertion exists to catch, and it
+   * was in the harness rather than in the product.
+   */
+  const snapshot = await db.storage.from(BUCKET).upload(storagePath, fetched, {
+    contentType: 'application/pdf', upsert: true,
+  });
+  if (snapshot.error) throw new Error(`snapshot: ${snapshot.error.message}`);
   const upload = await newUpload(twin, entry.filename, storagePath);
-  await db.from('builder_stock_uploads')
-    .update({ status: 'parsing', source_type: 'url' }).eq('id', upload.id);
+  await db.from('builder_stock_uploads').update({
+    status: 'parsing',
+    source_type: 'url',
+    // What `add_url_source` writes, so the row a URL import leaves behind is
+    // the row this gate settles and publishes from.
+    source_url: sourceUrl,
+    final_url: sourceUrl,
+    declared_content_type: response.headers.get('content-type') ?? 'application/pdf',
+    byte_size: fetched.length,
+    retrieved_at: new Date().toISOString(),
+  }).eq('id', upload.id);
 
   const result = await runStockImport({
     supabase: db,
@@ -436,10 +484,21 @@ async function routeB(entry: Entry, bytes: Uint8Array) {
     upload: { id: upload.id, original_filename: upload.original_filename },
     bytes: fetched,
     sourceKind: 'url',
-    baseUrl: `http://localhost:54996/${key}`,
+    baseUrl: sourceUrl,
+    /*
+     * WHAT THE SOURCE NAMED, resolved by the product's own rule from the
+     * address the fetch actually landed on and the header the server
+     * actually sent. A URL that names a document says so; one that does not
+     * says nothing, and nothing is what the reader then corroborates.
+     */
+    documentName: sourceDocumentName({
+      finalUrl: sourceUrl,
+      contentDisposition: response.headers.get('content-disposition'),
+    }),
   });
   return { result, uploadId: upload.id, ms: performance.now() - t0,
-           rssDelta: rss() - m0, transferred: fetched.length };
+           rssDelta: rss() - m0, transferred: fetched.length,
+           documentName: sourceDocumentName({ finalUrl: sourceUrl }) };
 }
 
 // ---------------------------------------------------------------------------
@@ -526,6 +585,28 @@ for (const entry of manifest) {
       fail(entry, `the image settler threw: ${(e as Error).message}`);
     }
   }
+  /*
+   * AND ON ROUTE B TOO, which is the difference between comparing two
+   * readings and comparing two CUSTOMERS' outcomes.
+   *
+   * The first version of 6b settled route A alone and then had to exclude
+   * `enrichment_status`, `image_work_stage`, `image_work_last_result` and
+   * `lifecycle_status` from the comparison to make it pass — seven columns
+   * of difference that the harness itself had created. Excluding them would
+   * have meant the equivalence assertion could never see a transport that
+   * publishes differently, which is most of what "the same document" is for:
+   * a card either shows the right photograph or it does not.
+   *
+   * So route B settles as well, and what remains excluded below is row ids
+   * and clock readings only.
+   */
+  if (b.result.ok) {
+    try {
+      row.imageryB = await settleImagery(orgs[`${entry.org}:b`].id, b.uploadId);
+    } catch (e) {
+      fail(entry, `the image settler threw on route B: ${(e as Error).message}`);
+    }
+  }
 
   const itemsA = await itemsFor(a.uploadId);
   const itemsB = await itemsFor(b.uploadId);
@@ -537,20 +618,118 @@ for (const entry of manifest) {
     fail(entry, `expected ${entry.expect.properties} properties, route A produced ${itemsA.length}`);
   }
 
-  // --- 6b. A and B agree ------------------------------------------------
-  if (a.result.ok !== b.result.ok) {
-    fail(entry, `route A ok=${a.result.ok} but route B ok=${b.result.ok}`);
-  }
+  /* --- 6b. IDENTICAL BYTES ARE THE SAME DOCUMENT ------------------------
+   *
+   * The import pipeline's own header says everything after transport is
+   * identical for a file and for a URL. This is the assertion behind that
+   * sentence, and it is deliberately made over the WHOLE reading rather than
+   * over a list of columns — a list can only ever catch what somebody
+   * remembered to put in it.
+   *
+   * What is compared: the verdict and its code, the reader's own status and
+   * reason, every field it READ and every field it DECLINED with the reason
+   * it declined for, which reader placed each field, the number of candidate
+   * properties, the identity of each, every stored column, and what the
+   * property published as. Timing, byte counts and row ids are excluded
+   * because they are properties of the run rather than of the document.
+   *
+   * IT WAS NOT TRUE WHEN THIS WAS WRITTEN. The reader takes a name as
+   * evidence and was handed `upload.original_filename` — the document's own
+   * name for a file, a display label of host + ellipsis + segment for a URL.
+   * The same bytes read differently, and a hostname could name a house
+   * design. `documentName.pure.ts` carries the measurement.
+   */
+  const readingOf = (r: any) => {
+    const d = r?.deterministicReading;
+    if (!d) return { present: false };
+    return {
+      present: true,
+      status: d.status ?? null,
+      reason: d.reason ?? null,
+      // Sorted: these are sets, and the order a reader happened to write them
+      // in is not a property of the document.
+      fieldsRead: [...(d.diagnostics?.fieldsRead ?? [])].sort(),
+      declinedFields: [...(d.diagnostics?.declinedFields ?? [])].sort(),
+      declinedBecause: [...(d.diagnostics?.declinedBecause ?? [])].sort(),
+      disputedFields: [...(d.diagnostics?.disputedFields ?? [])].sort(),
+      visualOnlyFields: [...(d.diagnostics?.visualOnlyFields ?? [])].sort(),
+      readBy: Object.fromEntries(Object.entries(d.diagnostics?.readBy ?? {}).sort()),
+      candidates: d.diagnostics?.candidates ?? null,
+    };
+  };
+  const verdictOf = (r: any) => ({
+    ok: r.ok === true,
+    code: r.ok ? null : String(r.code ?? ''),
+    strategy: r.ok ? String(r.strategy ?? '') : null,
+    detected: r.ok ? r.summary.detected : null,
+  });
+  /**
+   * A stored property, as the DOCUMENT describes it.
+   *
+   * `id`, `upload_id`, `organisation_id` and the timestamps are the run's,
+   * not the document's — and the two routes import into different
+   * organisations on purpose, so including them would assert a difference
+   * the harness itself created.
+   */
+  /**
+   * WHAT IS EXCLUDED, AND WHY — ids and clock readings, and nothing else.
+   *
+   * A row id, an upload id, an organisation id and a timestamp are facts
+   * about WHEN AND WHERE this run happened. The two routes deliberately
+   * import into different organisations (the same bytes in one organisation
+   * are a duplicate, correctly refused), so including any of them would
+   * assert a difference the harness created.
+   *
+   * Everything else is compared, INCLUDING what the property published as
+   * and whether a photograph reached its card — `primary_image_id` is a row
+   * id and is excluded, but `image_work_stage`, `image_work_last_result`,
+   * `enrichment_status` and `lifecycle_status` are not, because those are
+   * the answer to "did this document become the same product".
+   */
+  const OF_THE_RUN = new Set([
+    'id', 'upload_id', 'organisation_id', 'first_upload_id', 'pending_upload_id',
+    'created_by_builder_user_id', 'primary_image_id',
+    'created_at', 'updated_at', 'enriched_at', 'last_seen_at',
+    'image_work_updated_at', 'image_work_next_attempt_at',
+    'image_work_claim_until', 'image_work_claim_by',
+    'published_at', 'first_published_at', 'source_url',
+  ]);
+  /*
+   * `String(v)` on an object is `[object Object]`, which compares equal to
+   * every other object — so `source_row`, the reader's own record of what it
+   * read, was being compared to nothing at all. Found by looking at the
+   * failure text rather than at the code.
+   */
+  const asText = (v: unknown) => v === null || v === undefined
+    ? null
+    : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+  const documentShape = (it: any) => Object.fromEntries(
+    Object.entries(it)
+      .filter(([k]) => !OF_THE_RUN.has(k))
+      .map(([k, v]) => [k, asText(v)] as const)
+      .sort((x, y) => x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0));
+
+  const eq = (what: string, x: unknown, y: unknown) => {
+    const sx = JSON.stringify(x), sy = JSON.stringify(y);
+    if (sx !== sy) fail(entry, `transport changed ${what}: A=${sx} B=${sy}`);
+  };
+
+  eq('the verdict', verdictOf(a.result), verdictOf(b.result));
+  eq('the reading', readingOf(a.result), readingOf(b.result));
+  row.equivalence = { documentName: b.documentName, reading: readingOf(a.result) };
+
   if (itemsA.length !== itemsB.length) {
     fail(entry, `route A produced ${itemsA.length} properties, route B ${itemsB.length}`);
   } else {
-    for (let i = 0; i < itemsA.length; i += 1) {
-      for (const f of COMPARED) {
-        const va = valueOf(itemsA[i], f); const vb = valueOf(itemsB[i], f);
-        if (String(va).toLowerCase() !== String(vb).toLowerCase()) {
-          fail(entry, `transport changed ${f}: A=${JSON.stringify(va)} B=${JSON.stringify(vb)}`);
-        }
-      }
+    // Ordered by the document's own identity rather than by insertion, so a
+    // difference in the order rows landed is not reported as a difference in
+    // what the document says — and an identity difference is caught by the
+    // comparison itself rather than being hidden by the sort.
+    const byIdentity = (rows: any[]) => [...rows].sort((x, y) =>
+      JSON.stringify(documentShape(x)) < JSON.stringify(documentShape(y)) ? -1 : 1);
+    const sa = byIdentity(itemsA), sb = byIdentity(itemsB);
+    for (let i = 0; i < sa.length; i += 1) {
+      eq(`property ${i}`, documentShape(sa[i]), documentShape(sb[i]));
     }
   }
 
@@ -1105,6 +1284,97 @@ const invariants: Record<string, unknown> = {};
     new Set(ids).size === ids.length
     && runs.every((r) => r.rows.every((i: any) => i.upload_id === r.uploadId)),
     JSON.stringify(invariants.concurrent));
+}
+
+/* --- 7i. AN ADDRESS THAT NAMES NOTHING LOSES ONLY A NAME ------------------
+ *
+ * 6b asserts that identical bytes are the same document, and it does so over
+ * a URL that carries the brochure's own name — which is what a builder
+ * linking a brochure gives you, and therefore the case worth asserting first.
+ * It is not the case the defect lived in.
+ *
+ * A stock list behind `/download?id=9f2a` names no document, and
+ * `sourceDocumentName` answers null rather than handing the reader
+ * `alphahomes.com.au/download` as though it were a name. The question this
+ * settles is what that costs: a name the reader may not have is allowed to
+ * cost a CORROBORATION and is never allowed to cost the property.
+ *
+ * So the same bytes are imported once from a named address and once from a
+ * nameless one, and the identity the document states for itself — its lot,
+ * its address, its suburb, its state, its postcode, its price, its sizes —
+ * must be byte-identical across the two. Only `house_design` may differ, and
+ * only by being ABSENT on the nameless one.
+ *
+ * MEASURED, AND SAID PLAINLY: on this corpus nothing is lost at all —
+ * `package-brochure` reads `ASPIRE 24 GRANDE` from the PAGE under both
+ * addresses, and no document here depends on its name. So what this
+ * invariant proves today is that a nameless address costs nothing, not that
+ * the loss is bounded; the bound itself is proved where the corroborator
+ * lives, in `builderStockDocumentName.spec.ts`, which drives that function
+ * directly with all three names. Recorded rather than dressed up, because a
+ * fixture that cannot exercise a rule is not evidence about the rule — the
+ * lesson the verdict-block geometry gate had to learn the expensive way.
+ */
+{
+  const named = manifest.find((e: any) => (e.expect?.properties ?? 0) === 1
+    && (e.expect?.rows?.[0]?.design ?? null) !== null);
+  if (!named) {
+    invariant('a-nameless-address-loses-only-a-name', false,
+      'no corpus document states a design to lose');
+  } else {
+    const bytes = await Deno.readFile(`${corpusDir}/${named.org}/${named.filename}`);
+    const importAs = async (documentName: string | null, key: string) => {
+      const into = orgs[key];
+      const path = `${into.id}/${crypto.randomUUID()}.pdf`;
+      const upload = await newUpload(key, named.filename, path);
+      await db.from('builder_stock_uploads')
+        .update({ status: 'parsing', source_type: 'url' }).eq('id', upload.id);
+      const result = await runStockImport({
+        supabase: db, organisationId: into.id, organisationName: into.name,
+        builderUserId: into.userId,
+        upload: { id: upload.id, original_filename: upload.original_filename },
+        bytes, sourceKind: 'url', documentName,
+      });
+      return { result, uploadId: upload.id, rows: await itemsFor(upload.id) };
+    };
+
+    const withName = await importAs(
+      sourceDocumentName({ finalUrl: `https://alphahomes.com.au/stock/${encodeURIComponent(named.filename)}` }),
+      'name:named');
+    // An endpoint, which is what a great many stock-list links actually are.
+    const without = await importAs(
+      sourceDocumentName({ finalUrl: 'https://alphahomes.com.au/download?id=9f2a' }),
+      'name:nameless');
+
+    const IDENTITY = ['lot_number', 'unit_number', 'address_line', 'suburb', 'state',
+      'postcode', 'price', 'land_size_sqm', 'building_size_sqm',
+      'bedrooms', 'bathrooms', 'car_spaces', 'development_name', 'project_name'];
+    const one = withName.rows[0] as any;
+    const two = without.rows[0] as any;
+    /*
+     * BOTH MUST HAVE PRODUCED A PROPERTY. Without this, two empty readings
+     * agree on all fourteen fields and the invariant passes having compared
+     * nothing — which is how its first version reported a difference the
+     * duplicate guard had created, one layer down.
+     */
+    const bothImported = withName.rows.length === 1 && without.rows.length === 1;
+    const identitySame = bothImported
+      && IDENTITY.every((f) => String(one[f] ?? '') === String(two[f] ?? ''));
+    const designWith = one?.source_row?.house_design ?? null;
+    const designWithout = two?.source_row?.house_design ?? null;
+    // Absent, or the same. Never a DIFFERENT design — that would mean the
+    // address had named one, which is the defect rather than its cost.
+    const designHonest = designWithout === null || designWithout === designWith;
+
+    invariants.namelessAddress = {
+      doc: named.name, design: { named: designWith, nameless: designWithout },
+      identityFields: IDENTITY.length,
+      rows: { named: withName.rows.length, nameless: without.rows.length },
+    };
+    invariant('a-nameless-address-loses-only-a-name',
+      identitySame && designHonest,
+      JSON.stringify(invariants.namelessAddress));
+  }
 }
 
 await fileServer.shutdown();

@@ -81,6 +81,15 @@ export interface FetchedSource {
   sheetTab?: { gid: string; authority: SheetsTabPlan['authority']; tabCount: number };
   /** What the server said it was. A claim, checked against the bytes later. */
   declaredContentType: string;
+  /**
+   * What the server said its body is CALLED, verbatim, or null.
+   *
+   * Carried because a document's own name is evidence the deterministic
+   * reader is entitled to use, and a URL's display label is not — see
+   * `documentName.pure.ts`. Unparsed here: this layer reports what the
+   * header said and one module decides what it means.
+   */
+  contentDisposition: string | null;
   /** After redirects. This is what gets recorded as `final_url`. */
   finalUrl: string;
   status: number;
@@ -236,6 +245,13 @@ async function fetchGoogleSheet(
       // It IS a CSV now, whatever the endpoint labelled it, and saying so is
       // what puts it through the parser every other CSV source uses.
       declaredContentType: 'text/csv',
+      /*
+       * A SHEET NAMES NO DOCUMENT. These bytes were composed here from an
+       * export and a workbook; whatever the endpoint called either of them
+       * describes neither. Null rather than the endpoint's own filename,
+       * which is `export` on every Google Sheet in the world.
+       */
+      contentDisposition: null,
       finalUrl: attempt.url,
       status: body.status,
       hyperlinks: enriched.availability,
@@ -464,6 +480,7 @@ async function fetchOrdinaryUrl(startUrl: string): Promise<FetchedSource> {
     return {
       bytes,
       declaredContentType: (response.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase(),
+      contentDisposition: response.headers.get('content-disposition'),
       finalUrl: current.toString(),
       status: response.status,
     };

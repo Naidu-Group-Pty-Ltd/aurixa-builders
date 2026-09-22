@@ -74,6 +74,7 @@ import {
 import {
   fetchStockSource, SourceFetchError, type FetchedSource,
 } from './fetchSource.ts';
+import { sourceDocumentName } from './documentName.pure.ts';
 import {
   NOTION_NOT_PUBLIC_MESSAGE, normaliseStockSourceUrl, snapshotFileName,
   stockSourceDisplayName,
@@ -111,6 +112,15 @@ export interface PreparedLinkedSource {
   /** A readable name for the history row, and the object's own name. */
   displayName: string;
   objectName: string;
+  /**
+   * WHAT THE DOCUMENT IS CALLED, or null where nothing named it.
+   *
+   * Deliberately NOT `displayName`, which is host + ellipsis + segment and is
+   * built to be legible in a list. The deterministic reader treats a name as
+   * evidence, so a display label reaching it lets a HOSTNAME corroborate a
+   * property field. See `documentName.pure.ts`.
+   */
+  documentName: string | null;
   rowAssets: AnchoredAssets[];
   /** Only present where a Notion source produced nothing worth importing. */
   notionDiagnostics: Record<string, unknown> | null;
@@ -302,6 +312,10 @@ export async function prepareLinkedStockSource(
 
   const displayName = stockSourceDisplayName(fetched.finalUrl, pageTitle);
   const objectName = safeObjectName(snapshotFileName(fetched.finalUrl, classification.extension));
+  const documentName = sourceDocumentName({
+    finalUrl: fetched.finalUrl,
+    contentDisposition: fetched.contentDisposition,
+  });
 
   return {
     ok: true,
@@ -315,6 +329,7 @@ export async function prepareLinkedStockSource(
     classification,
     displayName,
     objectName,
+    documentName,
     rowAssets: sourceRowAssets,
     notionDiagnostics,
     hyperlinks: fetched.hyperlinks,

@@ -987,6 +987,10 @@ Deno.serve(async (req) => {
             bytes: refetched.importBytes,
             classification: refetched.classification,
             sourceKind: 'url',
+            // Read from THIS fetch, like everything else on this path — a
+            // server that has started stating a `Content-Disposition`, or a
+            // link that now redirects to a named file, describes itself here.
+            documentName: refetched.documentName,
             isNotionSource: refetched.isNotion,
             baseUrl: refetched.finalUrl,
             rowAssets: refetched.rowAssets,
@@ -1090,7 +1094,7 @@ Deno.serve(async (req) => {
       }
       const {
         importBytes, snapshotContentType, classification, displayName, objectName,
-        notionDiagnostics,
+        documentName, notionDiagnostics,
       } = prepared;
 
       const uploadId = crypto.randomUUID();
@@ -1176,6 +1180,14 @@ Deno.serve(async (req) => {
           bytes: importBytes,
           classification,
           sourceKind: 'url',
+          /*
+           * The document's own name where the source stated one, and NULL
+           * where it did not — never `displayName`, which is host + ellipsis
+           * + path segment. The reader corroborates a page line against a
+           * name, so a display label let a hostname name a house design.
+           * Measured in `documentName.pure.ts`.
+           */
+          documentName,
           isNotionSource: prepared.isNotion,
           baseUrl: prepared.finalUrl,
           rowAssets: prepared.rowAssets,
