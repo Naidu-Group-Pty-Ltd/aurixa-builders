@@ -164,6 +164,23 @@ const corpusDir = Deno.args[0] ?? '/var/tmp/corpus';
 
 const db = createClient(GATEWAY, KEY, { auth: { persistSession: false } });
 
+/*
+ * THE OCR MODEL REACHES THE READER THE WAY IT REACHES PRODUCTION.
+ *
+ * It used to be a module in the graph and is now an asset in the project's
+ * own storage, because that graph answered 413 on deploy and left two
+ * functions behind. `languageData.ts` therefore resolves `SUPABASE_URL` and
+ * `SUPABASE_SERVICE_ROLE_KEY` and GETs the object — so the gate must set
+ * both and must have put the object there, or it would prove OCR against a
+ * path production does not use, which is the whole class of infidelity this
+ * harness keeps finding in itself.
+ *
+ * `run.sh` places the file; this names the credentials. A deployment with
+ * neither is the honest negative case, and it is what a null model means.
+ */
+Deno.env.set('SUPABASE_URL', GATEWAY);
+Deno.env.set('SUPABASE_SERVICE_ROLE_KEY', KEY);
+
 interface Expect {
   properties: number;
   rows?: Record<string, unknown>[];

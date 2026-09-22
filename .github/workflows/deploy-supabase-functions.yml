@@ -44,6 +44,10 @@ on:
       - 'supabase/migrations/**'
       - 'supabase/config.toml'
       - 'scripts/ops/apply-migrations.mjs'
+      - 'scripts/ops/upload-ocr-language.mjs'
+      # The OCR model itself: an asset the functions read from storage rather
+      # than carry, so a change to it must trigger the lane that ships it.
+      - 'assets/ocr/**'
       - '.github/workflows/deploy-supabase-functions.yml'
   workflow_dispatch: {}
 
@@ -143,6 +147,31 @@ jobs:
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         run: node scripts/ops/verify-functions-deployed.mjs "${{ steps.deploy.outputs.started_at }}"
+
+      # THE OCR MODEL, AFTER THE CODE AND NOT BEFORE IT.
+      #
+      # The first draft put this first, "for the same reason schema comes
+      # before code". That reason does not transfer, and the difference is
+      # worth stating. A function deployed against a table that does not
+      # exist ANSWERS 500 — it is an outage, so schema must land first. A
+      # function deployed without this asset DECLINES OCR, which is the
+      # behaviour every deployment had before OCR existed and which
+      # `languageData.ts` returns null for by design.
+      #
+      # So the two orders fail differently. Asset first, and a fault here
+      # ships nothing at all — which, on the run this was written for, would
+      # have left `builder-portal-stock` and `builder-stock-image-settler` on
+      # the previous build for another cycle. Asset last, and a fault here
+      # leaves the functions correctly shipped, OCR honestly declining, and
+      # the run red so somebody looks. The second is strictly better.
+      #
+      # `always()` for the reason the verifier above uses it: this must report
+      # even when the step before it did not finish.
+      - name: ship the OCR language model
+        if: ${{ always() }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: node scripts/ops/upload-ocr-language.mjs
 
       - name: set platform configuration secrets (never vendor keys)
         env:
