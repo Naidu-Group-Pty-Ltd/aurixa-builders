@@ -447,6 +447,32 @@ are both empty for the last six hours; the most recent reservation of any
 kind is 21 September 13:55, before the assisted reader was switched off. The
 flag `BUILDER_STOCK_ASSISTED_READER` is set nowhere in this repository.
 
+### 9b · After the settlement window, which is a separate reading
+
+A correct row for thirty seconds is not a correct row. Read again at
+**08:13:53**, fourteen minutes and fourteen heartbeat ticks after the
+re-read, with nothing poked in between:
+
+| what the checklist asks | reading |
+|---|---|
+| the property is still correct | `building_size_sqm` 190.00, `lifecycle_status` active |
+| no duplicate row appeared | **1** live property, same id `0fd93346…` |
+| no valid image disappeared | same image row `15bb88b2…`, created 21 Sep 18:19, still `primary_property` / `eligible` |
+| no `pending_patch` appeared | none |
+| no orphan image duplication reappeared | 64 orphan rows over **64 distinct keys** |
+| no upload became stranded | 0 at `uploaded` or `parsing`, 0 `parsing` with an error |
+| no stale worker overwrote the result | `item.updated_at` still **07:59:09.958701** — untouched for fourteen minutes |
+| queues quiescent | claimed 0, unsettled 0 |
+| nothing spent | 0 AI reservations in the hour |
+
+**Six stranded patches exist and they are named rather than zeroed.** All six
+are on uploads a builder deliberately DELETED — each row's last write is
+within 130 ms of its upload's `deleted_at`, on 21 September, a day before
+this work — so the deletion is what stranded them, and the migration that
+fixed the cause (`20260922070000`) applies on an upload's next publication,
+which these will never have. Touching them would be altering deliberately
+deleted customer data. Against live uploads the count is **0**.
+
 ---
 
 ## 10 · The deploy that reported success and shipped a mixture
