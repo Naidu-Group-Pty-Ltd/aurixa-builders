@@ -284,3 +284,64 @@ the recovery path working, and it is deliberately not on the success path.
 ladder with no scheduler between stages, so it cannot report a production
 end-to-end and does not pretend to; it reports compute and hops separately and
 leaves the dispatch latency to be measured where it actually happens.
+
+## 9. The production A/B, on the same document
+
+**Measured 22 September 2026 after the deploy**, on the same upload
+(`c5f139b9`), the same organisation, the same property (`6e070603`, Lot 52) and
+the same photograph (`fac3e85a`), by re-opening that property's image work —
+the product's own "do this again" nudge, which `reopen_builder_stock_stranded_items`
+and a provenance version bump both perform by themselves. Nothing was touched
+after the nudge; every step below is the system's own.
+
+`builder_stock_items.image_work_timings`, written by the settler:
+
+| stage | work class | ms | scheduler_wait_ms |
+|---|---|---|---|
+| `source` | document | **3,460** | 56,395 (the nudge waiting for the minute tick) |
+| `eligibility` | decode | **313** | **1,880** (the isolate hand-off) |
+| `sanitization` | decode | **342** | **439** (same isolate) |
+| `fallback` | metadata | **388** | **475** (same isolate) |
+
+**Before — 22 Sep, 08:25:19.958 → 08:31:06.166 — 348 seconds** for those four
+stages, of which 5.4 s was work.
+**After — 09:48:04.3 → 09:48:10.75 — 6.4 seconds**, of which 4.5 s was work.
+
+The shape is exactly the design. The document invocation logged
+`rearmed: true, documents: 1, decodes: 0` and handed off; its successor logged
+`decodes: 2` plus the metadata stage and `rearmed: false`, because by then
+nothing was claimable. The one hop cost **1.88 s**; the two claims inside the
+second isolate cost **0.44 s** and **0.48 s**.
+
+### And the runtime named the resource
+
+```
+[builder-stock-image-settler] the runtime is terminating this worker {
+  phase: "runtime_termination",  reason: "cpu",
+  stock_item_id: "6e070603-…",   stage: "source",  holding_a_claim: true }
+```
+
+at 09:48:07.171 — **during a `source` stage that had run 3.46 seconds**. The
+worker survived the notice and completed the stage 0.58 s later, so this was
+the soft limit; but it is the first direct confirmation this subsystem has ever
+had of *which* resource it is running out of, and it confirms the allowance is
+the right shape: a single document is already close to the ceiling, so an
+isolate that then decodes twice is exactly the combination that was being
+killed.
+
+It is also the first evidence for the fix made an hour earlier. The release now
+passes `p_next_stage: null`, so it cannot disagree with the completion that was
+running beside it: the item advanced to `eligibility` normally, `attempts` came
+back to 0 and `image_work_failures` stayed 0. Had the release still named the
+stage it was claimed at, it would have raced a completion that had already
+moved on.
+
+A second notice, `reason: "early_drop", holding_a_claim: false`, is the ordinary
+end-of-request drop reporting honestly that it holds nothing.
+
+### Correctness across the A/B
+
+Same property, same `primary_image_id`, one image row, no duplicate, no pending
+patch, `image_work_failures: 0`, `image_work_attempts: 0`, and
+`has_primary_image: true` at **every** stage — the card was never blank, which
+on 22 September it was for six minutes.
