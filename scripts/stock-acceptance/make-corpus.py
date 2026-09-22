@@ -1280,6 +1280,65 @@ def _m10(c):
     c.showPage()
 
 
+# --- M12. the same stock list WITH a photograph on every card --------------
+#
+# WHY THIS EXISTS BESIDE M10, WHICH IS THE SAME DOCUMENT WITHOUT PICTURES.
+#
+# M10 is about SEGMENTATION over two pages and deliberately carries no
+# photograph, which is honest and makes it useless for the one question the
+# performance programme has to answer: how long does a builder wait for a
+# multi-property stock list whose cards a customer can actually look at?
+# Measured 22 September 2026, that is the shape that costs the most — four
+# properties, four sets of image work, and under the per-isolate work
+# allowance four crossings between isolates.
+#
+# TWO CARDS A PAGE, NEVER THREE. M2 records why: three columns on A4 leave
+# each picture at 3% of the page against the product's own 6% floor for "large
+# enough to be a property's listing image", so a three-across sheet honestly
+# has no listing images. Two across is 6.4%, which is the shape M1 already
+# proves publishes. Nothing about the floor is relaxed for this fixture.
+#
+# Every facade is a DIFFERENT seed, because four cards drawing one picture
+# would test the de-duplicator rather than the throughput, and the four
+# properties must end with four DIFFERENT photographs on them.
+@fixture('heldout-pages-of-cards-with-photos', 'MERIDIAN - STOCK LIST WITH IMAGES.pdf',
+         held_out=True, org='beta',
+         expect=dict(
+             properties=4,
+             rows=[
+                 dict(lot_number='160', design='Onyx 18', land_size_sqm=301,
+                      build_size_sqm=174, price=619000, image_size='1280x800'),
+                 dict(lot_number='164', design='Pearl 21', land_size_sqm=357,
+                      build_size_sqm=206, price=704000, image_size='960x600'),
+                 dict(lot_number='171', design='Quarry 23', land_size_sqm=406,
+                      build_size_sqm=233, price=771000, image_size='1120x700'),
+                 dict(lot_number='175', design='Rowan 26', land_size_sqm=462,
+                      build_size_sqm=264, price=848000, image_size='1024x640'),
+             ],
+             image='facade_page_1',
+             # NO CARD MAY WEAR ANOTHER'S LOT. The same prohibition M1 carries,
+             # and it matters more here: the lots are four apart across two
+             # pages, so a page-level attribution would look plausible.
+             forbid=dict(no_lot_numbers=['161', '165', '172', '176'])))
+def _m12(c):
+    text(c, L, 22, 'MERIDIAN PARK - STOCK LIST PAGE 1 OF 2', 17, True)
+    mcard(c, L, 40, '160', 'Onyx 18', '301m2', '174m2', '$619,000')
+    mcard(c, R, 40, '164', 'Pearl 21', '357m2', '206m2', '$704,000')
+    cardhero(c, facade(331, 1280, 800), L, 85)
+    cardhero(c, facade(337, 960, 600), R, 85)
+    text(c, L, 160, 'Prices subject to change without notice. Images are artist '
+                    'impressions only and not an offer.', 8)
+    c.showPage()
+    text(c, L, 22, 'MERIDIAN PARK - STOCK LIST PAGE 2 OF 2', 17, True)
+    mcard(c, L, 40, '171', 'Quarry 23', '406m2', '233m2', '$771,000')
+    mcard(c, R, 40, '175', 'Rowan 26', '462m2', '264m2', '$848,000')
+    cardhero(c, facade(347, 1120, 700), L, 85)
+    cardhero(c, facade(353, 1024, 640), R, 85)
+    text(c, L, 160, 'Prices subject to change without notice. Images are artist '
+                    'impressions only and not an offer.', 8)
+    c.showPage()
+
+
 # --- M11. a native multi-property page beside a SCANNED page --------------
 @fixture('heldout-mixed-scan-multi', 'THORNBURY - RELEASE AND SPEC.pdf', held_out=True,
          expect=dict(

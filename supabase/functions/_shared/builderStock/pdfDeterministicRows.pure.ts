@@ -412,6 +412,16 @@ export interface PdfDeterministicReading {
      * finding about the document.
      */
     regionsAbandoned?: string;
+    /**
+     * What the segmentation attempt COST, in milliseconds.
+     *
+     * DIAGNOSTICS, like the two above, and reported whichever way the reading
+     * went — including the ordinary case where it engaged on no page at all,
+     * because "segmentation is slow" and "segmentation was not attempted" are
+     * the two readings a latency question has to tell apart, and a field that
+     * appears only on the interesting path cannot do it.
+     */
+    segmentationMs?: number;
   };
 }
 
@@ -4749,17 +4759,24 @@ export function readPdfDeterministicRows(input: {
    */
   let regionsFound = 0;
   let regionsAbandoned = '';
+  let segmentationMs = 0;
   if (positioned && positioned.length) {
+    const segmentationStartedAt = Date.now();
     const segmented = readSegmentedDocument(pageTexts, positioned, {
       recognisedPages: input.recognisedPages,
       organisationName: input.organisationName,
     });
-    if (segmented.reading) return segmented.reading;
+    segmentationMs = Date.now() - segmentationStartedAt;
+    if (segmented.reading) {
+      segmented.reading.diagnostics.segmentationMs = segmentationMs;
+      return segmented.reading;
+    }
     regionsFound = segmented.found;
     regionsAbandoned = segmented.abandoned;
   }
 
   const brochure = readBrochure();
+  brochure.diagnostics.segmentationMs = segmentationMs;
   /*
    * REGIONS WERE FOUND AND THE READING WAS ABANDONED, so the document is read
    * exactly as it was before — and the log says so. A fallback that is silent
@@ -4779,6 +4796,7 @@ export function readPdfDeterministicRows(input: {
    */
   if (schedule) {
     const answer = moreEvidencedRefusal(schedule, brochure);
+    answer.diagnostics.segmentationMs = segmentationMs;
     if (regionsFound) {
       answer.diagnostics.regionsFound = regionsFound;
       answer.diagnostics.regionsAbandoned = regionsAbandoned;

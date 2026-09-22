@@ -91,7 +91,44 @@ export interface ExtractedMedia {
   placement?: PdfMediaPlacement | null;
 }
 
+/**
+ * WHAT THIS RUN SPENT, AND HOW MANY TIMES IT DID THE EXPENSIVE THING.
+ *
+ * DIAGNOSTICS ONLY. Nothing reads it to make a decision, no branch is taken
+ * on it, and it carries no document content — milliseconds and counts.
+ *
+ * WHY THE COUNTS AND NOT JUST THE MILLISECONDS. The 22 September 2026 latency
+ * investigation found the same PDF parsed TWICE for one import — once by the
+ * import and once again by an upload-level sweep four minutes later — and the
+ * only reason anybody noticed is that the second parse happened to log a line.
+ * A duration tells you a stage was slow; a count tells you the stage ran when
+ * it should not have run at all, which is the more expensive defect and the
+ * one nothing here could see.
+ */
+export interface ExtractionTimings {
+  /** Reading the container: the PDF text layer, the zip, the workbook. */
+  document_extract_ms?: number;
+  /** Recognition, where any page needed it. Absent means none did. */
+  ocr_ms?: number;
+  /** Pulling the pictures out of the document and deciding what they are. */
+  image_extract_ms?: number;
+  /** The deterministic reader, segmentation included. */
+  reader_ms?: number;
+  /** The region segmentation alone, where a page was divided. */
+  segmentation_ms?: number;
+  /** How many times this run opened the document itself. Should be 1. */
+  document_parses?: number;
+  /** Pages rasterised, which is only ever for recognition. */
+  rasterisations?: number;
+  /** Pages actually put through recognition. */
+  ocr_pages?: number;
+  /** Pictures taken out of the document. */
+  images_extracted?: number;
+}
+
 export interface StockExtraction {
+  /** See `ExtractionTimings`. Diagnostics; never read for a decision. */
+  timings?: ExtractionTimings;
   /** Recorded on the upload row so a support question has an answer. */
   strategy: string;
   rows: Array<Record<string, unknown>>;
@@ -565,6 +602,17 @@ export async function extractStockFile(
     media: [],
     rowAssets: [],
     warnings: [],
+    timings: {},
+  };
+  const timings = result.timings!;
+  /** Time one awaited phase into the run's ledger, adding to what is there. */
+  const timed = async <T>(key: keyof ExtractionTimings, run: () => Promise<T>): Promise<T> => {
+    const startedAt = Date.now();
+    try {
+      return await run();
+    } finally {
+      timings[key] = (timings[key] ?? 0) + (Date.now() - startedAt);
+    }
   };
 
   if (classification.kind === 'delimited') {
@@ -764,7 +812,10 @@ export async function extractStockFile(
       // uploaded here and the same brochure reached through a row's own link
       // cannot number their pages differently. See `pdfText.ts`.
       const { readPdfPageTexts } = await import('./pdfText.ts');
-      const pages = await readPdfPageTexts(bytes);
+      const pages = await timed('document_extract_ms', async () => {
+        timings.document_parses = (timings.document_parses ?? 0) + 1;
+        return await readPdfPageTexts(bytes);
+      });
       if (!pages.length) throw new Error('no text layer');
       result.pageTexts = pages;
       const merged = pages.join('\n');
@@ -806,7 +857,10 @@ export async function extractStockFile(
       try {
         const { extractPdfPhotosByPage } = await import('./pdfSourcePhoto.ts');
         const wanted = new Set(plan.pages);
-        const photos = await extractPdfPhotosByPage(bytes, { maxPages: OCR_MAX_PAGES });
+        const photos = await timed('image_extract_ms', async () => {
+          timings.document_parses = (timings.document_parses ?? 0) + 1;
+          return await extractPdfPhotosByPage(bytes, { maxPages: OCR_MAX_PAGES });
+        });
         const rasters = photos
           .filter((entry) => wanted.has(entry.page))
           .map((entry) => ({
@@ -815,10 +869,12 @@ export async function extractStockFile(
             width: entry.photo.provenance.sourceWidth,
             height: entry.photo.provenance.sourceHeight,
           }));
-        const reading = await recogniseScannedPages(rasters, {
+        timings.rasterisations = (timings.rasterisations ?? 0) + rasters.length;
+        const reading = await timed('ocr_ms', () => recogniseScannedPages(rasters, {
           deadlineAt: options.budget
             ? storageDeadlineFrom(options.budget, Date.now()) : undefined,
-        });
+        }));
+        timings.ocr_pages = (timings.ocr_pages ?? 0) + reading.text.size;
         result.ocr = {
           attempted: plan.pages.length,
           read: reading.text.size,
@@ -897,7 +953,10 @@ export async function extractStockFile(
        * before anything had asked what they were. Discovery now hands over all
        * of them and the role is settled where the property is known.
        */
-      const found = await discoverPdfSourceAssets(bytes);
+      const found = await timed('image_extract_ms', async () => {
+        timings.document_parses = (timings.document_parses ?? 0) + 1;
+        return await discoverPdfSourceAssets(bytes);
+      });
       result.pageOrderAuthoritative = found.pageOrderAuthoritative;
       let pdfSkipped = 0;
       let pdfCapped = false;
@@ -1023,9 +1082,13 @@ export async function extractStockFile(
        */
       const pageTexts = result.pageTexts ?? [];
       const { readPdfTextLayout } = await import('./pdfTextLayout.ts');
-      const layout = await readPdfTextLayout(bytes);
+      const layout = await timed('document_extract_ms', async () => {
+        timings.document_parses = (timings.document_parses ?? 0) + 1;
+        return await readPdfTextLayout(bytes);
+      });
       const positionedPages: PdfTextLayoutPage[] | null = layout.ok ? layout.pages : null;
 
+      const readerStartedAt = Date.now();
       const reading = readPdfDeterministicRows({
         pageTexts,
         positionedPages,
@@ -1048,6 +1111,11 @@ export async function extractStockFile(
           ? (options.documentName ?? '')
           : filename,
       });
+      timings.reader_ms = (timings.reader_ms ?? 0) + (Date.now() - readerStartedAt);
+      if (typeof reading.diagnostics.segmentationMs === 'number') {
+        timings.segmentation_ms = (timings.segmentation_ms ?? 0)
+          + reading.diagnostics.segmentationMs;
+      }
       result.deterministicReading = {
         status: reading.status,
         reason: reading.reason,
@@ -1128,6 +1196,7 @@ export async function extractStockFile(
        * warning, because a builder has nothing to do about it.
        */
     }
+    timings.images_extracted = result.media.length;
     return result;
   }
 
