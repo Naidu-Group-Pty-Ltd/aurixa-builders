@@ -15,6 +15,26 @@
  */
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
 import { runStockImport } from '../../supabase/functions/_shared/builderStock/runImport.ts';
+/*
+ * THE PORTAL'S OWN SERVING STEP, imported rather than imitated. This is what
+ * `builder-portal-stock`'s `image_url` operation calls, so what the gate
+ * proves is the function a customer's browser reaches.
+ */
+import { serveStockImage } from '../../supabase/functions/_shared/builderStock/serveStockImage.ts';
+/*
+ * THE IMAGE PIPELINE, driven the way the settler drives it. `runStockImport`
+ * leaves every property at `image_work_stage: 'source'` with no photograph —
+ * imagery is asynchronous in production and a cron function does it. A gate
+ * that stops at the import therefore proves nothing about what a customer
+ * sees, which is exactly what this corpus was doing: it carried an `image`
+ * expectation on eleven fixtures and never once checked it.
+ */
+import {
+  claimOneImageWorkItem, completeItemWork,
+} from '../../supabase/functions/_shared/builderStock/itemWorkClaim.ts';
+import { settleClaimedItem } from '../../supabase/functions/_shared/builderStock/settleItemImages.ts';
+import { settleUploadSourceImages } from '../../supabase/functions/_shared/builderStock/settleSourceImages.ts';
+import { enforceStrictPrimaryImages } from '../../supabase/functions/_shared/builderStock/primaryImage.ts';
 
 // ---------------------------------------------------------------------------
 // 1 · A MODEL CALL IS AN ERROR, NOT A MISSING CREDENTIAL
@@ -40,6 +60,62 @@ globalThis.fetch = ((input: any, init?: any) => {
   }
   return realFetch(input, init);
 }) as typeof fetch;
+
+/**
+ * IS THIS ACTUALLY AN IMAGE? Read as one, not trusted as one.
+ *
+ * A content type is a claim the server makes and a byte count is a claim
+ * nobody makes. What settles it is parsing the format's own header for the
+ * picture's dimensions: a JPEG's start-of-frame, a PNG's IHDR, a GIF's logical
+ * screen descriptor, a WebP's VP8 chunk. A truncated file, an HTML error page
+ * served with an image content type, or a zero-byte placeholder all fail here,
+ * and every one of those is a blank card.
+ */
+function decodeImage(
+  b: Uint8Array,
+): { kind: string; width: number; height: number } | null {
+  const u16 = (i: number) => (b[i] << 8) | b[i + 1];
+  // PNG: 8-byte signature, then IHDR with width/height big-endian
+  if (b.length > 24 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) {
+    const be32 = (i: number) =>
+      (b[i] << 24 >>> 0) + (b[i + 1] << 16) + (b[i + 2] << 8) + b[i + 3];
+    return { kind: 'png', width: be32(16), height: be32(20) };
+  }
+  // GIF: "GIF8", then the logical screen descriptor, little-endian
+  if (b.length > 10 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) {
+    return { kind: 'gif', width: b[6] | (b[7] << 8), height: b[8] | (b[9] << 8) };
+  }
+  // WebP: RIFF....WEBPVP8
+  if (b.length > 30 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46
+    && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) {
+    if (b[15] === 0x20) {  // VP8 (lossy)
+      return { kind: 'webp', width: (b[26] | (b[27] << 8)) & 0x3fff,
+               height: (b[28] | (b[29] << 8)) & 0x3fff };
+    }
+    return { kind: 'webp', width: 2, height: 2 };  // shape known, size unread
+  }
+  // JPEG: walk the markers to a start-of-frame, which carries the dimensions.
+  if (b.length > 4 && b[0] === 0xff && b[1] === 0xd8) {
+    let i = 2;
+    while (i + 9 < b.length) {
+      if (b[i] !== 0xff) { i += 1; continue; }
+      const marker = b[i + 1];
+      if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+        i += 2; continue;
+      }
+      const len = u16(i + 2);
+      // SOF0..SOF15, excluding the DHT/JPG/DAC markers that share the range
+      if (marker >= 0xc0 && marker <= 0xcf
+        && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+        return { kind: 'jpeg', height: u16(i + 5), width: u16(i + 7) };
+      }
+      if (len < 2) return null;
+      i += 2 + len;
+    }
+    return null;
+  }
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // 2 · The local project
@@ -112,8 +188,52 @@ const fileServer = Deno.serve({ port: 54996, onListen: () => {} }, (req) => {
   const bytes = served.get(key);
   if (!bytes) return new Response('not found', { status: 404 });
   urlFetches += 1;
-  return new Response(bytes, { headers: { 'content-type': 'application/pdf' } });
+  // `Uint8Array<ArrayBufferLike>` does not satisfy `BodyInit` under Deno's
+  // stricter generic; the bytes are copied into a plain buffer to say so.
+  const body = new Uint8Array(bytes.length);
+  body.set(bytes);
+  return new Response(body.buffer as ArrayBuffer,
+    { headers: { 'content-type': 'application/pdf' } });
 });
+
+/**
+ * ===========================================================================
+ * RUN THE IMAGERY THE WAY THE SETTLER RUNS IT.
+ * ===========================================================================
+ *
+ * Not a reimplementation: the same four functions
+ * `builder-stock-image-settler` calls, in the order it calls them. Claim a
+ * property's image work, settle the claimed stage, record the completion —
+ * around a loop, because the stages are a ladder and one pass climbs one
+ * rung — then bring the upload's own imagery up to the rules, then enforce
+ * the primary pointers for the organisation.
+ *
+ * BOUNDED, because a gate that can spin is a gate nobody runs. The bound is
+ * generous enough for the ladder and small enough to notice.
+ */
+const IMAGERY_MAX_CLAIMS = 40;
+
+async function settleImagery(organisationId: string, uploadId: string) {
+  const worked: string[] = [];
+  for (let i = 0; i < IMAGERY_MAX_CLAIMS; i += 1) {
+    const claim = await claimOneImageWorkItem(db, { leaseSeconds: 120, organisationId });
+    if (!claim.available || !claim.item) break;
+    const item = claim.item;
+    const settlement = await settleClaimedItem(db, item, {
+      deadlineAt: Date.now() + 20_000,
+    });
+    await completeItemWork(db, item.id, {
+      nextStage: settlement.nextStage,
+      result: settlement.result,
+      progressed: settlement.progressed,
+    });
+    worked.push(`${item.id}:${settlement.stage}->${settlement.nextStage}`);
+    if (!settlement.progressed) break;
+  }
+  await settleUploadSourceImages(db, { organisationId, uploadId });
+  await enforceStrictPrimaryImages(db, organisationId);
+  return worked;
+}
 
 // ---------------------------------------------------------------------------
 // 5 · Route A and route B
@@ -256,6 +376,24 @@ for (const entry of manifest) {
   row.b = { ok: b.result.ok, code: (b.result as any).code, ms: Math.round(b.ms),
             strategy: (b.result as any).strategy };
 
+  /*
+   * THE IMAGERY, BEFORE ANYTHING IS READ OFF THE ROW.
+   *
+   * In production this is a cron function, not part of the import — so a gate
+   * that stops at `runStockImport` reads every property at
+   * `image_work_stage: 'source'` with `primary_image_id` null and calls that
+   * normal. It is normal, for about a minute. What a customer sees is what the
+   * settler leaves behind, so the settler is run here, on route A, through its
+   * own functions.
+   */
+  if (a.result.ok) {
+    try {
+      row.imagery = await settleImagery(orgs[entry.org].id, a.uploadId);
+    } catch (e) {
+      fail(entry, `the image settler threw: ${(e as Error).message}`);
+    }
+  }
+
   const itemsA = await itemsFor(a.uploadId);
   const itemsB = await itemsFor(b.uploadId);
   row.propertiesA = itemsA.length;
@@ -370,6 +508,141 @@ for (const entry of manifest) {
         }
       }
     }
+  }
+
+  // --- 6f. A POINTER IS NOT A PHOTOGRAPH --------------------------------
+  /*
+   * ======================================================================
+   * THE WHOLE CHAIN, ENDING IN BYTES THAT DECODE.
+   * ======================================================================
+   *
+   * `primary_image_id` being set proves a row NAMES an image. It does not
+   * prove a customer opening the Builder Portal sees one, and in this product
+   * those two came apart completely once: every builder's imagery was
+   * discovered, de-duplicated, classified, ranked, stored and signed while the
+   * Stock List rendered zero `<img>` elements, because the function that turns
+   * an image id into a URL had no caller anywhere.
+   *
+   * So this asserts each link, in order, and the last two are the ones a
+   * database query cannot answer:
+   *
+   *   source image        an image row exists, from the builder's own document
+   *   association         it is THIS property's, in THIS organisation, from
+   *                       THIS upload
+   *   eligible / cleared  `builder_stock_photo_is_source_ready` — the
+   *                       PRODUCT's own publication rule, called rather than
+   *                       restated, because three copies of one rule is how
+   *                       two of them disagree
+   *   primary selection   the item points at it
+   *   serving             `serveStockImage` — the SAME function
+   *                       `builder-portal-stock`'s `image_url` operation
+   *                       calls. Not an imitation of it: six lines copied
+   *                       into a harness prove the six lines work and prove
+   *                       nothing about the function a browser reaches
+   *   fetch               an HTTP GET of the minted URL answers 200
+   *   decode              the returned bytes are a real image, read as one
+   *
+   * AND ONE NEGATIVE, which is the security half: the same image id asked for
+   * by a DIFFERENT organisation must answer exactly as an image that does not
+   * exist. An image id is a uuid a caller supplies.
+   */
+  if (a.result.ok && itemsA.length) {
+    const photographs: any[] = [];
+    for (const it of itemsA as any[]) {
+      const primaryId = it.primary_image_id ?? null;
+      if (!primaryId) {
+        if (entry.expect.image) {
+          fail(entry, `no photograph reached the card: primary_image_id is null`);
+        }
+        photographs.push({ lot: it.lot_number, primary: null });
+        continue;
+      }
+
+      const { data: img } = await db.from('builder_stock_item_images')
+        .select('*').eq('id', primaryId).maybeSingle();
+      if (!img) {
+        fail(entry, `primary_image_id ${primaryId} names no image row`);
+        continue;
+      }
+
+      // association
+      if (img.stock_item_id !== it.id) {
+        fail(entry, `the primary image belongs to another property: `
+          + `image.stock_item_id=${img.stock_item_id} item=${it.id}`);
+      }
+      if (img.organisation_id !== it.organisation_id) {
+        fail(entry, `the primary image belongs to another organisation`);
+      }
+      if (img.upload_id && img.upload_id !== it.upload_id) {
+        fail(entry, `the primary image came from another upload`);
+      }
+
+      // eligible / cleared — the product's own rule, called
+      const { data: readyRows } = await db.rpc('builder_stock_photo_is_source_ready',
+        { p_image_id: primaryId });
+      const cleared = readyRows === true || (Array.isArray(readyRows) && readyRows[0] === true);
+      if (!cleared) {
+        fail(entry, `the primary image is not source-ready: stage=${img.source_stage} `
+          + `verification=${img.verification_status} processing=${img.processing_status}`);
+      }
+
+      // serving — the portal's own step
+      const out = await serveStockImage(db, {
+        imageId: primaryId, organisationId: it.organisation_id,
+      });
+      if (!out.ok) {
+        fail(entry, `the portal could not serve the photograph: ${out.reason}`);
+        photographs.push({ lot: it.lot_number, primary: primaryId, served: out.reason });
+        continue;
+      }
+
+      // fetch
+      const url = out.url.startsWith('http') ? out.url : `${GATEWAY}${out.url}`;
+      let bytes: Uint8Array | null = null;
+      let status = 0;
+      try {
+        const res = await realFetch(url);
+        status = res.status;
+        if (res.ok) bytes = new Uint8Array(await res.arrayBuffer());
+      } catch (e) {
+        fail(entry, `fetching the served photograph threw: ${(e as Error).message}`);
+      }
+      if (!bytes) {
+        fail(entry, `the served photograph did not fetch: HTTP ${status}`);
+        photographs.push({ lot: it.lot_number, primary: primaryId, http: status });
+        continue;
+      }
+
+      // decode
+      const decoded = decodeImage(bytes);
+      if (!decoded) {
+        fail(entry, `the served bytes are not an image: ${bytes.length} bytes, `
+          + `first 8 = ${[...bytes.slice(0, 8)].join(',')}`);
+      } else if (!(decoded.width > 1 && decoded.height > 1)) {
+        fail(entry, `the served image has no picture in it: `
+          + `${decoded.kind} ${decoded.width}x${decoded.height}`);
+      }
+
+      // the security half
+      const otherOrg = Object.values(orgs).find((o) => o.id !== it.organisation_id);
+      if (otherOrg) {
+        const cross = await serveStockImage(db, {
+          imageId: primaryId, organisationId: otherOrg.id,
+        });
+        if (cross.ok) {
+          fail(entry, `ANOTHER ORGANISATION WAS SERVED THIS PHOTOGRAPH: ${cross.url}`);
+        } else if (cross.reason !== 'not_found') {
+          fail(entry, `a cross-tenant ask leaked that the image exists: ${cross.reason}`);
+        }
+      }
+
+      photographs.push({
+        lot: it.lot_number, primary: primaryId, cleared,
+        http: status, bytes: bytes.length,
+        decoded: decoded ? `${decoded.kind} ${decoded.width}x${decoded.height}` : null,
+      });
+    }
+    row.portalImages = photographs;
   }
 
   // --- 6e2. REPEAT PROCESSING IS SAFE -------------------------------------
