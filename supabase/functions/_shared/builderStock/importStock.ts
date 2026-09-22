@@ -51,7 +51,9 @@ import {
   carriedSanitizationFor, PROVENANCE_VERSION, storeSourceImages,
   type SourceImageFetcher,
 } from './sourceImages.ts';
-import { anchorPdfRowsToPages, pdfAnchorPage } from './pdfRowAnchors.pure.ts';
+import {
+  anchorPdfRowsToPages, pdfAnchorPage, pdfAnchorPageOrRegion,
+} from './pdfRowAnchors.pure.ts';
 import { documentVisualKinds, eligibilityDetailFor } from './assessSourceImage.ts';
 
 /** What `attachDocumentMedia` did with one picture, for a caller that counts. */
@@ -544,6 +546,17 @@ export async function importStockRecords(
      * to true only where no paginated reader ran at all.
      */
     pageOrderAuthoritative?: boolean;
+    /**
+     * The property regions a page carried, where the reader divided one.
+     *
+     * Absent on every document read whole, which is all of them but a
+     * multi-property sheet. Present, the region a property was read out of
+     * becomes ITS page for every question the imagery path asks about "this
+     * property's page" — see `pageTextsByItemId` at the call below, and
+     * `PdfReadingRegion.text` for why the page's own text is the wrong
+     * answer once the page holds three cards.
+     */
+    pdfRegions?: Array<{ page: number; index: number; anchor: string; text: string }>;
     /** The uploaded document's own name, recorded on every image it yielded. */
     filename?: string | null;
     /**
@@ -1249,6 +1262,20 @@ export async function importStockRecords(
          */
         soleProperty: records.length === 1,
         pageTexts: input.pageTexts,
+        /*
+         * AND, FOR A PROPERTY READ OUT OF A REGION, ITS REGION IS ITS PAGE.
+         *
+         * Every question below is asked of "this property's page": does the
+         * page state its identity, does it state package facts, how many
+         * pictures does it draw. On a sheet of three cards the page answers
+         * for all three — and `pageStatesIdentity`'s rule 2 refuses any page
+         * naming a lot other than ours, which is exactly right for a page
+         * read whole and exactly wrong for a card. So the page the property
+         * came off is substituted by the region it came out of, and every
+         * other page is left as it is: a later page that genuinely names
+         * this property is still its page.
+         */
+        pageTextsByItemId: regionPageViews(input.pdfRegions, input.pageTexts, itemIdByAnchor),
         pageOrderAuthoritative: input.pageOrderAuthoritative !== false,
       }
       : null,
@@ -1423,6 +1450,38 @@ export async function importStockRecords(
 }
 
 /**
+ * The pages as each region-read property sees them.
+ *
+ * ONE SUBSTITUTION AND NOTHING ELSE: the page the property was read off is
+ * replaced by the region it was read out of, and every other page is left
+ * exactly as the document wrote it. A property described again on page 5 is
+ * still described on page 5, and the answer to "is page 5 also this
+ * property's" is unchanged.
+ *
+ * A property whose anchor resolved to nothing gets no entry, so it is judged
+ * against the document's own pages exactly as it was before this existed.
+ */
+export function regionPageViews(
+  regions: ReadonlyArray<{ page: number; index: number; anchor: string; text: string }>
+    | undefined,
+  pageTexts: readonly string[] | undefined,
+  itemIdByAnchor: ReadonlyMap<string, string | null>,
+): Map<string, string[]> | undefined {
+  if (!regions?.length || !pageTexts?.length) return undefined;
+  const views = new Map<string, string[]>();
+  for (const region of regions) {
+    const itemId = itemIdByAnchor.get(region.anchor);
+    if (!itemId) continue;
+    const index = region.page - 1;
+    if (index < 0 || index >= pageTexts.length) continue;
+    const view = pageTexts.slice();
+    view[index] = region.text;
+    views.set(itemId, view);
+  }
+  return views.size ? views : undefined;
+}
+
+/**
  * Store the imagery found INSIDE the document.
  *
  * ATTRIBUTION IS STRUCTURAL FIRST. Every office format states where a picture
@@ -1469,6 +1528,12 @@ export async function attachDocumentMedia(
     /** The document produced exactly ONE property. See `pageStatesIdentity`. */
     soleProperty?: boolean;
     pageTexts: string[];
+    /**
+     * The pages as ONE property sees them, where that differs from the
+     * document's. Only a property read out of a page region has an entry; any
+     * property without one is judged against `pageTexts` exactly as before.
+     */
+    pageTextsByItemId?: Map<string, string[]>;
     pageOrderAuthoritative: boolean;
   } | null,
 ): Promise<AttachedMedia[]> {
@@ -1486,7 +1551,17 @@ export async function attachDocumentMedia(
    * the answer to that is an image kept against the upload and shown against
    * nobody. Other formats keep the counting fallback they always had.
    */
-  const pageAnchored = input.media.some((media) => pdfAnchorPage(media.anchor) !== null);
+  /*
+   * A REGION ANCHOR COUNTS, and getting that wrong would have undone the whole
+   * of the segmentation work one line from the end. `pdf:page3#r1` is the
+   * document speaking MORE precisely than `pdf:page3`, not less — so a
+   * document that produced region anchors has anchored its pictures, and the
+   * count-by-order fallback below must stay switched off for it. Read with the
+   * loose form for exactly that reason; whose a picture IS was settled by
+   * geometry before any of this ran. See `pdfAnchorPageOrRegion`.
+   */
+  const pageAnchored = input.media.some(
+    (media) => pdfAnchorPageOrRegion(media.anchor) !== null);
   const attributions = attributeDocumentMedia({
     anchors: input.media.map((media) => media.anchor ?? null),
     itemIdByAnchor: resolvedAnchors,

@@ -188,6 +188,24 @@ export interface StockExtraction {
   deterministicIgnored?: string[];
   /** Where each of those lines was drawn, aligned by index. Numbers only. */
   deterministicPlacement?: string[];
+  /**
+   * The property regions a page carried, where the document was read region by
+   * region. Empty or absent on everything else, which is every document this
+   * reader has handled until now.
+   *
+   * It exists to answer one question downstream: a page carrying three
+   * property cards draws three renders, and which is whose is a question the
+   * page NUMBER cannot answer. `anchor` is the same `pdf:page{N}#r{i}` the
+   * row carries, so the two meet without either knowing about the other;
+   * `text` is the region's own text, which is what the imagery path asks its
+   * "does this property's page state its identity" questions of once the page
+   * has been divided.
+   *
+   * DOCUMENT TEXT, so it is kept out of `deterministicReading` exactly as
+   * `deterministicIgnored` is — that field is the safe-to-log projection and
+   * this is never logged.
+   */
+  pdfRegions?: Array<{ page: number; index: number; anchor: string; text: string }>;
 }
 
 /**
@@ -1057,6 +1075,50 @@ export async function extractStockFile(
         && reading.rows.length <= MAX_ROWS) {
         result.rows = reading.rows;
         result.strategy = reading.strategy;
+        /*
+         * ==============================================================
+         * AND THE PICTURES FOLLOW THE PROPERTIES, OR THEY FOLLOW NOBODY.
+         * ==============================================================
+         *
+         * Every picture above was anchored to its PAGE, which is the whole
+         * of what a page-per-property document has to say. On a page
+         * carrying three cards that anchor names all three, and
+         * `attributeDocumentMedia` would resolve it to none of them or, worse,
+         * fall through to counting — the cross-assignment this whole path
+         * exists to prevent.
+         *
+         * So where the reading divided a page, the pictures drawn on it are
+         * re-anchored to the REGION that contains them, and a picture whose
+         * ownership cannot be established loses its anchor entirely. That is
+         * the deliberate outcome: an unanchored picture is stored against the
+         * upload and shown against nobody. A page-wide banner, a logo in the
+         * margin, a graphic straddling two cards and a page crop all land
+         * there, and each of them should.
+         *
+         * INSIDE THE ROW GATE ON PURPOSE. A reading whose rows were refused
+         * by the ceiling above did not produce the properties these anchors
+         * name, so re-anchoring to them would point every picture at nothing.
+         */
+        if (reading.regions?.length) {
+          const { regionForImage } = await import('./propertyRegions.pure.ts');
+          const { pdfAnchorPage } = await import('./pdfRowAnchors.pure.ts');
+          const regions = reading.regions;
+          for (const media of result.media) {
+            const page = pdfAnchorPage(media.anchor);
+            if (page === null) continue;
+            const onPage = regions.filter((region) => region.page === page);
+            // A page that did not divide keeps the page anchor it has always
+            // had, and everything about it behaves exactly as it did.
+            if (!onPage.length) continue;
+            const drawn = media.placement?.drawn ?? null;
+            const owner = drawn ? regionForImage(onPage, drawn) : null;
+            media.anchor = owner ? owner.anchor : null;
+          }
+          result.pdfRegions = regions.map((region) => ({
+            page: region.page, index: region.index,
+            anchor: region.anchor, text: region.text,
+          }));
+        }
       }
     } catch {
       /*

@@ -594,6 +594,17 @@ const FIELD_COLUMN: Record<string, string> = {
   build_size_sqm: 'building_size_sqm',
   street_name: 'address_line',
 };
+/**
+ * Keys an expectation row carries that are NOT columns of a property.
+ *
+ * `image_size` states which of a page's pictures this card drew, which is an
+ * assertion about the bytes the portal served rather than about a field —
+ * see the ownership proof in 6f. Comparing it as a column would look for a
+ * `builder_stock_items.image_size` that does not exist and report every
+ * multi-property fixture as missing a field it never had.
+ */
+const NOT_A_COLUMN = new Set(['image_size']);
+
 const valueOf = (item: any, key: string) =>
   key === 'house_design' ? (item.source_row?.house_design ?? null) : (item[key] ?? null);
 
@@ -815,6 +826,7 @@ for (const entry of manifest) {
       .filter(([, v]) => v !== null)));
   for (let i = 0; i < Math.min(expectRows.length, itemsA.length); i += 1) {
     for (const [field, want] of Object.entries(expectRows[i])) {
+      if (NOT_A_COLUMN.has(field)) continue;
       const key = FIELD_COLUMN[field] ?? field;
       const got = valueOf(itemsA[i], key);
       /*
@@ -831,6 +843,27 @@ for (const entry of manifest) {
           ? String(got ?? '').toLowerCase().includes(String(want).toLowerCase())
           : String(got).toLowerCase() === String(want).toLowerCase();
       if (!same) fail(entry, `row ${i} ${key}: expected ${JSON.stringify(want)}, got ${JSON.stringify(got)}`);
+    }
+  }
+
+  /*
+   * --- 6c2. WHICH READER PRODUCED THE ROWS ------------------------------
+   *
+   * Named only where a fixture's whole subject is the ORDER of the readers.
+   * A schedule must be read by the table parser, whose grid guarantees are
+   * stronger than anything the region reader has — every cell in a column, a
+   * cell outside every column refuses — so a document the table parser reads
+   * correctly must never reach the second reader. Asserting the count alone
+   * would pass if it did.
+   */
+  if (entry.expect.parse_strategy) {
+    const { data: up } = await db.from('builder_stock_uploads')
+      .select('parse_strategy').eq('id', a.uploadId).maybeSingle();
+    const got = String(up?.parse_strategy ?? '');
+    row.parseStrategy = got;
+    if (got !== entry.expect.parse_strategy) {
+      fail(entry, `read by the wrong reader: expected ${entry.expect.parse_strategy}, `
+        + `got ${JSON.stringify(got)}`);
     }
   }
 
@@ -1023,13 +1056,54 @@ for (const entry of manifest) {
         }
       }
 
+      /*
+       * ==================================================================
+       * AND IT IS THIS CARD'S PICTURE, not merely A picture.
+       * ==================================================================
+       *
+       * Every assertion above proves the chain HOLDS — a row names an image,
+       * the image is this property's, the portal serves it, the bytes decode.
+       * None of them can see a SWAP: on a page carrying two cards, giving
+       * each property the other's render satisfies all of them.
+       *
+       * So the fixtures that carry a picture per card draw them at
+       * DIFFERENT PIXEL DIMENSIONS, and the expectation names which. The
+       * comparison is made against the bytes the portal actually served,
+       * which is the only reading that cannot be satisfied by a correct
+       * pointer to the wrong photograph.
+       */
+      const wantSize = (entry.expect.rows ?? [])[itemsA.indexOf(it)]?.image_size ?? null;
+      if (wantSize && decoded) {
+        const gotSize = `${decoded.width}x${decoded.height}`;
+        if (gotSize !== wantSize) {
+          fail(entry, `lot ${it.lot_number} was served another card's photograph: `
+            + `expected ${wantSize}, served ${gotSize}`);
+        }
+      }
+
       photographs.push({
         lot: it.lot_number, primary: primaryId, cleared,
         http: status, bytes: bytes.length,
+        reference: img.source_reference ?? null,
         decoded: decoded ? `${decoded.kind} ${decoded.width}x${decoded.height}` : null,
       });
     }
     row.portalImages = photographs;
+
+    /*
+     * NO TWO PROPERTIES OF ONE DOCUMENT MAY SHOW THE SAME PICTURE.
+     *
+     * The weaker half of the ownership proof, and the one that needs no
+     * fixture cooperation: "the first image for every property" is a real
+     * failure mode this product has had, and it produces N properties
+     * pointing at one image row. Distinctness catches it whatever the
+     * pictures look like.
+     */
+    const primaries = photographs.map((p) => p.primary).filter(Boolean);
+    if (new Set(primaries).size !== primaries.length) {
+      fail(entry, `two properties in one document show the same photograph: `
+        + JSON.stringify(photographs.map((p) => ({ lot: p.lot, primary: p.primary }))));
+    }
   }
 
   // --- 6e2. REPEAT PROCESSING IS SAFE -------------------------------------
@@ -2146,6 +2220,7 @@ await fileServer.shutdown();
     for (let i = 0; i < expectRows.length; i += 1) {
       for (const [field, want] of Object.entries(expectRows[i])) {
         if (want === null) continue;          // a prohibition, not a field
+        if (NOT_A_COLUMN.has(field)) continue;
         totals.fieldsExpected += 1;
         const key = FIELD_COLUMN[field] ?? field;
         const got = (row?.items ?? [])[i]?.[key] ?? null;

@@ -520,13 +520,42 @@ def _f7(c):
 @fixture('two-column-two-properties', 'Estate Release - Two Homes.pdf', expect=dict(
     # A NAMED, UNCLOSED GAP — reported on every run, never failing the gate,
     # so it cannot be forgotten and cannot be mistaken for a pass.
-    # Brochure mode reads ONE property. This page sets two, side by side, each
-    # under its own `Lot` heading with its own specs beneath. The reader sees
-    # two lot numbers, cannot tell which figure belongs to which property, and
-    # refuses the document — which is the honest outcome and not a fabricated
-    # record. Reading it needs column reconstruction on a page that is not a
-    # table, which is a piece of work rather than a rule.
-    known_limit='brochure mode reads one property; this page sets two in columns',
+    #
+    # THE LIMIT MOVED, AND THE OLD WORDING IS KEPT HERE BECAUSE IT WAS WHAT
+    # THIS FIXTURE WAS WRITTEN FOR.
+    #
+    #   was:  "brochure mode reads one property; this page sets two in
+    #          columns"
+    #   why wrong now: that is closed. Measured 22 September 2026 through the
+    #          real layout reader, `segmentPropertyRegions` divides this page
+    #          into exactly two regions and neither holds one of the other's
+    #          values:
+    #            r0 = Lot 402 / Marlo 23 / Wollert VIC 3750 / 4 2 2 /
+    #                 Land Size - 400m2 / Package Price - $768,000
+    #            r1 = Lot 407 / Marlo 19 / Wollert VIC 3750 / 3 2 2 /
+    #                 Land Size - 325m2 / Package Price - $699,000
+    #   what refuses it now: each region reading comes back `incomplete` with
+    #          ONE unaccounted line, `RELEASE 6`. The page's heading reads
+    #          "RELEASE 6 - WOLLERT" and the reader parses ` - ` as a label
+    #          and its value, so `WOLLERT` is corroborated by the suburb in
+    #          both cards and `RELEASE 6` names no field this vocabulary
+    #          knows. It carries a digit, so it can never be dismissed as
+    #          prose — which is the conservative gate working as written — and
+    #          a shared line no region can account for stands the whole
+    #          document down, because it may be a fact about every property
+    #          on it.
+    #   evidence: `readPdfBrochure` on each region's own synthetic document
+    #          reads `lot_number`, `land_size_sqm` and `price` and refuses on
+    #          `unaccounted_specification_lines: ["RELEASE 6"]`.
+    #
+    # It is NOT closed by teaching the alias table that a "Release" is a
+    # stage. That is a per-document parser patch of exactly the kind this
+    # subsystem is frozen against, and the document imports zero properties
+    # before and after the segmentation work — so nothing regressed and the
+    # gap is a vocabulary gap rather than a layout one.
+    known_limit='segmentation divides this page correctly; the shared heading '
+                '"RELEASE 6" names no field this vocabulary knows, and a '
+                'shared line no region can account for stands the document down',
     properties=2,
     rows=[dict(lot_number='402', suburb='Wollert', state='VIC', bedrooms=4,
                bathrooms=2, car_spaces=2, land_size_sqm=400, price=768000,
@@ -891,6 +920,404 @@ def _f18(c):
     text(c, 20, 205, 'Land Size    392m2')
     text(c, 20, 212, 'Home Size    228.4m2')
     text(c, 20, 238, 'Artist impression. Prices subject to change.', 8)
+    c.showPage()
+
+
+# ===========================================================================
+# THE MULTI-PROPERTY HELD-OUT SET
+#
+# Eleven documents written AFTER the segmentation rules were designed and
+# never consulted while designing them. Their subject is the one question a
+# page-at-a-time reader cannot ask: does this page describe one property or
+# several, and if several, whose is whose.
+#
+# THEY ARE NOT ALL POSITIVE. Four of the eleven must come back as ONE
+# property or as a table, and those are the ones that matter most: a visual
+# column is not a property, and the corpus is full of brochures set in two
+# columns that describe one house. Splitting those would be strictly worse
+# than the defect this closes.
+#
+# NO FIXTURE IS NAMED IN ANY RULE. Nothing in the product reads a builder
+# name, a filename, a lot number or a page index from this set.
+# ===========================================================================
+
+# Column geometry, stated once. The gutter is 20mm — 57 points against the
+# 27.5 the segmenter derives from 11pt type — so these pages are unambiguous
+# about where one card ends. A page whose gutter is narrower than its own type
+# is one this reader will not divide, which is the conservative side.
+L, R, CARDW = 15, 115, 80
+THIRDS = (15, 82, 149)
+
+
+def mcard(c, x, top, lot, design, land, build, price, beds=None):
+    """One property card, laid out as a builder's release sheet lays one out.
+
+    Label and value are drawn as SEPARATE RUNS 30mm apart, which is what a
+    real card does and what lets the reader pair them; a label and value set
+    four points apart arrive as one cell and the value is never claimed.
+    """
+    text(c, x, top, f'Lot {lot}', 13, True)
+    text(c, x, top + 8, 'Home Design'); text(c, x + 32, top + 8, design)
+    text(c, x, top + 15, 'Land Size'); text(c, x + 32, top + 15, land)
+    text(c, x, top + 22, 'Build Size'); text(c, x + 32, top + 22, build)
+    text(c, x, top + 29, 'Price'); text(c, x + 32, top + 29, price)
+    if beds:
+        text(c, x, top + 36, 'Bedrooms'); text(c, x + 32, top + 36, beds)
+
+
+def cardhero(c, buf, x, top, w=80, h=50):
+    """A picture inside one card's column.
+
+    80x50mm is 6.4% of an A4 page, just over the product's own 6% floor for a
+    picture large enough to be a property's. That floor is not relaxed for
+    this corpus: a card whose picture is smaller than the floor honestly has
+    no listing image, and two of the fixtures below expect exactly that.
+    """
+    c.drawImage(ImageReader(buf), x * mm, H - (top + h) * mm,
+                width=w * mm, height=h * mm, preserveAspectRatio=True, mask=None)
+
+
+# --- M1. two cards side by side, under one estate heading -----------------
+@fixture('heldout-two-cards', 'BROOKHAVEN - TWO HOMES AVAILABLE.pdf', held_out=True,
+         expect=dict(
+             properties=2,
+             rows=[
+                 dict(lot_number='412', design='Wren 18', land_size_sqm=350,
+                      build_size_sqm=182, price=684000, estate='Brookhaven Rise Estate',
+                      image_size='1280x800'),
+                 dict(lot_number='418', design='Marlow 22', land_size_sqm=448,
+                      build_size_sqm=224, price=812500, estate='Brookhaven Rise Estate',
+                      image_size='960x600'),
+             ],
+             image='facade_page_1',
+             # NEITHER CARD MAY WEAR THE OTHER'S FIGURES. Stated as a
+             # prohibition as well as an expectation, because the expectation
+             # compares row 0 against row 0 and this compares every row
+             # against every forbidden value.
+             forbid=dict(no_lot_numbers=['413', '417'])))
+def _m1(c):
+    text(c, L, 22, 'BROOKHAVEN RISE ESTATE - STAGE 12 RELEASE', 19, True)
+    mcard(c, L, 40, '412', 'Wren 18', '350m2', '182m2', '$684,000')
+    mcard(c, R, 40, '418', 'Marlow 22', '448m2', '224m2', '$812,500')
+    cardhero(c, facade(301, 1280, 800), L, 85)
+    cardhero(c, facade(307, 960, 600), R, 85)
+    text(c, L, 160, 'Prices subject to change without notice. Images are artist '
+                    'impressions only and not an offer.', 8)
+    c.showPage()
+
+
+# --- M2. three cards on one page ------------------------------------------
+@fixture('heldout-three-cards', 'FERNLEIGH - THREE RELEASES.pdf', held_out=True,
+         expect=dict(
+             properties=3,
+             rows=[
+                 dict(lot_number='21', design='Alder 16', land_size_sqm=294,
+                      build_size_sqm=156, price=598000),
+                 dict(lot_number='22', design='Briar 19', land_size_sqm=336,
+                      build_size_sqm=190, price=655000),
+                 dict(lot_number='23', design='Cobalt 24', land_size_sqm=420,
+                      build_size_sqm=238, price=749000),
+             ],
+             # NO PHOTOGRAPH, AND THAT IS THE PRODUCT'S OWN RULE RATHER THAN A
+             # SHORTFALL. Three columns on A4 leave each card 55mm, so a
+             # picture inside one is 3% of the page against the 6% floor
+             # `MIN_PAGE_AREA_SHARE` sets for "large enough to be a property's
+             # listing image". Drawing them larger would mean overlapping
+             # columns, which is not a document anybody produces. This fixture
+             # is about segmentation and says nothing about imagery.
+             image=None,
+             known_limit='three columns on A4 leave each picture at 3% of the '
+                         'page, under the product 6% floor for a listing image'))
+def _m2(c):
+    text(c, L, 22, 'FERNLEIGH PARK - AUTUMN RELEASE', 18, True)
+    for x, (lot, design, land, build, price) in zip(THIRDS, [
+            ('21', 'Alder 16', '294m2', '156m2', '$598,000'),
+            ('22', 'Briar 19', '336m2', '190m2', '$655,000'),
+            ('23', 'Cobalt 24', '420m2', '238m2', '$749,000')]):
+        text(c, x, 42, f'Lot {lot}', 12, True)
+        text(c, x, 50, 'Home Design'); text(c, x, 56, design)
+        text(c, x, 64, 'Land Size'); text(c, x, 70, land)
+        text(c, x, 78, 'Build Size'); text(c, x, 84, build)
+        text(c, x, 92, 'Price'); text(c, x, 98, price)
+    text(c, L, 130, 'All prices subject to change. Images are artist impressions.', 8)
+    c.showPage()
+
+
+# --- M3. a two-column SCHEDULE, which is a table and must stay one --------
+@fixture('heldout-schedule-table', 'OAKRIDGE - STOCK SCHEDULE.pdf', held_out=True,
+         expect=dict(
+             properties=3,
+             rows=[
+                 dict(lot_number='101', design='Hawke 20', land_size_sqm=375, price=706000),
+                 dict(lot_number='102', design='Hawke 20', land_size_sqm=375, price=711000),
+                 dict(lot_number='103', design='Ridley 23', land_size_sqm=448, price=798000),
+             ],
+             image=None,
+             # A SCHEDULE IS READ AS A SCHEDULE. This fixture's job is to
+             # prove segmentation did not take a document the table parser
+             # already reads correctly: the grid guarantees — every cell in a
+             # column, a cell outside every column refuses — are stronger than
+             # anything the region reader has, so the order asks the table
+             # first and this document must never reach the second reader.
+             parse_strategy='pdf_deterministic_table'))
+def _m3(c):
+    text(c, L, 22, 'OAKRIDGE ESTATE - AVAILABLE STOCK', 16, True)
+    cols = [(15, 'Lot'), (40, 'Home Design'), (95, 'Land Size'), (130, 'Price')]
+    for x, head in cols:
+        text(c, x, 40, head, 10, True)
+    for i, row in enumerate([('101', 'Hawke 20', '375m2', '$706,000'),
+                             ('102', 'Hawke 20', '375m2', '$711,000'),
+                             ('103', 'Ridley 23', '448m2', '$798,000')]):
+        for (x, _), value in zip(cols, row):
+            text(c, x, 50 + i * 8, value, 10)
+    c.showPage()
+
+
+# --- M4. ONE property set in two visual columns ---------------------------
+@fixture('heldout-one-home-two-columns', 'LOT 77 - HOLLIS 21 - FEATURE.pdf',
+         held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='77', design='Hollis 21', land_size_sqm=392,
+                        build_size_sqm=205, price=729000)],
+             image='facade_page_1',
+             # THE MOST IMPORTANT NEGATIVE IN THE SET. The page is set in two
+             # columns with a real gutter, and the right column states nothing
+             # that identifies a property — it is the marketing copy every
+             # brochure in the corpus carries. A visual column is not a
+             # property.
+             forbid=dict(no_lot_numbers=['21', '205'])))
+def _m4(c):
+    text(c, L, 22, 'HOLLIS 21', 20, True)
+    text(c, L, 34, 'Lot 77 Redgum Parade, Officer VIC 3809')
+    text(c, L, 46, 'Home Design'); text(c, L + 32, 46, 'Hollis 21')
+    text(c, L, 53, 'Land Size'); text(c, L + 32, 53, '392m2')
+    text(c, L, 60, 'Build Size'); text(c, L + 32, 60, '205m2')
+    text(c, L, 67, 'Price'); text(c, L + 32, 67, '$729,000')
+    # The right-hand column: prose, a caption and a disclaimer. No lot, no
+    # price, no design, no measurement.
+    text(c, R, 46, 'Designed for family living', 10, True)
+    text(c, R, 53, 'Open plan living and dining', 9)
+    text(c, R, 60, 'Walk-in robe to the main bedroom', 9)
+    text(c, R, 67, 'Double garage with internal access', 9)
+    text(c, R, 74, 'Artist impression shown', 9)
+    hero(c, facade(311), top=185, height=105)
+    text(c, L, 196, 'Prices subject to change without notice.', 8)
+    c.showPage()
+
+
+# --- M5. a shared estate header several properties must INHERIT -----------
+@fixture('heldout-shared-estate-header', 'WILLOWMEAD - RELEASE SHEET.pdf',
+         held_out=True,
+         expect=dict(
+             properties=2,
+             # NEITHER CARD STATES THE ESTATE. It is written once, across the
+             # top of the page, and both properties must carry it — which is
+             # what makes the shared band a real part of the model rather than
+             # a bucket for leftovers.
+             rows=[
+                 dict(lot_number='508', design='Sable 17', land_size_sqm=312,
+                      build_size_sqm=168, price=627000, estate='Willowmead Estate'),
+                 dict(lot_number='511', design='Tamar 20', land_size_sqm=384,
+                      build_size_sqm=201, price=708000, estate='Willowmead Estate'),
+             ],
+             image=None,
+             known_limit='this release sheet carries no photograph at all'))
+def _m5(c):
+    text(c, L, 22, 'WILLOWMEAD ESTATE - STAGE 4 TITLED LAND RELEASE', 18, True)
+    mcard(c, L, 45, '508', 'Sable 17', '312m2', '168m2', '$627,000')
+    mcard(c, R, 45, '511', 'Tamar 20', '384m2', '201m2', '$708,000')
+    text(c, L, 120, 'All lots titled. Prices correct at time of printing.', 8)
+    c.showPage()
+
+
+# --- M6. several properties, several pictures each ------------------------
+@fixture('heldout-cards-with-plans', 'CARRINGTON - TWO PACKAGES.pdf', held_out=True,
+         expect=dict(
+             properties=2,
+             rows=[
+                 dict(lot_number='19', design='Verity 19', land_size_sqm=336,
+                      build_size_sqm=196, price=671000, image_size='1280x800'),
+                 dict(lot_number='24', design='Wexford 23', land_size_sqm=441,
+                      build_size_sqm=241, price=829000, image_size='1440x900'),
+             ],
+             image='facade_page_1'))
+def _m6(c):
+    text(c, L, 22, 'CARRINGTON GARDENS - PACKAGES AVAILABLE NOW', 17, True)
+    mcard(c, L, 40, '19', 'Verity 19', '336m2', '196m2', '$671,000')
+    mcard(c, R, 40, '24', 'Wexford 23', '441m2', '241m2', '$829,000')
+    # THE SEEDS ARE MEASURED, and this is the fixture being fixed rather than
+    # the product being tuned - the rule the corpus already records for
+    # `heldout-office-address`.
+    #
+    # Seed 337 was written here first and the right-hand card lost its
+    # photograph. Run through the product's OWN eligibility assessor at three
+    # sizes, that seed's octave noise produces one flat region covering 10.07%
+    # of the picture at 1120x700, 10.80% at 1280x800 and 11.27% at 1600x1000 -
+    # so `marketplaceEligibility` convicts it as an `annotated_marketing_tile`
+    # at every size, correctly: a real photograph has almost no flat regions
+    # and a graphic tile is made of them. The size is not the variable; the
+    # seed is.
+    #
+    # 331 and 353 both measure `largestShare: 0, regionCount: 0`. They are
+    # drawn at different pixel sizes because that is what makes a SWAP
+    # visible - see the ownership proof in the harness - and the sizes are
+    # named in the expectation above.
+    cardhero(c, facade(331, 1280, 800), L, 82)
+    cardhero(c, facade(353, 1440, 900), R, 82)
+    # A plan under each facade, in the same column. The hero election must
+    # take the photograph and not the line drawing, per card.
+    cardhero(c, floorplan(1200, 750), L, 140)
+    cardhero(c, floorplan(1000, 625), R, 140)
+    text(c, L, 205, 'Floor plans indicative only. Artist impressions shown.', 8)
+    c.showPage()
+
+
+# --- M7. a footer and a disclaimer crossing the full page width -----------
+@fixture('heldout-shared-footer', 'DUNMORE - RELEASE WITH TERMS.pdf', held_out=True,
+         expect=dict(
+             properties=2,
+             rows=[
+                 dict(lot_number='2201', design='Ivory 18', land_size_sqm=300,
+                      build_size_sqm=171, price=612000),
+                 dict(lot_number='2204', design='Juniper 21', land_size_sqm=364,
+                      build_size_sqm=209, price=733000),
+             ],
+             image=None,
+             known_limit='this release sheet carries no photograph at all',
+             # THE FOOTER IS NOT A PROPERTY FACT. It crosses the gutter, so it
+             # belongs to the page; nothing in it may reach a column of either
+             # property.
+             forbid=dict(nothing_containing=['DUNMORE PTY', 'ACN', '1300'])))
+def _m7(c):
+    text(c, L, 22, 'DUNMORE GREEN - TITLED RELEASE', 18, True)
+    mcard(c, L, 45, '2201', 'Ivory 18', '300m2', '171m2', '$612,000')
+    mcard(c, R, 45, '2204', 'Juniper 21', '364m2', '209m2', '$733,000')
+    text(c, L, 120, 'Terms: prices are subject to change without notice and do not '
+                    'constitute an offer. Images are artist impressions.', 8)
+    text(c, L, 128, 'Dunmore Pty Ltd ACN 000 111 222. Sales enquiries 1300 555 140. '
+                    'Display centre open daily 11am to 5pm.', 8)
+    c.showPage()
+
+
+# --- M8. the SAME lot numbers, a DIFFERENT organisation -------------------
+@fixture('heldout-same-lots-other-org', 'BROOKHAVEN - TWO HOMES AVAILABLE.pdf',
+         held_out=True, org='beta',
+         expect=dict(
+             properties=2,
+             # THE SAME LOTS AS M1, IN ANOTHER BUILDER'S ACCOUNT, with
+             # different designs, sizes and prices. A lot number is a
+             # builder's own numbering: two organisations naming lot 412 are
+             # two properties, and a reader that matched across the boundary
+             # would overwrite one with the other.
+             rows=[
+                 dict(lot_number='412', design='Pinnacle 20', land_size_sqm=400,
+                      build_size_sqm=210, price=755000),
+                 dict(lot_number='418', design='Summit 25', land_size_sqm=512,
+                      build_size_sqm=252, price=901000),
+             ],
+             image=None,
+             known_limit='this release sheet carries no photograph at all'))
+def _m8(c):
+    text(c, L, 22, 'KESTREL HOMES - AVAILABLE PACKAGES THIS MONTH', 18, True)
+    mcard(c, L, 45, '412', 'Pinnacle 20', '400m2', '210m2', '$755,000')
+    mcard(c, R, 45, '418', 'Summit 25', '512m2', '252m2', '$901,000')
+    text(c, L, 120, 'Prices subject to change without notice.', 8)
+    c.showPage()
+
+
+# --- M9. the same DESIGN across several properties ------------------------
+@fixture('heldout-same-design-many-lots', 'ASHFORD - HAWKE 20 RELEASE.pdf',
+         held_out=True,
+         expect=dict(
+             properties=2,
+             # ONE DESIGN, TWO PROPERTIES. `stockPropertyIdentity` reads the
+             # design as part of a property's identity, so two rows sharing it
+             # must still be told apart by everything else they state — and
+             # neither may be absorbed into the other as a duplicate.
+             rows=[
+                 dict(lot_number='31', design='Hawke 20', land_size_sqm=375,
+                      build_size_sqm=203, price=698000),
+                 dict(lot_number='46', design='Hawke 20', land_size_sqm=420,
+                      build_size_sqm=203, price=726000),
+             ],
+             image=None,
+             known_limit='this release sheet carries no photograph at all'))
+def _m9(c):
+    text(c, L, 22, 'ASHFORD RIDGE - THE HAWKE 20, TWO POSITIONS', 17, True)
+    mcard(c, L, 45, '31', 'Hawke 20', '375m2', '203m2', '$698,000')
+    mcard(c, R, 45, '46', 'Hawke 20', '420m2', '203m2', '$726,000')
+    text(c, L, 120, 'Prices subject to change without notice.', 8)
+    c.showPage()
+
+
+# --- M10. several pages, each carrying several properties -----------------
+@fixture('heldout-pages-of-cards', 'MERIDIAN - FULL STOCK LIST.pdf', held_out=True,
+         expect=dict(
+             properties=4,
+             rows=[
+                 dict(lot_number='60', design='Onyx 18', land_size_sqm=301,
+                      build_size_sqm=174, price=619000),
+                 dict(lot_number='64', design='Pearl 21', land_size_sqm=357,
+                      build_size_sqm=206, price=704000),
+                 dict(lot_number='71', design='Quarry 23', land_size_sqm=406,
+                      build_size_sqm=233, price=771000),
+                 dict(lot_number='75', design='Rowan 26', land_size_sqm=462,
+                      build_size_sqm=264, price=848000),
+             ],
+             image=None,
+             known_limit='this stock list carries no photograph at all'))
+def _m10(c):
+    text(c, L, 22, 'MERIDIAN PARK - STOCK LIST PAGE 1 OF 2', 17, True)
+    mcard(c, L, 45, '60', 'Onyx 18', '301m2', '174m2', '$619,000')
+    mcard(c, R, 45, '64', 'Pearl 21', '357m2', '206m2', '$704,000')
+    text(c, L, 120, 'Prices subject to change without notice.', 8)
+    c.showPage()
+    text(c, L, 22, 'MERIDIAN PARK - STOCK LIST PAGE 2 OF 2', 17, True)
+    mcard(c, L, 45, '71', 'Quarry 23', '406m2', '233m2', '$771,000')
+    mcard(c, R, 45, '75', 'Rowan 26', '462m2', '264m2', '$848,000')
+    text(c, L, 120, 'Prices subject to change without notice.', 8)
+    c.showPage()
+
+
+# --- M11. a native multi-property page beside a SCANNED page --------------
+@fixture('heldout-mixed-scan-multi', 'THORNBURY - RELEASE AND SPEC.pdf', held_out=True,
+         expect=dict(
+             properties=3,
+             rows=[
+                 dict(lot_number='120', design='Sorrel 19', land_size_sqm=330,
+                      build_size_sqm=188, price=664000),
+                 dict(lot_number='124', design='Thistle 22', land_size_sqm=392,
+                      build_size_sqm=221, price=742000),
+                 dict(lot_number='131', design='Umber 24', land_size_sqm=455,
+                      build_size_sqm=248, price=806000),
+             ],
+             image=None,
+             # WHAT THIS FIXTURE PROVES AND WHAT IT DOES NOT. Page 1 is native
+             # and carries two cards; page 2 is pixels and carries ONE
+             # property, read off its own recognition. A SCANNED page holding
+             # several cards is deliberately not attempted: recognition
+             # returns a page of lines and the positioned runs describe only
+             # whatever native fragment shared the sheet, so the gutters they
+             # suggest are gutters in a fragment. That limit is named rather
+             # than papered over.
+             known_limit='a page whose text was recognised is never divided; '
+                         'its positions describe only the native fragment',
+             refusal_must_not_be=['ai_budget_exhausted', 'assisted_reader_unavailable',
+                                  'assisted_reader_refused', 'assisted_reader_timeout',
+                                  'assisted_reader_invalid_response']))
+def _m11(c):
+    text(c, L, 22, 'THORNBURY WALK - RELEASE SHEET', 17, True)
+    mcard(c, L, 45, '120', 'Sorrel 19', '330m2', '188m2', '$664,000')
+    mcard(c, R, 45, '124', 'Thistle 22', '392m2', '221m2', '$742,000')
+    text(c, L, 120, 'Prices subject to change without notice.', 8)
+    c.showPage()
+    spec = render_page_as_scan([('LOT 131 - UMBER 24', 14),
+                                ('Home Design UMBER 24', 12),
+                                ('Land Size 455 m2', 12),
+                                ('Build Size 248 m2', 12),
+                                ('Price $806,000', 12)], seed=17)
+    c.drawImage(ImageReader(spec), 0, 0, width=W, height=H, mask=None)
     c.showPage()
 
 

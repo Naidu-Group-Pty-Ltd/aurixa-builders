@@ -91,6 +91,20 @@ export interface PdfFirstPage {
   /** `/MediaBox`, normalised so width and height are positive. */
   width: number;
   height: number;
+  /**
+   * The `/MediaBox`'s own lower-left corner, and the page's `/Rotate`.
+   *
+   * WHY THEY TRAVEL. A drawn rectangle read out of the content stream is in
+   * the page's RAW user space; the text reader's coordinates come from
+   * pdf.js, which reports text in the page's normalised space. The two are
+   * the same space — and only the same space — for a page whose box starts
+   * at the origin and which is not rotated. Anything that means to compare a
+   * picture's position with a run of text's has to be able to ask that
+   * question, and before this nothing could.
+   */
+  origin: { x: number; y: number };
+  /** Degrees, normalised to 0/90/180/270. 0 where the page states none. */
+  rotate: number;
   images: PdfImage[];
   /** Form XObjects the page draws. Their contents are read by the caller. */
   forms: PdfForm[];
@@ -590,9 +604,34 @@ export function readPdfPage(
 
   return {
     width: box.width, height: box.height,
+    origin: { x: box.x, y: box.y },
+    rotate: rotateOf(page, objects),
     images: scope.images, forms: scope.forms, contents,
     widgets: readWidgets(page.header, bytes, objects),
   };
+}
+
+/**
+ * `/Rotate`, inherited from the page tree exactly as `/MediaBox` is.
+ *
+ * Absent, illegible or not a multiple of 90 all read as 0 — which is the
+ * conservative answer only because every caller uses it to ask "is this page
+ * in the plain orientation", and a page that cannot answer is one whose
+ * geometry nothing should be compared across. See `origin`.
+ */
+function rotateOf(page: PdfObject, objects: Map<number, PdfObject>): number {
+  let node: PdfObject | null = page;
+  for (let depth = 0; depth < 8 && node; depth++) {
+    const stated = /\/Rotate\s+(-?\d{1,4})/.exec(node.header);
+    if (stated) {
+      const degrees = Number(stated[1]);
+      if (!Number.isFinite(degrees) || degrees % 90 !== 0) return 0;
+      return ((degrees % 360) + 360) % 360;
+    }
+    const parent = /\/Parent\s+(\d{1,7})\s+\d{1,5}\s+R/.exec(node.header);
+    node = parent ? objects.get(Number(parent[1])) ?? null : null;
+  }
+  return 0;
 }
 
 /** How many widgets one page may contribute. A cost guard, not a rule. */

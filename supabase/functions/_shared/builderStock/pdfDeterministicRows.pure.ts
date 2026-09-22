@@ -129,6 +129,11 @@ import { headerScore, keyRowsByHeader } from './table.pure.ts';
 import {
   bedroomsFromPlan, bindCountRow, countRoomsNamed,
 } from './floorPlanCounts.pure.ts';
+import {
+  pdfRegionAnchor, segmentPropertyRegions,
+  type PageSegmentation, type RegionBox,
+} from './propertyRegions.pure.ts';
+import { SOURCE_ANCHOR_HEADER } from './sourceAssets.pure.ts';
 
 // ---------------------------------------------------------------------------
 // The answer
@@ -152,7 +157,16 @@ export type PdfDeterministicStatus =
 
 export type PdfDeterministicStrategy =
   | 'pdf_deterministic_table'
-  | 'pdf_deterministic_brochure';
+  | 'pdf_deterministic_brochure'
+  /**
+   * One page, several properties, read region by region.
+   *
+   * Its own word rather than `brochure`'s, because the import log has to be
+   * able to say which reading produced a row: a document read whole and a
+   * document read in regions are two different claims about the page, and a
+   * defect in one is not a defect in the other.
+   */
+  | 'pdf_deterministic_regions';
 
 export interface PdfDeterministicReading {
   status: PdfDeterministicStatus;
@@ -259,6 +273,23 @@ export interface PdfDeterministicReading {
   placement: string[];
   /** Set on `complete` and null otherwise. Recorded as `parse_strategy`. */
   strategy: PdfDeterministicStrategy | null;
+  /**
+   * WHERE ON THE PAGE EACH PROPERTY WAS DRAWN, when the document segmented.
+   *
+   * Empty on every other reading, which is every document this reader has
+   * ever handled: a caller that finds it empty must behave exactly as it did.
+   *
+   * It exists for ONE caller and one question — which property owns which
+   * picture. A page carrying three cards draws three renders, and the page
+   * number cannot tell them apart; the column each was drawn in can. See
+   * `regionForImage`, which answers null far more often than it answers a
+   * region, because a wrong image is worse than no image.
+   *
+   * DELIBERATELY NOT IN `diagnostics`: `text` is document text and that
+   * object's contract is that it is safe to write to the import log. Nothing
+   * here is logged — it is read in-process by `extract.ts` and discarded.
+   */
+  regions?: PdfReadingRegion[];
   /** Machine-readable, stable, and safe to log. Never a fragment of the document. */
   reason: string;
   /**
@@ -363,7 +394,55 @@ export interface PdfDeterministicReading {
      * that distinction is the whole difference between the readings here.
      */
     readBy?: string[];
+    /**
+     * How many independent property regions the document's pages carried.
+     *
+     * A COUNT, so it is safe to log by the same contract as everything else
+     * here — and it is reported whichever way the reading went, because the
+     * question an operator asks about a multi-property sheet is "did it see
+     * the cards at all", and a reading that fell back looks identical to one
+     * that never segmented.
+     */
+    regionsFound?: number;
+    /**
+     * Why a segmented reading was abandoned, in this module's own vocabulary.
+     *
+     * Set only where regions WERE found and the document was still read
+     * whole. Every one of these is a statement about THIS reader, never a
+     * finding about the document.
+     */
+    regionsAbandoned?: string;
   };
+}
+
+/**
+ * One property region, as the reading hands it on.
+ *
+ * `box` is in the layout reader's own units, which is the same space a
+ * picture's `placement.drawn` rectangle is measured in — that is what makes
+ * the two comparable at all.
+ */
+export interface PdfReadingRegion {
+  /** 1-based, the page a person sees. */
+  page: number;
+  /** Reading order within the page: left to right, then top to bottom. */
+  index: number;
+  box: RegionBox;
+  /** `pdf:page{N}#r{i}` — the anchor the region's property carries. */
+  anchor: string;
+  /**
+   * The region's own text, flattened.
+   *
+   * WHY IT TRAVELS. Every question the imagery path asks about a property is
+   * asked of "its page" — does the page state its identity, does the page
+   * state package facts, how many pictures does the page draw. On a page
+   * carrying three cards each of those answers is about all three, and
+   * `pageStatesIdentity`'s rule 2 refuses a page naming any other lot, which
+   * is correct for a page read whole and wrong for a card. Once the page has
+   * been segmented the property's page IS its region, so the region's text is
+   * what those questions are asked of.
+   */
+  text: string;
 }
 
 /**
@@ -4623,15 +4702,291 @@ export function readPdfDeterministicRows(input: {
    * happens to everything else and to a table reading that refused.
    */
   const positioned = input.positionedPages ?? null;
-  if (positioned && positioned.length && mayHoldSchedule(pageTexts)) {
-    const schedule = assemblePdfSchedule(positioned);
-    if (schedule.status === 'complete') return schedule;
-    const fallback = readBrochure();
-    if (fallback.status === 'complete') return fallback;
-    return moreEvidencedRefusal(schedule, fallback);
+
+  /*
+   * ======================================================================
+   * A SCHEDULE IS STILL READ AS A SCHEDULE, AND IT IS ASKED FIRST.
+   * ======================================================================
+   *
+   * A document whose flattened text shows a heading row is a table, and the
+   * table parser has guarantees about the grid that nothing else here has:
+   * every cell in a column, a cell outside every column refuses, two cells in
+   * one column refuses. Segmentation would be asking a weaker reader a
+   * question this one already answers well, so the order is unchanged for
+   * every document that has ever reached it — and a schedule reading that
+   * COMPLETES returns before anything below runs.
+   */
+  const schedule = positioned && positioned.length && mayHoldSchedule(pageTexts)
+    ? assemblePdfSchedule(positioned)
+    : null;
+  if (schedule?.status === 'complete') return schedule;
+
+  /*
+   * ======================================================================
+   * SEVERAL PROPERTIES ON ONE PAGE ARE SEVERAL DOCUMENTS.
+   * ======================================================================
+   *
+   * A page carrying three property cards was read as ONE document by every
+   * reader below this line, because every one of them reads a document as a
+   * stream of lines and a stream of lines has no columns in it. The brochure
+   * reader would either refuse it (three lots stated, one `lot_number`, a
+   * `conflicting_values` ambiguity) or — where the cards state different
+   * fields — complete it as one property wearing three properties' facts.
+   * The second outcome is the one that matters: it is not a missing import,
+   * it is a WRONG one, and it is the only shape in this subsystem that can
+   * put one builder's price on another builder's house.
+   *
+   * IT RUNS BEFORE THE BROCHURE READER because that reader answers for the
+   * page as a whole, and by the time it has spoken the regions are gone.
+   *
+   * AND IT ALMOST NEVER ENGAGES. `segmentPropertyRegions` answers null for
+   * every page that does not carry PROPERTY-LEVEL evidence in more than one
+   * band — which is every single-property brochure, however many visual
+   * columns it sets, because a column of prose beside a column of render
+   * states one lot between them. Where it answers null for every page this
+   * returns null and the readers below see exactly what they have always
+   * seen.
+   */
+  let regionsFound = 0;
+  let regionsAbandoned = '';
+  if (positioned && positioned.length) {
+    const segmented = readSegmentedDocument(pageTexts, positioned, {
+      recognisedPages: input.recognisedPages,
+      organisationName: input.organisationName,
+    });
+    if (segmented.reading) return segmented.reading;
+    regionsFound = segmented.found;
+    regionsAbandoned = segmented.abandoned;
   }
 
-  return readBrochure();
+  const brochure = readBrochure();
+  /*
+   * REGIONS WERE FOUND AND THE READING WAS ABANDONED, so the document is read
+   * exactly as it was before — and the log says so. A fallback that is silent
+   * is indistinguishable from a page that never segmented, which is the one
+   * thing an operator looking at a multi-property sheet needs to be able to
+   * tell apart.
+   */
+  if (regionsFound) {
+    brochure.diagnostics.regionsFound = regionsFound;
+    brochure.diagnostics.regionsAbandoned = regionsAbandoned;
+  }
+  if (brochure.status === 'complete') return brochure;
+  /*
+   * WHEN BOTH READERS REFUSE, THE ONE THAT READ SOMETHING IS THE ANSWER.
+   * See `moreEvidencedRefusal`, and the defect below it that cost a whole
+   * seven-page brochure its import.
+   */
+  if (schedule) {
+    const answer = moreEvidencedRefusal(schedule, brochure);
+    if (regionsFound) {
+      answer.diagnostics.regionsFound = regionsFound;
+      answer.diagnostics.regionsAbandoned = regionsAbandoned;
+    }
+    return answer;
+  }
+  return brochure;
+}
+
+/**
+ * ===========================================================================
+ * ONE PAGE, SEVERAL PROPERTIES — READ AS SEVERAL DOCUMENTS.
+ * ===========================================================================
+ *
+ * `segmentPropertyRegions` decides WHERE the properties are; this decides
+ * what may be done about it. The separation matters: the segmenter is
+ * geometry and evidence and has no opinion about readers, and this has no
+ * opinion about columns.
+ *
+ * THE CONTRACT, AND IT IS THE STRICTEST ONE IN THIS MODULE.
+ *
+ * EVERY PAGE MUST BE ACCOUNTED FOR. A page that segmented contributes one
+ * candidate per region; a page that did not contributes one candidate, which
+ * is the whole page. EVERY candidate must then complete under the ordinary
+ * brochure gate — the same gate, the same order, the same inputs — and if any
+ * one of them refuses, the WHOLE segmented reading is abandoned and the
+ * document is read exactly as it is read today.
+ *
+ * That is deliberately harsher than it needs to be, and it is harsh in the
+ * only direction that is safe. The alternative — keep the regions that read
+ * and drop the page that did not — is `complete`-ing around content nobody
+ * read, which is the rule this module's own header opens with: "NEVER
+ * COMPLETE AROUND A FACT WE DID NOT READ." A page of terms and conditions
+ * beside two property cards therefore costs the segmented reading, and the
+ * document falls back. That limit is real, it is named in the log
+ * (`regionsAbandoned`), and it is the conservative side of it.
+ *
+ * SHARED EVIDENCE IS INHERITED, NEVER SPLIT. A region's synthetic document is
+ * the page's shared runs followed by the region's own — so the estate name,
+ * the builder's name, the stage and the footer disclaimer are read into every
+ * candidate, and every candidate has to account for them. Nothing that was
+ * drawn in one region's band can reach another's: `segmentPropertyRegions`
+ * puts a band in exactly one place, and a band that qualified as nobody's
+ * property is SHARED rather than given to a neighbour.
+ *
+ * THE FILENAME IS NOT PASSED. `corroborateDesignFromFilename` and the
+ * lot-agreement check both read the document's own name, and a document
+ * naming several properties has a name that describes the DOCUMENT. Letting
+ * it corroborate one region would make it contradict all the others — and
+ * `filename_lot_disagrees_with_document` would refuse the lot the file is
+ * actually named for.
+ */
+function readSegmentedDocument(
+  pageTexts: readonly string[],
+  positionedPages: readonly PdfTextLayoutPage[],
+  options: {
+    recognisedPages?: readonly number[] | null;
+    organisationName?: string | null;
+  },
+): { reading: PdfDeterministicReading | null; found: number; abandoned: string } {
+  const none = { reading: null, found: 0, abandoned: '' };
+
+  const byPage = new Map<number, PdfTextItem[]>();
+  for (const page of positionedPages) {
+    if (page && Number.isFinite(page.page) && Array.isArray(page.items)) {
+      byPage.set(Number(page.page), page.items);
+    }
+  }
+  /*
+   * A RECOGNISED PAGE HAS NO TRUSTWORTHY LAYOUT — the same seam
+   * `readPdfBrochure` answers to. Its positioned runs describe only whatever
+   * native fragment happened to share the sheet, so the gutters they suggest
+   * are gutters in a fragment. Such a page is never segmented; it is read
+   * whole, from the text that was recognised off its pixels.
+   */
+  const recognised = new Set(
+    (options.recognisedPages ?? []).map((page) => Number(page)).filter(Number.isFinite));
+
+  const segmentation = new Map<number, PageSegmentation>();
+  for (let index = 0; index < pageTexts.length; index++) {
+    const page = index + 1;
+    if (recognised.has(page)) continue;
+    const items = byPage.get(page);
+    if (!items || !items.length) continue;
+    const found = segmentPropertyRegions(items);
+    if (found) segmentation.set(page, found);
+  }
+  if (!segmentation.size) return none;
+
+  const found = [...segmentation.values()]
+    .reduce((total, entry) => total + entry.regions.length, 0);
+  const give = (abandoned: string) => ({ reading: null, found, abandoned });
+
+  const rows: Array<Record<string, unknown>> = [];
+  const regions: PdfReadingRegion[] = [];
+  const fieldsRead = new Set<string>();
+  const readBy = new Set<string>();
+
+  const readPart = (
+    items: readonly PdfTextItem[] | null,
+    flattened: string,
+  ): PdfDeterministicReading => readPdfBrochure([flattened], {
+    positionedPages: items && items.length ? [{ page: 1, items: items.slice() }] : null,
+    organisationName: options.organisationName ?? null,
+    filename: null,
+  });
+
+  for (let index = 0; index < pageTexts.length; index++) {
+    const page = index + 1;
+    const segmented = segmentation.get(page);
+
+    if (!segmented) {
+      /*
+       * A PAGE THAT DID NOT SEGMENT IS ONE CANDIDATE, and it is held to the
+       * same bar as every region. Read from its own positions where it has
+       * trustworthy ones and from its flattened text where it does not,
+       * which is exactly the seam the whole-document reader applies.
+       */
+      const items = recognised.has(page) ? null : (byPage.get(page) ?? null);
+      const reading = readPart(items, items ? flattenLayout(items) : (pageTexts[index] ?? ''));
+      if (reading.status !== 'complete' || reading.rows.length !== 1) {
+        return give(`page_${page}_not_a_property:${reading.reason}`);
+      }
+      rows.push(reading.rows[0]);
+      for (const field of reading.diagnostics.fieldsRead) fieldsRead.add(field);
+      for (const entry of reading.diagnostics.readBy ?? []) readBy.add(entry);
+      continue;
+    }
+
+    for (const region of segmented.regions) {
+      const items = segmented.shared.concat(region.items);
+      const flattened = flattenLayout(items);
+      const reading = readPart(items, flattened);
+      if (reading.status !== 'complete' || reading.rows.length !== 1) {
+        return give(`region_${page}_${region.index}:${reading.reason}`);
+      }
+      const anchor = pdfRegionAnchor(page, region.index);
+      /*
+       * THE REGION'S OWN ANCHOR, SET HERE AND NOWHERE ELSE.
+       *
+       * `importStock` applies a page anchor only where the record arrived
+       * without one (`if (!record.source_anchor && anchors[index])`), so a
+       * region anchor written here survives — and it has to, because the
+       * page anchor it would otherwise be given names a page three
+       * properties share.
+       */
+      rows.push({ ...reading.rows[0], [SOURCE_ANCHOR_HEADER]: anchor });
+      regions.push({ page, index: region.index, box: region.box, anchor, text: flattened });
+      for (const field of reading.diagnostics.fieldsRead) fieldsRead.add(field);
+      for (const entry of reading.diagnostics.readBy ?? []) readBy.add(entry);
+    }
+  }
+
+  if (rows.length < 2) return give('fewer_than_two_properties');
+
+  /*
+   * AND THEY MUST BE DIFFERENT PROPERTIES. `segmentPropertyRegions` already
+   * refuses two bands that name the same one, on the evidence it can see
+   * before anything is read; this asks the same question of the rows that
+   * were actually produced, which is the answer that counts. Two identical
+   * records are one property drawn twice, and importing them forks it.
+   */
+  const identities = rows.map((row) => JSON.stringify(
+    Object.entries(row)
+      .filter(([header]) => header !== SOURCE_ANCHOR_HEADER)
+      .map(([header, value]) => [header, String(value ?? '')])
+      .sort((a, b) => a[0].localeCompare(b[0]))));
+  if (new Set(identities).size !== identities.length) {
+    return give('two_regions_read_the_same_property');
+  }
+
+  return {
+    reading: {
+      status: 'complete',
+      rows,
+      provisional: [],
+      unaccounted: [],
+      ignored: [],
+      placement: [],
+      strategy: 'pdf_deterministic_regions',
+      reason: 'regions_read',
+      regions,
+      diagnostics: {
+        mode: 'brochure',
+        pages: pageTexts.length,
+        fieldsRead: [...fieldsRead].sort(),
+        candidates: rows.length,
+        regionsFound: found,
+        readBy: [...readBy].sort(),
+      },
+    },
+    found,
+    abandoned: '',
+  };
+}
+
+/**
+ * A region's runs as the lines they were drawn as.
+ *
+ * The same `layoutLines` every reading here goes through, so a region's text
+ * and a page's text are produced by one implementation — two would drift, and
+ * this one is what the imagery path asks its questions of.
+ */
+function flattenLayout(items: readonly PdfTextItem[]): string {
+  return layoutLines(items)
+    .map((line) => line.cells.map((cell) => cell.text).join(' ').trim())
+    .filter((line) => line !== '')
+    .join('\n');
 }
 
 /**
