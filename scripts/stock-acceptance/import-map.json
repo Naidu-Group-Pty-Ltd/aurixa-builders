@@ -8,6 +8,7 @@
     "https://esm.sh/xlsx@0.18.5": "npm:xlsx@0.18.5",
     "https://esm.sh/jszip@3.10.1": "npm:jszip@3.10.1",
     "https://esm.sh/zod@3.25.76": "npm:zod@3.25.76",
-    "https://esm.sh/bcryptjs@2.4.3": "npm:bcryptjs@2.4.3"
+    "https://esm.sh/bcryptjs@2.4.3": "npm:bcryptjs@2.4.3",
+    "https://esm.sh/tesseract.js@5.1.1": "npm:tesseract.js@5.1.1"
   }
 }

@@ -2790,6 +2790,15 @@ export function readPdfBrochure(
   options: {
     positionedPages?: readonly PdfTextLayoutPage[] | null;
     /**
+     * Pages whose text was RECOGNISED rather than drawn, 1-based.
+     *
+     * Such a page is read as flattened text: its positioned runs describe only
+     * whatever native fragment happened to share it, which on a scanned sheet
+     * is a fraction of what it says. See the seam in `readPdfBrochure`.
+     */
+    recognisedPages?: readonly number[] | null;
+
+    /**
      * The organisation that uploaded the document. Its own name is on every
      * page of its own brochure and is never the estate or the design — so it
      * is recognised as the publisher talking about itself rather than left
@@ -2858,8 +2867,33 @@ export function readPdfBrochure(
       positioned.set(page.page, page.items);
     }
   }
+  /*
+   * ======================================================================
+   * A RECOGNISED PAGE HAS NO TRUSTWORTHY LAYOUT.
+   * ======================================================================
+   *
+   * Positions describe what the PDF ITSELF DREW. Where a page's text was read
+   * off its pixels, the positioned runs describe only the native fragment that
+   * happened to be there too — and on a mixed page that fragment is a fraction
+   * of what the page says.
+   *
+   * MEASURED 22 SEPTEMBER 2026 on `LOT 140 - HARLOW 21 - MIXED.pdf`: page 2 is
+   * a scanned specification sheet carrying ONE native line, its price. The
+   * layout reader returned that one line, `unitsFromLayout` produced one unit,
+   * and the rule below — prefer positions wherever there are any — threw away
+   * the recognised text that states the design, both sizes and all three room
+   * counts. Five fields absent from a page that states them plainly, and the
+   * fully scanned document beside it read perfectly, because it had no native
+   * text at all to prefer.
+   *
+   * So a page named here is read as the FLATTENED text it now is. Nothing else
+   * changes: a page the PDF drew itself keeps its positions, which is what the
+   * beside/below pairing and the glyph-run folding depend on.
+   */
+  const recognised = new Set(
+    (options.recognisedPages ?? []).map((page) => Number(page)).filter(Number.isFinite));
   const pages = pageTexts.map((page, index) => {
-    const items = positioned.get(index + 1);
+    const items = recognised.has(index + 1) ? null : positioned.get(index + 1);
     const laid = items && items.length ? unitsFromLayout(items) : null;
     /*
      * A layout reading that produced nothing falls back to the flattened
@@ -4553,6 +4587,8 @@ const VALUE_TOKEN = /^[$€£¥]?\d/;
 export function readPdfDeterministicRows(input: {
   pageTexts: readonly string[];
   positionedPages?: readonly PdfTextLayoutPage[] | null;
+  /** Pages whose text was recognised rather than drawn, 1-based. */
+  recognisedPages?: readonly number[] | null;
   organisationName?: string | null;
   filename?: string | null;
 }): PdfDeterministicReading {
@@ -4560,6 +4596,7 @@ export function readPdfDeterministicRows(input: {
 
   const readBrochure = () => readPdfBrochure(pageTexts, {
     positionedPages: input.positionedPages,
+    recognisedPages: input.recognisedPages,
     organisationName: input.organisationName,
     filename: input.filename,
   });

@@ -105,8 +105,36 @@ export interface NormalisedUnit {
  */
 const FIELD_SEPARATOR = /\s+[·–—]\s+/;
 
+/**
+ * AND A SPACED HYPHEN, BUT ONLY ON A LINE THAT CARRIES NO LABEL.
+ *
+ * `LOT 88 - HARLOW 21` is a lot and a design — one of the commonest headings a
+ * builder writes, and the shape a scanned cover produced that this reader left
+ * entirely unaccounted. `Package Price - $712,000` is the same punctuation
+ * doing the same job.
+ *
+ * But `Design: ENZO 10.5 - MODERN` is ONE value with a hyphen in it, and
+ * splitting it makes the design `ENZO 10.5`. A pinned spec already says so.
+ *
+ * WHAT TELLS THEM APART IS PUNCTUATION, NOT VOCABULARY, which is the only kind
+ * of thing this layer is allowed to know. A colon means the line has already
+ * named its field and everything after it is that field's value — so the value
+ * is not cut. A line with no colon has named nothing, so a spaced hyphen on it
+ * is separating two statements rather than sitting inside one.
+ *
+ * The hyphen must have whitespace on BOTH sides, so `266-268`, `Land-Size` and
+ * a hyphenated street name are untouched — the same guard the middle dot
+ * answers to.
+ */
+const DASH_SEPARATOR = /\s+-\s+/;
+
 export function splitOnFieldSeparators(text: string): string[] {
-  return text.split(FIELD_SEPARATOR).map((part) => part.trim()).filter(Boolean);
+  const source = String(text ?? '');
+  const parts = source.split(FIELD_SEPARATOR);
+  const out = source.includes(':')
+    ? parts
+    : parts.flatMap((part) => part.split(DASH_SEPARATOR));
+  return out.map((part) => part.trim()).filter(Boolean);
 }
 
 /**
