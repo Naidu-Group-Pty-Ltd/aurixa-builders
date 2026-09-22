@@ -134,7 +134,27 @@
  * `MATERIAL_FIELDS` — an estate is a place containing many properties, the
  * lot identifies one, and `lot_number` still refuses.
  */
-export const DETERMINISTIC_READER_VERSION = 6;
+/*
+ * VERSION 7 — THE STALE CODE ON A ROW THAT SUCCEEDED AT VERSION 6.
+ *
+ * Not a change to the reader, and the second time this has been needed for
+ * the same reason: a fix to how an outcome is RECORDED cannot reach a row
+ * that is already stamped, because the stamp is what stops it being asked
+ * again.
+ *
+ * Version 6 read `Lot 37 - Miami 190 - Property Package.pdf` successfully —
+ * one property, 563 m², the builder's own photograph — while the row went on
+ * carrying `error_code: no_properties_found` from the read before it, because
+ * a stale error was cleared only where the STATUS said `failed` and this row
+ * said `complete`. That is fixed, and the fix runs on the next re-read;
+ * without this there is no next re-read.
+ *
+ * Every row that succeeded at version 6 while carrying an older error is in
+ * the same position, so this is the repair for all of them rather than for
+ * one, and it is a re-read of bytes that have not changed — cheap, bounded
+ * by the same one-per-version rule as every other.
+ */
+export const DETERMINISTIC_READER_VERSION = 7;
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */
 export const READER_SETTLED_VERSION_COLUMN = 'reader_settled_version';
