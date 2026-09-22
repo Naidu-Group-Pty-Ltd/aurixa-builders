@@ -54,7 +54,12 @@
  */
 
 export interface TerminationRelease {
-  /** Hold this claim; a runtime termination will try to give it back. */
+  /**
+   * Hold this claim; a runtime termination will try to give it back.
+   *
+   * The stage is carried for the LOG only — the release itself names no
+   * stage, deliberately. See `p_next_stage` below.
+   */
   hold(itemId: string, stage: string): void;
   /** The claim is settled and recorded. Nothing to give back. */
   clear(): void;
@@ -100,7 +105,22 @@ export function releaseClaimOnTermination(db: any, tag: string): TerminationRele
        */
       db.rpc('complete_builder_stock_image_work', {
         p_item_id: held.itemId,
-        p_next_stage: held.stage,
+        /*
+         * NULL, WHICH THE COMPLETION READS AS "LEAVE THE STAGE WHERE IT IS"
+         * (`coalesce(p_next_stage, i.image_work_stage)`), AND THAT IS THE
+         * WHOLE POINT.
+         *
+         * The first version of this passed `held.stage` — the stage the claim
+         * was taken at. Between the settler's completion resolving and its
+         * `termination.clear()` there is a window, small but real, in which
+         * that value is STALE: the completion has already advanced the
+         * property to the next rung, and a release firing there would write
+         * the old rung back and walk it down the ladder. A release exists to
+         * hand back a LEASE; it has no business having an opinion about which
+         * stage a property is on, and saying nothing is the only reading that
+         * is correct in both windows.
+         */
+        p_next_stage: null,
         p_result: `released: worker terminated by the runtime (${reason})`,
         p_error: null,
         p_retry_after_seconds: 0,
