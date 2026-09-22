@@ -45,10 +45,21 @@ import {
   readOutstandingUploads, runSettlementTick, settleUploadSourceImages,
 } from '../../supabase/functions/_shared/builderStock/settleSourceImages.ts';
 import {
-  readerSweepPending, settleReaderVersion,
+  READER_SWEEP_RESERVE_MS, readerSweepPending, settleReaderVersion,
 } from '../../supabase/functions/_shared/builderStock/settleReaderVersion.ts';
 import { publishUploadIfReady } from '../../supabase/functions/_shared/builderStock/itemWorkClaim.ts';
 import { enforceStrictPrimaryImages } from '../../supabase/functions/_shared/builderStock/primaryImage.ts';
+/*
+ * THE SWITCH THAT DECIDES WHETHER A VENDOR IS EVER ASKED, read rather than
+ * described. Part 8 asserts a model refusal cannot reach the normal path, and
+ * the only honest way to assert that is to ask the product's own policy.
+ */
+import {
+  assistedReaderDisposition, assistedReaderEnabled,
+} from '../../supabase/functions/_shared/builderStock/assistedReaderPolicy.pure.ts';
+import {
+  ABANDONED_UPLOAD_MS, DETERMINISTIC_READER_VERSION,
+} from '../../supabase/functions/_shared/builderStock/readerVersion.pure.ts';
 
 // ---------------------------------------------------------------------------
 // 1 · A MODEL CALL IS AN ERROR, NOT A MISSING CREDENTIAL
@@ -153,6 +164,13 @@ interface Expect {
 interface Entry {
   name: string; org: string; filename: string; path: string;
   held_out: boolean; expect: Expect; bytes: number;
+  /**
+   * A SECOND DOCUMENT ABOUT THE SAME PROPERTY, where the fixture declares
+   * one. Judged by nothing in the main loop; the fault matrix's replacement
+   * case is the only reader, because a replacement is a new document about
+   * properties a builder already listed and identical bytes are not that.
+   */
+  revision?: { filename: string; path: string; bytes: number };
 }
 
 const manifest: Entry[] = JSON.parse(
@@ -196,6 +214,16 @@ for (const [key, legal] of [
    */
   ['name:named', 'Named Address Homes Pty Ltd'],
   ['name:nameless', 'Nameless Address Homes Pty Ltd'],
+  /*
+   * AND FOUR FOR THE FAULT MATRIX. Each case there imports a document the
+   * main loop has already imported, and several import the SAME document
+   * twice on purpose; separate organisations are what let a case assert its
+   * own fault rather than re-asserting the duplicate guard.
+   */
+  ['fault', 'Fault Matrix Homes Pty Ltd'],
+  ['fault:img', 'Fault Matrix Imagery Pty Ltd'],
+  ['fault:replace', 'Fault Matrix Replacement Pty Ltd'],
+  ['fault:abandoned', 'Fault Matrix Abandoned Pty Ltd'],
 ]) {
   const { data: org, error } = await db.from('builder_organisations')
     .insert({ legal_name: legal, org_type: 'builder' }).select('id').single();
@@ -1053,6 +1081,24 @@ for (const entry of manifest) {
  * They run once, on one ordinary brochure, because they are properties of the
  * pipeline rather than of the page.
  */
+/**
+ * A TICK THE SWEEP WILL ACTUALLY WORK IN.
+ *
+ * `settleReaderVersion` declines to START a re-read with less than
+ * `READER_SWEEP_RESERVE_MS` (40s) left, because a parse it cannot finish
+ * writes nothing and spends the budget anyway — a good rule. Part 8 was
+ * written passing 15, 20 and 25 seconds, so every sweep in it broke out of
+ * the loop before touching a row and THREE cases passed having exercised
+ * nothing: a re-read that never ran could not stamp a run in flight, a
+ * deploy that never re-read could not lose a row, and an abandoned upload
+ * that was never considered stayed `uploaded` and was read as a product
+ * gap that does not exist.
+ *
+ * Derived from the product's own constant rather than typed, so the number
+ * cannot drift away from the rule it is about.
+ */
+const SWEEP_TICK_MS = READER_SWEEP_RESERVE_MS + 20_000;
+
 const invariant = (name: string, ok: boolean, detail = '') => {
   if (!ok) fails.push(`invariant/${name}: ${detail}`);
   return ok;
@@ -1375,6 +1421,539 @@ const invariants: Record<string, unknown> = {};
       identitySame && designHonest,
       JSON.stringify(invariants.namelessAddress));
   }
+}
+
+// ===========================================================================
+// 8 · THE FAULT MATRIX — WHAT A BROKEN DAY DOES TO A CUSTOMER'S DOCUMENT
+// ===========================================================================
+/*
+ * Part 7 asks what the subsystem does when everything works. This asks what
+ * it does when something does not, because every defect this incident is
+ * about presented as normal operation: an upload stuck at `parsing` with an
+ * error code on it, a settler spinning on a row it could never finish, a
+ * vendor's billing state standing between a brochure and the marketplace.
+ *
+ * ONE STANDARD FOR EVERY ROW BELOW. A fault may cost TIME and it may cost a
+ * FIELD. It may never cost the property, never publish something wrong,
+ * never leave a row in a state nothing can move, and never be silent — the
+ * row must carry, afterwards, a reading of what happened that an operator
+ * could act on.
+ *
+ * WHAT IS NOT INJECTED, AND WHY. Nothing here disables a control to make a
+ * case reachable. Where the product's own configuration is the fault (the
+ * assisted reader being off, a provider having no credential) that IS the
+ * default this deployment ships, so the case is asserted against the default
+ * rather than by taking a guard away.
+ */
+{
+  const stateOf = async (uploadId: string) => {
+    const { data } = await db.from('builder_stock_uploads')
+      .select('status, error_code, error_message, processing_completed_at')
+      .eq('id', uploadId).maybeSingle();
+    return (data ?? {}) as {
+      status?: string; error_code?: string | null;
+      error_message?: string | null; processing_completed_at?: string | null;
+    };
+  };
+  /** No upload may end a fault in a status that means "still working". */
+  const terminal = (s: any) => s.status === 'completed' || s.status === 'failed'
+    || s.status === 'partial';
+  const faults: Record<string, unknown> = {};
+  const FAULT = 'fault';
+  const FAULT_IMG = 'fault:img';
+  const FAULT_REPLACE = 'fault:replace';
+  const FAULT_ABANDONED = 'fault:abandoned';
+  /*
+   * ORDINARY DOCUMENTS, in manifest order, one per case. A fault matrix that
+   * reused one document would be asserting six things about one page; these
+   * are the corpus's own single-property brochures and each case takes the
+   * next, so a case cannot be made to pass by the document it chose.
+   */
+  const SINGLES = manifest.filter((e: any) => (e.expect?.properties ?? 0) === 1);
+  const docOf = (n: number) => SINGLES[n % SINGLES.length];
+  const imageRowsFor = async (uploadId: string) => {
+    const { data } = await db.from('builder_stock_item_images')
+      .select('id, stock_item_id, source_reference').eq('upload_id', uploadId);
+    return data ?? [];
+  };
+
+  const importInto = async (orgKey: string, entry: any, opts: Record<string, unknown> = {}) => {
+    const org = orgs[orgKey];
+    const bytes = await Deno.readFile(`${corpusDir}/${entry.org}/${entry.filename}`);
+    const path = `${org.id}/${crypto.randomUUID()}.pdf`;
+    const up = await db.storage.from(BUCKET).upload(path, bytes, {
+      contentType: 'application/pdf', upsert: true,
+    });
+    if (up.error) throw new Error(`fault fixture upload: ${up.error.message}`);
+    const upload = await newUpload(orgKey, entry.filename, path);
+    await db.from('builder_stock_uploads').update({ status: 'parsing' }).eq('id', upload.id);
+    const result = await runStockImport({
+      supabase: db, organisationId: org.id, organisationName: org.name,
+      builderUserId: org.userId,
+      upload: { id: upload.id, original_filename: upload.original_filename },
+      bytes, sourceKind: 'file', ...opts,
+    });
+    if (!result.ok) {
+      await closeRefusedUpload(db, {
+        uploadId: upload.id, organisationId: org.id,
+        code: String((result as any).code ?? 'import_failed'),
+        message: String((result as any).message ?? ''),
+      });
+    } else {
+      await db.from('builder_stock_uploads').update({
+        status: 'completed', processing_completed_at: new Date().toISOString(),
+      }).eq('id', upload.id);
+    }
+    return { result, uploadId: upload.id, orgId: org.id };
+  };
+
+  // --- 8a. NO MODEL PROVIDER, NO CREDENTIAL, NO BUDGET --------------------
+  /*
+   * The shipped default, asserted as a fault because it is the one that
+   * caused the incident: `openrouter/openai/gpt-5.6-luna` answered 402 and a
+   * seven-page brochure with 3,962 characters of clean text was reported to
+   * the builder as unreadable.
+   *
+   * The whole acceptance run already proves the normal path asks nobody —
+   * `modelCallAttempts` is empty or the gate fails. What this adds is the
+   * explicit statement that the documents still IMPORT with every model
+   * credential absent, which is a different claim from "nothing was called".
+   */
+  {
+    const before = modelCallAttempts.length;
+    const imported = report.filter((r: any) => r.a?.ok).length;
+    /*
+     * READ, NOT ASSUMED. The point of the row is that these are absent, so
+     * the absence is measured from the environment this run actually has
+     * rather than asserted from the fact that nobody set them.
+     */
+    const CREDENTIALS = ['OPENROUTER_API_KEY', 'OPENAI_API_KEY',
+      'ANTHROPIC_API_KEY', 'GOOGLE_API_KEY', 'LOVABLE_API_KEY'];
+    const present = CREDENTIALS.filter((n) => (Deno.env.get(n) ?? '').trim() !== '');
+    faults.noProvider = {
+      credentialsPresent: present,
+      modelCallsDuringRun: modelCallAttempts.length,
+      documentsImported: imported,
+    };
+    invariant('no-model-provider-still-imports',
+      modelCallAttempts.length === before && imported > 0,
+      JSON.stringify(faults.noProvider));
+  }
+
+  // --- 8b. THE MODEL IS REACHABLE AND REFUSES (402) -----------------------
+  // --- 8c. THE MODEL IS REACHABLE AND NEVER ANSWERS (timeout) -------------
+  /*
+   * Both are one assertion, and the assertion is about REACHABILITY rather
+   * than about the answer: `assistedReaderEnabled` is false on this
+   * deployment and on every deployment that has not opted in by name, so no
+   * request is composed, no budget is reserved and no vendor round trip is
+   * waited on. A 402 and a timeout are then the same event — one that does
+   * not occur — and the honest way to assert that is to prove the switch is
+   * off and that the import does not consult it, not to stand up a fake
+   * vendor that answers 402 to a call nobody makes.
+   *
+   * The interceptor above is what makes this more than an opinion: any code
+   * path that DID compose a request would throw and be reported by name.
+   */
+  {
+    const enabled = assistedReaderEnabled(Deno.env);
+    const disposition = assistedReaderDisposition({
+      enabled, deterministicRows: 0, sourceHasColumns: false,
+    } as any);
+    faults.assistedReader = { enabled, disposition, modelCalls: modelCallAttempts.length };
+    invariant('a-vendor-refusal-cannot-reach-the-normal-path',
+      enabled === false && modelCallAttempts.length === 0,
+      JSON.stringify(faults.assistedReader));
+  }
+
+  // --- 8d. THE SAME JOB IS DELIVERED TWICE --------------------------------
+  /*
+   * A queue that promises at-least-once delivery hands the same upload to two
+   * workers. Neither may write a second property, and the loser must not
+   * report success for work it did not do.
+   */
+  {
+    const entry = docOf(0);
+    const org = orgs[FAULT];
+    const bytes = await Deno.readFile(`${corpusDir}/${entry.org}/${entry.filename}`);
+    const path = `${org.id}/${crypto.randomUUID()}.pdf`;
+    await db.storage.from(BUCKET).upload(path, bytes, { contentType: 'application/pdf', upsert: true });
+    const upload = await newUpload(FAULT, entry.filename, path);
+    await db.from('builder_stock_uploads').update({ status: 'parsing' }).eq('id', upload.id);
+    const once = () => runStockImport({
+      supabase: db, organisationId: org.id, organisationName: org.name,
+      builderUserId: org.userId,
+      upload: { id: upload.id, original_filename: upload.original_filename },
+      bytes, sourceKind: 'file',
+    });
+    const [first, second] = await Promise.all([once(), once()]);
+    const rows = await itemsFor(upload.id);
+    faults.duplicateDelivery = {
+      first: first.ok, second: second.ok, rows: rows.length,
+      distinctAnchors: new Set(rows.map((r: any) => r.source_row?.source_anchor)).size,
+    };
+    invariant('one-job-delivered-twice-writes-one-property',
+      rows.length === (entry.expect.properties ?? 1),
+      JSON.stringify(faults.duplicateDelivery));
+  }
+
+  // --- 8e. A RE-READ ARRIVES WHILE THE FIRST READ IS RUNNING --------------
+  /*
+   * The reader sweep meets an upload the import is still inside. It must
+   * leave it alone — `parse_in_flight` is deliberately NOT stampable, because
+   * stamping records a version against a read nobody did — and it must not
+   * report it as a failure the operator should act on.
+   */
+  {
+    const org = orgs[FAULT];
+    const entry = docOf(1);
+    const bytes = await Deno.readFile(`${corpusDir}/${entry.org}/${entry.filename}`);
+    const path = `${org.id}/${crypto.randomUUID()}.pdf`;
+    await db.storage.from(BUCKET).upload(path, bytes, { contentType: 'application/pdf', upsert: true });
+    const upload = await newUpload(FAULT, entry.filename, path);
+    await db.from('builder_stock_uploads').update({
+      status: 'parsing', processing_started_at: new Date().toISOString(),
+      reader_settled_version: null,
+    }).eq('id', upload.id);
+
+    const sweep = await settleReaderVersion(db, { limit: 50, deadlineAt: Date.now() + SWEEP_TICK_MS });
+    const { data: after } = await db.from('builder_stock_uploads')
+      .select('status, reader_settled_version').eq('id', upload.id).maybeSingle();
+    const touched = (sweep.refused ?? []).some((r: any) => r.uploadId === upload.id);
+    faults.reReadDuringProcessing = {
+      stamped: after?.reader_settled_version ?? null,
+      status: after?.status,
+      refusedBySweep: touched,
+      leftOutstanding: (sweep.failed ?? []).some((r: any) => r.uploadId === upload.id),
+    };
+    invariant('a-re-read-never-stamps-a-run-in-flight',
+      after?.reader_settled_version == null && !touched,
+      JSON.stringify(faults.reReadDuringProcessing));
+    // Leave nothing behind for the next case.
+    await closeRefusedUpload(db, {
+      uploadId: upload.id, organisationId: org.id,
+      code: 'acceptance_fixture', message: 'fault matrix fixture, closed',
+    });
+  }
+
+  // --- 8f. A DEPLOYMENT LANDS WHILE A DOCUMENT IS BEING PROCESSED ---------
+  /*
+   * What a deploy actually is, from a row's point of view: the reader version
+   * changes under it. The row must not be lost, must not be double-counted,
+   * and must come out on the CURRENT reader — which is the sweep's whole job,
+   * asserted here from the mid-flight state rather than from a clean one.
+   */
+  {
+    const org = orgs[FAULT];
+    const entry = docOf(2);
+    const done = await importInto(FAULT, entry);
+    // The row is now settled on today's reader. A deploy moves the goalposts.
+    await db.from('builder_stock_uploads')
+      .update({ reader_settled_version: 1 }).eq('id', done.uploadId);
+    const before = (await itemsFor(done.uploadId)).map((i: any) => i.id).sort();
+    let ticks = 0; let reread = 0;
+    for (let i = 0; i < 6; i += 1) {
+      const sweep = await settleReaderVersion(db, { limit: 50, deadlineAt: Date.now() + SWEEP_TICK_MS });
+      ticks += 1; reread += sweep.reread;
+      const { data } = await db.from('builder_stock_uploads')
+        .select('reader_settled_version').eq('id', done.uploadId).maybeSingle();
+      if (Number(data?.reader_settled_version ?? 0) >= DETERMINISTIC_READER_VERSION) break;
+    }
+    const after = (await itemsFor(done.uploadId)).map((i: any) => i.id).sort();
+    faults.deploymentDuringProcessing = {
+      ticks, reread, rowsBefore: before.length, rowsAfter: after.length,
+      sameRows: JSON.stringify(before) === JSON.stringify(after),
+    };
+    invariant('a-deploy-mid-flight-re-reads-onto-the-same-rows',
+      before.length > 0 && JSON.stringify(before) === JSON.stringify(after),
+      JSON.stringify(faults.deploymentDuringProcessing));
+  }
+
+  // --- 8g. IMAGE WORK FAILS AND IS RETRIED --------------------------------
+  /*
+   * A settlement attempt that failed must be retryable and must not
+   * accumulate: the same picture settled twice is one row, which is the
+   * NULLS DISTINCT defect this subsystem has already paid for once.
+   */
+  {
+    const entry = docOf(3);
+    const done = await importInto(FAULT_IMG, entry);
+    const first = await settleImagery(done.orgId, done.uploadId);
+    const imagesAfterFirst = await imageRowsFor(done.uploadId);
+    // Put the ladder back to the bottom, exactly as a failed attempt does.
+    await db.from('builder_stock_items').update({
+      enrichment_status: 'pending', image_work_stage: 'source',
+      image_work_claim_until: null,
+      image_work_next_attempt_at: new Date().toISOString(),
+    }).eq('upload_id', done.uploadId);
+    const second = await settleImagery(done.orgId, done.uploadId);
+    const imagesAfterSecond = await imageRowsFor(done.uploadId);
+    faults.imageRetry = {
+      first: imagesAfterFirst.length, second: imagesAfterSecond.length,
+      rounds: { first: first.length, second: second.length },
+    };
+    invariant('image-work-retried-adds-no-row',
+      imagesAfterSecond.length === imagesAfterFirst.length,
+      JSON.stringify(faults.imageRetry));
+  }
+
+  // --- 8h. A BUILDER UPLOADS A REPLACEMENT LIST ---------------------------
+  /*
+   * The case `49-re-importing-a-linked-stock-list.md` is about. A replacement
+   * must not blank the marketplace: the properties it matches keep serving
+   * what they served, their new values wait in `pending_patch` until the
+   * cutover, and the uploads it supersedes are NAMED rather than guessed at.
+   *
+   * THE FIRST VERSION OF THIS CASE TESTED THE WRONG THING, and it passed. It
+   * re-imported IDENTICAL bytes, which the duplicate guard refuses — so what
+   * it proved was that a refused import changes nothing, which is true and is
+   * a different assertion. A replacement is a builder sending a NEW document
+   * about properties they already listed: same lot, same street, different
+   * price, different picture. `replacement-original` carries one now, with
+   * its revision beside it, because a case that cannot be reached without the
+   * right document belongs in the corpus rather than in a workaround here.
+   */
+  {
+    const entry = manifest.find((e: any) => e.name === 'replacement-original');
+    if (!entry?.revision) {
+      invariant('a-replacement-never-blanks-the-marketplace', false,
+        'the corpus carries no revision document');
+    } else {
+      const org = orgs[FAULT_REPLACE];
+      const first = await importInto(FAULT_REPLACE, entry);
+      await settleImagery(org.id, first.uploadId);
+      await publishUploadIfReady(db, first.uploadId);
+      const live = await itemsFor(first.uploadId);
+      const liveIds = live.map((i: any) => i.id).sort();
+      const priceBefore = live.map((i: any) => String(i.price ?? '')).sort();
+
+      const revision = await Deno.readFile(`${corpusDir}/${entry.revision.path}`);
+      const path = `${org.id}/${crypto.randomUUID()}.pdf`;
+      await db.storage.from(BUCKET).upload(path, revision, {
+        contentType: 'application/pdf', upsert: true,
+      });
+      const upload = await newUpload(FAULT_REPLACE, entry.revision.filename, path);
+      await db.from('builder_stock_uploads').update({ status: 'parsing' }).eq('id', upload.id);
+      const again = await runStockImport({
+        supabase: db, organisationId: org.id, organisationName: org.name,
+        builderUserId: org.userId,
+        upload: { id: upload.id, original_filename: upload.original_filename },
+        bytes: revision, sourceKind: 'file',
+      });
+
+      const { data: after } = await db.from('builder_stock_items')
+        .select('id, lifecycle_status, price, pending_patch, primary_image_id')
+        .eq('organisation_id', org.id);
+      const rows = after ?? [];
+      const matched = rows.filter((r: any) => liveIds.includes(r.id));
+      const stillLive = matched.filter((r: any) => r.lifecycle_status === 'active').length;
+      const priceAfter = matched.map((r: any) => String(r.price ?? '')).sort();
+      const withPendingPatch = matched.filter((r: any) => r.pending_patch).length;
+      const withPhotograph = matched.filter((r: any) => r.primary_image_id).length;
+      const { data: revisionRow } = await db.from('builder_stock_uploads')
+        .select('published_at').eq('id', upload.id).maybeSingle();
+      const cutOver = !!revisionRow?.published_at;
+      const priceHeld = JSON.stringify(priceBefore) === JSON.stringify(priceAfter);
+
+      faults.replacementUpload = {
+        accepted: again.ok,
+        code: again.ok ? null : String((again as any).code),
+        liveBefore: liveIds.length, stillLive,
+        totalRowsAfter: rows.length,
+        sameRowIds: JSON.stringify(matched.map((r: any) => r.id).sort()) === JSON.stringify(liveIds),
+        priceHeld, priceBefore, priceAfter, withPendingPatch, withPhotograph,
+        revisionPublished: cutOver,
+        replaces: again.ok ? ((again as any).summary?.replacesUploadIds ?? []).length : null,
+        deferred: again.ok ? ((again as any).summary?.deferred ?? null) : null,
+        staged: again.ok ? ((again as any).summary?.staged ?? null) : null,
+      };
+      /*
+       * THE EXPECTATION THIS ROW STARTED WITH WAS WRONG, AND THE EVIDENCE IS
+       * WORTH MORE THAN THE CORRECTION.
+       *
+       * OLD: the revision's $699,500 must wait in `pending_patch` while the
+       * marketplace goes on serving $684,900.
+       * MEASURED: `priceHeld: false`, `withPendingPatch: 0`, and the revision
+       * upload carrying `published_at` one second after its import.
+       * WHY IT WAS WRONG: deferral is not the end state, it is the FIRST HALF
+       * of one. `importStockRecords` defers (`newPropertyLifecycle === staged
+       * && lifecycleBefore === active`) and then `runStockImport` asks
+       * `publish_builder_stock_upload`, which applies the held patch in the
+       * SAME statement that promotes the staged rows — deliberately, under a
+       * comment recording that a re-read of an already-settled list produces
+       * no image work, so nobody else would ever ask and a corrected reading
+       * would sit in `pending_patch` for ever. This property's photographs
+       * were already settled, so the revision was ready immediately and cut
+       * over immediately. Asserting the patch was still pending would have
+       * been asserting that the cutover had not happened yet, which is a
+       * statement about timing rather than about correctness.
+       * NEW: what the customer must never see is what is asserted — the card
+       * never goes blank, never forks, and never loses its photograph. The
+       * price is REPORTED with the publication state that explains it, and
+       * the two legal shapes are named: held while the revision is unpublished,
+       * applied once it is.
+       */
+      invariant('a-replacement-never-blanks-the-marketplace',
+        again.ok
+        && liveIds.length > 0
+        // No blank: every property that was live is still live.
+        && stillLive === liveIds.length
+        // No fork: the same rows, and no new ones beside them.
+        && rows.length === liveIds.length
+        && JSON.stringify(matched.map((r: any) => r.id).sort()) === JSON.stringify(liveIds)
+        // No lost picture.
+        && withPhotograph === liveIds.length
+        // And the price is one of the two legal shapes, never a third.
+        && (cutOver ? !priceHeld : priceHeld),
+        JSON.stringify(faults.replacementUpload));
+      if (!again.ok) {
+        await closeRefusedUpload(db, {
+          uploadId: upload.id, organisationId: org.id,
+          code: String((again as any).code ?? 'import_failed'),
+          message: String((again as any).message ?? ''),
+        });
+      }
+    }
+  }
+
+  // --- 8i. THE BROWSER CLOSES THE MOMENT THE UPLOAD IS ACCEPTED -----------
+  /*
+   * The customer's half of "worker termination". `process_upload` is what the
+   * browser calls after the file is stored, so a tab closed before that call
+   * leaves a row at `uploaded` with bytes behind it and nobody coming. The
+   * product's answer is the reader sweep, and the requirement is that the
+   * document reaches the marketplace with NOBODY ASKING — which is the whole
+   * difference between a pipeline and a button.
+   */
+  {
+    /*
+     * A DOCUMENT THAT PROMISES A PHOTOGRAPH, chosen for that rather than by
+     * index. This is the one case in the matrix that runs the whole customer
+     * workflow end to end with nobody touching it, so it must be able to
+     * reach the last step of it — a card with the right picture on it. The
+     * first version took `docOf(5)`, which the corpus's own manifest records
+     * as carrying no eligible imagery, so "no photograph" would have been the
+     * document's correct answer and the assertion would have proved nothing.
+     */
+    const entry = SINGLES.find((e: any) => e.expect?.image === 'facade_page_1'
+      && ![docOf(0), docOf(1), docOf(2), docOf(3), docOf(4)].includes(e))
+      ?? docOf(6);
+    const org = orgs[FAULT_ABANDONED];
+    const bytes = await Deno.readFile(`${corpusDir}/${entry.org}/${entry.filename}`);
+    const path = `${org.id}/${crypto.randomUUID()}.pdf`;
+    await db.storage.from(BUCKET).upload(path, bytes, { contentType: 'application/pdf', upsert: true });
+    const upload = await newUpload(FAULT_ABANDONED, entry.filename, path);
+    // Nothing else happens. The tab is gone.
+    //
+    // A FRESH ROW IS DELIBERATELY LEFT ALONE, and that is a control rather
+    // than an obstacle: `upload_not_started` refuses an `uploaded` row until
+    // `ABANDONED_UPLOAD_MS` has passed, so the sweep cannot race a browser
+    // that is about to call `process_upload`. Asserted first, then the clock
+    // is wound back — the bytes and the row are untouched, only the moment
+    // they landed moves, which is the one thing a test cannot wait for.
+    const fresh = await settleReaderVersion(db, { limit: 50, deadlineAt: Date.now() + SWEEP_TICK_MS });
+    const notYet = (await itemsFor(upload.id)).length === 0
+      && (await stateOf(upload.id)).status === 'uploaded'
+      && !(fresh.refused ?? []).some((r: any) => r.uploadId === upload.id);
+
+    await db.from('builder_stock_uploads').update({
+      created_at: new Date(Date.now() - ABANDONED_UPLOAD_MS - 60_000).toISOString(),
+    }).eq('id', upload.id);
+
+    let ticks = 0;
+    for (let i = 0; i < 8; i += 1) {
+      const sweep = await settleReaderVersion(db, { limit: 50, deadlineAt: Date.now() + SWEEP_TICK_MS });
+      ticks += 1;
+      if ((await itemsFor(upload.id)).length) break;
+      if (!sweep.considered) break;
+    }
+    const rows = await itemsFor(upload.id);
+    const state = await stateOf(upload.id);
+    // The customer's actual outcome: a card, with the photograph on it.
+    const settled = rows.length
+      ? await settleImagery(org.id, upload.id)
+      : [];
+    const published = rows.length ? await itemsFor(upload.id) : [];
+    /*
+     * The last step of the workflow: a card, with this property's own
+     * photograph on it. Required only where the document promises one —
+     * asking a brochure with no eligible imagery for a picture is asking it
+     * to invent one, which is the rule the whole subsystem turns on.
+     */
+    const withPhotographReached = entry.expect.image === 'facade_page_1'
+      ? published.some((r: any) => r.primary_image_id)
+      : true;
+    faults.abandonedUpload = {
+      freshRowLeftAlone: notYet,
+      ticks, rows: rows.length, status: state.status,
+      errorCode: state.error_code ?? null,
+      imagerySettled: settled.length,
+      withPhotograph: published.filter((r: any) => r.primary_image_id).length,
+      expected: entry.expect.properties ?? 1,
+      expectedImage: entry.expect.image ?? null,
+      document: entry.name,
+    };
+    /*
+     * ASSERTED, AND IT USED TO FAIL.
+     *
+     * The first version of this row accepted `status === 'uploaded'` as a
+     * pass, and it passed: eight ticks, zero properties, nothing moved.
+     * `RE_READABLE_STATUSES` excluded `uploaded` under a sentence covering
+     * two different cases — "a cron tick may not decide to start importing a
+     * file the builder's own import refused OR NEVER RAN" — and the second
+     * half of that was wrong. A `failed` row carries a decision a person was
+     * shown; an `uploaded` row carries none, and refusing it stranded the
+     * customer's stock list for ever with every screen reporting normal.
+     *
+     * Accepting that as a pass would have been weakening the test to agree
+     * with the code, which is the one thing this incident's contract names
+     * outright. The product is fixed instead: `readerVersion.pure.ts` admits
+     * the state, `settleReaderVersion` CLAIMS it so a returning browser and a
+     * tick cannot both import, and every branch that can leave a claimed row
+     * puts it down terminally.
+     */
+    /*
+     * AND THE STATUS IS JUDGED BY WHETHER ANYTHING WILL ACT ON IT.
+     *
+     * `terminal()` was written for a REFUSAL — completed, failed, partial —
+     * and applying it here failed a healthy import: a successful first pass
+     * ends at `enriching`, which is `runStockImport`'s own answer (its only
+     * other is `partially_complete`) and which the image settler owns and
+     * moves forward. The two statuses that must never survive this case are
+     * `uploaded`, where the row is stranded because nothing considers it, and
+     * `parsing`, where the row reads as work in flight with no run behind it.
+     * Those are the states the whole change is about, so those are what is
+     * named.
+     */
+    const stranded = state.status === 'uploaded' || state.status === 'parsing';
+    invariant('an-abandoned-upload-imports-with-nobody-asking',
+      notYet
+      && rows.length === (entry.expect.properties ?? 1)
+      && !stranded
+      && withPhotographReached,
+      JSON.stringify(faults.abandonedUpload));
+  }
+
+  // --- 8j. NOTHING IN THE MATRIX LEFT A ROW MID-FLIGHT --------------------
+  /*
+   * The cross-cutting one, and the reason it is last: it judges every row
+   * every case above created rather than any one of them. A status meaning
+   * "still working", carrying an error code, is the state that spun sixteen
+   * rows through the reader sweep for ever.
+   */
+  {
+    const keys = [FAULT, FAULT_IMG, FAULT_REPLACE, FAULT_ABANDONED].map((k) => orgs[k].id);
+    const { data } = await db.from('builder_stock_uploads')
+      .select('id, organisation_id, status, error_code')
+      .in('organisation_id', keys);
+    const midFlight = (data ?? []).filter((r: any) =>
+      r.status === 'parsing' && r.error_code);
+    faults.noMidFlightRows = { uploads: (data ?? []).length, midFlight: midFlight.length };
+    invariant('no-fault-leaves-an-error-on-a-working-status',
+      midFlight.length === 0, JSON.stringify(faults.noMidFlightRows));
+  }
+
+  invariants.faults = faults;
 }
 
 await fileServer.shutdown();

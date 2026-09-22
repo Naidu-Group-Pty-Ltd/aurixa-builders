@@ -44,6 +44,7 @@ import {
   readerReReadRefusal, reReadSettlesAt,
   stampable, type ReaderSweepUpload,
 } from './readerVersion.pure.ts';
+import { closeRefusedUpload } from './closeRefusedUpload.ts';
 import { TELEMETRY_PREFIX } from './importTelemetry.pure.ts';
 
 /** The columns the sweep reads. Named once so the two queries cannot drift. */
@@ -224,6 +225,60 @@ export async function settleReaderVersion(
     if (outcome.reread >= MAX_REREADS_PER_TICK) break;
     if (Date.now() + READER_SWEEP_RESERVE_MS > deadlineAt) break;
 
+    /*
+     * A FIRST PASS IS CLAIMED; A RE-READ IS NOT.
+     *
+     * An `uploaded` row is one nobody has ever imported — the bytes landed,
+     * the browser never came back, and `RE_READABLE_STATUSES` now admits it
+     * so the file is not stranded for ever. That is the ONE case where this
+     * sweep and a customer's own `process_upload` could both be about to
+     * write the same properties, because every other re-readable status is
+     * one the portal already refuses to start from.
+     *
+     * So the row is claimed: `uploaded` → `parsing`, conditional on it still
+     * being `uploaded`. Whichever of the two gets there first is the one that
+     * imports, and the other is refused by the status it now reads. The
+     * condition is the whole guard — an unconditional update would claim a
+     * row the browser had just claimed, and two imports of one file is the
+     * duplicate fork this subsystem must never produce.
+     *
+     * A claim that takes nothing is not a failure: somebody else is doing
+     * the work. The row is left alone and unstamped, and the next tick will
+     * find it in whatever state they left it.
+     */
+    /*
+     * WHAT THE ROW WAS BEFORE THIS TICK TOUCHED IT.
+     *
+     * The claim below rewrites `upload.status`, and two decisions downstream
+     * read it: `writeImportOutcome` writes a status only for the states a
+     * successful read plainly contradicts, and the failure branch below has
+     * to know whether the `parsing` it is looking at is this tick's doing.
+     * Reading the mutated value would make a claimed first pass look like an
+     * ordinary re-read and leave it at `parsing` — which is the stranded
+     * state this whole change exists to end, reintroduced one line later.
+     */
+    const statusBefore = String(upload.status ?? '');
+    const firstPass = statusBefore === 'uploaded';
+    if (firstPass) {
+      const { data: claimed, error: claimError } = await db
+        .from('builder_stock_uploads')
+        .update({ status: 'parsing', processing_started_at: new Date().toISOString() })
+        .eq('id', upload.id)
+        .eq('organisation_id', upload.organisation_id)
+        .eq('status', 'uploaded')
+        .select('id');
+      if (claimError) {
+        // A fault, not a verdict: left outstanding, exactly as a failed read is.
+        outcome.failed.push({ uploadId: upload.id, reason: 'claim_failed' });
+        continue;
+      }
+      if (!(claimed ?? []).length) {
+        outcome.refused.push({ uploadId: upload.id, reason: 'claimed_elsewhere' });
+        continue;
+      }
+      upload.status = 'parsing';
+    }
+
     try {
       const { data: blob, error: downloadError } = await db.storage
         .from(String(upload.storage_bucket))
@@ -237,6 +292,16 @@ export async function settleReaderVersion(
          * every tick. Stamped, and the rows it wrote are untouched — they are
          * still the builder's stock and nothing here judges them.
          */
+        // A CLAIMED ROW IS PUT DOWN, for the reason the failure branch below
+        // states: this tick moved it, so this tick owes it a terminal status.
+        if (firstPass) {
+          await closeRefusedUpload(db, {
+            uploadId: String(upload.id),
+            organisationId: String(upload.organisation_id),
+            code: 'file_missing',
+            message: 'The uploaded file could not be read. Please upload it again.',
+          });
+        }
         await stamp(db, upload);
         outcome.refused.push({ uploadId: upload.id, reason: 'object_missing' });
         continue;
@@ -276,6 +341,25 @@ export async function settleReaderVersion(
          */
         outcome.failed.push({ uploadId: upload.id, reason: String(result.code) });
         /*
+         * EXCEPT A FIRST PASS, WHICH THIS TICK MOVED AND MUST THEREFORE PUT
+         * DOWN.
+         *
+         * "Leave the upload exactly as it was" is a rule about a row somebody
+         * else's import already settled. A claimed `uploaded` row was settled
+         * by nobody — this tick moved it to `parsing` — so leaving it is not
+         * leaving it as it was, it is abandoning it mid-flight with an error
+         * nothing will ever clear. That is `closeRefusedUpload`'s whole
+         * subject, and the same function the portal's own refusal path calls.
+         */
+        if (firstPass) {
+          await closeRefusedUpload(db, {
+            uploadId: String(upload.id),
+            organisationId: String(upload.organisation_id),
+            code: String(result.code),
+            message: String((result as { message?: string }).message ?? ''),
+          });
+        }
+        /*
          * A VERDICT IS FINISHED; A FAULT IS NOT. See `DOCUMENT_VERDICT_CODES`.
          * Re-asking the same bytes of the same reader cannot change a verdict,
          * so the source is stamped and stops being outstanding. A fault is
@@ -288,7 +372,7 @@ export async function settleReaderVersion(
         continue;
       }
 
-      await writeImportOutcome(db, upload, result, String(upload.status ?? ''));
+      await writeImportOutcome(db, upload, result, statusBefore);
       await stamp(db, upload);
       outcome.reread += 1;
       console.info(`${TELEMETRY_PREFIX} reader sweep re-read`, {
@@ -303,6 +387,27 @@ export async function settleReaderVersion(
       });
     } catch (error) {
       const message = String((error as { message?: string })?.message ?? error).slice(0, 200);
+      /*
+       * AND HERE TOO, WHICH IS THE BRANCH THAT WOULD HAVE BEEN FORGOTTEN.
+       *
+       * A throw anywhere between the claim and the write leaves a row this
+       * tick moved to `parsing` with no run behind it, and a `parsing` row
+       * is re-readable — so the next tick claims nothing (it is no longer
+       * `uploaded`), reads it as a re-read, and the status never becomes
+       * terminal. Best-effort, inside its own guard: the fault being
+       * reported must not be replaced by a fault reporting it.
+       */
+      if (firstPass) {
+        try {
+          await closeRefusedUpload(db, {
+            uploadId: String(upload.id),
+            organisationId: String(upload.organisation_id),
+            code: 'processing_failed',
+            message: 'That file could not be processed. Please check the format and try again.',
+            detail: { phase: 'reader_sweep_first_pass', message },
+          });
+        } catch { /* reported below either way */ }
+      }
       outcome.failed.push({ uploadId: upload.id, reason: message });
       console.warn('[builderStock] reader sweep failed', {
         upload_id: upload.id, phase: 'reader_sweep', message,
@@ -430,7 +535,19 @@ async function writeImportOutcome(
      * left `complete` rather than being pushed back to `enriching`, because
      * the rows it already produced are live stock.
      */
-    const clearedFailure = statusBefore === 'failed'
+    /*
+     * AND A FIRST PASS, for the same reason and with more force.
+     *
+     * `failed` is written because a successful read plainly contradicts it.
+     * A row this sweep CLAIMED is at `parsing` because this sweep put it
+     * there, and `parsing` is not a state an import that has finished may be
+     * left in — it means "still working", it is re-readable, and it is
+     * precisely the shape that stranded sixteen rows in the acceptance
+     * database. `result.uploadStatus` is the import's own answer, the same
+     * field the portal's `finishImport` writes, so a swept first pass and a
+     * builder's own import cannot end in different states.
+     */
+    const clearedFailure = (statusBefore === 'failed' || statusBefore === 'uploaded')
       ? { status: result.uploadStatus, error_code: null, error_message: null }
       : { error_code: null, error_message: null };
     await db.from('builder_stock_uploads').update({

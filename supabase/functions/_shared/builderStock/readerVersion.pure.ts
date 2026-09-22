@@ -213,6 +213,8 @@ export interface ReaderSweepUpload {
   storage_path?: unknown;
   deleted_at?: unknown;
   processing_started_at?: unknown;
+  /** When the bytes landed. Decides whether an `uploaded` row is abandoned. */
+  created_at?: unknown;
   /** Which failure, where the status is `failed`. See `OUR_FAILURE_CODES`. */
   error_code?: unknown;
 }
@@ -227,16 +229,55 @@ export interface ReaderSweepUpload {
 export const ABANDONED_PARSE_MS = 15 * 60_000;
 
 /**
+ * How long a row may sit at `uploaded` before the request that would have
+ * imported it is taken to be gone.
+ *
+ * `add_upload` stores the bytes and answers; the browser then calls
+ * `process_upload`. Between those two calls the customer's tab can close,
+ * their connection can drop, or the phone they uploaded from can lock — and
+ * the row is left holding a stock list nobody will ever ask about. Fifteen
+ * minutes is `ABANDONED_PARSE_MS`, deliberately: the two are the same
+ * judgement about the same kind of absence, and two numbers for one
+ * judgement is how they drift.
+ */
+export const ABANDONED_UPLOAD_MS = ABANDONED_PARSE_MS;
+
+/**
  * Statuses a re-read may act on.
  *
- * `failed` and `uploaded` are excluded for the reason the portal excludes
- * them: nothing has been read, so there is nothing to correct and the act the
- * source needs is a first pass, not a second one. A first pass writes
- * properties, and a cron tick may not decide to start importing a file the
- * builder's own import refused or never ran.
+ * `failed` IS EXCLUDED AND `uploaded` IS NOT, AND THE DIFFERENCE IS WHO WAS
+ * TOLD WHAT.
+ *
+ * This set read `complete, imported, enriching, parsing` and excluded both,
+ * under one sentence: "a cron tick may not decide to start importing a file
+ * the builder's own import refused or never ran." The first half of that is
+ * right and stands — a `failed` row is a DECISION, the builder was shown it,
+ * and a tick that quietly re-imports overrules something a person was told.
+ *
+ * The second half was wrong, and it is a gap of exactly the shape this
+ * subsystem keeps finding: a state nothing can move, that reads as normal.
+ * A row at `uploaded` carries no decision at all. The bytes are stored, the
+ * builder was told the file was received, and NOTHING HAS EVER LOOKED AT IT.
+ * Starting the first pass there is not overruling anybody; it is the pipeline
+ * doing the job the upload was for. Refusing it means a customer whose tab
+ * closed between `add_upload` and `process_upload` has a stock list that
+ * never imports, for ever, with every screen in the product reporting normal
+ * operation.
+ *
+ * MEASURED 22 SEPTEMBER 2026 in the acceptance gate's fault matrix: bytes
+ * stored, row at `uploaded`, eight sweep ticks, zero properties, status
+ * unchanged. Nobody was coming.
+ *
+ * TWO THINGS MAKE IT SAFE, and neither is in this set.
+ *   • The row must be OLD ENOUGH that no request is still in flight —
+ *     `ABANDONED_UPLOAD_MS`, checked in `readerReReadRefusal`, which answers
+ *     `upload_not_started` for a fresh one and refuses to stamp it.
+ *   • The sweep must CLAIM it, moving `uploaded` to `parsing` conditionally
+ *     on it still being `uploaded`, so a browser that comes back at the same
+ *     moment and this tick cannot both import. See `settleReaderVersion`.
  */
 export const RE_READABLE_STATUSES: ReadonlySet<string> =
-  new Set(['complete', 'imported', 'enriching', 'parsing']);
+  new Set(['complete', 'imported', 'enriching', 'parsing', 'uploaded']);
 
 /**
  * ============================================================================
@@ -369,6 +410,24 @@ export function readerReReadRefusal(
     if (!abandoned) return 'parse_in_flight';
   }
 
+  /*
+   * A ROW THE BROWSER MAY STILL BE ABOUT TO IMPORT.
+   *
+   * Like `parse_in_flight`, this is a statement about RIGHT NOW rather than
+   * about the upload, so it is not stampable: stamping would settle the row
+   * at this reader version having read nothing, and the first pass would
+   * then never happen at all — which is the defect, moved rather than fixed.
+   * An unparseable or absent `created_at` is treated as old, on the same side
+   * as `parse_in_flight` treats an unparseable start: the alternative is a
+   * row nothing will ever adopt.
+   */
+  if (status === 'uploaded') {
+    const createdAt = Date.parse(String(upload?.created_at ?? ''));
+    if (Number.isFinite(createdAt) && (now - createdAt) <= ABANDONED_UPLOAD_MS) {
+      return 'upload_not_started';
+    }
+  }
+
   // A linked source is the builder's to re-fetch. See the header.
   if (String(upload?.source_type ?? '') === 'url') return 'linked_source';
 
@@ -386,5 +445,7 @@ export function readerReReadRefusal(
  * a read this sweep did not perform.
  */
 export function stampable(refusal: string | null): boolean {
-  return refusal !== null && refusal !== 'parse_in_flight';
+  return refusal !== null
+    && refusal !== 'parse_in_flight'
+    && refusal !== 'upload_not_started';
 }

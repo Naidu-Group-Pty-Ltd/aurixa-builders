@@ -236,10 +236,21 @@ def hero(c, buf, top=165, height=110):
 
 FIXTURES = []
 
-def fixture(name, filename, expect, held_out=False, org='alpha'):
+def fixture(name, filename, expect, held_out=False, org='alpha', revision=None,
+            revision_filename=None):
+    """Declare a document the gate judges.
+
+    `revision` is a SECOND document about the SAME property, written beside
+    the first and named in the manifest rather than judged on its own. It
+    exists for the fault matrix's replacement case, which had been asserting
+    the duplicate guard by re-importing identical bytes: a replacement is a
+    builder sending a NEW document about properties they already listed, and
+    identical bytes are not that. Nothing in the main loop reads it.
+    """
     def deco(fn):
         FIXTURES.append(dict(name=name, filename=filename, expect=expect,
-                             held_out=held_out, org=org, build=fn))
+                             held_out=held_out, org=org, build=fn,
+                             revision=revision, revision_filename=revision_filename))
         return fn
     return deco
 
@@ -822,6 +833,67 @@ def _h4(c):
     c.showPage()
 
 
+# --- 18. A PROPERTY RE-DESCRIBED BY A SECOND DOCUMENT ----------------------
+#
+# The replacement case, which the fault matrix could not reach without it.
+# A builder sends a revised brochure for a lot they already listed: the SAME
+# property, a DIFFERENT document, a changed price and a changed availability.
+# Identical bytes are refused by the duplicate guard — correctly, and that is
+# a different assertion — so the revision is genuinely different: a new price,
+# a sold-status line, and a different facade seed so the imagery is not the
+# same picture either.
+#
+# THE IDENTITY MUST SURVIVE IT. Lot, street, suburb, state and postcode are
+# byte-identical between the two, because what makes this a replacement rather
+# than a new property is that the reader arrives at the same anchor.
+def _revision_18(c):
+    text(c, 20, 28, 'CEDAR 22', 20, True)
+    text(c, 20, 36, 'Lot 650 Harrowgate Rise')
+    text(c, 20, 43, 'Tarneit VIC 3029')
+    hero(c, facade(97))
+    text(c, 20, 178, 'Land Price - $328,000')
+    text(c, 20, 185, 'Build Price - $371,500')
+    text(c, 20, 192, 'Package Price - $699,500')
+    text(c, 20, 205, 'Land Size    392m2')
+    text(c, 20, 212, 'Home Size    228.4m2')
+    text(c, 20, 222, 'Status    Under Offer')
+    text(c, 20, 238, 'Revised release. Supersedes previous pricing.', 8)
+    c.showPage()
+
+
+@fixture('replacement-original', 'LOT 650 - CEDAR 22 - BROCHURE.pdf',
+         revision=_revision_18,
+         revision_filename='LOT 650 - CEDAR 22 - BROCHURE V2.pdf',
+         expect=dict(
+             properties=1,
+             # NO ESTATE, deliberately. `corroborateDevelopmentFromPlace`
+             # resolves `<name>, <suburb>` only where the suburb was also read
+             # from a LABELLED statement somewhere in the document, and a
+             # one-page brochure carries none — the package fixture gets it
+             # from its siting plan. Writing the estate here and expecting it
+             # read would have been asserting a property of a two-page
+             # document against a one-page one. This fixture's subject is
+             # identity across a replacement; it does not buy an estate
+             # reading it was not built to test.
+             rows=[dict(lot_number='650', street_name='Harrowgate Rise',
+                        suburb='Tarneit', state='VIC', postcode='3029',
+                        land_size_sqm=392, build_size_sqm=228.4, price=684900,
+                        design='Cedar 22')],
+             image='facade_page_1'))
+def _f18(c):
+    text(c, 20, 28, 'CEDAR 22', 20, True)
+    text(c, 20, 36, 'Lot 650 Harrowgate Rise')
+    text(c, 20, 43, 'Tarneit VIC 3029')
+    hero(c, facade(43))
+    text(c, 20, 178, 'Land Price - $320,000')
+    text(c, 20, 185, 'Build Price - $364,900')
+    text(c, 20, 192, 'Package Price - $684,900')
+    text(c, 20, 205, 'Land Size    392m2')
+    text(c, 20, 212, 'Home Size    228.4m2')
+    text(c, 20, 238, 'Artist impression. Prices subject to change.', 8)
+    c.showPage()
+
+
 def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     manifest = []
@@ -836,11 +908,21 @@ def main(outdir):
             c = canvas.Canvas(path, pagesize=A4)
         f['build'](c)
         c.save()
-        manifest.append(dict(name=f['name'], org=f['org'], filename=f['filename'],
-                             path=os.path.relpath(path, outdir),
-                             held_out=f['held_out'], expect=f['expect'],
-                             known_limit=f['expect'].get('known_limit'),
-                             bytes=os.path.getsize(path)))
+        entry = dict(name=f['name'], org=f['org'], filename=f['filename'],
+                     path=os.path.relpath(path, outdir),
+                     held_out=f['held_out'], expect=f['expect'],
+                     known_limit=f['expect'].get('known_limit'),
+                     bytes=os.path.getsize(path))
+        if f.get('revision'):
+            rev_path = os.path.join(sub, f['revision_filename'])
+            rc = canvas.Canvas(rev_path, pagesize=A4)
+            f['revision'](rc)
+            rc.save()
+            entry['revision'] = dict(
+                filename=f['revision_filename'],
+                path=os.path.relpath(rev_path, outdir),
+                bytes=os.path.getsize(rev_path))
+        manifest.append(entry)
     with open(os.path.join(outdir, 'manifest.json'), 'w') as fh:
         json.dump(manifest, fh, indent=2)
     total = sum(m['bytes'] for m in manifest)
