@@ -13,6 +13,41 @@ expectation was wrong rather than the code.
 
 ---
 
+## 0 · THIS SUBSYSTEM IS FROZEN
+
+**The PDF ingestion architecture is the supported baseline as of 22 September
+2026** (reader 13, `builder-portal-stock` v562, `builder-stock-image-settler`
+v564). It is not frozen because it is finished — §12 lists what is still open —
+but because it has been measured, and the measurement is what a change has to
+beat.
+
+What that means in practice: **a new builder, a new filename, a new estate, a
+new design name or a new brochure colour is not a reason to touch anything
+here.** A document is covered because its SHAPE is covered, and the shapes are
+the acceptance corpus. The commonest way this subsystem got worse in the past
+was a parser patch written for one document that nobody could later distinguish
+from a rule.
+
+A change to this subsystem needs one of exactly four things, and the first of
+them is the bar the other three are measured against:
+
+1. **A reproducible production defect** — a row, a log line or a stored
+   document that shows the pipeline doing something wrong, not a report that
+   it might.
+2. **A genuinely new unsupported document CLASS** — a shape the corpus does
+   not contain, added to the corpus as a held-out fixture BEFORE the code
+   that reads it.
+3. **A security or compliance issue.**
+4. **A clearly specified new product capability**, asked for as a capability
+   rather than as a fix.
+
+Anything that is not one of those four is already answered by §11, §12 or the
+corpus. If a document fails and its shape is in the corpus, the corpus is the
+place to reproduce it; if its shape is not, that is case 2 and the fixture
+comes first.
+
+---
+
 ## 1 · What "working" means here
 
 Not "the parser returned", not "CI passed", not "`primary_image_id` is
@@ -34,38 +69,44 @@ re-arm, no re-upload.
 
 ## 2 · The numbers
 
+*Re-measured 22 September 2026 on the frozen baseline. The 18-document run
+this table replaces is in the history of this file.*
+
 | | |
 |---|---|
-| PDFs tested | **18** |
+| PDFs tested | **29** |
+| Held out (written after the rules, never consulted while designing them) | **15** |
 | Document classes | 3 — single-property, multi-property, refused |
-| Properties expected | 20 |
-| Properties created | 18 |
-| Fields expected | 165 |
-| Fields delivered | 144 |
+| Properties expected | 46 |
+| Properties created | 44 |
+| Properties review-required | 2 (the two named image limits) |
+| Fields expected | 296 |
+| Fields delivered | 274 |
 | Fields missing, unaccounted for | **0** |
-| Fields missing under a named limit | 21 |
+| Fields missing under a named limit | 22 |
+| Genuine failures | **0** |
 | Wrong properties | **0** |
 | Wrong organisations | **0** |
 | Duplicate properties / forks | **0** |
 | Wrong fields | **0** |
 | Wrong images | **0** |
-| Missing expected images | 2, both named limits |
+| Properties on a document that states a photograph | 17 |
+| — photograph served, fetched and decoded end to end | 15 |
+| — absent | 2, both named limits |
 | Image-serving failures | **0** |
 | Stranded jobs | **0** |
 | Stranded patches | **0** |
+| Orphan duplicate image rows | **0** (64 orphan rows over 64 distinct keys) |
 | AI calls attempted | **0** |
-| Published properties | 16 of the 18 documents' rows |
-| Review-required properties | 2 (the two named image limits) |
-| Genuine failures | **0** |
 
-The two properties short of 20 are one fixture: a single page that sets two
-homes in columns, which brochure mode reads as one. It is a **named limit** —
-a refusal or an absent field, never a wrong value — and the corpus reports it
-on every run rather than hiding it.
+Route A (a direct upload) and route B (the same bytes fetched over HTTP)
+produce the same properties on all 29: **44 and 44**, compared property by
+property over the whole document shape rather than over a list of columns.
 
-**21 of the 165 missing fields are three named limits**: 18 belong to that
-two-column page, 2 are a bare design heading with no estate and no filename to
-corroborate it, and 1 is the same on a scanned page.
+The two properties short of 46 are one fixture, `Estate Release - Two
+Homes.pdf`, and the reason MOVED with this work — segmentation divides that
+page correctly into two regions and what refuses it is now a vocabulary gap in
+a shared heading. See §12.
 
 ---
 
@@ -359,6 +400,78 @@ updated a row that already existed; the recovery's describe the **upload's
 standing state**, which is that it supplies one property. Reading either as the
 other is the "two counters counting different things" mistake this codebase has
 already paid for once, in `sectionCountForTier`.
+
+### 9a · And again, for the segmentation deploy (22 September 2026, 07:58 UTC)
+
+**What shipped, read three ways.** Every one of the 27 functions moved its
+`version` and its `updated_at`, and exactly **two** moved their
+`ezbr_sha256` — which is the containment guarantee observed on the wire
+rather than asserted:
+
+| function | version | `ezbr_sha256` |
+|---|---|---|
+| `builder-portal-stock` | 557 → **562** | `58a415e3…` → **`824f48e3…`** |
+| `builder-stock-image-settler` | 559 → **564** | `eee257ba…` → **`6408c093…`** |
+| `builder-stock-link-callback` | 559 → **564** | `0e8df63b…` *unchanged* |
+| `builder-network-stock-image` | 499 → **504** | `8a0f35a5…` *unchanged* |
+| `builder-document-processor` | 562 → **567** | `62a3ce4a…` *unchanged* |
+
+A version that moves with an identical bundle hash is the deploy doing its
+job over code that did not change. Only the import path and the settler
+carry a new bundle, which is where the change is.
+
+**The heartbeat re-read the stored document with nobody asking.** Reader 13
+shipped at 07:58:16; at **07:59:10**, on the ordinary minute tick, the one
+non-deleted upload in this project re-read and settled:
+
+| | before | after |
+|---|---|---|
+| `reader_settled_version` | 12 | **13** |
+| `parse_strategy` | `pdf_deterministic_brochure` | `pdf_deterministic_brochure` |
+| row id | `0fd93346…` | `0fd93346…` |
+| `source_anchor` | `pdf:page1` | `pdf:page1` |
+| `building_size_sqm` | 190.00 | 190.00 |
+| `land_size_sqm` | 563.00 | 563.00 |
+| `development_name` | Sandpiper Estate | Sandpiper Estate |
+| `lifecycle_status` | active | active |
+| primary image | set, `primary_property`, `eligible` | set, `primary_property`, `eligible` |
+| `pending_patch` | none | none |
+
+**The strategy is the assertion.** `pdf_deterministic_brochure`, not
+`pdf_deterministic_regions`, and a page anchor rather than a region anchor —
+a single-property document is untouched by segmentation in production, which
+is the regression that mattered most and the one a corpus alone cannot prove.
+
+**And nothing spent anything.** `ai_spend_reservations` and `api_usage_log`
+are both empty for the last six hours; the most recent reservation of any
+kind is 21 September 13:55, before the assisted reader was switched off. The
+flag `BUILDER_STOCK_ASSISTED_READER` is set nowhere in this repository.
+
+### 9b · After the settlement window, which is a separate reading
+
+A correct row for thirty seconds is not a correct row. Read again at
+**08:13:53**, fourteen minutes and fourteen heartbeat ticks after the
+re-read, with nothing poked in between:
+
+| what the checklist asks | reading |
+|---|---|
+| the property is still correct | `building_size_sqm` 190.00, `lifecycle_status` active |
+| no duplicate row appeared | **1** live property, same id `0fd93346…` |
+| no valid image disappeared | same image row `15bb88b2…`, created 21 Sep 18:19, still `primary_property` / `eligible` |
+| no `pending_patch` appeared | none |
+| no orphan image duplication reappeared | 64 orphan rows over **64 distinct keys** |
+| no upload became stranded | 0 at `uploaded` or `parsing`, 0 `parsing` with an error |
+| no stale worker overwrote the result | `item.updated_at` still **07:59:09.958701** — untouched for fourteen minutes |
+| queues quiescent | claimed 0, unsettled 0 |
+| nothing spent | 0 AI reservations in the hour |
+
+**Six stranded patches exist and they are named rather than zeroed.** All six
+are on uploads a builder deliberately DELETED — each row's last write is
+within 130 ms of its upload's `deleted_at`, on 21 September, a day before
+this work — so the deletion is what stranded them, and the migration that
+fixed the cause (`20260922070000`) applies on an upload's next publication,
+which these will never have. Touching them would be altering deliberately
+deleted customer data. Against live uploads the count is **0**.
 
 ---
 
