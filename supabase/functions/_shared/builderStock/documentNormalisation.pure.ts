@@ -524,10 +524,54 @@ export function normaliseUnits(input: readonly RawUnit[]): NormalisedUnit[] {
  */
 export function trackedOutHeadings(units: readonly NormalisedUnit[]): Set<string> {
   const headings = new Set<string>();
+  const add = (value: string | null | undefined) => {
+    const text = String(value ?? '').replace(/\s+/g, ' ').trim().toUpperCase();
+    if (text) headings.add(text);
+  };
   for (const unit of units) {
     const rule = unit.normalisation?.rule;
     if (rule !== 'letter_spaced_word' && rule !== 'letter_spaced_phrase') continue;
-    headings.add(unit.text.replace(/\s+/g, ' ').trim().toUpperCase());
+    add(unit.text);
+    /*
+     * ====================================================================
+     * A PHRASE'S OWN WORDS ARE HEADINGS TOO, AND THAT COST A PRODUCTION ROW.
+     * ====================================================================
+     *
+     * MEASURED 22 SEPTEMBER 2026 on the deployed reader, from the import
+     * log rather than from reading the code: `development_name:
+     * leading_field_name` on `Lot 37 - Miami 190 - Property Package.pdf`,
+     * with the estate written onto the builder's card as `MASTERPLAN`.
+     *
+     * The page sets `E S T A T E` and `M A S T E R P L A N` side by side.
+     * Joining them is RIGHT — that is how the page reads, and it is what
+     * makes `ESTATE` legible as a label at all. `readLeadingFieldName` then
+     * does exactly its job: a line opening with a field name, the rest its
+     * value. So the claim was `development_name = MASTERPLAN`, and the guard
+     * held only the phrase `ESTATE MASTERPLAN` and did not recognise it.
+     *
+     * One join and one split, each correct, and the display type came out
+     * the other side as a value. So every word the page set as display type
+     * is recorded, not only the phrase they were assembled into: a reader
+     * may legitimately take a phrase apart, and what it hands back is still
+     * type a designer tracked out.
+     */
+    const spellings = [unit.text];
+    for (const source of unit.normalisation?.sources ?? []) {
+      spellings.push(collapseTrackedRun(source)?.text ?? source);
+    }
+    /*
+     * The WORDS, not only the sources, because the two transports assemble the
+     * same phrase differently. Positioned runs give `E S T A T E` and
+     * `M A S T E R P L A N` as two units the phrase rule joins, so the sources
+     * carry both words; flattened page text gives ONE string with the wider
+     * word gap inside it, so the single source IS the phrase and collapsing it
+     * hands back exactly what was already recorded. Reading the words off the
+     * result covers both, and every word of a tracked phrase is display type
+     * by construction.
+     */
+    for (const spelling of spellings) {
+      for (const word of spelling.split(/\s+/)) add(word);
+    }
   }
   return headings;
 }
