@@ -142,13 +142,25 @@ carries `{stage, work_class, ms, scheduler_wait_ms}` per completed stage, and
 counts. Diagnostics only — milliseconds, counts and stage names, never a byte
 of a builder's document, and nothing branches on either.
 
-`document_parses` is the one to watch. A single import legitimately opens the
-PDF **three** times (text layer, positioned layout, image discovery) and a
-scanned one four (page rasters for recognition). The 22 September investigation
-found a **fourth on a native document**, four minutes later, from an
-upload-level sweep re-reading the same file — and the only reason anybody
-noticed is that it happened to log a line. A duration says a stage was slow; a
-count says a stage ran that should not have run at all.
+`document_parses` is the one to watch, and the first production reading of it
+corrected this paragraph before the ink was dry. It was written as "three for a
+native document, four for a scan"; the first live run on `Lot 52 - Bishop 258 -
+Property Package.pdf` reported **four with `rasterisations: 0` and
+`ocr_pages: 0`** — a native document, recognising nothing.
+
+That is correct and the sentence was not. `planOcr` is a statement about
+PAGES: this package has a page that carries no text of its own, so the
+recognition branch is entered, extracts that page's rasters — a parse — and
+honestly recognises nothing from them. So the rule is **three where every page
+states its own text, four where any page does not**, which is a distinction no
+amount of reading the source produced and one run of the instrument did. On
+top of that, the 22 September run paid a **fifth**, four minutes later, from
+an upload-level sweep re-reading the same file; the only reason anybody
+noticed is that it happened to log a line.
+
+A duration says a stage was slow. A count says a stage ran that should not
+have run at all — or that the shape of the document is not what the code's own
+comments assumed.
 
 ## 5. What was deliberately not changed
 
@@ -171,7 +183,7 @@ once, and where each number is now readable.
 
 | expensive thing | per import, by design | measured on the 22 Sep run | where it is counted now |
 |---|---|---|---|
-| PDF document parse | **3** — text layer, positioned layout, image discovery (a scan adds a fourth for page rasters) | **4** on a native document: the three, plus an upload-level sweep re-reading the same file at 08:30:12 | `stage_timings.document_parses` |
+| PDF document parse | **3** where every page states its own text; **4** where any page does not, because the recognition branch rasterises from a parse of its own | **4** per run — and a fifth, four minutes later, from an upload-level sweep re-reading the same file at 08:30:12 | `stage_timings.document_parses` |
 | page rasterisation | 0 for a native PDF; one per page needing recognition | 0 | `stage_timings.rasterisations` |
 | OCR recognition | one pass over the pages that need it, never the document | 0 (native) | `stage_timings.ocr_pages`, `ocr_ms` |
 | image extraction | once, inside the discovery parse | once, then again inside the duplicate parse | `stage_timings.images_extracted`, `image_extract_ms` |
@@ -236,3 +248,39 @@ question a performance programme has to answer. Two cards a page and never
 three — three columns on A4 leave each picture at 3% of the page against the
 product's own 6% floor, which `heldout-three-cards` already records. Nothing
 about the floor is relaxed for it.
+
+## 8. What is deliberately still slow
+
+Honest remaining limits, stated rather than rounded off.
+
+**A hop costs about a second, and there is no lower bound below that.** A
+signed dispatch through `pg_net` plus an Edge Function cold boot was 1.03 s on
+the measured run (`builder_stock_kick_image_work` at 08:25:16.9, settler
+booted 08:25:17.9). A four-property sheet crosses four isolates, so it pays
+four of them. Removing that would mean doing more in one isolate, which is
+exactly what the CPU ceiling forbids — so it is the price of not being killed,
+and it is the right trade at one second a crossing.
+
+**The upload-to-processing handover is ~9 s and is not touched here.** It is
+the browser putting the file in storage and calling the processing endpoint,
+and it is measured, not modelled: 08:24:56.189 to 08:25:05.171 on an 83 KB
+document. It is a client and transport question rather than a pipeline one.
+
+**OCR is the slowest legitimate work in the pipeline** and stays that way:
+3.89 s median against 1.59 s for a native document of the same shape,
+because recognition decodes page rasters. It remains ordinary Tesseract; no
+model was added and none will be.
+
+**The ten-minute sanitization cooldown stands.** It only stranded the measured
+import because a worker was killed at all; weakening it would trade a rare
+ten-minute wait for an unbounded repeat of the most expensive operation here.
+
+**The minute tick is still the floor for recovery.** Anything the chain drops —
+a worker that dies without raising `beforeunload`, a dispatch `pg_net` never
+delivers — waits for the next tick and then for the watchdog's grace. That is
+the recovery path working, and it is deliberately not on the success path.
+
+**The benchmark measures compute, not the customer's clock.** It drives the
+ladder with no scheduler between stages, so it cannot report a production
+end-to-end and does not pretend to; it reports compute and hops separately and
+leaves the dispatch latency to be measured where it actually happens.
