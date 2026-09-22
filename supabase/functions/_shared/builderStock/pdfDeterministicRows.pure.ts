@@ -2204,11 +2204,53 @@ interface BrochureUnit {
 /** How far apart two cells may start and still be one column. */
 const SAME_COLUMN_TOLERANCE = 12;
 
+/**
+ * ===========================================================================
+ * A MIDDLE DOT BETWEEN TWO FIELDS IS A SEPARATOR, NOT A WORD.
+ * ===========================================================================
+ *
+ * MEASURED 22 SEPTEMBER 2026 on `Lot 37 - Miami 190 - Property Package.pdf`,
+ * read out of the 176 lines its own row recorded as attributed to nothing.
+ * The document is dot-delimited throughout, and every field it was thought
+ * not to state is sitting in one of those runs:
+ *
+ *     Miami 190 · Spectral
+ *     Sandpiper · Tweed Heads NSW
+ *     190.38 m² · 4 bed · 2 bath · double garage
+ *     LAND PRICE $780,000 · REGISTERING Q1 2027
+ *
+ * Read as whole lines, none of them matches anything: a design followed by a
+ * facade name, an estate followed by a locality, and a specification run are
+ * each one long string the vocabulary has no entry for. Split on the dot,
+ * every segment is an ordinary statement this reader already understands —
+ * measured on those lines, the reading goes from
+ * `unsupported / too_few_fields_for_a_specification` to `complete`, and the
+ * bedroom and bathroom counts arrive.
+ *
+ * It is the SAME character the reader was claiming as an estate one commit
+ * ago. That is not a coincidence: a designer using it as a separator leaves
+ * it standing alone wherever a segment either side is empty, and reading it
+ * as a value was the first symptom of not reading it as punctuation.
+ *
+ * ONLY WHERE IT SEPARATES, which is what keeps this from cutting words. The
+ * dot must have whitespace on BOTH sides, so `Ph 1300·555·020` and a decimal
+ * are untouched, and a segment that ends up empty is dropped rather than
+ * becoming a unit. The bullet `•` is deliberately NOT included: it opens a
+ * list item rather than separating two fields, and the inclusions lists every
+ * brochure carries are full of them.
+ */
+const FIELD_SEPARATOR = /\s+[·–—]\s+/;
+
+function splitOnFieldSeparators(text: string): string[] {
+  return text.split(FIELD_SEPARATOR).map((part) => part.trim()).filter(Boolean);
+}
+
 function unitsFromPageText(page: string): BrochureUnit[] {
   return String(page ?? '')
     .split(/\r?\n/)
     .map((line) => line.replace(/\s+/g, ' ').trim())
     .filter(Boolean)
+    .flatMap((line) => splitOnFieldSeparators(line))
     .map((text, row) => ({ text, x: 0, row }));
 }
 
@@ -2217,7 +2259,11 @@ function unitsFromLayout(items: readonly PdfTextItem[]): BrochureUnit[] {
   layoutLines(items).forEach((line, row) => {
     for (const cell of line.cells) {
       const text = String(cell.text ?? '').replace(/\s+/g, ' ').trim();
-      if (text) units.push({ text, x: cell.x, row });
+      // Split HERE rather than at the reader, so both ways of building a unit
+      // see the same statements. See `splitOnFieldSeparators`.
+      for (const part of splitOnFieldSeparators(text)) {
+        units.push({ text: part, x: cell.x, row });
+      }
     }
   });
   return units;

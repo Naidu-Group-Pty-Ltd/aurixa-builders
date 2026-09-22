@@ -154,7 +154,14 @@
  * one, and it is a re-read of bytes that have not changed — cheap, bounded
  * by the same one-per-version rule as every other.
  */
-export const DETERMINISTIC_READER_VERSION = 7;
+/*
+ * VERSION 8 — THE DOCUMENT WAS DOT-DELIMITED ALL ALONG.
+ *
+ * `Lot 37`'s own row recorded 176 lines attributed to nothing, and every
+ * field it was thought not to state was in them, either side of a middle
+ * dot. A separator read as a word is why. See `splitOnFieldSeparators`.
+ */
+export const DETERMINISTIC_READER_VERSION = 8;
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */
 export const READER_SETTLED_VERSION_COLUMN = 'reader_settled_version';
