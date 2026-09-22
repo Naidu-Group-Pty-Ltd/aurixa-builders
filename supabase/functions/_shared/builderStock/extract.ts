@@ -20,10 +20,18 @@
  */
 import { keyRowsByHeader, parseDelimited } from './table.pure.ts';
 import {
-  discoveryRefusal, IMAGERY_DEFERRED_WARNING,
+  discoveryRefusal, IMAGERY_DEFERRED_WARNING, storageDeadlineFrom,
   type DiscoveryRefusal, type ImportBudget,
 } from './importBudget.pure.ts';
 import { attachRowHyperlinks, hyperlinkTargetOf } from './sheetHyperlinks.pure.ts';
+/*
+ * ORDINARY OCR, at the one seam where a PDF's own text is found wanting.
+ * Static imports of the POLICY (pure, tiny) and the recogniser's entry point;
+ * the recogniser itself imports the engine and the 3.9 MB language module
+ * DYNAMICALLY, so an import that never meets a scan pays nothing.
+ */
+import { mergeRecognisedPages, planOcr } from './ocr/ocrPolicy.pure.ts';
+import { OCR_MAX_PAGES, recogniseScannedPages } from './ocr/recogniseScan.ts';
 import { MAX_GRID_CELLS } from './sheetGrid.pure.ts';
 import { readHtmlSource } from './htmlSource.pure.ts';
 import { readOpenDocument, readPresentation, readRichText, readStructured } from './otherFormats.pure.ts';
@@ -97,6 +105,26 @@ export interface StockExtraction {
    * outstanding rather than as absent. Absent on every unbudgeted path.
    */
   imageryDeferred?: DiscoveryRefusal | null;
+  /**
+   * What text RECOGNITION did, where the PDF's own text layer was wanting.
+   *
+   * Absent on every document whose pages state their own text, which is
+   * almost all of them. Present it is the honest account of a scan: how many
+   * pages were attempted, how many were read, which were refused and why, and
+   * whether the engine was available at all — so "this scan imported nothing"
+   * can never be indistinguishable from "this scan was never looked at".
+   */
+  ocr?: {
+    attempted: number;
+    read: number;
+    /** 1-based pages whose text came from recognition. */
+    recognisedPages?: number[];
+    refusals: Array<{ page: number; reason: string }>;
+    available: boolean;
+    ms: number;
+    imageOnly: boolean;
+    error?: string;
+  } | null;
   /**
    * Imagery the source published as a URL against ONE of its rows — an `<img>`
    * inside a stock table's row, and the same shape a Notion collection
@@ -484,6 +512,23 @@ export async function extractStockFile(
     baseUrl?: string;
     organisationName?: string | null;
     /**
+     * WHAT THE DOCUMENT IS CALLED, as distinct from `filename`, which is the
+     * upload's display label and is what a URL import shows in a list.
+     *
+     * Only the deterministic PDF reader takes this, and it takes it because
+     * it uses a name as EVIDENCE. `filename` still serves everything that
+     * merely wants an extension — a bare image's content type and its media
+     * name — where a display label is perfectly good and a missing document
+     * name would be a regression.
+     *
+     * Absent falls back to `filename`, which is correct for every caller
+     * that holds a real file (the repair sweep, re-reads) and is why this is
+     * additive: only the URL import states it, and it states the truth,
+     * including the truth that a URL named no document. See
+     * `documentName.pure.ts`.
+     */
+    documentName?: string | null;
+    /**
      * The run's own clock, when the caller keeps one.
      *
      * ABSENT MEANS UNBUDGETED, and unbudgeted means exactly today's
@@ -715,6 +760,81 @@ export async function extractStockFile(
         error,
       );
     }
+    /*
+     * ==================================================================
+     * A PAGE WITH NO TEXT IS READ RATHER THAN REFUSED.
+     * ==================================================================
+     *
+     * A scanned brochure is a PDF whose pages are photographs of paper, so
+     * `readPdfPageTexts` returns empty strings and the refusal below was the
+     * whole of this product's answer to it. Recognition is what turns those
+     * pixels into the page text every reader downstream already consumes —
+     * the SAME `pageTexts`, through the SAME normalisation, the SAME
+     * evidence model, the SAME typed validators and the SAME identity,
+     * image and publication path. There is no OCR reader and no OCR
+     * vocabulary; nothing below this line knows which pages were recognised.
+     *
+     * PER PAGE, NEVER PER DOCUMENT, which is what makes a MIXED document
+     * work: a scanned contract page inside a native brochure leaves the
+     * native pages their own exact text and recognises only the scan.
+     *
+     * AND IT IS NOT A MODEL. Recognition can misread a character and says so
+     * in its confidence; a generative model asked to read a brochure writes
+     * a plausible one, and the failure mode is a property that does not
+     * exist. See `ocr/recogniseScan.ts`.
+     */
+    const plan = planOcr(result.pageTexts ?? []);
+    if (!plan.sufficient) {
+      try {
+        const { extractPdfPhotosByPage } = await import('./pdfSourcePhoto.ts');
+        const wanted = new Set(plan.pages);
+        const photos = await extractPdfPhotosByPage(bytes, { maxPages: OCR_MAX_PAGES });
+        const rasters = photos
+          .filter((entry) => wanted.has(entry.page))
+          .map((entry) => ({
+            page: entry.page,
+            bytes: entry.photo.bytes,
+            width: entry.photo.provenance.sourceWidth,
+            height: entry.photo.provenance.sourceHeight,
+          }));
+        const reading = await recogniseScannedPages(rasters, {
+          deadlineAt: options.budget
+            ? storageDeadlineFrom(options.budget, Date.now()) : undefined,
+        });
+        result.ocr = {
+          attempted: plan.pages.length,
+          read: reading.text.size,
+          recognisedPages: [...reading.text.keys()].sort((a, b) => a - b),
+          refusals: reading.refusals,
+          available: reading.available,
+          ms: reading.ms,
+          imageOnly: plan.imageOnly,
+        };
+        if (reading.text.size) {
+          result.pageTexts = mergeRecognisedPages(result.pageTexts ?? [], reading.text);
+          const recognised = (result.pageTexts ?? []).join('\n');
+          result.text = recognised.trim()
+            ? recognised.slice(0, MAX_TEXT_CHARS) : result.text;
+        }
+        if (!reading.available) {
+          result.warnings.push(
+            'This PDF looks like a scan and text recognition was not available in '
+            + 'this deployment, so its pages could not be read.',
+          );
+        }
+      } catch (error) {
+        // Recognition can never fail an import. A document it could not read
+        // is a document with no text, which the refusal below already says
+        // honestly.
+        result.warnings.push('The scanned pages of this PDF could not be recognised.');
+        result.ocr = {
+          attempted: plan.pages.length, read: 0, refusals: [],
+          available: false, ms: 0, imageOnly: plan.imageOnly,
+          error: String((error as Error)?.message ?? error).slice(0, 200),
+        };
+      }
+    }
+
     if (!result.text) {
       throw new StockExtractionError(
         'pdf_no_text_layer',
@@ -891,12 +1011,24 @@ export async function extractStockFile(
       const reading = readPdfDeterministicRows({
         pageTexts,
         positionedPages,
+        /*
+         * A page read off its pixels is read as flattened text: its positioned
+         * runs describe only whatever native fragment shared it. See the seam
+         * in `readPdfBrochure`.
+         */
+        recognisedPages: result.ocr?.recognisedPages ?? null,
         organisationName: options.organisationName ?? null,
         /*
          * The name the builder gave the file, read only to CLASSIFY a name
          * the document itself printed. It can fill no field of its own.
+         *
+         * The DOCUMENT'S name, never the upload's display label — those are
+         * the same string for a file and are not for a URL, where the label
+         * carries the publisher's hostname. See `documentName.pure.ts`.
          */
-        filename,
+        filename: options.documentName !== undefined
+          ? (options.documentName ?? '')
+          : filename,
       });
       result.deterministicReading = {
         status: reading.status,

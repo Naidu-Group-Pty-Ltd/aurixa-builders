@@ -15,7 +15,8 @@
     "natively. Same package, same version \u2014 only the transport changes."
   ],
   "imports": {
-    "https://esm.sh/@supabase/supabase-js@2.55.0": "npm:@supabase/supabase-js@2.55.0"
+    "https://esm.sh/@supabase/supabase-js@2.55.0": "npm:@supabase/supabase-js@2.55.0",
+    "https://esm.sh/tesseract.js@5.1.1": "npm:tesseract.js@5.1.1"
   },
   "compilerOptions": {
     "strict": true,

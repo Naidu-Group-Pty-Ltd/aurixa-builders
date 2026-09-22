@@ -184,6 +184,26 @@ export interface SanitizationFailure {
    * graphic is still there" is a claim somebody has to be able to check.
    */
   rejected_path?: string | null;
+  /**
+   * WHICH OF THE FIVE CONDITIONS REFUSED THE CLEARANCE, where one did.
+   *
+   * `nothing_to_remove` is two different answers wearing one reason code, and
+   * `decideOverlayClearance` is what tells them apart: the picture is clean and
+   * the classifier convicted it for a feature of the house, or there IS a badge
+   * whose extent this could not find. The first serves the builder's own file;
+   * the second keeps a blank card.
+   *
+   * MEASURED 22 SEPTEMBER 2026 on the acceptance corpus: two fixtures took the
+   * clearance and one took the refusal, and their rows were indistinguishable —
+   * the decision was computed, used, and then DROPPED. `detail` carried the two
+   * different sentences, which is prose, and nothing carried the reason. So a
+   * photograph that a builder can see in their own PDF was blocked from their
+   * own card with no record of which condition blocked it.
+   *
+   * A refusal that cannot say why is a refusal nobody can act on, which is the
+   * rule this repository already holds everywhere else.
+   */
+  clearance_refusal?: string | null;
 }
 
 /**

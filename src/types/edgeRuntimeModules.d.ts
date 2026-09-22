@@ -97,4 +97,35 @@ declare type DurableObjectNamespace = {
  */
 declare const Deno: {
   env: { get(name: string): string | undefined };
+  /**
+   * The three filesystem calls the OCR language loader makes, and no more.
+   *
+   * It decodes the trained model into `/tmp` once per isolate so the engine
+   * can be pointed at a directory — see `ocr/languageData.ts`, which explains
+   * why the model is part of the module graph rather than a CDN fetch or a
+   * seeded bucket. Every call is inside a try/catch that answers `null`, which
+   * is what makes this safe to declare for a Node typecheck that will never
+   * execute it.
+   */
+  stat(path: string): Promise<{ isFile: boolean; size: number }>;
+  mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
+  writeFile(path: string, data: Uint8Array): Promise<void>;
 };
+
+/**
+ * The OCR engine, declared the way every other edge dependency here is.
+ *
+ * `recogniseScan.ts` imports it DYNAMICALLY and types the result structurally,
+ * so this declaration exists for `tsc` rather than for the code: nothing in
+ * the frontend bundle reaches it, and the edge runtime resolves the specifier
+ * through `supabase/functions/deno.json`, which pins it to the npm registry
+ * for the reasons that file's header gives.
+ */
+declare module 'https://esm.sh/tesseract.js@5.1.1' {
+  export function createWorker(
+    language?: string, oem?: number, options?: Record<string, unknown>,
+  ): Promise<{
+    recognize(input: unknown): Promise<{ data: { text?: string; confidence?: number } }>;
+    terminate(): Promise<unknown>;
+  }>;
+}

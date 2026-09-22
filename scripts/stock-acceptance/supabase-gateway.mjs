@@ -84,7 +84,7 @@ const server = createServer(async (req, res) => {
     // createSignedUploadUrl: POST object/upload/sign/{bucket}/{key}
     if (req.method === 'POST' && rest.startsWith('object/upload/sign/')) {
       const spec = rest.slice('object/upload/sign/'.length);
-      return send(res, 200, { url: `/storage/v1/object/upload/sign/${spec}?token=${sign(spec)}` });
+      return send(res, 200, { url: `/object/upload/sign/${spec}?token=${sign(spec)}` });
     }
     // createSignedUrl: POST object/sign/{bucket}/{key}
     if (req.method === 'POST' && rest.startsWith('object/sign/')) {
@@ -93,8 +93,34 @@ const server = createServer(async (req, res) => {
       if (!existsSync(objectPath(bucket, k.join('/')))) {
         return send(res, 404, { error: 'not_found', message: 'Object not found' });
       }
+      /*
+       * ==================================================================
+       * RELATIVE TO THE STORAGE API ROOT, BECAUSE THAT IS THE CONTRACT.
+       * ==================================================================
+       *
+       * MEASURED 22 SEPTEMBER 2026, and it cost a day of looking at the
+       * product for a defect the harness had. Supabase Storage returns
+       * `signedURL` WITHOUT the `/storage/v1` prefix, and `supabase-js`
+       * composes the absolute URL itself:
+       *
+       *     const signedUrl = encodeURI(`${this.url}${data.signedURL}`)
+       *                                   ^ already ends in /storage/v1
+       *
+       * Returning the prefix here produced
+       *
+       *     /storage/v1/storage/v1/object/sign/…
+       *
+       * which this gateway then failed to route — so eleven fixtures
+       * reported "the served photograph did not fetch: HTTP 404" and the
+       * product looked like it was signing paths for objects that were not
+       * there. The objects were there, at exactly the path the row named.
+       *
+       * A HARNESS THAT IS NOT FAITHFUL TO THE CONTRACT IS WORSE THAN NO
+       * HARNESS: it manufactures a defect that does not exist, and the next
+       * one it manufactures might be an absence nobody chases.
+       */
       return send(res, 200, {
-        signedURL: `/storage/v1/object/sign/${spec}?token=${sign(spec)}`,
+        signedURL: `/object/sign/${spec}?token=${sign(spec)}`,
       });
     }
     // list: POST object/list/{bucket}

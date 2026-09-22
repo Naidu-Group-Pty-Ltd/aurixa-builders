@@ -47,6 +47,22 @@ export interface RunImportInput {
   upload: { id: string; original_filename: string };
   bytes: Uint8Array;
   /**
+   * WHAT THE DOCUMENT IS CALLED, as distinct from what this upload is LABELLED.
+   *
+   * `original_filename` is a display label. For a file it happens to be the
+   * document's own name; for a URL it is `host/…/segment`, composed to read
+   * well in a list. The deterministic reader uses a name as EVIDENCE — it
+   * will settle which field an unplaced page line belongs to when the name
+   * echoes it — so handing it a label let a HOSTNAME name a house design.
+   * Measured, with the numbers, in `documentName.pure.ts`.
+   *
+   * Absent means the transport did not supply one and nothing may be
+   * corroborated, which is the same position a file called `download.pdf`
+   * leaves the reader in. A caller that omits it for a FILE gets the file's
+   * own name, because for a file the label and the name are the same thing.
+   */
+  documentName?: string | null;
+  /**
    * Pre-decided reading strategy. URL sources classify from the response as
    * well as the bytes; a file classifies from its name and its bytes, which is
    * what this module does when the caller passes nothing.
@@ -283,6 +299,17 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
 
   const classification = input.classification
     ?? classifyStockFile(upload.original_filename, detection.mime, detection.reason);
+
+  /*
+   * A FILE'S LABEL IS ITS NAME; A URL'S IS NOT. `documentName` is stated by
+   * the URL transport, which is the only one that can tell the difference —
+   * and where it states nothing, nothing is invented. A file transport
+   * supplies no `documentName` and its label stands, because a builder
+   * choosing what to call a file they are attaching IS naming the document.
+   */
+  const documentName = input.documentName !== undefined
+    ? (input.documentName ?? '')
+    : (sourceKind === 'url' ? '' : upload.original_filename);
   if (classification.kind === 'unsupported') {
     return fail('unsupported_file_type', classification.reason ?? 'That file type cannot be read.');
   }
@@ -290,6 +317,7 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
   let extraction;
   try {
     extraction = await extractStockFile(bytes, upload.original_filename, classification, {
+      documentName,
       baseUrl: input.baseUrl,
       /*
        * The uploading organisation's own name, for the deterministic PDF

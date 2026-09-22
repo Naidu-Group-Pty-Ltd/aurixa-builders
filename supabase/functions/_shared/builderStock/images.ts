@@ -22,6 +22,7 @@
  * an image is allowed to change what the marketplace shows.
  */
 import { meteredFetch } from '../meteredFetch.ts';
+import { stockImageUpsertKey } from './stockImageUpsertKey.pure.ts';
 import { killSwitchActive } from '../publicAbuseControls.ts';
 import {
   clientMessageFor,
@@ -208,7 +209,7 @@ async function recordStageUnavailable(
     error_message: message,
     source_detail: ran ? { stage_ran: true } : { stage_ran: false, blocked_passes: blocked },
     position: 0,
-  }, { onConflict: 'stock_item_id,source_stage,source_reference' });
+  }, { onConflict: stockImageUpsertKey(item.id) });
   return { stage, status, detail: message };
 }
 
@@ -253,7 +254,7 @@ async function recordStageSkipped(
       verification_status: stage === 'google_maps' ? 'location_derived' : 'unverified',
       error_message: message,
       position: 0,
-    }, { onConflict: 'stock_item_id,source_stage,source_reference' });
+    }, { onConflict: stockImageUpsertKey(item.id) });
   }
   return { stage, status: 'skipped', detail: message };
 }
@@ -557,7 +558,7 @@ export async function enrichFromGoogle(
         panorama_longitude: panorama?.lng ?? null,
         panorama_distance_metres: usefulness.distanceMetres,
       },
-    }, { onConflict: 'stock_item_id,source_stage,source_reference' });
+    }, { onConflict: stockImageUpsertKey(item.id) });
 
     return { stage: 'google_maps', status: 'ready', detail: product };
   } catch (error) {
@@ -742,7 +743,7 @@ export async function enrichFromInternetSearch(
             }
             : { identity_refused: verdict.reason, identity_matched: verdict.matched }),
         },
-      }, { onConflict: 'stock_item_id,source_stage,source_reference' });
+      }, { onConflict: stockImageUpsertKey(item.id) });
     }
 
     return {

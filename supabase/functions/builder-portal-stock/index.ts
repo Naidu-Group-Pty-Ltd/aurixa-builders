@@ -59,6 +59,9 @@ import {
   parseIsAbandoned, settleUploadCompletion,
 } from '../_shared/builderStock/uploadCompletion.ts';
 import { googleSheetsRef } from '../_shared/builderStock/googleSheetsSource.pure.ts';
+import { serveStockImage } from '../_shared/builderStock/serveStockImage.ts';
+import { closeRefusedUpload } from '../_shared/builderStock/closeRefusedUpload.ts';
+import { importCountColumns } from '../_shared/builderStock/recordImportOutcome.ts';
 import {
   isTraversableBranch, rowSourceBranches,
 } from '../_shared/builderStock/sourceBranches.pure.ts';
@@ -349,12 +352,13 @@ Deno.serve(async (req) => {
     ) => {
       if (!result.ok) {
         if (result.code === 'duplicate_file') {
-          await supabase.from('builder_stock_uploads').update({
-            status: 'failed',
-            error_code: result.code,
-            error_message: result.message,
-            processing_completed_at: new Date().toISOString(),
-          }).eq('id', uploadId).eq('organisation_id', activeOrganisationId);
+          // The one implementation of "a refusal closes the row", shared with
+          // the acceptance gate so the two cannot drift. See
+          // `closeRefusedUpload.ts`.
+          await closeRefusedUpload(supabase, {
+            uploadId, organisationId: activeOrganisationId,
+            code: result.code, message: result.message,
+          });
           return json({
             success: false, error: result.message, code: result.code,
             duplicate_upload_id: result.duplicateUploadId,
@@ -443,12 +447,17 @@ Deno.serve(async (req) => {
       const outcomeDetail = result.summary.failures.length
         ? { failures: result.summary.failures }
         : (sourceNotice ? sourceNotice.detail : null);
+      /*
+       * THE COUNTS ARE THE SAME FACT HOWEVER THE IMPORT WAS REACHED, so they
+       * are named once — in `recordImportOutcome.ts`, which the acceptance
+       * gate calls too. This write states them inline because it also writes
+       * the status and the source notice, which are NOT alike across callers
+       * and must not be made alike; `IMPORT_COUNT_COLUMNS` is what keeps the
+       * shared function and this one from naming different columns.
+       */
       const { data: updated } = await supabase.from('builder_stock_uploads').update({
         status: result.uploadStatus,
-        records_detected: result.summary.detected,
-        records_imported: result.summary.imported,
-        records_updated: result.summary.updated,
-        records_failed: result.summary.failed,
+        ...importCountColumns(result.summary),
         error_code: result.summary.failures.length ? null : (sourceNotice?.code ?? null),
         error_detail: (outcomeDetail || importDiagnosis)
           ? { ...(outcomeDetail ?? {}), ...(importDiagnosis ?? {}) }
@@ -984,6 +993,10 @@ Deno.serve(async (req) => {
             bytes: refetched.importBytes,
             classification: refetched.classification,
             sourceKind: 'url',
+            // Read from THIS fetch, like everything else on this path — a
+            // server that has started stating a `Content-Disposition`, or a
+            // link that now redirects to a named file, describes itself here.
+            documentName: refetched.documentName,
             isNotionSource: refetched.isNotion,
             baseUrl: refetched.finalUrl,
             rowAssets: refetched.rowAssets,
@@ -1087,7 +1100,7 @@ Deno.serve(async (req) => {
       }
       const {
         importBytes, snapshotContentType, classification, displayName, objectName,
-        notionDiagnostics,
+        documentName, notionDiagnostics,
       } = prepared;
 
       const uploadId = crypto.randomUUID();
@@ -1173,6 +1186,14 @@ Deno.serve(async (req) => {
           bytes: importBytes,
           classification,
           sourceKind: 'url',
+          /*
+           * The document's own name where the source stated one, and NULL
+           * where it did not — never `displayName`, which is host + ellipsis
+           * + path segment. The reader corroborates a page line against a
+           * name, so a display label let a hostname name a house design.
+           * Measured in `documentName.pure.ts`.
+           */
+          documentName,
           isNotionSource: prepared.isNotion,
           baseUrl: prepared.finalUrl,
           rowAssets: prepared.rowAssets,
@@ -1676,22 +1697,29 @@ Deno.serve(async (req) => {
     }
 
     if (operation === 'image_url') {
-      const imageId = cleanText(body.image_id, 64);
-      const { data: image } = await supabase
-        .from('builder_stock_item_images')
-        .select('id, storage_bucket, storage_path, external_url, organisation_id')
-        .eq('id', imageId)
-        .eq('organisation_id', activeOrganisationId)
-        .maybeSingle();
-      if (!image) return notFoundHere('That image');
-      if (image.external_url && !image.storage_path) {
-        return json({ success: true, url: image.external_url, external: true });
+      /*
+       * THE STEP BETWEEN THE POINTER AND THE PICTURE, and it lives in
+       * `serveStockImage.ts` rather than here so the acceptance gate can prove
+       * it by CALLING it. Six lines copied into a harness prove that the six
+       * lines work; they prove nothing about the function a customer's browser
+       * reaches. The tenant filter, the external-URL case and the short-lived
+       * signed URL are all that module's, and its header says why each one is
+       * the way it is.
+       */
+      const served = await serveStockImage(supabase, {
+        imageId: cleanText(body.image_id, 64),
+        organisationId: activeOrganisationId,
+        ttlSeconds: IMAGE_URL_TTL_SECONDS,
+        bucket: STOCK_IMAGE_BUCKET,
+      });
+      if (!served.ok) {
+        return served.reason === 'not_found'
+          ? notFoundHere('That image')
+          : json({ error: 'The image could not be prepared' }, 502);
       }
-      const { data: signed, error } = await supabase.storage
-        .from(image.storage_bucket || STOCK_IMAGE_BUCKET)
-        .createSignedUrl(image.storage_path, IMAGE_URL_TTL_SECONDS);
-      if (error || !signed?.signedUrl) return json({ error: 'The image could not be prepared' }, 502);
-      return json({ success: true, url: signed.signedUrl, expires_in: IMAGE_URL_TTL_SECONDS });
+      return served.external
+        ? json({ success: true, url: served.url, external: true })
+        : json({ success: true, url: served.url, expires_in: served.expiresIn });
     }
 
     // =====================================================================

@@ -25,6 +25,7 @@
  * exactly why the guard has to run per hop rather than once.
  */
 import { STOCK_IMAGE_BUCKET } from './fileTypes.pure.ts';
+import { stockImageUpsertKey } from './stockImageUpsertKey.pure.ts';
 import {
   MAX_SOURCE_IMAGE_BYTES, sourceImageObjectPath, validateSourceImageBytes,
   type SourceImageAsset,
@@ -534,7 +535,7 @@ export async function storeSourceImages(
           // about these exact bytes — and only ever the keys that stage owns.
           ...carried,
         },
-      }, { onConflict: 'stock_item_id,source_stage,source_reference' });
+      }, { onConflict: stockImageUpsertKey(input.stockItemId) });
 
       outcome.stored += 1;
     } catch (error) {
@@ -572,7 +573,7 @@ export async function storeSourceImages(
           snapshotted: false,
           provenance_version: PROVENANCE_VERSION,
         },
-      }, { onConflict: 'stock_item_id,source_stage,source_reference' }).then(
+      }, { onConflict: stockImageUpsertKey(input.stockItemId) }).then(
         () => undefined,
         () => undefined,
       );
@@ -660,7 +661,7 @@ export async function storeSourceImageBytes(
       // these exact bytes — and only ever the keys that stage owns.
       ...carried,
     },
-  }, { onConflict: 'stock_item_id,source_stage,source_reference' });
+  }, { onConflict: stockImageUpsertKey(input.stockItemId) });
 
   return true;
 }

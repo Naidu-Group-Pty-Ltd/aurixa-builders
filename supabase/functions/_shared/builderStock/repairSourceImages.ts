@@ -32,6 +32,7 @@ import { RUNTIME_VERSION } from './runtimeVersion.pure.ts';
 import { PROCESSED_LIFECYCLE } from './stockLifecycle.pure.ts';
 import { detectDocumentMime } from '../immutableDocuments.ts';
 import { extractStockFile } from './extract.ts';
+import { sourceDocumentName } from './documentName.pure.ts';
 import { keyRowsByHeader } from './table.pure.ts';
 import { isNotionUrl } from './urlSource.pure.ts';
 import {
@@ -643,7 +644,23 @@ export async function repairSourceImagesForUpload(
         return { ...outcome, error: 'That source cannot be read for imagery.' };
       }
       const extraction = await extractStockFile(
-        bytes, upload.original_filename, classification, { baseUrl: sourceUrl ?? undefined });
+        bytes, upload.original_filename, classification, {
+          baseUrl: sourceUrl ?? undefined,
+          /*
+           * THE SAME RULE THE IMPORT ANSWERS TO. A linked source's stored
+           * `original_filename` is its display label — host, ellipsis,
+           * segment — and handing that to the reader as a name lets a
+           * hostname corroborate a property field. This path re-reads a
+           * document rather than re-fetching it, so there is no
+           * `Content-Disposition` to consult and the URL's own path is all
+           * there is; where that names nothing, nothing is claimed. An
+           * uploaded file's label IS its name and is passed unchanged.
+           * See `documentName.pure.ts`.
+           */
+          documentName: upload.source_type === 'url'
+            ? sourceDocumentName({ finalUrl: sourceUrl ?? '' })
+            : undefined,
+        });
       rows = extraction.rows;
       rowAssets = extraction.rowAssets;
       media = extraction.media;

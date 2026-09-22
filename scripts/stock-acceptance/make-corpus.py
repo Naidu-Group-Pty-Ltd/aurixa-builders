@@ -36,24 +36,100 @@ W, H = A4
 # to differ in exactly those statistics rather than by being labelled.
 # ---------------------------------------------------------------------------
 
+def _octaves(seed, w, h, octaves=6):
+    """Multi-octave value noise: the 1/f statistic natural images actually have.
+
+    Returns a w*h list of floats in roughly [-1, 1], smooth at every scale and
+    FLAT AT NONE. That last property is the point — see `facade`.
+    """
+    rnd = random.Random(seed)
+    acc = [0.0] * (w * h)
+    amp, cells = 1.0, 2
+    for _ in range(octaves):
+        gw, gh = cells + 1, cells + 1
+        grid = [rnd.uniform(-1.0, 1.0) for _ in range(gw * gh)]
+        for y in range(h):
+            fy = y * cells / h
+            y0 = int(fy); y1 = min(y0 + 1, gh - 1); ty = fy - y0
+            ty = ty * ty * (3 - 2 * ty)                      # smoothstep
+            for x in range(w):
+                fx = x * cells / w
+                x0 = int(fx); x1 = min(x0 + 1, gw - 1); tx = fx - x0
+                tx = tx * tx * (3 - 2 * tx)
+                a = grid[y0 * gw + x0] + tx * (grid[y0 * gw + x1] - grid[y0 * gw + x0])
+                b = grid[y1 * gw + x0] + tx * (grid[y1 * gw + x1] - grid[y1 * gw + x0])
+                acc[y * w + x] += amp * (a + ty * (b - a))
+        amp *= 0.55
+        cells *= 2
+    return acc
+
+
 def facade(seed=11, w=1280, h=800):
-    random.seed(seed)
-    img = Image.new('RGB', (w, h)); px = img.load()
-    for y in range(h):
-        for x in range(w):
-            if y < h * 0.42:
-                base = (120 + int(70 * y / (h * 0.42)), 165 + int(55 * y / (h * 0.42)), 225)
-            elif y < h * 0.72:
-                t = (y - h * 0.42) / (h * 0.30)
-                base = (188 - int(40 * t), 172 - int(45 * t), 150 - int(40 * t))
-                if abs(x - w / 2) < 300 and y < h * 0.55:
-                    base = (96 + int(20 * math.sin(x / 40)), 90, 88)
+    """A builder's facade render, with the statistics a photograph has.
+
+    TWO CORRECTIONS, BOTH MEASURED THROUGH THE REAL PIPELINE, and the second is
+    the one that matters.
+
+    The first version laid +/-14 per-pixel noise over three flat colour bands.
+    At some seeds that high-frequency texture read to the overlay inspector as
+    the SHAPE OF WORDS — `faint_type_present` — so `LOT 61 - EMBER - FLYER` was
+    refused a clearance and its photograph never reached the card.
+
+    Removing the noise fixed that and exposed the real problem: the bands.
+    `marketplaceEligibility` convicts a picture as an `annotated_marketing_tile`
+    on its FLAT REGIONS, which is exactly right — a real photograph has almost
+    none, and a graphic tile is made of them. A fixture painted in flat bands is
+    a graphic tile, so the corpus was asking a classifier tuned on photographs
+    to accept something that is not one, and eleven documents "had no
+    photograph".
+
+    So the render is built from multi-octave value noise: the 1/f statistic
+    natural images have. Smooth at every scale, flat at none, no glyph-shaped
+    high-frequency structure. The product's rule is untouched — what changed is
+    that the fixture is now the kind of thing the rule was written about.
+
+    This is the `SAMPLE_REPORT_DATA` lesson twice over: a fixture that is not
+    representative of production turns a real measurement into a statement
+    about the fixture.
+    """
+    sw, sh = w // 8, h // 8
+    n1 = _octaves(seed, sw, sh)
+    n2 = _octaves(seed + 991, sw, sh)
+    img = Image.new('RGB', (sw, sh)); px = img.load()
+    roof, eaves, grass = 0.32, 0.56, 0.74
+    for y in range(sh):
+        t = y / sh
+        for x in range(sw):
+            u = x / sw
+            d = n1[y * sw + x]; e = n2[y * sw + x]
+            if t < roof:
+                base = (128 + 54 * t / roof, 170 + 46 * t / roof, 224 - 8 * t / roof)
+                base = tuple(c + 18 * d for c in base)
+            elif t < eaves:
+                shade = 1.0 - 0.16 * abs(u - 0.5)
+                base = tuple(c * shade + 16 * d for c in (108, 100, 98))
+            elif t < grass:
+                warm = 1.0 - 0.10 * ((t - eaves) / (grass - eaves))
+                base = tuple(c * warm + 20 * d for c in (204, 190, 168))
+                # NO STRAIGHT EDGES ANYWHERE. The opening and the driveway were
+                # painted as rectangles with hard vertical boundaries, which is
+                # what a graphic-tile detector is built to find — measured, two
+                # flat regions, and `LOT 41 - BIRCH 20 - INFO` was refused a
+                # clearance as `still_annotated` on a photograph that has no
+                # annotation. A real window has a frame, a reveal and
+                # perspective; a real driveway has a kerb. Both boundaries are
+                # modulated by the noise field, so the region is soft-edged the
+                # way a photographed one is.
+                if 0.36 + 0.03 * d < u < 0.60 + 0.03 * e:
+                    base = (base[0] * (0.58 + 0.06 * e), base[1] * (0.63 + 0.06 * d),
+                            base[2] * (0.74 + 0.05 * e))
             else:
-                base = (92 + int(40 * random.random()), 128, 74)
-                if abs(x - w / 2) < 150:
-                    base = (176, 174, 170)
-            px[x, y] = tuple(max(0, min(255, c + random.randint(-14, 14))) for c in base)
-    buf = io.BytesIO(); img.save(buf, format='JPEG', quality=86); buf.seek(0)
+                base = (100 + 22 * e, 134 + 30 * d, 78 + 20 * e)
+                if 0.62 + 0.04 * e < u < 0.86 + 0.04 * d:
+                    base = (166 + 24 * d, 164 + 22 * e, 158 + 24 * d)
+            px[x, y] = tuple(max(0, min(255, int(c))) for c in base)
+    img = img.resize((w, h), Image.BICUBIC)
+    buf = io.BytesIO(); img.save(buf, format='JPEG', quality=88); buf.seek(0)
     return buf
 
 
@@ -72,22 +148,49 @@ def floorplan(w=1400, h=990):
     return buf
 
 
+SCAN_FONTS = [
+    '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+]
+
+
 def render_page_as_scan(lines, seed=5, w=1240, h=1754):
-    """A page of text rasterised: what a scanner produces. No text layer."""
-    from PIL import ImageDraw
+    """A page of text rasterised: what a scanner produces. No text layer.
+
+    SET IN A REAL TYPEFACE AT A REAL SIZE, because the point of this fixture is
+    that the product can READ it. The first version drew PIL's default bitmap
+    font — eleven pixels tall, fixed — which is not what any scanner produces
+    and not what any OCR engine is tuned for; a corpus built that way measures
+    the fixture's font rather than the product's recognition. A4 at 150 DPI is
+    1240x1754, and 11pt type at 150 DPI is about 23 pixels.
+
+    The noise is a scanner's, not a texture: light speckle and a faint skew of
+    tone across the sheet, the two things that separate a scan from a render.
+    """
+    from PIL import ImageDraw, ImageFont
     random.seed(seed)
-    img = Image.new('RGB', (w, h), (250, 249, 246))
+    img = Image.new('RGB', (w, h), (252, 251, 248))
     dr = ImageDraw.Draw(img)
-    y = 120
-    for text, size in lines:
-        dr.text((110, y), text, fill=(22, 22, 26))
-        y += 30 + size
+    face = None
+    for path in SCAN_FONTS:
+        try:
+            face = path
+            ImageFont.truetype(path, 24)
+            break
+        except OSError:
+            face = None
+    y = 150
+    for text_line, size in lines:
+        px = max(20, int(size * 150 / 72))          # points at 150 DPI
+        font = ImageFont.truetype(face, px) if face else None
+        dr.text((120, y), text_line, fill=(26, 26, 30), font=font)
+        y += int(px * 1.9)
     px = img.load()                      # scanner noise, so it is not flat art
-    for _ in range(w * h // 40):
+    for _ in range(w * h // 60):
         x0, y0 = random.randrange(w), random.randrange(h)
         v = px[x0, y0]
-        px[x0, y0] = tuple(max(0, min(255, c + random.randint(-18, 18))) for c in v)
-    buf = io.BytesIO(); img.save(buf, format='JPEG', quality=80); buf.seek(0)
+        px[x0, y0] = tuple(max(0, min(255, c + random.randint(-14, 14))) for c in v)
+    buf = io.BytesIO(); img.save(buf, format='JPEG', quality=82); buf.seek(0)
     return buf
 
 
@@ -133,10 +236,21 @@ def hero(c, buf, top=165, height=110):
 
 FIXTURES = []
 
-def fixture(name, filename, expect, held_out=False, org='alpha'):
+def fixture(name, filename, expect, held_out=False, org='alpha', revision=None,
+            revision_filename=None):
+    """Declare a document the gate judges.
+
+    `revision` is a SECOND document about the SAME property, written beside
+    the first and named in the manifest rather than judged on its own. It
+    exists for the fault matrix's replacement case, which had been asserting
+    the duplicate guard by re-importing identical bytes: a replacement is a
+    builder sending a NEW document about properties they already listed, and
+    identical bytes are not that. Nothing in the main loop reads it.
+    """
     def deco(fn):
         FIXTURES.append(dict(name=name, filename=filename, expect=expect,
-                             held_out=held_out, org=org, build=fn))
+                             held_out=held_out, org=org, build=fn,
+                             revision=revision, revision_filename=revision_filename))
         return fn
     return deco
 
@@ -283,8 +397,44 @@ def _f4(c):
 
 # --- 5. a scanned document: image-only pages, no text layer at all ---------
 @fixture('scanned-no-text-layer', 'LOT 88 - SCANNED PACKAGE.pdf', expect=dict(
-    properties=0, rows=[], image=None,
-    outcome='honest_refusal',
+    # THE EXPECTATION CHANGED BECAUSE THE PRODUCT CHANGED, and the old one is
+    # recorded rather than replaced.
+    #
+    # It read `properties=0, outcome='honest_refusal'`. That was right while
+    # this platform had no way to read a page of pixels: a scan reached
+    # `pdf_no_text_layer`, which is an honest refusal and was the whole of the
+    # answer. It is not a supportable answer for a product a builder pays for —
+    # scanned brochures are ordinary — so ordinary OCR now reads them.
+    #
+    # Measured through the real extractor on these exact bytes: one page, no
+    # text layer, recognised in 596 ms with no model call of any kind, giving
+    #
+    #   LOT 88 - HARLOW 21 / 22 Wattlebird Way / Craigieburn VIC 3064
+    #   4 bed 2 bath 2 car / Land 375m2 Build 201m2 / Package Price $712,000
+    #
+    # which is every fact the page carries. The refusal codes below are still
+    # forbidden: if this ever fails again it must not be because a model
+    # account was empty.
+    properties=1,
+    rows=[dict(lot_number='88', street_name='Wattlebird Way', suburb='Craigieburn',
+               state='VIC', postcode='3064', design='Harlow 21',
+               land_size_sqm=375, build_size_sqm=201, price=712000)],
+    # THE DESIGN IS THE THIRD INSTANCE OF A LIMIT THIS CORPUS ALREADY NAMES
+    # TWICE, and three instances of one limit is better evidence than a
+    # pretend pass. The recognised heading splits correctly into `LOT 88` and
+    # `HARLOW 21`; the lot is read, and the design is a BARE NAME with no
+    # estate beside it and no filename to corroborate it (`LOT 88 - SCANNED
+    # PACKAGE.pdf` does not carry the word). The reader refuses to guess which
+    # bare line on a page is the design and which is the estate — the
+    # PALOMINO / ENZO rule — and that refusal is what keeps a facade name off
+    # the estate field. Closing it means finding a second source for a bare
+    # name, not relaxing the rule.
+    known_limit='a bare design name with no estate and no filename to '
+                'corroborate it',
+    # NO PHOTOGRAPH, and that is correct rather than a shortfall: page 1 is a
+    # photograph OF PAPER. There is no facade in this document, so nothing may
+    # designate one.
+    image=None,
     refusal_must_not_be=['ai_budget_exhausted', 'assisted_reader_unavailable',
                          'assisted_reader_refused', 'assisted_reader_timeout',
                          'assisted_reader_invalid_response']))
@@ -305,16 +455,29 @@ def _f5(c):
                land_size_sqm=375, build_size_sqm=201, price=712000, design='Harlow 21')],
     image='facade_page_1'))
 def _f6(c):
-    hero(c, facade(41), top=200, height=150)
+    # GENUINELY MIXED, which the first version was not: its page 1 was a
+    # photograph and its page 2 was native text, so nothing in it was ever
+    # scanned and OCR had nothing to do. The shape that actually turns up is a
+    # native marketing page with a SCANNED specification sheet appended — the
+    # builder photocopies the page the drafter signed — so that is what this
+    # is. Page 1 states the identity and the price in the PDF's own text and
+    # carries the facade; page 2 is pixels and states the sizes and counts.
+    text(c, 20, 24, 'HARLOW 21', 18, True)
+    text(c, 20, 34, 'Lot 140 Wattlebird Way, Craigieburn VIC 3064')
+    text(c, 20, 42, 'Package Price - $712,000')
+    hero(c, facade(41), top=170, height=105)
+    text(c, 20, 182, 'Artist impression. Specification sheet attached.', 8)
     c.showPage()
-    text(c, 20, 26, 'PACKAGE DETAILS', 14, True)
-    text(c, 20, 38, 'Site Address: Lot 140 WATTLEBIRD WAY')
-    text(c, 20, 45, 'Locality: CRAIGIEBURN (3064)')
-    text(c, 20, 52, 'State: VIC')
-    text(c, 20, 59, 'Home Design: HARLOW 21')
-    text(c, 20, 66, 'Site Area: 375 m2')
-    text(c, 20, 73, 'Build Area: 201 m2')
-    text(c, 20, 80, 'Bedrooms: 4   Bathrooms: 2   Car Spaces: 2')
+    spec = render_page_as_scan([('SPECIFICATION SHEET', 14),
+                                ('Home Design HARLOW 21', 12),
+                                ('Site Area 375 m2', 12),
+                                ('Build Area 201 m2', 12),
+                                ('Bedrooms 4 Bathrooms 2 Car Spaces 2', 12)], seed=9)
+    c.drawImage(ImageReader(spec), 0, 0, width=W, height=H, mask=None)
+    # ONE NATIVE LINE ON THE SCANNED PAGE, deliberately: a page can be both,
+    # and this is what proves `mergeRecognisedPages` keeps what the document
+    # STATES ahead of what was read off it rather than replacing one with the
+    # other.
     text(c, 20, 87, 'Package Price: $712,000')
     c.showPage()
 
@@ -325,7 +488,25 @@ def _f6(c):
     rows=[dict(lot_number='9', street_name='Perrin Street', suburb='Armstrong Creek',
                state='VIC', postcode='3217', design='Calla 18',
                price=None, land_size_sqm=None, build_size_sqm=None)],
-    image='facade_page_1'))
+    # NO PHOTOGRAPH, AND THE EXPECTATION WAS WRONG RATHER THAN THE PRODUCT.
+    #
+    # It read `image='facade_page_1'`. Measured 22 September 2026 through the
+    # real image settler, the product refuses to designate one and says why:
+    #
+    #   "no page states this property's identity together with its package
+    #    information (the page states 0 package facts, and a cover must state
+    #    2) - its first page reads 'Lot 9 Perrin Street, Armstrong Creek VIC
+    #    3217'"
+    #
+    # That is this fixture's whole point. It is the document that states its
+    # identity and NOTHING ELSE — pricing on application, no sizes — so nothing
+    # on the page designates the picture as this property's listing image
+    # rather than a design render, a streetscape or somebody else's house. The
+    # rule that refuses it is the one that keeps a bedroom render off a card.
+    #
+    # An absent photograph beside correct facts is the right outcome, so it is
+    # EXPECTED here rather than excused as a limit.
+    image=None))
 def _f7(c):
     text(c, 20, 26, 'CALLA 18', 18, True)
     text(c, 20, 36, 'Lot 9 Perrin Street, Armstrong Creek VIC 3217')
@@ -499,6 +680,26 @@ def _h1(c):
              rows=[dict(lot_number='41', street_name='Galloway Road', suburb='Bacchus Marsh',
                         state='VIC', postcode='3340', design='Birch 20', price=615000)],
              image='facade_page_1',
+             # A NAMED LIMIT ABOUT THE FIXTURE, not about the product, and the
+             # measurement is recorded so it cannot be mistaken for either.
+             #
+             # This document's synthetic facade carries the largest flat region
+             # of any in the corpus — `region_count: 2, largest_share: 0.1201`
+             # against 0 to 0.11 for the rest. The coarse classifier therefore
+             # convicts it as an `annotated_marketing_tile`, the precise repair
+             # is attempted, and it comes back `still_annotated`: the rebuild
+             # did not satisfy the classifier either.
+             #
+             # Both readings are the product being conservative about a picture
+             # it cannot vouch for, which is right — a wrong image on a card is
+             # worse than none. What cannot be concluded from it is anything
+             # about real photographs: the other ten facades in this corpus
+             # clear (four outright, six through the precise inspection), and
+             # tuning a generated image until a classifier trained on
+             # photographs accepts it would prove nothing at all.
+             known_limit='the synthetic facade at this seed carries the largest '
+                         'flat region in the corpus and the overlay repair '
+                         'returns still_annotated',
              forbid=dict(no_suburb=['Port Melbourne'], no_street=['Normanby Road'])))
 def _h2(c):
     text(c, 20, 26, 'BIRCH 20', 18, True)
@@ -540,6 +741,31 @@ def _h2(c):
                         land_size_sqm=320, build_size_sqm=186, price=None,
                         design='Rowan 19')],
              image='facade_page_1',
+             # A NAMED, UNCLOSED GAP, reported every run and never failing it.
+             #
+             # Measured through the real image settler: the product refuses to
+             # designate page 1's picture and says why —
+             #
+             #   "no page states this property's identity together with its
+             #    package information (the page states 1 package fact, and a
+             #    cover must state 2)"
+             #
+             # The page states a great deal: a lot, a street, a suburb, a
+             # state, a postcode, two prices and two sizes. It counts as ONE
+             # package fact because none of its money carries a currency
+             # marker, so no price is recognised — which is the same reading
+             # `acceptFieldValue` makes of the same figures, deliberately, and
+             # is why this fixture's `price` is None.
+             #
+             # So the two halves of the product agree with each other and the
+             # document is simply thinner evidence than the cover rule asks
+             # for. The outcome is an ABSENT photograph beside correct facts,
+             # never a wrong one. Closing it means deciding whether a stated
+             # land size and a stated build size are one package fact or two,
+             # which is a change to the designation threshold and is not
+             # something to do while making a gate green.
+             known_limit='a cover must state 2 package facts; this page states '
+                         '1, because its money carries no currency marker',
              forbid=dict(land_size_not_in=[659900, 320000, 339900],
                          price_not_in=[320, 186])))
 def _h3(c):
@@ -596,10 +822,75 @@ def _h4(c):
     text(c, 20, 195, 'Package Price - $1,327,407', 12, True)
     text(c, 20, 202, 'Land Price - $780,000')
     text(c, 20, 209, 'Build Price - $547,407')
+    # The dwelling's area under a TRACKED-OUT QUANTIFIED HEADING, which is how
+    # the reported document sets it. No alias table has `TOTAL HOME`; what
+    # reads it is the grammatical class in `labelSemantics.pure.ts`, and this
+    # is the only fixture that exercises it through real PDF bytes.
     tracked(c, 20, 220, 'T O T A L   H O M E', 11)
-    text(c, 20, 228, 'Lot Size    563m2')
-    text(c, 20, 235, 'Build Area  190.38m2')
+    text(c, 20, 228, '190.38 m2')
+    text(c, 20, 238, 'Lot Size    563m2')
     text(c, 20, 245, 'Artist impression. Prices subject to change.', 8)
+    c.showPage()
+
+
+# --- 18. A PROPERTY RE-DESCRIBED BY A SECOND DOCUMENT ----------------------
+#
+# The replacement case, which the fault matrix could not reach without it.
+# A builder sends a revised brochure for a lot they already listed: the SAME
+# property, a DIFFERENT document, a changed price and a changed availability.
+# Identical bytes are refused by the duplicate guard — correctly, and that is
+# a different assertion — so the revision is genuinely different: a new price,
+# a sold-status line, and a different facade seed so the imagery is not the
+# same picture either.
+#
+# THE IDENTITY MUST SURVIVE IT. Lot, street, suburb, state and postcode are
+# byte-identical between the two, because what makes this a replacement rather
+# than a new property is that the reader arrives at the same anchor.
+def _revision_18(c):
+    text(c, 20, 28, 'CEDAR 22', 20, True)
+    text(c, 20, 36, 'Lot 650 Harrowgate Rise')
+    text(c, 20, 43, 'Tarneit VIC 3029')
+    hero(c, facade(97))
+    text(c, 20, 178, 'Land Price - $328,000')
+    text(c, 20, 185, 'Build Price - $371,500')
+    text(c, 20, 192, 'Package Price - $699,500')
+    text(c, 20, 205, 'Land Size    392m2')
+    text(c, 20, 212, 'Home Size    228.4m2')
+    text(c, 20, 222, 'Status    Under Offer')
+    text(c, 20, 238, 'Revised release. Supersedes previous pricing.', 8)
+    c.showPage()
+
+
+@fixture('replacement-original', 'LOT 650 - CEDAR 22 - BROCHURE.pdf',
+         revision=_revision_18,
+         revision_filename='LOT 650 - CEDAR 22 - BROCHURE V2.pdf',
+         expect=dict(
+             properties=1,
+             # NO ESTATE, deliberately. `corroborateDevelopmentFromPlace`
+             # resolves `<name>, <suburb>` only where the suburb was also read
+             # from a LABELLED statement somewhere in the document, and a
+             # one-page brochure carries none — the package fixture gets it
+             # from its siting plan. Writing the estate here and expecting it
+             # read would have been asserting a property of a two-page
+             # document against a one-page one. This fixture's subject is
+             # identity across a replacement; it does not buy an estate
+             # reading it was not built to test.
+             rows=[dict(lot_number='650', street_name='Harrowgate Rise',
+                        suburb='Tarneit', state='VIC', postcode='3029',
+                        land_size_sqm=392, build_size_sqm=228.4, price=684900,
+                        design='Cedar 22')],
+             image='facade_page_1'))
+def _f18(c):
+    text(c, 20, 28, 'CEDAR 22', 20, True)
+    text(c, 20, 36, 'Lot 650 Harrowgate Rise')
+    text(c, 20, 43, 'Tarneit VIC 3029')
+    hero(c, facade(43))
+    text(c, 20, 178, 'Land Price - $320,000')
+    text(c, 20, 185, 'Build Price - $364,900')
+    text(c, 20, 192, 'Package Price - $684,900')
+    text(c, 20, 205, 'Land Size    392m2')
+    text(c, 20, 212, 'Home Size    228.4m2')
+    text(c, 20, 238, 'Artist impression. Prices subject to change.', 8)
     c.showPage()
 
 
@@ -617,11 +908,21 @@ def main(outdir):
             c = canvas.Canvas(path, pagesize=A4)
         f['build'](c)
         c.save()
-        manifest.append(dict(name=f['name'], org=f['org'], filename=f['filename'],
-                             path=os.path.relpath(path, outdir),
-                             held_out=f['held_out'], expect=f['expect'],
-                             known_limit=f['expect'].get('known_limit'),
-                             bytes=os.path.getsize(path)))
+        entry = dict(name=f['name'], org=f['org'], filename=f['filename'],
+                     path=os.path.relpath(path, outdir),
+                     held_out=f['held_out'], expect=f['expect'],
+                     known_limit=f['expect'].get('known_limit'),
+                     bytes=os.path.getsize(path))
+        if f.get('revision'):
+            rev_path = os.path.join(sub, f['revision_filename'])
+            rc = canvas.Canvas(rev_path, pagesize=A4)
+            f['revision'](rc)
+            rc.save()
+            entry['revision'] = dict(
+                filename=f['revision_filename'],
+                path=os.path.relpath(rev_path, outdir),
+                bytes=os.path.getsize(rev_path))
+        manifest.append(entry)
     with open(os.path.join(outdir, 'manifest.json'), 'w') as fh:
         json.dump(manifest, fh, indent=2)
     total = sum(m['bytes'] for m in manifest)

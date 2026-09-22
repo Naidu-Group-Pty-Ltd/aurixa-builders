@@ -596,6 +596,14 @@ export async function settleImageSanitization(
         model: result.model,
         failed_at: new Date().toISOString(),
         rejected_path: rejectedPath,
+        /*
+         * WHICH CONDITION REFUSED THE CLEARANCE. Computed by
+         * `decideOverlayClearance`, carried on the result, and until now
+         * dropped here — so two fixtures that took the clearance and one that
+         * took the refusal wrote rows nobody could tell apart.
+         */
+        clearance_refusal: (result as { clearanceRefusal?: string | null })
+          .clearanceRefusal ?? null,
       };
       const { error: writeError } = await settleWrite(
         row, detail, failureDetail(failure),

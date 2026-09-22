@@ -23,7 +23,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  ABANDONED_PARSE_MS, DETERMINISTIC_READER_VERSION,
+  ABANDONED_PARSE_MS, ABANDONED_UPLOAD_MS, DETERMINISTIC_READER_VERSION,
   READER_SETTLED_VERSION_COLUMN, RE_READABLE_STATUSES,
   readerReReadRefusal, stampable,
 } from '../../../supabase/functions/_shared/builderStock/readerVersion.pure';
@@ -51,13 +51,67 @@ describe('what a reader sweep may act on', () => {
   });
 
   /*
-   * A cron tick may not decide to start importing a file the builder's own
-   * import refused or never ran. A first pass WRITES properties; this exists
-   * only to correct ones that exist.
+   * THIS EXPECTATION CHANGED, AND THE OLD ONE WAS HALF RIGHT.
+   *
+   * OLD: `readerReReadRefusal({status: 'uploaded'})` is `'status:uploaded'`,
+   * under the rule "a cron tick may not decide to start importing a file the
+   * builder's own import refused OR NEVER RAN".
+   *
+   * WHY IT WAS WRONG: those are two different cases and only the first is a
+   * decision. A `failed` row carries a verdict a person was SHOWN, and a tick
+   * that quietly re-imports overrules them. An `uploaded` row carries no
+   * verdict at all — `add_upload` stored the bytes, the browser never called
+   * `process_upload`, and nothing has ever looked at the file. Refusing it is
+   * not declining to overrule anybody; it is leaving a customer's stock list
+   * unimported for ever while every screen reports normal operation.
+   *
+   * EVIDENCE: measured 22 September 2026 in the acceptance gate's fault
+   * matrix (case 8i, the browser closing the moment the upload is accepted).
+   * Bytes stored, row at `uploaded`, eight sweep ticks, ZERO properties,
+   * status unchanged. Nobody was coming. With the rule corrected the same
+   * fixture imports on the first tick and its photograph reaches the card.
+   *
+   * NEW: a FRESH `uploaded` row is still refused, because a browser may be
+   * about to import it — `upload_not_started`, which `stampable` refuses to
+   * settle. Past `ABANDONED_UPLOAD_MS` the sweep adopts it, and
+   * `settleReaderVersion` claims it conditionally so the two cannot collide.
    */
-  it('refuses a source nothing has ever read', () => {
-    expect(readerReReadRefusal({ ...FILE_UPLOAD, status: 'uploaded' }))
-      .toBe('status:uploaded');
+  it('leaves a fresh upload for the browser that is about to import it', () => {
+    expect(readerReReadRefusal({
+      ...FILE_UPLOAD, status: 'uploaded', created_at: new Date().toISOString(),
+    })).toBe('upload_not_started');
+  });
+
+  it('adopts an upload nobody came back for', () => {
+    expect(readerReReadRefusal({
+      ...FILE_UPLOAD,
+      status: 'uploaded',
+      created_at: new Date(Date.now() - ABANDONED_UPLOAD_MS - 1_000).toISOString(),
+    })).toBeNull();
+  });
+
+  /*
+   * A row whose landing time cannot be read is treated as OLD, on the same
+   * side `parse_in_flight` treats an unparseable start: the alternative is a
+   * row nothing will ever adopt, which is the defect rather than a guard.
+   */
+  it('adopts an upload whose landing time cannot be read', () => {
+    expect(readerReReadRefusal({ ...FILE_UPLOAD, status: 'uploaded' })).toBeNull();
+    expect(readerReReadRefusal({
+      ...FILE_UPLOAD, status: 'uploaded', created_at: 'not a date',
+    })).toBeNull();
+  });
+
+  /*
+   * AND IT IS NEVER SETTLED FROM THE REFUSAL. Stamping `upload_not_started`
+   * would record this reader version against a file nothing read, and the
+   * first pass would then never happen at all — the defect moved rather than
+   * fixed. Same rule, same reason, as `parse_in_flight`.
+   */
+  it('never settles a row it only declined to start yet', () => {
+    expect(stampable('upload_not_started')).toBe(false);
+    expect(stampable('parse_in_flight')).toBe(false);
+    expect(stampable('linked_source')).toBe(true);
   });
 
   /*
@@ -84,9 +138,13 @@ describe('what a reader sweep may act on', () => {
     }
   });
 
+  /*
+   * `failed` STAYS OUT AND `uploaded` CAME IN — see the expectation above for
+   * why the two were never alike. `failed` is the one a person was shown.
+   */
   it('never names a status it will not act on as re-readable', () => {
     expect(RE_READABLE_STATUSES.has('failed')).toBe(false);
-    expect(RE_READABLE_STATUSES.has('uploaded')).toBe(false);
+    expect(RE_READABLE_STATUSES.has('uploaded')).toBe(true);
   });
 
   /*
@@ -476,11 +534,44 @@ describe('the sweep is wired where the cron can still reach it', () => {
    * A read that FAILED is not a builder who has added nothing. The rows this
    * source already produced are live stock; writing `failed` over a healthy
    * list is the defect `49-re-importing-a-linked-stock-list.md` records.
+   *
+   * THIS EXPECTATION CHANGED TOO, AND NARROWLY.
+   *
+   * OLD: the sweep's source contains no `status: '<literal>'` at all.
+   * WHY IT NEEDED CHANGING: the sweep now writes `status: 'parsing'` in ONE
+   * place — the claim that adopts an abandoned `uploaded` row, which must be
+   * conditional and atomic or a returning browser and a tick both import the
+   * same file. That write is on a row with NO LIST BEHIND IT, which is the
+   * opposite of what this rule protects.
+   * NEW: the two statuses that would overwrite an existing list are still
+   * forbidden outright, and `parsing` is permitted only in a write whose own
+   * predicate is `uploaded` — so the guard is pinned rather than the absence.
    */
   it('never invents a status for an existing list', () => {
-    // No literal status of its own; the only one it can write is the import's
-    // own answer, on the single transition below.
-    expect(sweep).not.toMatch(/status: '(failed|parsing|enriching|complete)'/);
+    expect(sweep).not.toMatch(/status: '(failed|complete|enriching)'/);
+  });
+
+  /*
+   * AND THE CLAIM IS CONDITIONAL, WHICH IS THE WHOLE GUARD. An unconditional
+   * update would take a row a browser had just taken, and two imports of one
+   * file is the duplicate fork this subsystem must never produce.
+   */
+  it('claims an abandoned upload conditionally or not at all', () => {
+    const claims = sweep.match(/status: 'parsing'/g) ?? [];
+    expect(claims).toHaveLength(1);
+    expect(sweep).toMatch(/\.eq\('status', 'uploaded'\)/);
+  });
+
+  /*
+   * AND EVERY WAY OUT OF A CLAIMED ROW PUTS IT DOWN. A claimed row left at
+   * `parsing` is re-readable, so the next tick claims nothing (it is no
+   * longer `uploaded`), reads it as an ordinary re-read, and the status never
+   * becomes terminal — the stranded state, reintroduced by the fix for it.
+   * Three exits: the object is gone, the import refused, the run threw.
+   */
+  it('puts down every claimed row it cannot finish', () => {
+    expect(sweep).toMatch(/import \{ closeRefusedUpload \}/);
+    expect((sweep.match(/if \(firstPass\) \{/g) ?? []).length).toBeGreaterThanOrEqual(3);
   });
 
   /*
