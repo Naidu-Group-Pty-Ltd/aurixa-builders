@@ -39,6 +39,28 @@ export interface ClaimedItem {
   image_work_stage: string;
   image_work_attempts: number;
   lifecycle_status: string | null;
+  /**
+   * When this property BECAME claimable — read, never written, by the caller.
+   *
+   * The claim deliberately leaves this column alone (backoff is a failure's
+   * consequence, written elsewhere) and returns the row, so `now` minus this
+   * is exactly how long the property sat ready and unclaimed. That is the one
+   * number that separates what this deployment SPENT from what it WAITED FOR,
+   * and its absence is why every latency investigation in this subsystem has
+   * had to reason from wall-clock coincidence. Optional because a database
+   * that has not applied the claim amendments still answers without it.
+   */
+  image_work_next_attempt_at?: string | null;
+  /**
+   * The stage timings already recorded against this property.
+   *
+   * Read so the settler can APPEND rather than read-modify-write: the claim
+   * returns `i.*`, so the history is in hand for free, and a ladder that
+   * crosses isolates — which is now the ordinary case — would otherwise
+   * report only its last isolate's stages. Diagnostics; nothing decides on
+   * it. Optional, because a database without the column answers without it.
+   */
+  image_work_timings?: unknown[] | null;
 }
 
 /**

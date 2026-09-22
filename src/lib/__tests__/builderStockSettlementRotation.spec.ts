@@ -123,18 +123,38 @@ describe('what the shorter period must not change', () => {
   });
 
   /**
-   * The rotation is the ONLY thing this pass touched in the settler. These are
-   * the neighbours it would have been easy to tune at the same time, and the
-   * brief said not to.
+   * WHAT THIS ASSERTION WAS, AND WHY IT IS NARROWER NOW.
+   *
+   * It read "leaves the budgets, the concurrency and the leases alone" and
+   * named seven literals, because the 19 September pass changed the rotation
+   * and the brief said to change nothing else. That was a statement about
+   * ONE PASS, and it was written as if it were a standing rule about the
+   * settler's constants — so the next pass with a different brief found a
+   * test in front of it that could only be satisfied by not doing the work.
+   *
+   * THREE OF THE SEVEN HAVE SINCE MOVED, deliberately and with their own
+   * measurement (22 September 2026, `CPU Time exceeded` in production 3.6 s
+   * into a 100 s budget):
+   *
+   *   `HEAVY_DOCUMENTS_PER_INVOCATION` and `LIGHT_ITEMS_AFTER_DOCUMENTS` are
+   *   now one per-class allowance in `workAllowance.pure.ts`. The document
+   *   ceiling itself is unchanged and pinned there.
+   *
+   *   The 120-second lease is now derived from what is left of the
+   *   invocation, because a worker killed holding a constant one parks a
+   *   healthy property for two minutes before the watchdog's grace begins.
+   *
+   * All three are pinned by `builderStockWorkChainsWithoutWaiting.spec.ts`,
+   * which is where they belong: beside the measurement that chose them.
+   *
+   * WHAT STAYS HERE is what this file is actually about — the neighbours the
+   * ROTATION must not have disturbed, which it still has not.
    */
-  it('leaves the budgets, the concurrency and the leases alone', () => {
+  it('leaves the tick-level budgets and queue sizes alone', () => {
     const source = read(SETTLER);
     expect(source).toContain('const BUDGET_MS = 100_000;');
     expect(source).toContain('const MAX_UPLOADS_PER_TICK = 6;');
     expect(source).toContain('const MAX_QUEUE_ROWS = 100;');
-    expect(source).toContain('const HEAVY_DOCUMENTS_PER_INVOCATION = 3;');
-    expect(source).toContain('const LIGHT_ITEMS_AFTER_DOCUMENTS = 8;');
     expect(source).toContain('const LIGHT_STAGE_RESERVE_MS = 20_000;');
-    expect(source).toContain('leaseSeconds: Math.ceil(BUDGET_MS / 1000) + 20');
   });
 });

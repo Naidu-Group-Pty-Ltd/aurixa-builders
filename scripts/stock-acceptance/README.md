@@ -45,13 +45,14 @@ deno run --allow-all --import-map scripts/stock-acceptance/import-map.json \
 
 A fixture written to make a rule pass proves the rule was written. A fixture
 written AFTER the rules, against a document shape nobody had coded for,
-proves the rule generalises. **15 of the 29 documents are held out**, and the
+proves the rule generalises. **16 of the 30 documents are held out**, and the
 eleven added for multi-property segmentation are the strongest of them
 because four of them must come back as ONE property or as a table:
 
 | fixture | must produce |
 |---|---|
 | `heldout-two-cards` | 2 properties, each with **its own** photograph |
+| `heldout-pages-of-cards-with-photos` | 4 properties over 2 pages, **four different** photographs |
 | `heldout-three-cards` | 3 properties |
 | `heldout-schedule-table` | 3 properties, **read by the table parser** |
 | `heldout-one-home-two-columns` | **1** property — a visual column is not a property |
@@ -90,3 +91,28 @@ seed is.
 about photographs.** The fixture is fixed instead, with the measurement
 recorded beside it, and the two that remain are named limits the gate reports
 on every run.
+
+## The gate proves it is right; `latency.ts` measures how long it takes
+
+`scripts/stock-acceptance/latency.ts` runs the same modules over the same
+stack and reports **median, p90, p95 and max** for five document classes —
+native, scanned, mixed, two-property and a multi-property sheet — timed from
+an accepted upload to a published property whose photograph has been fetched
+through the portal's own serving step and decoded.
+
+```bash
+deno run --allow-all --node-modules-dir=none \
+  --import-map scripts/stock-acceptance/import-map.json \
+  scripts/stock-acceptance/latency.ts /var/tmp/corpus 5
+```
+
+It is deliberately NOT part of `run.sh`. Two reasons, and the second is the
+one that matters. A benchmark that gates a merge makes a slow morning on a
+shared runner look like a regression, so it is run and read rather than
+enforced. And it measures **compute**, not the end-to-end a customer waits
+for: it drives the ladder with no scheduler between the stages, so it reports
+compute and the number of isolate crossings separately and leaves the dispatch
+latency to be measured in production. Saying "1.6 seconds" without that
+distinction would be the most flattering number available and not a true one.
+
+See `docs/builder-portal/53-why-an-import-took-seven-minutes.md`.

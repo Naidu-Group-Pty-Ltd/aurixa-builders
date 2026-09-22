@@ -762,6 +762,7 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
   const linkDiscovery: RowLinkDiscovery = input.linkDiscovery
     ?? { state: 'complete', method: `native:${strategy}` };
 
+  const recordsStartedAt = Date.now();
   const outcome = await importStockRecords(supabase, {
     organisationId,
     uploadId: upload.id,
@@ -784,6 +785,34 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     // the half of this defect that had a budget and spent it from zero.
     imageDeadlineAt: storageDeadlineFrom(runBudget, Date.now()),
   });
+  const dbWriteMs = Date.now() - recordsStartedAt;
+
+  /*
+   * WHAT THIS RUN SPENT, WRITTEN DOWN WHERE SOMEBODY CAN READ IT LATER.
+   *
+   * DIAGNOSTICS ONLY — milliseconds and counts, never a byte of the builder's
+   * document, and nothing branches on it. It exists because the 22 September
+   * 2026 latency investigation had to reconstruct every stage of this pipeline
+   * from log-line coincidence, and got the resource wrong twice before the
+   * runtime named it. `document_parses` is the one to watch: a single import
+   * legitimately opens the PDF three times (text layer, layout, images), and
+   * anything above that is a stage running twice.
+   *
+   * BEST-EFFORT, exactly as the kick below is: a deployment whose migration
+   * has not been dispatched has no column for this and must not fail an
+   * import over a diagnostic.
+   */
+  try {
+    await supabase.from('builder_stock_uploads').update({
+      stage_timings: {
+        ...(extraction.timings ?? {}),
+        db_write_ms: dbWriteMs,
+        total_ms: Date.now() - runBudget.startedAt,
+        strategy,
+        rows_detected: outcome.detected,
+      },
+    }).eq('id', upload.id).eq('organisation_id', organisationId);
+  } catch { /* a diagnostic never fails the deliverable */ }
 
   if (!outcome.detected) {
     /**

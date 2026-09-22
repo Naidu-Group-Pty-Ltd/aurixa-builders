@@ -92,6 +92,10 @@ import {
 } from '../_shared/builderStock/itemWorkClaim.ts';
 import { settleClaimedItem } from '../_shared/builderStock/settleItemImages.ts';
 import {
+  mayTakeStage, newAllowance, refusalFor, shouldRearm, spendStage, workClassOf,
+} from '../_shared/builderStock/workAllowance.pure.ts';
+import { releaseClaimOnTermination } from '../_shared/builderStock/releaseOnTermination.ts';
+import {
   readerSweepPending, settleReaderVersion,
 } from '../_shared/builderStock/settleReaderVersion.ts';
 
@@ -421,8 +425,13 @@ Deno.serve(async (req: Request) => {
    * no longer exists, having never been looked at. Throughput comes from
    * invoking more often, never from widening this number.
    */
+  /*
+   * THE LEASE IS WHAT IS LEFT OF THIS INVOCATION, not a constant. See the
+   * second claim site inside the loop, where the same expression is used and
+   * the measurement that changed it is recorded.
+   */
   const itemClaim = await claimOneImageWorkItem(supabase, {
-    leaseSeconds: Math.ceil(BUDGET_MS / 1000) + 20,
+    leaseSeconds: Math.ceil((startedAt + BUDGET_MS - Date.now()) / 1000) + 15,
   });
 
   /*
@@ -543,66 +552,47 @@ Deno.serve(async (req: Request) => {
       stage === 'source' ? HEAVY_STAGE_RESERVE_MS : LIGHT_STAGE_RESERVE_MS;
 
     /*
-     * HOW MANY DOCUMENTS ONE ISOLATE MAY OPEN, and why a clock is not enough.
+     * HOW MUCH ONE ISOLATE MAY DO, AND WHY IT IS TWO ALLOWANCES.
      *
-     * The serial loop above fixed throughput and introduced this: an isolate
-     * that reads several PDFs never gives the memory back, so the invocation
-     * dies of ACCUMULATION rather than of any one document. The property in
-     * the chair when it happens takes the blame — a surviving attempt record
-     * naming a document that was never the problem.
+     * MEMORY WAS THE FIRST CEILING AND IT STANDS. Measured 7 September 2026,
+     * Lot 608 Acclaim Estate (`1nMsonm9`), the one property of seventy-eight
+     * that did not recover: its brochure reads in 0.84 s and its facade render
+     * is on page 1, and run six times in one process resident memory went
+     * 50 → 173 → 236 → 247 → 254 → 287 → 318 MB. The FIFTH document crosses an
+     * Edge Function's ~256 MB ceiling. Each one is individually cheap and the
+     * isolate is dead by the fifth all the same, which is the shape of the four
+     * kills that document collected. Three documents, so the invocation stops
+     * two before the crossing rather than at it.
      *
-     * MEASURED 7 SEPTEMBER 2026, Lot 608 Acclaim Estate (`1nMsonm9`), the one
-     * property of seventy-eight that did not recover. Its brochure reads in
-     * 0.84 s and its facade render is on page 1; run six times in one process,
-     * resident memory went 50 → 173 → 236 → 247 → 254 → 287 → 318 MB. The
-     * FIFTH document crosses an Edge Function's ~256 MB ceiling. Each one is
-     * individually cheap and the isolate is dead by the fifth all the same,
-     * which is exactly the shape of the four kills that document collected.
+     * CPU WAS THE SECOND AND NOTHING HERE COULD SEE IT. Measured 22 September
+     * 2026, upload `c5f139b9`: a settler was killed with `CPU Time exceeded`
+     * 3.6 seconds into a 100-second budget, having opened one document
+     * (`source`), decoded one photograph (`eligibility`) and begun a
+     * full-resolution decode (`sanitization`) — one third of one document of
+     * its document allowance, and well inside every clock in this file. It cost
+     * that customer 221 seconds of recovery on a stage that takes 1.3 s.
      *
-     * Three, so the invocation stops two documents before the crossing rather
-     * than at it. Only `source` is counted, because only `source` opens a
-     * PACKAGE: a multi-megabyte PDF, its page tree, and every raster on the
-     * pages it flattens.
+     * WHAT THIS BLOCK USED TO SAY, AND WHY IT WAS WRONG. It carried
+     * `LIGHT_ITEMS_AFTER_DOCUMENTS = 8` under a header reading "HOW MUCH LIGHT
+     * WORK MAY RIDE ALONG BEHIND THE DOCUMENTS", and it was right about the
+     * problem it was solving: ending an invocation at its document allowance
+     * wasted most of the budget — `item tick { settled: 3, claimable: 17,
+     * ms: 19360 }`, eighty seconds in hand, worker exits. It was wrong about
+     * the remedy, because the items it let ride along are the DECODES, and a
+     * document followed by decodes is precisely the combination the runtime
+     * kills. Its own text had already noticed the first half of that — "THE
+     * LIGHT STAGES ARE NOT FREE, and this comment used to say they were" — and
+     * then went on counting them as free anyway.
      *
-     * THE LIGHT STAGES ARE NOT FREE, and this comment used to say they were
-     * ("eligibility, sanitization and fallback decode nothing"). They do:
-     * eligibility downloads a stored photograph and decodes it to judge it,
-     * and sanitization runs a full-resolution decode, a reconstruction and a
-     * re-decode. They are cheap RELATIVE to a package — one photograph rather
-     * than a document — which is why they are not counted against the
-     * allowance, and why the invocation's walk past a spent allowance is
-     * bounded rather than unlimited. See `LIGHT_ITEMS_AFTER_DOCUMENTS`.
+     * So the allowance is per CLASS of work (`workAllowance.pure.ts`, which
+     * carries the measurement): an isolate opens documents or decodes
+     * photographs, never both, and metadata stages ride along with either. And
+     * the waste the old rule existed to remove is removed a different way — an
+     * invocation that stops with work left starts its successor in the same
+     * breath, so the budget is not wasted, it is spent by a fresh isolate with
+     * a fresh CPU allowance. See `shouldRearm` at the exit below.
      */
-    const HEAVY_DOCUMENTS_PER_INVOCATION = 3;
-    const isHeavy = (stage: string): boolean => stage === 'source';
-    let heavyDocuments = 0;
-
-    /*
-     * HOW MUCH LIGHT WORK MAY RIDE ALONG BEHIND THE DOCUMENTS.
-     *
-     * The invocation used to END when it reached its document allowance, and
-     * that is the largest measured waste in this engine: over a real
-     * eighteen-property import the settler used 524 s of the 2,100 s its
-     * twenty-one invocations were given, because
-     *
-     *   item tick { settled: 3, claimable: 17, ms: 19360 }
-     *
-     * happens every time — three documents opened, seventeen properties ready
-     * to go, eighty seconds of budget in hand, worker exits. Each property is
-     * claimed four times (source, eligibility, sanitization, fallback), so
-     * three of every four claims are light, and ending the invocation made
-     * every one of them wait for a fresh minute of its own.
-     *
-     * So the allowance now refuses the DOCUMENT rather than ending the walk.
-     * The bound on what follows is the envelope production has already
-     * demonstrated: mixed invocations of eleven items are ordinary in the
-     * live log (`settled: 11 … stage: "source"`), and light-only invocations
-     * reach thirty-six. Eight keeps documents-then-light at eleven — inside
-     * what has run for months without a kill — rather than inventing a new
-     * combination on the strength of an argument.
-     */
-    const LIGHT_ITEMS_AFTER_DOCUMENTS = 8;
-    let lightItemsAfterDocuments = 0;
+    const allowance = newAllowance();
 
     /*
      * WHAT THIS INVOCATION HAS ALREADY DONE, AND WHAT IT GAVE BACK.
@@ -644,6 +634,25 @@ Deno.serve(async (req: Request) => {
     const MAX_HANDBACKS_PER_INVOCATION = 12;
     let handbacks = 0;
 
+    /*
+     * THE TWO NUMBERS THAT HAD TO BE SEPARATED.
+     *
+     * `ms` is what this deployment SPENT on a stage. `scheduler_wait_ms` is
+     * what the property WAITED between becoming claimable and being claimed —
+     * the claim leaves `image_work_next_attempt_at` alone and returns the row,
+     * so the difference is exactly the queueing delay and nothing else. Every
+     * wrong conclusion about this pipeline's latency came from having one
+     * total and reasoning about which half it was.
+     */
+    const stageTimings: Array<Record<string, unknown>> = [];
+    const claimWaitMs = (item: { image_work_next_attempt_at?: string | null }): number | null => {
+      const due = Date.parse(String(item.image_work_next_attempt_at ?? ''));
+      if (!Number.isFinite(due)) return null;
+      return Math.max(0, Date.now() - due);
+    };
+    // Best effort only; the lease and the watchdog remain the guarantee.
+    const termination = releaseClaimOnTermination(supabase, 'builder-stock-image-settler');
+
     let claimed = itemClaim.item;
     let settledCount = 0;
     let lastSettlement: Awaited<ReturnType<typeof settleClaimedItem>> | null = null;
@@ -658,7 +667,9 @@ Deno.serve(async (req: Request) => {
      * unless ten seconds remain — could be starved indefinitely while the
      * counter that would have retired it never advanced.
      */
-    if (isHeavy(claimed.image_work_stage)) heavyDocuments += 1;
+    spendStage(claimed.image_work_stage, allowance);
+    termination.hold(claimed.id, claimed.image_work_stage);
+    const stageStartedAt = Date.now();
     const settlement = await settleClaimedItem(supabase, claimed, {
       deadlineAt: startedAt + BUDGET_MS - 10_000,
       repairBudget: newRepairBudget(),
@@ -699,9 +710,57 @@ Deno.serve(async (req: Request) => {
       }, 503);
     }
 
+    termination.clear();
     settledCount += 1;
     lastSettlement = settlement;
     workedThisInvocation.add(`${claimed.id}:${settlement.stage}`);
+    /*
+     * WHAT EACH STAGE COST, DURABLY, AND WHAT IT WAITED FOR TO GET HERE.
+     *
+     * Timing only — never a byte of the customer's document. Written beside
+     * the item because the item is what a stage is about, and written on
+     * EVERY stage because the two numbers answer different questions and the
+     * whole 22 September investigation turned on being unable to separate
+     * them: `ms` is what this deployment SPENT, `scheduler_wait_ms` is what
+     * the property WAITED between being claimable and being claimed.
+     */
+    const timing = {
+      stage: settlement.stage,
+      work_class: workClassOf(settlement.stage),
+      ms: Date.now() - stageStartedAt,
+      scheduler_wait_ms: claimWaitMs(claimed),
+      at: new Date().toISOString(),
+    };
+    stageTimings.push(timing);
+    /*
+     * DURABLE, AND NEVER ALLOWED TO FAIL THE WORK IT DESCRIBES.
+     *
+     * THE HISTORY COMES BACK FROM THE CLAIM, which is what makes this one
+     * write rather than a read and a write. `claim_builder_stock_image_work`
+     * returns `i.*`, so the array as it stood when this stage was claimed is
+     * already in hand — and a ladder that crosses isolates (which is now the
+     * ordinary case) would otherwise report only its last isolate's stages,
+     * losing exactly the `source` timing a document question needs.
+     *
+     * A deployment whose migration has not been dispatched answers PGRST204
+     * for the column and is not degraded by it — the same reading the claim
+     * itself already treats as skew. The array is capped so a property that
+     * is re-opened for months cannot grow a row without bound.
+     */
+    const priorTimings = Array.isArray(claimed.image_work_timings)
+      ? claimed.image_work_timings : [];
+    try {
+      const { error: timingError } = await supabase
+        .from('builder_stock_items')
+        .update({ image_work_timings: [...priorTimings, timing].slice(-12) })
+        .eq('id', claimed.id);
+      if (timingError && !isMissingCapability(timingError)) {
+        console.warn('[builder-stock-image-settler] stage timing not recorded', {
+          phase: 'stage_timing', stock_item_id: claimed.id,
+          message: String(timingError.message ?? '').slice(0, 200),
+        });
+      }
+    } catch { /* diagnostics never fail the deliverable */ }
 
     /*
      * AND ASK WHETHER THIS PROPERTY'S UPLOAD CAN NOW BE PUBLISHED.
@@ -758,12 +817,15 @@ Deno.serve(async (req: Request) => {
      * Three documents opened, seventeen properties ready to go, EIGHTY
      * SECONDS of budget in hand, and the worker exits. The allowance exists
      * because decoding accumulates memory and the fifth document in one
-     * isolate crosses the ceiling — that is measured and it stands. But it
-     * bounds PACKAGES, and there are three light claims for every document
-     * claim. Ending the invocation spent the allowance's cost on those too,
-     * and they are precisely the ones that could have filled the rest of the
-     * budget — bounded, because they are cheaper than a package rather than
-     * free. See `LIGHT_ITEMS_AFTER_DOCUMENTS`.
+     * isolate crosses the ceiling — that is measured and it stands.
+     *
+     * WHAT IT DOES NOT LICENCE, which is what the 22 September kill added to
+     * this paragraph: the seventeen properties waiting are mostly DECODES, and
+     * this invocation has already opened a document, so it may not take them
+     * (`workAllowance.pure.ts`). Skipping past them is still right — there may
+     * be a metadata stage in the set, and a handback costs one index read —
+     * and the budget they would have filled is now filled by the successor
+     * this invocation starts on its way out, which has a fresh CPU allowance.
      *
      * So a refusal skips the property instead of ending the loop. A handback
      * is recorded, and seeing the same property offered twice means the
@@ -773,8 +835,20 @@ Deno.serve(async (req: Request) => {
     let nextItem: (typeof claimed) | null = null;
     for (;;) {
       if (Date.now() > startedAt + BUDGET_MS - LIGHT_STAGE_RESERVE_MS) break;
+      /*
+       * THE LEASE IS WHAT IS LEFT OF THIS INVOCATION, NOT A CONSTANT.
+       *
+       * It was `ceil(BUDGET_MS / 1000) + 20` — 120 seconds — on every claim
+       * however late in the invocation it was taken. A worker killed holding
+       * one of those parks a healthy property for the FULL 120 s before the
+       * watchdog's grace even begins, and on 22 September that was the
+       * largest single term in a 370-second import. A lease only has to
+       * outlive the invocation that holds it, so it is now derived from the
+       * invocation's own remaining clock. The margin covers the completion
+       * write and clock skew between the isolate and the database.
+       */
       const next = await claimOneImageWorkItem(supabase, {
-        leaseSeconds: Math.ceil(BUDGET_MS / 1000) + 20,
+        leaseSeconds: Math.ceil((startedAt + BUDGET_MS - Date.now()) / 1000) + 15,
       });
       if (!next.available || !next.item) break;
       const candidate = next.item;
@@ -818,14 +892,13 @@ Deno.serve(async (req: Request) => {
        * it were an answer about the link.
        */
       const remaining = startedAt + BUDGET_MS - Date.now();
-      const spentOnDocuments = isHeavy(stage)
-        && heavyDocuments >= HEAVY_DOCUMENTS_PER_INVOCATION;
-      if (spentOnDocuments || remaining < reserveFor(stage)) {
+      const allowanceSpent = !mayTakeStage(stage, allowance);
+      if (allowanceSpent || remaining < reserveFor(stage)) {
         const seenBefore = handedBack.has(candidate.id);
         await completeItemWork(supabase, candidate.id, {
           nextStage: stage,
-          result: spentOnDocuments
-            ? 'deferred: this invocation has opened its allowance of documents'
+          result: allowanceSpent
+            ? refusalFor(stage, allowance)
             : 'deferred: not enough of this invocation left to finish it',
           error: null,
           retryAfterSeconds: 0,
@@ -847,33 +920,13 @@ Deno.serve(async (req: Request) => {
         handedBack.add(candidate.id);
         continue;
       }
-      /*
-       * A light property behind a spent allowance rides along, up to the
-       * bound above. Reaching it ends the invocation rather than deferring:
-       * there is nothing wrong with the property, and a handback would cost
-       * it a claim to say so.
-       */
-      if (heavyDocuments > 0 && !isHeavy(stage)) {
-        if (lightItemsAfterDocuments >= LIGHT_ITEMS_AFTER_DOCUMENTS) {
-          await completeItemWork(supabase, candidate.id, {
-            nextStage: stage,
-            result: 'deferred: this invocation has spent its allowance',
-            error: null,
-            retryAfterSeconds: 0,
-            progressed: false,
-            resetAttempts: true,
-          });
-          break;
-        }
-        lightItemsAfterDocuments += 1;
-      }
-
       nextItem = candidate;
       break;
     }
     if (!nextItem) break;
     claimed = nextItem;
     }
+    termination.clear();
 
     const pending = await readItemWorkPending(supabase);
 
@@ -889,6 +942,43 @@ Deno.serve(async (req: Request) => {
      */
     await runTickHousekeeping(supabase, { serialised: false });
 
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * AND THE NEXT ISOLATE STARTS NOW, NOT ON THE NEXT MINUTE BOUNDARY.
+     * ═══════════════════════════════════════════════════════════════════════
+     *
+     * This is the orchestration fix. Until it existed the ONLY thing that
+     * started a settler was `* * * * *` cron, so a four-stage ladder crossed a
+     * stage boundary when a minute boundary came round: measured 22 September
+     * 2026, an ordinary one-property PDF spent about 28 seconds working and
+     * 342 seconds waiting, four of those waits being nothing but the clock.
+     *
+     * `builder_stock_dispatch_image_workers` is the dispatcher the cron tick
+     * already uses — the same signed invocation, the same concurrency ceiling,
+     * the same best-effort contract — asked for exactly ONE worker. It refuses
+     * on its own when the claimable count is zero.
+     *
+     * THE HEARTBEAT IS NOT REPLACED AND MUST NOT BE. The minute tick still
+     * runs the watchdog, the publication sweep, the stranded-item reopen and
+     * the housekeeping; it is the recovery clock. What it stops being is the
+     * transport for ordinary successful work.
+     *
+     * AND IT CANNOT RUN AWAY. `shouldRearm` requires that this invocation
+     * ACTUALLY ADVANCED SOMETHING as well as that something is claimable, so a
+     * chain can only continue while real work is being completed — which is a
+     * queue draining, not a loop. Nothing here sleeps, polls or retries.
+     */
+    let rearmed = false;
+    if (shouldRearm({ settled: settledCount, claimable: pending.claimable })) {
+      try {
+        await supabase.rpc('builder_stock_dispatch_image_workers', { p_max: 1 });
+        rearmed = true;
+      } catch {
+        // Never fails a tick, exactly as the dispatcher's own loop does not.
+        // The minute tick reaches the same queue.
+      }
+    }
+
     console.log('[builder-stock-image-settler] item tick', {
       phase: 'item_work',
       settled: settledCount,
@@ -899,6 +989,10 @@ Deno.serve(async (req: Request) => {
       primary_set: lastSettlement?.primarySet,
       claimable: pending.claimable,
       outstanding: pending.outstanding,
+      rearmed,
+      documents: allowance.documents,
+      decodes: allowance.decodes,
+      stage_timings: stageTimings,
       ms: Date.now() - startedAt,
     });
 
@@ -913,6 +1007,7 @@ Deno.serve(async (req: Request) => {
       archivedOnCutover: publication?.archived ?? 0,
       claimable: pending.claimable, outstanding: pending.outstanding,
       complete: pending.outstanding === 0, deploymentReady: true,
+      rearmed, stageTimings,
     });
     }
   }

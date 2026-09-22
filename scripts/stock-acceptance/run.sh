@@ -24,6 +24,15 @@ curl -s -X POST "http://localhost:54998/rpc/nonexistent" >/dev/null 2>&1 || true
 # PostgREST caches the catalogue; a rebuilt database needs it reloaded.
 psql -h localhost -p 54999 -U postgres -d stock_acceptance -c "NOTIFY pgrst, 'reload schema'" >/dev/null
 sleep 2
+# THE WATCHDOG'S BACKOFF BRANCH, PROVED BY EFFECT AGAINST THIS DATABASE.
+# A killed worker must not bill the property for the first expiry of its lease,
+# and every expiry after it must keep the bounded ladder. Reading the function
+# back would prove only that the text applied — the class of mistake the
+# retention purge, the `manual_stats` CHECK and the AML `.or()` each shipped
+# once. This puts rows in both states, runs the real function and reads the
+# real column back. See `scripts/ops/probe-watchdog-backoff.mjs`.
+PGPASSWORD=acceptance node scripts/ops/probe-watchdog-backoff.mjs \
+  "postgres://postgres:acceptance@127.0.0.1:54999/stock_acceptance"
 exec deno run --allow-all --node-modules-dir=none \
   --import-map scripts/stock-acceptance/import-map.json \
   scripts/stock-acceptance/harness.ts "$CORPUS"
