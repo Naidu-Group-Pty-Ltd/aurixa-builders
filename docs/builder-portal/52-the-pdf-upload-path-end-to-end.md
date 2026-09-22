@@ -311,7 +311,100 @@ at its call site.
 
 ---
 
-## 9 · What is still open, named rather than hidden
+## 9 · What production says, after the deploy
+
+The gate is a claim about the product. This is the same claim, read out of
+`htfluofznhxeumblwbww` after the change shipped.
+
+**The reader version did the work it exists for.** `Lot 37 - Miami 190 -
+Property Package.pdf` was settled at reader 11 and carried **no building
+size**. `DETERMINISTIC_READER_VERSION` moved to 12, the sweep re-read the row
+50 seconds after the deploy with nobody asking, and:
+
+| field | reader 11 | reader 12 |
+|---|---|---|
+| `building_size_sqm` | *null* | **190.00** |
+
+which is the quantifier rule (`TOTAL HOME AREA` is the building size) firing on
+the real document rather than on a reconstruction of it. The import log
+confirms how: `deterministic_status: complete`, `building_size_sqm:below`.
+
+**What is still absent is the reader declining, not failing.** `price`,
+`postcode`, `address_line` and `house_design` are null on that row, and the
+log's `deterministic_fields` names exactly what the page proved. This is the
+distinction §3 is about: `deterministic_unaccounted_lines: 0` on the very same
+run, beside four fields the record does not hold.
+
+**The orphan-image defect is closed.** 64 unattached image rows across 18
+uploads, **64 distinct** `(upload_id, source_stage, source_reference)` keys —
+zero duplicates, against the 31-rows-for-2-pictures that the NULLS DISTINCT
+bug produced.
+
+**The OCR model is in storage** at `system/ocr/4.0.0_best_int/eng.traineddata.gz`,
+2,952,873 bytes, `application/gzip` — the exact count `languageData.ts`
+asserts before it will use it.
+
+---
+
+## 10 · The deploy that reported success and shipped a mixture
+
+This is the episode the report would be dishonest without, because it was
+caused by the work above.
+
+The first merge went green and its deploy **failed**:
+
+```
+unexpected deploy status 413: {"message":"request entity too large"}
+deploy failed for: builder-portal-stock builder-stock-image-settler
+```
+
+Twenty-five functions shipped. The two that did not were the customer's upload
+entry point and the sweep that settles every image. `verify-functions-deployed.mjs`
+caught it and failed the run — the only reason it was not silent.
+
+**The cause was the OCR model, vendored into the module graph by the change
+that introduced OCR.** `--use-api` uploads a function's whole module graph in
+one request:
+
+| | bytes |
+|---|---:|
+| `builder-portal-stock` | 6,588,010 |
+| — of which the model | 3,937,754 (60%) |
+| — without it | **2,650,256** ← the size that last shipped |
+
+Two cheaper repairs were **checked rather than assumed**: a dynamic import does
+not remove a module from the graph (it was already dynamic and still there),
+and splitting it across modules does not help, because the limit is on the
+request. So the graph is not a viable home for the asset at any encoding.
+
+`languageData.ts`'s own header had considered a bucket and rejected it, for a
+sound reason — a capability depending on a seeded object is absent on every
+clone while looking present. **What makes it safe is that it is not seeded:**
+the deploy uploads it on every deploy, idempotently, so it travels the way code
+travels. That is the remedy `CLONE_PROVISIONING_GAPS.md` itself names.
+
+Three things worth keeping from it:
+
+* **The listing's version number is not evidence of a deploy.** After the
+  failure, `builder-portal-stock` read version 550 against a baseline of 548 —
+  while `updated_at` and `ezbr_sha256` were **unchanged**. Two of the three
+  signals said nothing shipped and they were right. Read the workflow's
+  conclusion first; verify with the timestamp and the bundle hash, never the
+  version alone.
+* **The upload runs after the functions, not before.** A function deployed
+  against a missing table answers 500; one deployed without this asset declines
+  OCR, which is what every deployment did before OCR existed. Asset-first would
+  ship nothing on a fault; asset-last ships the functions and goes red.
+* **A commit can claim a change it does not contain.** A `git reset --hard`
+  between writing and committing discarded every tracked edit, and `git add -A`
+  then staged only the new files — so the commit saying the model had left the
+  graph left it in place. CI passed, because a graph too large to *deploy* still
+  typechecks and builds. The check that found it was reading the commit's own
+  `--stat` against what it claimed.
+
+---
+
+## 11 · What is still open, named rather than hidden
 
 * **A page that sets two properties in columns** reads as one. Brochure mode is
   single-property by construction; a column-aware mode is a different reader,
