@@ -596,9 +596,13 @@ def _h4(c):
     text(c, 20, 195, 'Package Price - $1,327,407', 12, True)
     text(c, 20, 202, 'Land Price - $780,000')
     text(c, 20, 209, 'Build Price - $547,407')
+    # The dwelling's area under a TRACKED-OUT QUANTIFIED HEADING, which is how
+    # the reported document sets it. No alias table has `TOTAL HOME`; what
+    # reads it is the grammatical class in `labelSemantics.pure.ts`, and this
+    # is the only fixture that exercises it through real PDF bytes.
     tracked(c, 20, 220, 'T O T A L   H O M E', 11)
-    text(c, 20, 228, 'Lot Size    563m2')
-    text(c, 20, 235, 'Build Area  190.38m2')
+    text(c, 20, 228, '190.38 m2')
+    text(c, 20, 238, 'Lot Size    563m2')
     text(c, 20, 245, 'Artist impression. Prices subject to change.', 8)
     c.showPage()
 

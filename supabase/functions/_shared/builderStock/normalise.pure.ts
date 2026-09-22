@@ -90,6 +90,8 @@ export interface NormalisedStockRecord {
 }
 
 /** Canonical field names a header can map onto. */
+import { quantifiedFieldForLabel } from './labelSemantics.pure.ts';
+
 type FieldKey =
   | 'external_reference' | 'development_name' | 'project_name' | 'address_line'
   | 'suburb' | 'state' | 'postcode' | 'lot_number' | 'unit_number'
@@ -403,8 +405,21 @@ export function fieldForHeader(raw: unknown): string | null {
    * in the middle of a heading (`... - V002 Contract Type`) is untouched.
    */
   const versioned = key.match(/^(.*?)v\d{1,4}$/);
-  if (versioned) return HEADER_ALIASES[versioned[1]] ?? null;
-  return null;
+  if (versioned) {
+    const stripped = HEADER_ALIASES[versioned[1]];
+    if (stripped) return stripped;
+  }
+  /*
+   * AND LAST, THE SHAPE. `TOTAL HOME`, `OVERALL BUILDING AREA`,
+   * `TOTAL BUILD AREA` — a quantifier turns a thing into a measure of it, and
+   * no list of synonyms ever finishes. It is asked LAST, so nothing this table
+   * explicitly knows can be overruled by a rule about grammar, and it answers
+   * only for the two fields a quantifier can be asking about. See
+   * `labelSemantics.pure.ts`, in particular why it is not "strip the
+   * quantifier and look the noun up again" — that reads `TOTAL HOUSE` as the
+   * DESIGN and `TOTAL BUILDING` as the PROJECT.
+   */
+  return quantifiedFieldForLabel(raw);
 }
 
 // ---------------------------------------------------------------------------
