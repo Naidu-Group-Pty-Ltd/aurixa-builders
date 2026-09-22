@@ -58,7 +58,7 @@ import {
   assistedReaderDisposition, assistedReaderEnabled,
 } from '../../supabase/functions/_shared/builderStock/assistedReaderPolicy.pure.ts';
 import {
-  ABANDONED_UPLOAD_MS, DETERMINISTIC_READER_VERSION,
+  ABANDONED_PARSE_MS, ABANDONED_UPLOAD_MS, DETERMINISTIC_READER_VERSION,
 } from '../../supabase/functions/_shared/builderStock/readerVersion.pure.ts';
 
 // ---------------------------------------------------------------------------
@@ -1932,6 +1932,96 @@ const invariants: Record<string, unknown> = {};
       && !stranded
       && withPhotographReached,
       JSON.stringify(faults.abandonedUpload));
+  }
+
+  // --- 8k. THE WORKER DIES AFTER COMMITTING, BEFORE REPORTING -------------
+  /*
+   * 7g kills a worker BEFORE its work lands. This is the other half and the
+   * harder one: the properties are written, the transaction is committed, and
+   * the process is gone before it can write the upload's own outcome. The row
+   * is left at `parsing` with a complete import behind it — a state that reads
+   * as "still working" and is indistinguishable, from every screen, from one
+   * where nothing happened.
+   *
+   * TWO THINGS MUST HOLD. Recovery must FINISH the row rather than leaving it,
+   * and it must not import a second time: the properties are already there, so
+   * a second pass that forked them would turn a survivable crash into a
+   * duplicated marketplace. `ABANDONED_PARSE_MS` is what tells the sweep the
+   * claimant is gone, and the anchor match is what stops the fork.
+   */
+  {
+    const entry = docOf(7);
+    const org = orgs[FAULT];
+    const bytes = await Deno.readFile(`${corpusDir}/${entry.org}/${entry.filename}`);
+    const path = `${org.id}/${crypto.randomUUID()}.pdf`;
+    await db.storage.from(BUCKET).upload(path, bytes, { contentType: 'application/pdf', upsert: true });
+    const upload = await newUpload(FAULT, entry.filename, path);
+    await db.from('builder_stock_uploads').update({
+      status: 'parsing', processing_started_at: new Date().toISOString(),
+    }).eq('id', upload.id);
+
+    // The work lands.
+    const committed = await runStockImport({
+      supabase: db, organisationId: org.id, organisationName: org.name,
+      builderUserId: org.userId,
+      upload: { id: upload.id, original_filename: upload.original_filename },
+      bytes, sourceKind: 'file',
+    });
+    // And the worker is gone before it can say so: no status, no counts, no
+    // completion stamp. Exactly what a killed process leaves.
+    await db.from('builder_stock_uploads').update({
+      status: 'parsing',
+      processing_completed_at: null,
+      records_detected: null, records_imported: null,
+      reader_settled_version: null,
+      // Old enough that `ABANDONED_PARSE_MS` says the claimant is not coming.
+      processing_started_at: new Date(Date.now() - ABANDONED_PARSE_MS - 60_000).toISOString(),
+    }).eq('id', upload.id);
+
+    const rowsBefore = (await itemsFor(upload.id)).map((i: any) => i.id).sort();
+    let ticks = 0;
+    for (let i = 0; i < 4; i += 1) {
+      await settleReaderVersion(db, { limit: 50, deadlineAt: Date.now() + SWEEP_TICK_MS });
+      ticks += 1;
+      const { data } = await db.from('builder_stock_uploads')
+        .select('status, reader_settled_version').eq('id', upload.id).maybeSingle();
+      if (data?.status !== 'parsing' || data?.reader_settled_version != null) break;
+    }
+    const rowsAfter = (await itemsFor(upload.id)).map((i: any) => i.id).sort();
+    const state = await stateOf(upload.id);
+    /*
+     * A FORK OF THIS PROPERTY, not of the organisation. Counting duplicate
+     * anchors across the whole organisation reads 2 and means nothing: the
+     * fault matrix imports four different documents into this organisation
+     * and `pdf:page1` is what every one-page brochure's anchor looks like.
+     * Two documents sharing an anchor are two properties — that is 7c, and
+     * it is correct. What a crash must not produce is a second row for THIS
+     * document's own lot, which is what is counted.
+     */
+    const lot = String((await itemsFor(upload.id))[0]?.lot_number ?? '');
+    const orgRows = (await db.from('builder_stock_items')
+      .select('id, lot_number').eq('organisation_id', org.id)).data ?? [];
+    const sameLot = lot
+      ? orgRows.filter((r: any) => String(r.lot_number ?? '') === lot).length
+      : 0;
+
+    faults.workerDiedAfterCommit = {
+      committed: committed.ok, ticks,
+      rowsBefore: rowsBefore.length, rowsAfter: rowsAfter.length,
+      sameRows: JSON.stringify(rowsBefore) === JSON.stringify(rowsAfter),
+      status: state.status,
+      lot, rowsForThisLot: sameLot,
+    };
+    invariant('a-worker-that-died-after-committing-loses-and-duplicates-nothing',
+      committed.ok
+      && rowsBefore.length > 0
+      // Not forked: the SAME rows, not a second set beside them.
+      && JSON.stringify(rowsBefore) === JSON.stringify(rowsAfter)
+      // And not left reading "still working" with a finished import behind it.
+      && state.status !== 'parsing'
+      // And not forked: exactly one row in this organisation for this lot.
+      && sameLot === 1,
+      JSON.stringify(faults.workerDiedAfterCommit));
   }
 
   // --- 8j. NOTHING IN THE MATRIX LEFT A ROW MID-FLIGHT --------------------
