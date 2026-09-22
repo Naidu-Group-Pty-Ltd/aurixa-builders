@@ -30,7 +30,8 @@ import {
 } from '../_shared/builderStock/imageProgress.pure.ts';
 import { createCorsHeaders } from '../_shared/auth.ts';
 import { enforceCsrf, csrfDenied } from '../_shared/csrfGuard.ts';
-import { readBoundedJson, DEFAULT_MAX_BODY_BYTES } from '../_shared/validate.ts';
+import { DEFAULT_MAX_BODY_BYTES } from '../_shared/validate.ts';
+import { enforceRawBodyLimit } from '../_shared/requestSecurity.ts';
 import {
   resolveBuilderSession,
   builderGovernanceError,
@@ -43,8 +44,13 @@ import {
   classifyStockFile, isAcceptableStockStoragePath, safeObjectName,
 } from '../_shared/builderStock/fileTypes.pure.ts';
 import {
-  runStockImport, type RunImportResult,
+  isImportContinuation, runStockImport, type RunImportResult,
 } from '../_shared/builderStock/runImport.ts';
+import {
+  claimImport, releaseThenContinue, type ImportClaim,
+} from '../_shared/builderStock/importClaim.ts';
+import { continueStockImport } from '../_shared/builderStock/continueImport.ts';
+import { verifyInternal } from '../_shared/auth_v2.ts';
 import {
   SOURCE_LINKS_UNAVAILABLE, sourceAccessNoticeFor,
 } from '../_shared/builderStock/sourceAccessNotice.pure.ts';
@@ -61,7 +67,9 @@ import {
 import { googleSheetsRef } from '../_shared/builderStock/googleSheetsSource.pure.ts';
 import { serveStockImage } from '../_shared/builderStock/serveStockImage.ts';
 import { closeRefusedUpload } from '../_shared/builderStock/closeRefusedUpload.ts';
-import { importCountColumns } from '../_shared/builderStock/recordImportOutcome.ts';
+import {
+  importFailureColumns, importOutcomeColumns,
+} from '../_shared/builderStock/recordImportOutcome.ts';
 import {
   isTraversableBranch, rowSourceBranches,
 } from '../_shared/builderStock/sourceBranches.pure.ts';
@@ -157,9 +165,62 @@ Deno.serve(async (req) => {
 
     // Bounded BEFORE the session is resolved below, so an unauthenticated
     // caller cannot make this isolate buffer a body of any size it likes.
-    const body = await readBoundedJson(req, DEFAULT_MAX_BODY_BYTES)
-      .catch(() => ({} as Record<string, any>));
+    /*
+     * AND THE RAW TEXT IS KEPT, because one caller needs it.
+     *
+     * `verifyInternal` hashes the EXACT bytes the signer hashed. Re-serialising
+     * a parsed object is a different string — key order, spacing, number
+     * formatting — so a re-stringify would fail every signature, always, in a
+     * way that reads as a broken secret rather than as a bug here.
+     *
+     * Every other path is byte-identical to `readBoundedJson`: the same limit,
+     * the same parse, and the same `{}` on a body that is too large or is not
+     * JSON, so an oversized request still falls through to "unknown operation"
+     * exactly as it did.
+     */
+    const bounded = await enforceRawBodyLimit(req, DEFAULT_MAX_BODY_BYTES)
+      .catch(() => ({ ok: false } as { ok: false }));
+    let body: Record<string, any> = {};
+    if (bounded.ok && bounded.raw) {
+      try { body = JSON.parse(bounded.raw) as Record<string, any>; } catch { body = {}; }
+    }
+    const rawBody = bounded.ok ? bounded.raw : '';
     const operation = String(body.operation || '');
+
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * THE SUCCESSOR INVOCATION OF AN IMPORT THAT RAN OUT OF CPU
+     * ═══════════════════════════════════════════════════════════════════════
+     *
+     * BEFORE THE SESSION GATE, because there is no session: this is dispatched
+     * by the database through `cron_invoke_signed_function`, the same signed
+     * internal transport that fans out the image settler, and it is gated by
+     * `verifyInternal` exactly as the settler is.
+     *
+     * IT LIVES HERE RATHER THAN IN A NEW FUNCTION. The whole point of the
+     * hand-off is that the successor reads the document the same way the
+     * first invocation did — same extractor, same reader, same segmentation,
+     * same image ownership. A second edge function is a second implementation
+     * of that, which is how two import paths come to behave differently. What
+     * changes between the two callers is the authentication and the
+     * organisation, and that is exactly what is written out below.
+     *
+     * NO SESSION MEANS NO SESSION-HELD ORGANISATION, so the organisation comes
+     * from the upload ROW — which is the only correct source here and is not a
+     * weakening: a browser-supplied organisation is refused as ever, because
+     * no browser can reach this branch.
+     */
+    if (operation === 'continue_import') {
+      const gate = await verifyInternal(supabase, req, rawBody);
+      if (!gate.ok) {
+        console.warn('[builder-portal-stock] continue_import denied', {
+          phase: 'import_continuation', errorCode: (gate as { errorCode?: string }).errorCode,
+        });
+        return json({ error: 'Forbidden' }, 403);
+      }
+      const outcome = await continueStockImport(supabase, cleanText(body.upload_id, 64));
+      return json(outcome, outcome.success === false ? 409 : 200);
+    }
 
     const session = await resolveBuilderSession(supabase, req);
     if (!session.ok || !session.user) {
@@ -289,6 +350,19 @@ Deno.serve(async (req) => {
         status: 'parsing',
         processing_started_at: new Date().toISOString(),
         error_code: null, error_message: null, error_detail: null,
+        /*
+         * A PERSON STARTING THE IMPORT AGAIN IS A NEW ATTEMPT.
+         *
+         * The recovery sweep bounds itself at three restarts, so a document
+         * that dies every time cannot loop the minute tick for ever. That
+         * bound must not survive the builder trying again — otherwise a file
+         * that failed three times last week can never be re-read, and the
+         * only symptom would be an import that quietly never resumes.
+         *
+         * `processing_started_at` above is reset for the same reason and has
+         * always been: this is one statement about one attempt.
+         */
+        import_recovery_attempts: 0,
       }).eq('id', uploadId).eq('organisation_id', activeOrganisationId);
     };
 
@@ -318,13 +392,9 @@ Deno.serve(async (req) => {
     const failUpload = async (
       uploadId: string, code: string, message: string, detail?: unknown,
     ) => {
-      await supabase.from('builder_stock_uploads').update({
-        status: 'failed',
-        error_code: code,
-        error_message: message,
-        error_detail: detail ? { detail: String(detail).slice(0, 128_000) } : null,
-        processing_completed_at: new Date().toISOString(),
-      }).eq('id', uploadId).eq('organisation_id', activeOrganisationId);
+      await supabase.from('builder_stock_uploads')
+        .update(importFailureColumns(code, message, detail))
+        .eq('id', uploadId).eq('organisation_id', activeOrganisationId);
       return json({ success: false, error: message, code }, 400);
     };
 
@@ -349,6 +419,15 @@ Deno.serve(async (req) => {
       sourceHyperlinks?: HyperlinkAvailability,
       /** The URL the rows came from, for a Google Sheets recovery ask. */
       sourceUrlForRecovery?: string | null,
+      /**
+       * The import claim this caller holds, where it holds one.
+       *
+       * Passed so the HAND-OFF is paired here rather than at four call sites:
+       * the release must happen before the dispatch, and `finishImport` is the
+       * one place every import path ends. A caller holding no claim passes
+       * nothing and only the dispatch happens.
+       */
+      claim?: ImportClaim | null,
     ) => {
       if (!result.ok) {
         if (result.code === 'duplicate_file') {
@@ -365,6 +444,43 @@ Deno.serve(async (req) => {
           }, result.status);
         }
         return await failUpload(uploadId, result.code, result.message, result.detail);
+      }
+
+      /*
+       * ═══════════════════════════════════════════════════════════════════
+       * THE IMPORT IS NOT OVER; IT MOVED
+       * ═══════════════════════════════════════════════════════════════════
+       *
+       * This invocation spent its CPU allowance on the one stage that has
+       * nowhere else to go — recognising a scanned page — and handed the rest
+       * to a successor it has already dispatched. Nothing is written here:
+       * the row stays `parsing`, no count is recorded and
+       * `processing_completed_at` stays null, because a document that has not
+       * been read has nothing true to say about how many properties it holds.
+       *
+       * WRITING A SUCCESS HERE WOULD BE THE 22 SEPTEMBER LIE EXACTLY:
+       * `records_detected: 0` on an upload whose properties arrive a few
+       * seconds later. Writing a failure would be worse — it would send a
+       * builder to re-upload a list that is mid-import.
+       *
+       * The browser is told to keep watching. It already knows how: the page
+       * polls `get_upload` for a `parsing` row, and closing the tab changes
+       * nothing, because the work is the dispatcher's now and not this
+       * request's.
+       */
+      if (isImportContinuation(result)) {
+        // RELEASE, THEN DISPATCH — in that order, once, for every path that
+        // ends here. See `releaseThenContinue`.
+        await releaseThenContinue(supabase, claim ?? null, uploadId);
+        return json({
+          success: true,
+          still_importing: true,
+          code: 'import_continuing',
+          message: 'This document is large enough to be read in stages. '
+            + 'It is still being read — you can close this page.',
+          outstanding: result.outstanding,
+          continuations: result.continuations,
+        });
       }
 
       /*
@@ -435,38 +551,24 @@ Deno.serve(async (req) => {
        * and it never invents an `error_code` or an `error_message`: an
        * import that succeeded still reads as one.
        */
-      const importDiagnosis = result.deterministicIgnored?.length
-        ? {
-          deterministic_ignored: result.deterministicIgnored,
-          // Where each of those was drawn, aligned by index. A flattened line
-          // cannot be told apart from a flattened PAIR, and which of the two
-          // `Estate Warragul` is decides whether a suburb was ever stated.
-          deterministic_placement: result.deterministicPlacement ?? null,
-        }
-        : null;
-      const outcomeDetail = result.summary.failures.length
-        ? { failures: result.summary.failures }
-        : (sourceNotice ? sourceNotice.detail : null);
       /*
-       * THE COUNTS ARE THE SAME FACT HOWEVER THE IMPORT WAS REACHED, so they
-       * are named once — in `recordImportOutcome.ts`, which the acceptance
-       * gate calls too. This write states them inline because it also writes
-       * the status and the source notice, which are NOT alike across callers
-       * and must not be made alike; `IMPORT_COUNT_COLUMNS` is what keeps the
-       * shared function and this one from naming different columns.
+       * THE WHOLE OUTCOME IS NOW COMPOSED IN ONE PLACE, not just the counts.
+       *
+       * This statement used to spell the status, the two error columns and
+       * the diagnosis inline, under a comment saying that only the COUNTS are
+       * alike across callers. That was true while the other callers were the
+       * reader sweep and the acceptance gate. It stopped being true the
+       * moment an import could be finished by a CONTINUATION: the browser's
+       * invocation and the dispatcher's are the same import split across
+       * isolates, so a status that differed between them would make what an
+       * import means depend on how big the document was.
+       *
+       * What stays here is what is genuinely this caller's: the organisation
+       * filter and the `select` its HTTP response needs.
        */
-      const { data: updated } = await supabase.from('builder_stock_uploads').update({
-        status: result.uploadStatus,
-        ...importCountColumns(result.summary),
-        error_code: result.summary.failures.length ? null : (sourceNotice?.code ?? null),
-        error_detail: (outcomeDetail || importDiagnosis)
-          ? { ...(outcomeDetail ?? {}), ...(importDiagnosis ?? {}) }
-          : null,
-        error_message: result.summary.failures.length
-          ? `${result.summary.failed} row(s) could not be saved.`
-          : (sourceNotice?.message ?? null),
-        processing_completed_at: new Date().toISOString(),
-      }).eq('id', uploadId).eq('organisation_id', activeOrganisationId)
+      const { data: updated } = await supabase.from('builder_stock_uploads')
+        .update(importOutcomeColumns(result, sourceNotice))
+        .eq('id', uploadId).eq('organisation_id', activeOrganisationId)
         .select(STOCK_UPLOAD_SELECT).single();
 
       /*
@@ -624,6 +726,38 @@ Deno.serve(async (req) => {
         }, 409);
       }
 
+      /*
+       * ONE WORKER PER IMPORT, AND THE CLAIM IS TAKEN BEFORE THE ROW MOVES.
+       *
+       * The status check above stops a SECOND CLICK, and it always did. What
+       * it cannot stop is a continuation already reading this document in
+       * another isolate: the row is `parsing` in that case, which this branch
+       * refuses anyway — but the reverse race is real, and so is a builder
+       * hitting a `failed` row that the recovery sweep has just picked up.
+       * `builder_stock_claim_import` is one conditional UPDATE and settles
+       * every one of them. See `importClaim.ts`.
+       *
+       * `held` is refused; `unavailable` — a deployment whose migration has
+       * not arrived — proceeds exactly as every import did before this.
+       */
+      const claimed = await claimImport(supabase, upload.id);
+      if (!claimed.ok && claimed.reason === 'held') {
+        return json({
+          error: 'This file is already being read. It will finish on its own.',
+          code: 'import_in_progress',
+        }, 409);
+      }
+      const claim = claimed.ok ? claimed.claim : null;
+      /*
+       * THE HAND-OFF RELEASES AND DISPATCHES; THE `finally` ONLY RELEASES.
+       *
+       * `releaseThenContinue` does both, in that order, and sets this so the
+       * `finally` below does not release a second time — which would be
+       * harmless (the release is idempotent and token-scoped) but would read
+       * as two people handing back one lease.
+       */
+      let handedOff = false;
+
       await markParsing(upload.id);
 
       try {
@@ -642,13 +776,40 @@ Deno.serve(async (req) => {
           upload: { id: upload.id, original_filename: upload.original_filename },
           bytes: new Uint8Array(await blob.arrayBuffer()),
           sourceKind: 'file',
+          /*
+           * WHAT A PREVIOUS ATTEMPT AT THESE BYTES ALREADY RECOGNISED.
+           *
+           * Discarded unless its digest matches the document in hand, so a
+           * re-upload of a DIFFERENT file under the same row inherits
+           * nothing. `resumed` is absent, so the crossing counter starts
+           * again: this is a fresh attempt, not a successor.
+           */
+          storedCheckpoint: upload.import_checkpoint,
+          // A stored file IS its own bytes, so a successor reading them again
+          // reproduces this run exactly. See `resumableFromStoredBytes`.
+          resumableFromStoredBytes: true,
         });
-        return await finishImport(upload.id, result, {});
+        // The hand-off's release-then-dispatch is `finishImport`'s, so it is
+        // written once for every import path rather than four times.
+        handedOff = isImportContinuation(result);
+        return await finishImport(upload.id, result, {}, undefined, undefined, claim);
       } catch (error) {
         console.error('[builder-portal-stock] processing failed', error);
         return await failUpload(upload.id, 'processing_failed',
           'That file could not be processed. Please check the format and try again.',
           (error as { message?: string })?.message);
+      } finally {
+        /*
+         * HANDED BACK ON EVERY PATH, INCLUDING THE HAND-OFF.
+         *
+         * A continuation has already been dispatched by the time the hand-off
+         * returns, and it cannot claim a row this invocation still holds — so
+         * releasing here is what lets the successor start NOW rather than in
+         * ninety seconds. The release is token-scoped, so doing it while a
+         * successor somehow already holds the row is a no-op rather than a
+         * theft. See `importClaim.ts`.
+         */
+        if (!handedOff) await claim?.release();
       }
     }
 
@@ -1059,7 +1220,37 @@ Deno.serve(async (req) => {
           bytes: new Uint8Array(await blob.arrayBuffer()),
           sourceKind: 'file',
           linkDiscovery: linkDiscoveryFromAvailability(storedAvailability),
+          /*
+           * THE SAME BYTES, SO THE SAME RECOGNISED TEXT.
+           *
+           * A re-read re-runs the READER, which is what it is for. It does
+           * not need to re-run the RECOGNISER: the pages are keyed on the
+           * digest of the stored document, and this path downloads exactly
+           * those stored bytes, so anything carried describes this document
+           * or it is discarded. Three seconds a page for nothing is the
+           * alternative.
+           */
+          storedCheckpoint: upload.import_checkpoint,
+          // This branch is the FILE re-read — a linked source is re-fetched
+          // above and carries metadata a stored-bytes successor could not
+          // reproduce. See `resumableFromStoredBytes`.
+          resumableFromStoredBytes: true,
         });
+        /*
+         * NO CLAIM IS TAKEN ON THIS PATH, AND THAT IS A DECISION.
+         *
+         * The guard above already refuses a row that is `parsing` and not
+         * abandoned — which is exactly what a live continuation looks like,
+         * because a continuation keeps the row `parsing` and never refreshes
+         * `processing_started_at`. The only window it leaves is a
+         * continuation still running after fifteen minutes, and a
+         * continuation is bounded at ten crossings of a few seconds each.
+         *
+         * Adding a lease here would buy nothing and cost something real: a
+         * re-read that failed would hold the row shut for ninety seconds
+         * against a builder who is trying again, which is the state this
+         * operation exists to get people OUT of.
+         */
         return await finishImport(upload.id, result, { reprocessed: true });
       } catch (error) {
         console.error('[builder-portal-stock] reprocessing failed', error);
@@ -1217,12 +1408,22 @@ Deno.serve(async (req) => {
          * a token in its query string), no cookie, no header, no key. The HOST
          * identifies the provider and nothing here identifies a credential.
          */
-        if (notionDiagnostics && (!result.ok || result.summary.detected === 0)) {
+        /*
+         * A CONTINUATION IS NOT "PRODUCED NOTHING".
+         *
+         * It is a document that has not finished being READ, so it has no
+         * strategy, no count and no failure code — and warning here would file
+         * an import that is still running as a Notion source that failed. The
+         * successor reaches this same line when it finishes.
+         */
+        const readIt = isImportContinuation(result) ? null : result;
+        if (notionDiagnostics && readIt
+          && (!readIt.ok || readIt.summary.detected === 0)) {
           console.warn('[builder-portal-stock] notion produced no stock', {
             ...notionDiagnostics,
-            parse_strategy: result.ok ? result.strategy : null,
-            rows_detected: result.ok ? result.summary.detected : 0,
-            failure_code: result.ok ? null : result.code,
+            parse_strategy: readIt.ok ? readIt.strategy : null,
+            rows_detected: readIt.ok ? readIt.summary.detected : 0,
+            failure_code: readIt.ok ? null : readIt.code,
           });
         }
 

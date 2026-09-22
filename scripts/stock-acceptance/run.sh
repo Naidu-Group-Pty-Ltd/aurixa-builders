@@ -33,6 +33,15 @@ sleep 2
 # real column back. See `scripts/ops/probe-watchdog-backoff.mjs`.
 PGPASSWORD=acceptance node scripts/ops/probe-watchdog-backoff.mjs \
   "postgres://postgres:acceptance@127.0.0.1:54999/stock_acceptance"
+
+# AND CAN TWO WORKERS IMPORT THE SAME STOCK LIST? Same rule, same reason. An
+# import is resumable now, which makes a double dispatch, a successor racing
+# its predecessor and a killed worker's lease all reachable — and every one of
+# them writes a builder's stock list twice. Eight properties, run against the
+# real functions and read back off the real columns. See
+# `scripts/ops/probe-import-claim.mjs`.
+PGPASSWORD=acceptance node scripts/ops/probe-import-claim.mjs \
+  "postgres://postgres:acceptance@127.0.0.1:54999/stock_acceptance"
 exec deno run --allow-all --node-modules-dir=none \
   --import-map scripts/stock-acceptance/import-map.json \
   scripts/stock-acceptance/harness.ts "$CORPUS"

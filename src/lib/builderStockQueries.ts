@@ -264,6 +264,38 @@ export interface StockUploadResult {
   imageWorkPending: number;
 }
 
+/**
+ * THE IMPORT IS NOT OVER; IT MOVED TO A SUCCESSOR.
+ *
+ * A document large enough to run a server invocation out of CPU is read in
+ * stages now — the invocation that ran out dispatches the next one before it
+ * answers. So a `process_upload` can come back with no upload row, no summary
+ * and no counts, because none of them exists yet: the document has not
+ * finished being read.
+ *
+ * IT IS A SEPARATE SHAPE RATHER THAN A ZEROED SUMMARY, and that is the whole
+ * point. `{ detected: 0, imported: 0 }` is what a stock list containing no
+ * properties looks like, and telling a builder "0 new from 0 properties"
+ * about a document that is mid-import is the exact lie the server side of
+ * this work exists to stop writing to the row.
+ *
+ * Nothing needs to be waited on. The sources list below the dialog shows the
+ * row as being read and refreshes on its own.
+ */
+export interface StockUploadStillReading {
+  stillImporting: true;
+  /** Pages of the document the reader has still to reach. Diagnostic only. */
+  outstanding: number;
+}
+
+export type StockUploadOutcome = StockUploadResult | StockUploadStillReading;
+
+/** Did this import finish, or is it still being read? */
+export const uploadIsStillReading = (
+  outcome: StockUploadOutcome,
+): outcome is StockUploadStillReading =>
+  (outcome as StockUploadStillReading).stillImporting === true;
+
 /** What deleting a source affected. Counts only — no client is named. */
 export interface StockSourceRemoval {
   archived: number;
@@ -385,7 +417,7 @@ function invokeBounded<T>(
 export async function uploadBuilderStockFile(
   file: File,
   onProgress?: (progress: StockUploadProgress) => void,
-): Promise<StockUploadResult> {
+): Promise<StockUploadOutcome> {
   onProgress?.({ phase: 'requesting' });
 
   const created = await invokeBounded<{
@@ -412,9 +444,16 @@ export async function uploadBuilderStockFile(
   onProgress?.({ phase: 'processing' });
   const processed = await invokeBounded<{
     upload: BuilderStockUpload; summary: StockImportSummary; enrichment_pending: number;
+    still_importing?: boolean; outstanding?: number;
   }>('reading the properties', { operation: 'process_upload', upload_id: created.upload.id });
 
   onProgress?.({ phase: 'done' });
+  // The document ran a server invocation out of CPU and moved to a successor.
+  // See `StockUploadStillReading`: there is no summary yet, and inventing a
+  // zeroed one would read as a stock list holding no properties.
+  if (processed.still_importing) {
+    return { stillImporting: true, outstanding: Number(processed.outstanding ?? 0) };
+  }
   return {
     upload: processed.upload,
     summary: processed.summary,
@@ -438,13 +477,19 @@ export async function uploadBuilderStockFile(
 export async function importBuilderStockUrl(
   url: string,
   onProgress?: (progress: StockUploadProgress) => void,
-): Promise<StockUploadResult> {
+): Promise<StockUploadOutcome> {
   onProgress?.({ phase: 'processing' });
   const imported = await invokeBounded<{
     upload: BuilderStockUpload; summary: StockImportSummary; enrichment_pending: number;
   }>('reading the linked list', { operation: 'import_url', url });
 
   onProgress?.({ phase: 'done' });
+  if ((imported as { still_importing?: boolean }).still_importing) {
+    return {
+      stillImporting: true,
+      outstanding: Number((imported as { outstanding?: number }).outstanding ?? 0),
+    };
+  }
   return {
     upload: imported.upload,
     summary: imported.summary,

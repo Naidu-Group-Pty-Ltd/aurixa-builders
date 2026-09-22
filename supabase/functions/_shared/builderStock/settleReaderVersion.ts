@@ -39,6 +39,8 @@
  * builder's own "Read again" does.
  */
 import type { runStockImport } from './runImport.ts';
+import { isImportContinuation } from './importContinuation.pure.ts';
+import { tradingName } from './organisationName.ts';
 import {
   DETERMINISTIC_READER_VERSION, READER_SETTLED_VERSION_COLUMN,
   readerReReadRefusal, reReadSettlesAt,
@@ -328,6 +330,23 @@ export async function settleReaderVersion(
         sourceKind: 'file',
       });
 
+      /*
+       * A CONTINUATION CANNOT REACH THIS SWEEP, AND THE GUARD SAYS SO RATHER
+       * THAN ASSUMING IT.
+       *
+       * `runStockImport` hands an import to a successor only where the caller
+       * declares `resumableFromStoredBytes`, and this one does not: the sweep
+       * has its own budget, its own claim and its own cadence, and a
+       * continuation dispatched from inside it would be a second scheduler
+       * arguing with the first. If that ever changes, this line is where the
+       * change is noticed — rather than `result.summary` being undefined on a
+       * branch nobody thought about.
+       */
+      if (isImportContinuation(result)) {
+        outcome.failed.push({ uploadId: upload.id, reason: 'unexpected_continuation' });
+        continue;
+      }
+
       if (!result.ok) {
         /*
          * A READ THAT FAILED LEAVES THE UPLOAD EXACTLY AS IT WAS.
@@ -419,18 +438,6 @@ export async function settleReaderVersion(
 }
 
 /** The organisation's own name, for the messages an import composes. */
-async function tradingName(db: any, organisationId: unknown): Promise<string | null> {
-  try {
-    const { data } = await db.from('builder_organisations')
-      .select('trading_name, legal_name')
-      .eq('id', organisationId)
-      .maybeSingle();
-    return (data?.trading_name ?? data?.legal_name ?? null) as string | null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * The counts and the diagnosis, written the way the portal writes them.
  *

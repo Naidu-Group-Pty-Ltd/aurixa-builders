@@ -134,3 +134,195 @@ from the two stages above:
 Everything else stays in one invocation, because everything else is measured
 in tens of milliseconds and a document that fits must not pay for a document
 that does not.
+
+---
+
+## 6. What was built from that measurement
+
+Two rules, both taken from §4, and nothing else. No new edge function, no
+second queue, and no split of work that was measured in tens of milliseconds.
+
+### 6.1 The raster class leaves early, and the loop that was unbounded is bounded
+
+`attachDocumentMedia` had **no budget inside it at all**. `importStockRecords`
+asked `room()` once, before the call, and the loop then decoded, classified
+and uploaded every picture in the document with nothing checking anything.
+That is the LOT 550 kill in one sentence: `room()` said yes at 46 ms and
+twelve pictures at ~1.5 s each followed it.
+
+Now:
+
+* `room()` also asks `mayStoreImage(ledger)`, so the wall-clock deadline and
+  the picture count are joined by the resource that actually kills the worker.
+* Each picture is asked for BEFORE it is stored, and charged whether it stored
+  or threw — a ceiling that only counts successes is one a run of failures
+  walks straight through.
+* What is left behind is reported (`onImageryDeferred` → `imageryOutstanding`),
+  which is a state the page already renders as *"Images are still being found
+  — you can close this page."*
+* `documentVisualKinds` is charged as `image_decode` and run **whole or not at
+  all**: truncating it would settle roles on partial evidence, which is the
+  thing `importStockRecords`' own whole-set deferral exists to prevent.
+
+Nothing is lost. The image settler re-reads the same document through the same
+`attachDocumentMedia`, in its own CPU-class-aware isolate, dispatched six wide
+by `builder_stock_kick_image_work` the moment the import ends.
+
+`repairSourceImages` passes no ledger and therefore declines nothing — it is
+the component that exists to attach what this declines.
+
+### 6.2 The document class gets a continuation, and only for recognition
+
+Recognition is the one document-class stage that can exceed any sane budget on
+its own and the only one with nowhere else to send its work. It was already
+page-wise; what it lacked was somewhere to stop and somewhere to put what it
+had read.
+
+* `recogniseScannedPages` takes `mayRecognise` (asked before each page) and
+  `onPage` (awaited after each one). A page it does not reach is **deferred**,
+  a third state beside "read" and "refused", because a refusal is a statement
+  about the page and a deferral is a statement about the invocation.
+* `FINAL_OCR_REFUSAL_REASONS` names the refusals that are about the page —
+  `no_raster`, `too_large`, `unreadable`. `out_of_time` and
+  `engine_unavailable` are deliberately not in it: treating either as final
+  would silently lose a readable page the moment a budget was tight.
+* `extractPdfPhotosByPage` takes a page LIST. It took a page count, rasterised
+  1..n and the caller threw away what the plan had not asked for — 4,408 ms on
+  `stress-many-images` to recognise none of them.
+* The checkpoint (`import_checkpoint`) holds recognised page text and nothing
+  else, keyed on the document's own SHA-256. A checkpoint whose digest does
+  not match the bytes in hand is discarded **whole**, which is what makes
+  re-reading a changed linked source indistinguishable from a first read.
+
+Pictures are deliberately **not** checkpointed: they already have somewhere
+better to go, and persisting decoded rasters to resume them would be the
+"giant blob stored to avoid computation" this design is told not to write.
+
+### 6.3 The ceiling is derived, not chosen
+
+The platform exposes no CPU meter — `546` names no resource and no amount — so
+the ceiling is derived from the other end. The shortest production run
+measured to be KILLED is **6,400 ms of wall clock**, and compute is a subset
+of wall clock. The test is asked before a step, so the worst case is
+`ceiling + largest single step`, and the largest step measured is an OCR page
+at ~3,100 ms:
+
+```
+ceiling + 3,100  <  6,400      =>      ceiling  <  3,300
+```
+
+`EXPENSIVE_SPEND_CEILING_MS` is **3,000**. `metadata` is excluded from the
+reckoning entirely, because it was measured at 485 ms across eight documents.
+
+The asymmetry is the point: overshoot kills the invocation; undershoot costs
+one dispatch. `builderStockImportHandsOffBeforeItDies.spec.ts` asserts the
+inequality rather than the number, so if the step costs change the ceiling
+must move with them.
+
+## 7. One worker per import
+
+Once an import is resumable, four things become possible that were not before,
+and every one of them writes a builder's stock list twice: a continuation
+dispatched twice (the hand-off AND the recovery sweep), a successor starting
+while its predecessor is alive, a builder clicking through a second
+`process_upload`, and a killed worker holding the row shut.
+
+`builder_stock_claim_import` answers all four with one conditional UPDATE.
+Under READ COMMITTED the second writer blocks on the row lock, re-evaluates
+its `WHERE` against the version the first committed, matches zero rows and
+answers false. No queue, no advisory lock, no second table.
+
+Three rules carry it:
+
+* **The lease is invocation-sized** (90 s). A lease is how long a DEAD worker
+  blocks the work, and lengthening one is never the remedy for anything — the
+  settler's seventeen-minute incident is what that costs.
+* **A release names its token.** The settler shipped a release that named the
+  stage it *thought* it held and walked a property back down its ladder. Here
+  the statement clears the claim only `WHERE import_claim_token = p_token`, so
+  a stale worker cannot release a successor's claim — not by timing, but
+  because it cannot spell the token. A release also writes nothing else.
+* **`held` and `unavailable` lead opposite ways.** `held` means stop.
+  `unavailable` means the migration has not reached this deployment, and the
+  caller proceeds unclaimed, exactly as every import did before.
+
+Eight of these properties are asserted against a real PostgreSQL by
+`scripts/ops/probe-import-claim.mjs`, which runs in the acceptance gate —
+because reading the function back proves the text applied and nothing else,
+which is the class of mistake the retention purge, the `manual_stats` CHECK
+and the AML `.or()` each shipped once.
+
+## 8. The successor starts now
+
+`builder_stock_dispatch_import_continuation` calls
+`cron_invoke_signed_function('builder-portal-stock', …)` — the same signed
+internal dispatcher that fans out the image settler. `continue_import` is an
+operation on the function that already owns importing, gated by
+`verifyInternal` before the portal session is resolved, so there is exactly
+one implementation of "read this document".
+
+**The release comes before the dispatch.** A successor dispatched while its
+predecessor still holds the claim would find the row claimed, correctly
+decline, and the import would then wait for the minute tick — which is the
+cron dependency this whole design removes. `releaseThenContinue` is the one
+place that pairing is written down, and `finishImport` is the one place every
+import path ends, so it is written once rather than at four call sites.
+
+**Only a caller that can be reproduced is handed off.** A continuation
+re-reads the stored bytes and nothing else. That reproduces a file import
+faithfully and a LINKED one not at all: Sheets and Notion carry
+`documentName`, `baseUrl`, `isNotionSource`, `rowAssets`, `linkDiscovery` and
+`sheetTab` alongside the bytes, every one of them evidence the reader uses. So
+`resumableFromStoredBytes` is declared by the file paths and by the
+continuation itself, and a linked source degrades exactly as it does today —
+which is now safe, because the CPU ceiling stops recognition on every path
+whether or not a hand-off follows. (In practice they barely overlap: a Sheets
+or Notion source is a spreadsheet or a page, never a scan.)
+
+The organisation's name is READ on the continuation path rather than
+inherited — `organisationName.ts`, shared with the reader sweep — because the
+deterministic reader uses it as evidence. Leaving it null would make the
+successor read the same brochure differently from its predecessor, and which
+reading a customer got would depend on where the CPU ran out.
+
+## 9. The status never lies
+
+The hand-off writes **nothing**. The row stays `parsing`, no count is
+recorded, `processing_completed_at` stays null. Writing a success there would
+be the 22 September lie exactly — `records_detected: 0` on an upload whose
+properties arrive a few seconds later; writing a failure would be worse,
+sending a builder to re-upload a list that is mid-import.
+
+`importOutcomeColumns` composes the whole outcome row in one place. The
+comment above it used to say only the COUNTS are alike across callers, and
+that was true while the callers were the portal and the reader sweep. It
+stopped being true the moment an import could be finished by a continuation:
+the browser's invocation and the dispatcher's are the same import split across
+isolates, so a status that differed between them would make what an import
+means depend on how big the document was.
+
+The browser is told `still_importing: true` and says so — *"Still reading this
+document … it will appear in your sources below when it finishes — you can
+close this page."* `StockUploadStillReading` is a separate shape rather than a
+zeroed summary, because `{ detected: 0, imported: 0 }` is what an empty stock
+list looks like.
+
+## 10. Recovery remains, and does not define latency
+
+`builder_stock_recover_stalled_imports` runs from the minute tick. It is
+**recovery, not stage transport**: the normal path dispatches its own
+successor before returning and never reaches it. It exists for the invocation
+that vanished without being able to say so — an out-of-memory abort, a host
+that went away.
+
+Its signal is better than the one the fifteen-minute sweep has to use. A clock
+cannot tell a running import from a dead one; a lease can. `parsing` plus a
+claim token plus an expired claim is a worker that died, definitively, and it
+turns a fifteen-minute gap into a sixty-second one.
+
+It is bounded at three restarts per attempt, because an import that has died
+three times is not one more dispatch away from working, and a minute tick
+re-dispatching it for ever is a loop nobody is watching. `markParsing` resets
+the bound, because a person starting the import again is a new attempt — a
+file that failed three times last week must not be permanently unreadable.
+`recoverAbandonedFinalisations` sits behind all of it, unchanged.

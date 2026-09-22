@@ -15,6 +15,10 @@
  */
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
 import { runStockImport } from '../../supabase/functions/_shared/builderStock/runImport.ts';
+import { isImportContinuation } from '../../supabase/functions/_shared/builderStock/importContinuation.pure.ts';
+import { continueStockImport } from '../../supabase/functions/_shared/builderStock/continueImport.ts';
+import { claimImport } from '../../supabase/functions/_shared/builderStock/importClaim.ts';
+import { EXPENSIVE_SPEND_CEILING_MS } from '../../supabase/functions/_shared/builderStock/importResumeBudget.pure.ts';
 /*
  * THE PORTAL'S OWN SERVING STEP, imported rather than imitated. This is what
  * `builder-portal-stock`'s `image_url` operation calls, so what the gate
@@ -253,6 +257,7 @@ for (const [key, legal] of [
   ['fault:img', 'Fault Matrix Imagery Pty Ltd'],
   ['fault:replace', 'Fault Matrix Replacement Pty Ltd'],
   ['fault:abandoned', 'Fault Matrix Abandoned Pty Ltd'],
+  ['fault:handoff', 'Fault Matrix Hand-off Pty Ltd'],
 ]) {
   const { data: org, error } = await db.from('builder_organisations')
     .insert({ legal_name: legal, org_type: 'builder' }).select('id').single();
@@ -1584,6 +1589,7 @@ const invariants: Record<string, unknown> = {};
   const FAULT_IMG = 'fault:img';
   const FAULT_REPLACE = 'fault:replace';
   const FAULT_ABANDONED = 'fault:abandoned';
+  const FAULT_HANDOFF = 'fault:handoff';
   /*
    * ORDINARY DOCUMENTS, in manifest order, one per case. A fault matrix that
    * reused one document would be asserting six things about one page; these
@@ -2148,6 +2154,134 @@ const invariants: Record<string, unknown> = {};
       JSON.stringify(faults.workerDiedAfterCommit));
   }
 
+  // --- 8l. THE IMPORT RUNS OUT OF CPU AND HANDS ITSELF ON -----------------
+  /*
+   * THE CASE THE WHOLE RESUMABLE IMPORTER EXISTS FOR, driven end to end
+   * through the real modules: `runStockImport` hands off, the successor
+   * `continueStockImport` finishes, and the document that comes out is the
+   * one a single invocation would have produced.
+   *
+   * HOW THE HAND-OFF IS FORCED, AND WHY IT IS NOT A STUB. The run is handed a
+   * ledger that has ALREADY SPENT the invocation's allowance — which is
+   * exactly what a real document does to itself after a few OCR pages, and
+   * which `mayRecognisePage` reads without knowing or caring how the spend
+   * got there. Nothing is mocked: the real budget module makes the real
+   * decision, the real checkpoint is written to the real column, and the real
+   * successor reads it back.
+   *
+   * FOUR THINGS MUST HOLD, and each one is a way this could ship broken:
+   *
+   *   • the hand-off writes NO count and NO completion stamp — the
+   *     22 September lie was `records_detected: 0` on a row mid-import;
+   *   • the successor produces the properties, exactly once;
+   *   • a SECOND successor, dispatched while the first holds the claim, does
+   *     nothing at all — the double dispatch is expected, not exceptional,
+   *     because the hand-off and the recovery sweep reach the same row;
+   *   • the finished row reads `enriching`/`partially_complete` with real
+   *     counts, never `parsing` and never a false zero.
+   */
+  {
+    /*
+     * A SCANNED DOCUMENT, because only recognition can hand off. Its own
+     * organisation, because the duplicate guard is keyed on (bytes,
+     * organisation) and every other fault case has already imported the
+     * singles into theirs.
+     */
+    const entry = manifest.find((e: any) => e.name === 'scanned-no-text-layer')
+      ?? manifest.find((e: any) => e.expect?.ocr)
+      ?? docOf(7);
+    const org = orgs[FAULT_HANDOFF];
+    const bytes = await Deno.readFile(`${corpusDir}/${entry.org}/${entry.filename}`);
+    const path = `${org.id}/${crypto.randomUUID()}.pdf`;
+    await db.storage.from(BUCKET).upload(path, bytes, { contentType: 'application/pdf', upsert: true });
+    const upload = await newUpload(FAULT_HANDOFF, entry.filename, path);
+    await db.from('builder_stock_uploads').update({
+      status: 'parsing', processing_started_at: new Date().toISOString(),
+    }).eq('id', upload.id);
+
+    /*
+     * A run whose allowance is already gone before it reaches recognition.
+     * `ocr_ms` is charged to the `document` class, which is what the ceiling
+     * counts — see `importResumeBudget.pure.ts` — and this is exactly what a
+     * real scan does to itself after a couple of pages. Nothing is mocked:
+     * the real budget module makes the real decision.
+     */
+    const spent = { ocr_ms: EXPENSIVE_SPEND_CEILING_MS + 1, stage: 'ocr' };
+    const first = await runStockImport({
+      supabase: db, organisationId: org.id, organisationName: org.name,
+      builderUserId: org.userId,
+      upload: { id: upload.id, original_filename: upload.original_filename },
+      bytes, sourceKind: 'file',
+      ledger: { ...spent },
+      resumableFromStoredBytes: true,
+    });
+
+    const handedOff = isImportContinuation(first);
+    const afterFirst = await stateOf(upload.id);
+    const rowsAfterFirst = (await itemsFor(upload.id)).length;
+
+    /*
+     * AND THE SUCCESSOR, WHICHEVER WAY THE FIRST RUN WENT.
+     *
+     * On a document that handed off it finishes the import. On one that did
+     * not it must be a NO-OP — the row is no longer `parsing`, so there is
+     * nothing owed, and a continuation that re-imported a finished document
+     * would fork every property in it. Both are asserted below, from the one
+     * call, because both are how this can be wrong.
+     */
+    const second = await continueStockImport(db, upload.id);
+
+    // A SECOND DISPATCH, while nothing is holding the row. It must find the
+    // import already finished and do nothing rather than import again.
+    const third = await continueStockImport(db, upload.id);
+
+    // AND ONE THAT ARRIVES WHILE A WORKER STILL HOLDS THE CLAIM.
+    const holder = await claimImport(db, upload.id);
+    const whileHeld = await continueStockImport(db, upload.id);
+    if (holder.ok) await holder.claim.release();
+
+    const rowsFinal = (await itemsFor(upload.id)).map((i: any) => i.id).sort();
+    const state = await stateOf(upload.id);
+    const lots = (await itemsFor(upload.id)).map((i: any) => String(i.lot_number ?? ''));
+    const distinctLots = new Set(lots).size;
+
+    faults.cpuHandOff = {
+      handedOff,
+      // What the hand-off left on the row: nothing, if it happened.
+      afterFirst: handedOff
+        ? {
+          status: afterFirst.status,
+          recordsDetected: afterFirst.records_detected ?? null,
+          completedAt: afterFirst.processing_completed_at ?? null,
+          rows: rowsAfterFirst,
+        }
+        : null,
+      successor: second.state,
+      secondDispatch: third.state,
+      whileClaimHeld: whileHeld.state,
+      rows: rowsFinal.length,
+      distinctLots,
+      status: state.status,
+      recordsDetected: state.records_detected ?? null,
+    };
+    invariant('an-import-that-runs-out-of-cpu-hands-off-and-is-finished-exactly-once',
+      // The hand-off states nothing about a document it has not read.
+      (!handedOff || (afterFirst.status === 'parsing'
+        && !afterFirst.processing_completed_at
+        && !afterFirst.records_detected
+        && rowsAfterFirst === 0))
+      // A worker holding the claim is never displaced by a second dispatch.
+      && whileHeld.state === 'held'
+      // A finished import is never re-imported by a late dispatch.
+      && third.state === 'not_importing'
+      // And the document that came out is one document, once.
+      && rowsFinal.length > 0
+      && distinctLots === rowsFinal.length
+      && state.status !== 'parsing'
+      && Number(state.records_detected ?? 0) === rowsFinal.length,
+      JSON.stringify(faults.cpuHandOff));
+  }
+
   // --- 8j. NOTHING IN THE MATRIX LEFT A ROW MID-FLIGHT --------------------
   /*
    * The cross-cutting one, and the reason it is last: it judges every row
@@ -2156,7 +2290,8 @@ const invariants: Record<string, unknown> = {};
    * rows through the reader sweep for ever.
    */
   {
-    const keys = [FAULT, FAULT_IMG, FAULT_REPLACE, FAULT_ABANDONED].map((k) => orgs[k].id);
+    const keys = [FAULT, FAULT_IMG, FAULT_REPLACE, FAULT_ABANDONED, FAULT_HANDOFF]
+      .map((k) => orgs[k].id);
     const { data } = await db.from('builder_stock_uploads')
       .select('id, organisation_id, status, error_code')
       .in('organisation_id', keys);

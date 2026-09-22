@@ -31,7 +31,10 @@ import { attachRowHyperlinks, hyperlinkTargetOf } from './sheetHyperlinks.pure.t
  * DYNAMICALLY, so an import that never meets a scan pays nothing.
  */
 import { mergeRecognisedPages, planOcr } from './ocr/ocrPolicy.pure.ts';
-import { OCR_MAX_PAGES, recogniseScannedPages } from './ocr/recogniseScan.ts';
+import {
+  OCR_MAX_PAGES, isFinalOcrRefusal, recogniseScannedPages,
+} from './ocr/recogniseScan.ts';
+import { OCR_PAGE_MS, remainingExpensiveMs } from './importResumeBudget.pure.ts';
 import { MAX_GRID_CELLS } from './sheetGrid.pure.ts';
 import { readHtmlSource } from './htmlSource.pure.ts';
 import { readOpenDocument, readPresentation, readRichText, readStructured } from './otherFormats.pure.ts';
@@ -123,6 +126,20 @@ export interface StockExtraction {
    * outstanding rather than as absent. Absent on every unbudgeted path.
    */
   imageryDeferred?: DiscoveryRefusal | null;
+  /**
+   * The pages recognition still owes this document, after everything this
+   * invocation and its predecessors have settled.
+   *
+   * THE HAND-OFF SIGNAL, AND THE ONLY ONE. A non-empty list means a successor
+   * invocation has something worth doing that cannot be done anywhere else —
+   * imagery goes to the settler, row writes are free, and recognition is the
+   * one stage with nowhere else to go. An empty list, or absent, means this
+   * document is finished with the recogniser.
+   *
+   * Absent on every document that needed no recognition, which is almost all
+   * of them.
+   */
+  ocrOutstanding?: number[];
   /**
    * What text RECOGNITION did, where the PDF's own text layer was wanting.
    *
@@ -590,6 +607,27 @@ export async function extractStockFile(
      * test caller unchanged.
      */
     onStage?: ((ledger: ImportStageLedger) => Promise<void>) | null;
+    /**
+     * WHAT A PREVIOUS INVOCATION ALREADY RECOGNISED, and where to put what
+     * this one recognises.
+     *
+     * Recognition is the one document-class stage measured to exceed any sane
+     * CPU budget on its own — 9,223 ms over three pages, ~3,100 ms each — and
+     * it is the only stage in this extractor whose work cannot be handed to
+     * another component. So it is the only one that is checkpointed, and this
+     * is the whole of that mechanism from the extractor's side: pages it is
+     * handed are not re-read, pages it reads are handed back one at a time,
+     * and pages it could not afford are named so a successor knows what is
+     * still owed.
+     *
+     * ALL THREE ABSENT MEANS TODAY'S BEHAVIOUR, exactly: one pass, as far as
+     * the deadline allows, nothing carried and nothing reported.
+     */
+    ocrCarried?: ReadonlyMap<number, string> | null;
+    ocrSettled?: ReadonlySet<number> | null;
+    mayRecognisePage?: (() => boolean) | null;
+    onRecognisedPage?: ((page: number, text: string) => Promise<void> | void) | null;
+    onRefusedPage?: ((page: number) => Promise<void> | void) | null;
   } = {},
 ): Promise<StockExtraction> {
   const result: StockExtraction = {
@@ -863,18 +901,59 @@ export async function extractStockFile(
     if (!plan.sufficient) {
       try {
         const { extractPdfPhotosByPage } = await import('./pdfSourcePhoto.ts');
-        const wanted = new Set(plan.pages);
+        /*
+         * WHAT A PREVIOUS INVOCATION ALREADY SETTLED IS NOT ASKED AGAIN.
+         *
+         * `ocrSettled` carries the pages a successor must not spend CPU on:
+         * the ones already recognised, and the ones refused for a reason that
+         * is about the PAGE rather than about an attempt. See
+         * `FINAL_OCR_REFUSAL_REASONS` — an `out_of_time` page is deliberately
+         * NOT in it, because that refusal is a statement about a budget and
+         * re-asking is the entire point of resuming.
+         */
+        const settled = options.ocrSettled ?? new Set<number>();
+        const stillOwed = plan.pages.filter((page) => !settled.has(page));
+        /*
+         * RASTERISE ONLY WHAT THIS INVOCATION CAN AFFORD TO RECOGNISE.
+         *
+         * Decompressing a page is charged to the same allowance recognising it
+         * is, and it happens FIRST — so without this, an invocation could
+         * rasterise eight pages, discover it has nothing left, recognise none
+         * of them and hand off; and its successor would do exactly the same,
+         * for ever, until the crossing bound stopped it. Ten isolates spent
+         * decompressing the same pages over and over is the worst outcome
+         * available here and it is produced by the mechanism meant to prevent
+         * it.
+         *
+         * AT LEAST ONE, ALWAYS. A fresh invocation arrives having spent almost
+         * nothing, so the floor never binds in practice; it is there so that
+         * "how many can I afford" can never answer none, because an invocation
+         * that makes no progress is a crossing wasted.
+         */
+        const affordable = Math.max(1, Math.floor(
+          remainingExpensiveMs(options.ledger) / OCR_PAGE_MS));
+        const outstanding = stillOwed.slice(0, affordable);
+        const wanted = new Set(outstanding);
         /*
          * COUNTED AS `ocr` RATHER THAN AS IMAGE WORK, because that is what it
          * is: these rasters exist only to be recognised and are thrown away
          * afterwards. Filing them under image extraction was the flat
          * ledger's doing and it made a scanned document look like one with
          * lots of pictures.
+         *
+         * AND ONLY THE PAGES THE PLAN WANTS ARE DECOMPRESSED. Measured
+         * 22 September 2026: this call took a page COUNT, rasterised pages
+         * 1..n and the filter below threw away what the plan had not asked
+         * for — 4,408 ms on `stress-many-images` to recognise none of them.
          */
-        const photos = await timed('ocr', async () => {
-          countIn(timings, 'document_parses');
-          return await extractPdfPhotosByPage(bytes, { maxPages: OCR_MAX_PAGES });
-        });
+        const photos = outstanding.length
+          ? await timed('ocr', async () => {
+            countIn(timings, 'document_parses');
+            return await extractPdfPhotosByPage(bytes, {
+              maxPages: OCR_MAX_PAGES, pages: outstanding,
+            });
+          })
+          : [];
         const rasters = photos
           .filter((entry) => wanted.has(entry.page))
           .map((entry) => ({
@@ -887,19 +966,52 @@ export async function extractStockFile(
         const reading = await timed('ocr', () => recogniseScannedPages(rasters, {
           deadlineAt: options.budget
             ? storageDeadlineFrom(options.budget, Date.now()) : undefined,
+          mayRecognise: options.mayRecognisePage ?? null,
+          onPage: options.onRecognisedPage ?? null,
         }));
+        /*
+         * A REFUSAL THAT IS ABOUT THE PAGE IS REPORTED SO IT IS NEVER ASKED
+         * AGAIN. One that is about the attempt is not — it stays outstanding
+         * and a successor retries it with a fresh allowance.
+         */
+        if (options.onRefusedPage) {
+          for (const refusal of reading.refusals) {
+            if (isFinalOcrRefusal(refusal)) await options.onRefusedPage(refusal.page);
+          }
+        }
+        /*
+         * THE CARRIED PAGES ARE PART OF THE READING.
+         *
+         * A successor that recognised page 5 and was handed pages 1 and 3 by
+         * its predecessor must produce the same document as one invocation
+         * that read all three — otherwise resuming would change what the
+         * deterministic reader sees, which is the one thing a resume may
+         * never do.
+         */
+        const everyPage = new Map<number, string>(options.ocrCarried ?? []);
+        for (const [page, text] of reading.text) everyPage.set(page, text);
         countIn(timings, 'ocr_pages', reading.text.size);
         result.ocr = {
           attempted: plan.pages.length,
-          read: reading.text.size,
-          recognisedPages: [...reading.text.keys()].sort((a, b) => a - b),
+          read: everyPage.size,
+          recognisedPages: [...everyPage.keys()].sort((a, b) => a - b),
           refusals: reading.refusals,
           available: reading.available,
           ms: reading.ms,
           imageOnly: plan.imageOnly,
         };
-        if (reading.text.size) {
-          result.pageTexts = mergeRecognisedPages(result.pageTexts ?? [], reading.text);
+        /*
+         * PAGES THIS DEPLOYMENT STILL OWES — the plan's pages that neither
+         * this invocation nor any before it has settled. A non-empty list is
+         * the extractor saying "a successor has something worth doing"; an
+         * empty one is what lets the run finish.
+         */
+        result.ocrOutstanding = plan.pages
+          .filter((page) => !everyPage.has(page)
+            && !settled.has(page)
+            && !reading.refusals.some((r) => r.page === page && isFinalOcrRefusal(r)));
+        if (everyPage.size) {
+          result.pageTexts = mergeRecognisedPages(result.pageTexts ?? [], everyPage);
           const recognised = (result.pageTexts ?? []).join('\n');
           result.text = recognised.trim()
             ? recognised.slice(0, MAX_TEXT_CHARS) : result.text;

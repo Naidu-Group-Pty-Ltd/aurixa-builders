@@ -375,12 +375,32 @@ export async function extractExactSourcePhotoFromPdf(
  */
 export async function extractPdfPhotosByPage(
   bytes: Uint8Array,
-  options: { maxPages?: number } = {},
+  options: {
+    maxPages?: number;
+    /**
+     * The 1-based pages the caller actually wants, where it knows.
+     *
+     * WHY THIS EXISTS. The OCR path asks for a PAGE COUNT and then throws away
+     * every page its plan did not want — measured 22 September 2026 on
+     * `stress-many-images`: 4,408 ms spent rasterising SEVEN pages, of which
+     * the plan wanted a subset, in a stage that is one of only two expensive
+     * stages in the whole importer. Decompressing a page nobody will read is
+     * the cheapest CPU in this pipeline to stop spending.
+     *
+     * Absent means "the first `maxPages`", which is exactly today's
+     * behaviour — so no other caller changes.
+     */
+    pages?: readonly number[] | null;
+  } = {},
 ): Promise<Array<{ page: number; photo: PdfPhoto }>> {
   const { objects: recovered } = await recoverCompressedObjects(bytes);
   const limit = Math.max(1, Math.min(options.maxPages ?? MAX_PAGES_SEARCHED, MAX_PAGES_SEARCHED));
+  const wanted = options.pages?.length
+    ? new Set(options.pages.filter((page) => Number.isFinite(page) && page > 0))
+    : null;
   const out: Array<{ page: number; photo: PdfPhoto }> = [];
   for (let index = 0; index < limit; index++) {
+    if (wanted && !wanted.has(index + 1)) continue;
     const photo = await extractPdfPagePhoto(bytes, index, recovered);
     if (photo) out.push({ page: index + 1, photo });
   }

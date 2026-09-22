@@ -76,3 +76,83 @@ export async function recordImportCounts(
   if (input.organisationId) query = query.eq('organisation_id', input.organisationId);
   await query;
 }
+
+/**
+ * ===========================================================================
+ * AND THE WHOLE OUTCOME ROW, ONCE, BECAUSE THERE ARE TWO CALLERS NOW.
+ * ===========================================================================
+ *
+ * The paragraph above says the STATUS and the ERROR are not alike across
+ * callers and must not be made alike. That was true of the portal and the
+ * reader sweep, and it is exactly false of the two callers below: the
+ * browser's `process_upload` and the dispatcher's `continue_import` are the
+ * SAME import, split across isolates because one of them ran out of CPU. If
+ * they wrote different statuses for the same result, an import would mean
+ * something different depending on which invocation happened to finish it —
+ * which is the worst possible place for a divergence, because it depends on a
+ * document's size.
+ *
+ * So the columns are composed here and the two callers spread them. Each
+ * still owns what is genuinely its own: the portal's statement adds the
+ * organisation filter and the `select` its response needs; the continuation's
+ * adds nothing, because a dispatcher has no response to shape.
+ *
+ * Pure: it returns columns. Nothing here reads a clock but the completion
+ * stamp, and nothing here writes.
+ */
+export interface ImportOutcomeSummary extends ImportCounts {
+  failures: Array<{ label: string; reason: string }>;
+}
+
+export function importOutcomeColumns(
+  result: {
+    uploadStatus: string;
+    summary: ImportOutcomeSummary;
+    deterministicIgnored?: string[] | null;
+    deterministicPlacement?: string[] | null;
+  },
+  /**
+   * What a SPREADSHEET source could not give us, where the caller read one.
+   *
+   * Null for every file import, which is what a continuation always is — it
+   * resumes from stored bytes, and stored bytes have no hyperlinks to fail to
+   * read. Passing null is therefore a statement about the source rather than
+   * a caller declining to look.
+   */
+  sourceNotice: { code?: string | null; message?: string | null; detail?: unknown } | null,
+): Record<string, unknown> {
+  const importDiagnosis = result.deterministicIgnored?.length
+    ? {
+      deterministic_ignored: result.deterministicIgnored,
+      deterministic_placement: result.deterministicPlacement ?? null,
+    }
+    : null;
+  const outcomeDetail = result.summary.failures.length
+    ? { failures: result.summary.failures }
+    : (sourceNotice ? sourceNotice.detail : null);
+  return {
+    status: result.uploadStatus,
+    ...importCountColumns(result.summary),
+    error_code: result.summary.failures.length ? null : (sourceNotice?.code ?? null),
+    error_detail: (outcomeDetail || importDiagnosis)
+      ? { ...(outcomeDetail as Record<string, unknown> ?? {}), ...(importDiagnosis ?? {}) }
+      : null,
+    error_message: result.summary.failures.length
+      ? `${result.summary.failed} row(s) could not be saved.`
+      : (sourceNotice?.message ?? null),
+    processing_completed_at: new Date().toISOString(),
+  };
+}
+
+/** The columns a failed import writes, named beside the ones a good one does. */
+export function importFailureColumns(
+  code: string, message: string, detail?: unknown,
+): Record<string, unknown> {
+  return {
+    status: 'failed',
+    error_code: code,
+    error_message: message,
+    error_detail: detail ? { detail: String(detail).slice(0, 128_000) } : null,
+    processing_completed_at: new Date().toISOString(),
+  };
+}

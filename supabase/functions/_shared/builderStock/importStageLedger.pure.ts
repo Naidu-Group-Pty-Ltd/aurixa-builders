@@ -178,3 +178,46 @@ export function nextStageAfter(ledger: ImportStageLedger | null | undefined): Im
   if (at < 0) return IMPORT_STAGES[0];
   return IMPORT_STAGES[at + 1] ?? null;
 }
+
+/**
+ * Fold one invocation's account into the import's running account.
+ *
+ * ===========================================================================
+ * WHY AN IMPORT KEEPS TWO LEDGERS AND NOT ONE.
+ * ===========================================================================
+ *
+ * They answer different questions and the same object cannot answer both.
+ *
+ * `stage_timings` on the row is the IMPORT'S account: what this document has
+ * cost in total, across however many isolates it took. That is what a support
+ * question needs and what the 22 September incident had none of.
+ *
+ * The budget is about THIS INVOCATION: how much of its own allowance a worker
+ * has spent and whether it may begin another expensive step. A successor that
+ * inherited its predecessor's spend would arrive with its allowance already
+ * gone, decline every step, hand off again, and the import would spend all
+ * ten of its crossings doing nothing — the exact failure a resumable importer
+ * is supposed to prevent, produced by the mechanism meant to prevent it.
+ *
+ * So a run records into a FRESH ledger and this folds it onto the inherited
+ * one at the moment of writing. `recordStage` adds, so the merged totals are
+ * the sums; `stage` is the last stage of the run doing the writing, which is
+ * what a termination diagnostic is asking about.
+ */
+export function mergeLedgers(
+  base: ImportStageLedger | null | undefined,
+  delta: ImportStageLedger,
+): ImportStageLedger {
+  const merged: ImportStageLedger = { ...(base ?? {}) };
+  for (const [key, value] of Object.entries(delta)) {
+    if (key === 'stage') continue;
+    if (typeof value === 'number') {
+      const existing = merged[key];
+      merged[key] = (typeof existing === 'number' ? existing : 0) + value;
+    } else {
+      merged[key] = value;
+    }
+  }
+  if (delta.stage) merged.stage = delta.stage;
+  return merged;
+}
