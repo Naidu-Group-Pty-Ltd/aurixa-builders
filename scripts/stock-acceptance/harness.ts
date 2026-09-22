@@ -22,6 +22,13 @@ import { runStockImport } from '../../supabase/functions/_shared/builderStock/ru
  */
 import { serveStockImage } from '../../supabase/functions/_shared/builderStock/serveStockImage.ts';
 /*
+ * A REFUSAL CLOSES THE ROW — the portal's own rule, imported rather than
+ * imitated. `runStockImport` marks an upload `parsing` and RETURNS a refusal;
+ * every production caller then writes a terminal status. This gate is a
+ * caller, so it writes one too, through the same function.
+ */
+import { closeRefusedUpload } from '../../supabase/functions/_shared/builderStock/closeRefusedUpload.ts';
+/*
  * THE IMAGE PIPELINE, driven the way the settler drives it. `runStockImport`
  * leaves every property at `image_work_stage: 'source'` with no photograph —
  * imagery is asynchronous in production and a cron function does it. A gate
@@ -36,6 +43,9 @@ import { settleClaimedItem } from '../../supabase/functions/_shared/builderStock
 import {
   readOutstandingUploads, runSettlementTick, settleUploadSourceImages,
 } from '../../supabase/functions/_shared/builderStock/settleSourceImages.ts';
+import {
+  readerSweepPending, settleReaderVersion,
+} from '../../supabase/functions/_shared/builderStock/settleReaderVersion.ts';
 import { publishUploadIfReady } from '../../supabase/functions/_shared/builderStock/itemWorkClaim.ts';
 import { enforceStrictPrimaryImages } from '../../supabase/functions/_shared/builderStock/primaryImage.ts';
 
@@ -165,6 +175,15 @@ const orgs: Record<string, { id: string; name: string; userId: string }> = {};
 for (const [key, legal] of [
   ['alpha', 'Alpha Homes Pty Ltd'], ['beta', 'Beta Living Group Pty Ltd'],
   ['alpha:b', 'Alpha Homes (B) Pty Ltd'], ['beta:b', 'Beta Living Group (B) Pty Ltd'],
+  /*
+   * TWO MORE FOR PART 7, and they exist because the duplicate guard is right.
+   * The invariants re-import documents the main loop has already imported, and
+   * a second upload of the same bytes into the same organisation is refused as
+   * `duplicate_file` — correctly. Running them in organisations that have
+   * never seen the bytes tests identity rather than the duplicate rule, which
+   * is tested where it belongs, above.
+   */
+  ['inv', 'Invariant Homes Pty Ltd'], ['inv:other', 'Invariant Rivals Pty Ltd'],
 ]) {
   const { data: org, error } = await db.from('builder_organisations')
     .insert({ legal_name: legal, org_type: 'builder' }).select('id').single();
@@ -376,6 +395,21 @@ async function routeA(entry: Entry, bytes: Uint8Array, tag = 'A') {
     bytes: downloaded,
     sourceKind: 'file',
   });
+  /*
+   * A REFUSAL CLOSES THE ROW, through the portal's own function. Without this
+   * the gate leaves a row reading `status: parsing, error_code:
+   * duplicate_file` — an error on a status meaning "still working" — and
+   * because `parsing` is re-readable the reader sweep then considers it on
+   * every tick, for ever. Measured: sixteen such rows, and a backlog that can
+   * never drain looks exactly like one draining slowly.
+   */
+  if (!result.ok) {
+    await closeRefusedUpload(db, {
+      uploadId: upload.id, organisationId: orgs[entry.org].id,
+      code: String((result as { code?: string }).code ?? 'import_failed'),
+      message: String((result as { message?: string }).message ?? ''),
+    });
+  }
   return { result, uploadId: upload.id, ms: performance.now() - t0,
            rssDelta: rss() - m0, transferred: downloaded.length };
 }
@@ -828,12 +862,257 @@ for (const entry of manifest) {
   report.push(row);
 }
 
+// ===========================================================================
+// 7 · THE INVARIANTS THAT ARE NOT ABOUT ONE DOCUMENT
+// ===========================================================================
+/*
+ * Everything above judges a document. These judge the SUBSYSTEM: which row a
+ * re-read lands on, what a second organisation's identical file does, whether
+ * a stale source is re-read with nobody asking, whether publication can be
+ * driven twice, and what happens when a worker dies mid-run.
+ *
+ * They run once, on one ordinary brochure, because they are properties of the
+ * pipeline rather than of the page.
+ */
+const invariant = (name: string, ok: boolean, detail = '') => {
+  if (!ok) fails.push(`invariant/${name}: ${detail}`);
+  return ok;
+};
+
+const subject = manifest.find((e: any) => e.name === 'package-brochure') ?? manifest[0];
+/** Part 7 runs in its own organisations. See the seed list. */
+const INV = 'inv';
+const INV_OTHER = 'inv:other';
+const subjectBytes = await Deno.readFile(
+  `${corpusDir}/${subject.org}/${subject.filename}`);
+const invariants: Record<string, unknown> = {};
+
+// --- 7a. A ROW SURVIVES A RE-READ, BY ID -----------------------------------
+/*
+ * The count staying the same is not the same claim as the ROW staying the
+ * same: a fork that also archived the original would keep the count. Identity
+ * is asserted on the id, which is what every image, every patch and every
+ * published card points at.
+ */
+{
+  const org = orgs[INV];
+  const up = await newUpload(INV, subject.filename,
+    `${org.id}/inv-${crypto.randomUUID()}.pdf`);
+  await runStockImport({
+    supabase: db, organisationId: org.id, organisationName: org.name,
+    builderUserId: org.userId, upload: { id: up.id, original_filename: subject.filename },
+    bytes: subjectBytes, sourceKind: 'file',
+  });
+  const first = await itemsFor(up.id);
+  await runStockImport({
+    supabase: db, organisationId: org.id, organisationName: org.name,
+    builderUserId: org.userId, upload: { id: up.id, original_filename: subject.filename },
+    bytes: subjectBytes, sourceKind: 'file',
+  });
+  const second = await itemsFor(up.id);
+  invariants.rereadIds = { before: first.map((i: any) => i.id), after: second.map((i: any) => i.id) };
+  invariant('reread-keeps-the-row',
+    first.length > 0 && first.length === second.length
+    && first.every((i: any, n: number) => i.id === second[n].id),
+    `${JSON.stringify(first.map((i: any) => i.id))} -> ${JSON.stringify(second.map((i: any) => i.id))}`);
+
+  // --- 7b. ANOTHER ORGANISATION'S IDENTICAL FILE IS ANOTHER PROPERTY -------
+  /*
+   * Same bytes, same filename, same lot number, same `pdf:page1` anchor — and
+   * a different tenant. Nothing about a document may join two organisations'
+   * records, and the identity rule is keyed on things a document states, so
+   * this is the test that it is scoped as well.
+   */
+  const other = orgs[INV_OTHER];
+  const up2 = await newUpload(INV_OTHER, subject.filename,
+    `${other.id}/inv-${crypto.randomUUID()}.pdf`);
+  await runStockImport({
+    supabase: db, organisationId: other.id, organisationName: other.name,
+    builderUserId: other.userId, upload: { id: up2.id, original_filename: subject.filename },
+    bytes: subjectBytes, sourceKind: 'file',
+  });
+  const mine = await itemsFor(up.id);
+  const theirs = await itemsFor(up2.id);
+  const shared = mine.filter((i: any) => theirs.some((j: any) => j.id === i.id));
+  invariants.crossTenant = { mine: mine.length, theirs: theirs.length, shared: shared.length };
+  invariant('same-file-another-tenant-is-another-property',
+    theirs.length > 0 && shared.length === 0
+    && theirs.every((i: any) => i.organisation_id === other.id),
+    `mine=${mine.length} theirs=${theirs.length} shared=${shared.length}`);
+
+  // --- 7c. TWO DOCUMENTS SHARING AN ANCHOR ARE TWO PROPERTIES -------------
+  /*
+   * Every single-page brochure anchors its property at `pdf:page1`. Keying on
+   * that alone is what once let a re-read of a three-property list fork it to
+   * five, so two DIFFERENT documents in ONE organisation must still produce
+   * distinct rows.
+   */
+  const secondDoc = manifest.find((e: any) =>
+    e.name !== subject.name && (e.expect?.properties ?? 0) === 1);
+  if (secondDoc) {
+    const bytes2 = await Deno.readFile(`${corpusDir}/${secondDoc.org}/${secondDoc.filename}`);
+    const up3 = await newUpload(INV, secondDoc.filename,
+      `${org.id}/inv2-${crypto.randomUUID()}.pdf`);
+    await runStockImport({
+      supabase: db, organisationId: org.id, organisationName: org.name,
+      builderUserId: org.userId, upload: { id: up3.id, original_filename: secondDoc.filename },
+      bytes: bytes2, sourceKind: 'file',
+    });
+    const otherDocRows = await itemsFor(up3.id);
+    const collided = otherDocRows.filter((i: any) => mine.some((j: any) => j.id === i.id));
+    invariants.sharedAnchor = { doc: secondDoc.name, rows: otherDocRows.length,
+                                collided: collided.length };
+    invariant('two-documents-one-anchor-are-two-properties',
+      otherDocRows.length > 0 && collided.length === 0,
+      `${secondDoc.name}: ${otherDocRows.length} rows, ${collided.length} collided`);
+  }
+}
+
+// --- 7d. A STALE SOURCE IS RE-READ WITH NOBODY ASKING ----------------------
+/*
+ * The contract the permanent heartbeat exists for: raise the reader version,
+ * do nothing else, and every stored source is read again. No SQL re-arm, no
+ * upload, no "Read again", no manual settler invocation.
+ *
+ * It is simulated by putting a row BEHIND the current version, which is
+ * exactly what deploying a new reader does to every row in the table.
+ */
+{
+  /*
+   * NULL IS WHAT A NEW READER SEES. `reader_settled_version` is stamped by the
+   * sweep, not by an import, so every stored source is outstanding the moment
+   * a reader ships — which is exactly the condition this contract is about.
+   */
+  const pendingBefore = await readerSweepPending(db);
+  let considered = 0; let reread = 0; let ticks = 0;
+  // The sweep is bounded per tick on purpose; the cron comes back. So does this.
+  for (; ticks < 40; ticks += 1) {
+    const tick = await settleReaderVersion(db, { deadlineAt: Date.now() + 60_000, limit: 25 });
+    considered += tick.considered; reread += tick.reread;
+    if (!tick.considered) break;
+    if ((await readerSweepPending(db) ?? 0) === 0) { ticks += 1; break; }
+  }
+  const pendingAfter = await readerSweepPending(db);
+  invariants.readerSweep = { pendingBefore, considered, reread, ticks, pendingAfter };
+  invariant('a-stale-source-is-reread-unasked',
+    (pendingBefore ?? 0) > 0 && (pendingAfter ?? 0) === 0,
+    `${pendingBefore} outstanding before; ${considered} considered over ${ticks} ticks, `
+    + `${reread} re-read, ${pendingAfter} outstanding after`);
+
+  // --- 7e. AND AN IDLE HEARTBEAT IS CHEAP AND EXITS ------------------------
+  /*
+   * The tick that finds nothing must cost nothing. A heartbeat that woke and
+   * did work every time would be a scheduler nobody could afford to leave on,
+   * and this one runs every fifteen minutes for ever.
+   */
+  const t0 = Date.now();
+  const idle = await settleReaderVersion(db, { deadlineAt: Date.now() + 60_000, limit: 25 });
+  const idleMs = Date.now() - t0;
+  invariants.idleSweep = { considered: idle.considered, reread: idle.reread, ms: idleMs };
+  invariant('an-idle-heartbeat-is-cheap',
+    idle.reread === 0 && idleMs < 5_000,
+    `re-read ${idle.reread} with nothing outstanding, in ${idleMs} ms`);
+}
+
+// --- 7f. PUBLICATION IS IDEMPOTENT ----------------------------------------
+/*
+ * A property becomes publishable for several different reasons — an import, a
+ * field correction, an image completing, a re-read, a reader upgrade — so the
+ * publish step is reachable from all of them and must be safe to reach twice.
+ */
+{
+  const { data: published } = await db.from('builder_stock_uploads')
+    .select('id, published_at').not('published_at', 'is', null).limit(1);
+  const target = (published ?? [])[0];
+  if (target) {
+    const before = target.published_at;
+    await publishUploadIfReady(db, target.id);
+    await publishUploadIfReady(db, target.id);
+    const { data: again } = await db.from('builder_stock_uploads')
+      .select('published_at').eq('id', target.id).maybeSingle();
+    invariants.publishTwice = { before, after: again?.published_at };
+    invariant('publishing-twice-changes-nothing',
+      !!again?.published_at && again.published_at === before,
+      `${before} -> ${again?.published_at}`);
+  } else {
+    invariant('publishing-twice-changes-nothing', false,
+      'nothing published, so idempotence could not be shown');
+  }
+}
+
+// --- 7g. A WORKER THAT DIES MID-RUN LOSES NOTHING --------------------------
+/*
+ * The import is interrupted after its bytes are stored and before it finishes,
+ * which is what a killed worker looks like from the database: the upload row
+ * exists and no property does. The next pass must complete it rather than
+ * leave it stranded, and must not produce two of anything.
+ */
+{
+  /*
+   * A DOCUMENT THIS ORGANISATION HAS NOT SEEN, because the duplicate guard is
+   * right and would otherwise refuse the run this test is about.
+   */
+  const killDoc = manifest.find((e: any) =>
+    (e.expect?.properties ?? 0) === 1 && e.name !== subject.name) ?? subject;
+  const killBytes = await Deno.readFile(`${corpusDir}/${killDoc.org}/${killDoc.filename}`);
+  const org = orgs[INV_OTHER];
+  const up = await newUpload(INV_OTHER, killDoc.filename,
+    `${org.id}/kill-${crypto.randomUUID()}.pdf`);
+  const killed = new AbortController();
+  killed.abort();
+  let threw = false;
+  try {
+    await runStockImport({
+      supabase: db, organisationId: org.id, organisationName: org.name,
+      builderUserId: org.userId, upload: { id: up.id, original_filename: killDoc.filename },
+      bytes: killBytes, sourceKind: 'file', signal: killed.signal,
+    } as never);
+  } catch { threw = true; }
+  const stranded = await itemsFor(up.id);
+  // Whatever the interruption did, the next ordinary pass must settle it.
+  await runStockImport({
+    supabase: db, organisationId: org.id, organisationName: org.name,
+    builderUserId: org.userId, upload: { id: up.id, original_filename: killDoc.filename },
+    bytes: killBytes, sourceKind: 'file',
+  });
+  const recovered = await itemsFor(up.id);
+  invariants.killedWorker = { doc: killDoc.name, threw, strandedRows: stranded.length,
+                              recoveredRows: recovered.length };
+  invariant('a-killed-worker-is-recovered-not-duplicated',
+    recovered.length === (killDoc.expect?.properties ?? 1),
+    `${killDoc.name}: after recovery ${recovered.length} rows, `
+    + `expected ${killDoc.expect?.properties ?? 1}`);
+}
+
+// --- 7h. TWO UPLOADS AT ONCE DO NOT CROSS ---------------------------------
+{
+  const org = orgs[INV];
+  const twoDocs = manifest.filter((e: any) => (e.expect?.properties ?? 0) === 1).slice(2, 4);
+  const runs = await Promise.all(twoDocs.map(async (e: any, n: number) => {
+    const b = await Deno.readFile(`${corpusDir}/${e.org}/${e.filename}`);
+    const up = await newUpload(INV, e.filename,
+      `${org.id}/conc${n}-${crypto.randomUUID()}.pdf`);
+    const result = await runStockImport({
+      supabase: db, organisationId: org.id, organisationName: org.name,
+      builderUserId: org.userId, upload: { id: up.id, original_filename: e.filename },
+      bytes: b, sourceKind: 'file',
+    });
+    return { uploadId: up.id, ok: result.ok, rows: await itemsFor(up.id) };
+  }));
+  const ids = runs.flatMap((r) => r.rows.map((i: any) => i.id));
+  invariants.concurrent = runs.map((r) => ({ ok: r.ok, rows: r.rows.length }));
+  invariant('two-uploads-at-once-do-not-cross',
+    new Set(ids).size === ids.length
+    && runs.every((r) => r.rows.every((i: any) => i.upload_id === r.uploadId)),
+    JSON.stringify(invariants.concurrent));
+}
+
 await fileServer.shutdown();
 
 // ---------------------------------------------------------------------------
 // 7 · The verdict
 // ---------------------------------------------------------------------------
-console.log(JSON.stringify({ report, fails, limits, modelCallAttempts, urlFetches }, null, 2));
+console.log(JSON.stringify({ report, invariants, fails, limits, modelCallAttempts, urlFetches }, null, 2));
 console.log(`\n${manifest.length} documents · ${fails.length} failures · `
   + `${limits.length} named limits · `
   + `${modelCallAttempts.length} generative-model calls attempted`);

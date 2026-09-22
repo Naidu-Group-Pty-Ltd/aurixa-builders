@@ -60,6 +60,7 @@ import {
 } from '../_shared/builderStock/uploadCompletion.ts';
 import { googleSheetsRef } from '../_shared/builderStock/googleSheetsSource.pure.ts';
 import { serveStockImage } from '../_shared/builderStock/serveStockImage.ts';
+import { closeRefusedUpload } from '../_shared/builderStock/closeRefusedUpload.ts';
 import {
   isTraversableBranch, rowSourceBranches,
 } from '../_shared/builderStock/sourceBranches.pure.ts';
@@ -350,12 +351,13 @@ Deno.serve(async (req) => {
     ) => {
       if (!result.ok) {
         if (result.code === 'duplicate_file') {
-          await supabase.from('builder_stock_uploads').update({
-            status: 'failed',
-            error_code: result.code,
-            error_message: result.message,
-            processing_completed_at: new Date().toISOString(),
-          }).eq('id', uploadId).eq('organisation_id', activeOrganisationId);
+          // The one implementation of "a refusal closes the row", shared with
+          // the acceptance gate so the two cannot drift. See
+          // `closeRefusedUpload.ts`.
+          await closeRefusedUpload(supabase, {
+            uploadId, organisationId: activeOrganisationId,
+            code: result.code, message: result.message,
+          });
           return json({
             success: false, error: result.message, code: result.code,
             duplicate_upload_id: result.duplicateUploadId,
