@@ -263,26 +263,44 @@ Stated rather than implied.
   touch. Recorded because an earlier reading of this incident called them
   stranded jobs, and they were not.
 
-## 8 · Open: 176 lines the reader could not attribute, and the record keeps none
+## 8 · The 176 lines, and the mistake that nearly buried them
 
-`Lot 37` imports now — lot 37, 563 m², the builder's own photograph — and
-its log line also says `deterministic_ignored_lines: 176`. Those 176 lines
-are where its address, price and design still are, and the row's
-`error_detail` is **null**.
+This section previously recorded that `Lot 37`'s 176 unattributed lines were
+not carried into the record, and that "which writer drops them is not yet
+identified". **That was wrong.** Nothing drops them. They were in
+`error_detail` the whole time under `deterministic_ignored` — the key the
+SUCCESS path writes — and the query read `error_detail->>'detail'`, the key
+the FAILURE path writes. It returned null, and a chain of otherwise-correct
+elimination followed from a wrong reading of a record. Kept here because it
+is the same class of error this whole document is about: **a record read the
+wrong way is worse than no record**, and the elimination felt rigorous right
+up to the point it was pointless.
 
-What is established, by execution rather than by reading: the reader
-produces them (`ignoredText` and `diagnostics.ignoredLines` derive from the
-same set), and `extractStockFile` carries them — driven against a crafted
-partial reading it returned three ignored lines beside one provisional row.
-`runStockImport` has a single success return and it includes them, and
-`writeImportOutcome` writes them into `error_detail` when present.
+Reading them properly solved the document. `Lot 37` is **dot-delimited
+throughout**, and every field it was thought not to state is sitting either
+side of a middle dot:
 
-**Which writer drops them is not yet identified**, and no guess is recorded
-here in place of finding out. Until it is, the remaining Lot 37 fields
-cannot be designed for from the stored record alone — which is the
-diagnostic dead end this whole exercise exists to close, still open one
-level down.
+```
+Miami 190 · Spectral
+Sandpiper · Tweed Heads NSW
+190.38 m² · 4 bed · 2 bath · double garage
+LAND PRICE $780,000 · REGISTERING Q1 2027
+Build $547,407          $1,327,407
+```
 
-Two smaller things the same row shows: `development_name` reads
-`PROPLAUNCH`, claimed `via: caption` — the platform's own brand mark, not an
-estate — and the design the filename names (`Miami 190`) is not read.
+Read as whole lines none of them matches anything — a design followed by a
+facade name, an estate followed by a locality, a specification run, each one
+long string the vocabulary has no entry for. Split on the dot, every segment
+is an ordinary statement the reader already understands.
+
+It is the **same character** that was being claimed as an estate, and that is
+not a coincidence: a designer using it as a separator leaves it standing
+alone wherever a segment either side is empty, so reading it as a value was
+the first symptom of not reading it as punctuation.
+
+Only where it separates: whitespace on both sides, so a decimal and
+`1300·555·020` are untouched. The bullet `•` is excluded, because it opens a
+list item rather than separating two fields and every inclusions list is full
+of them.
+
+**The estate is `Sandpiper`, at Tweed Heads West NSW 2485 — not `PROPLAUNCH`.**
