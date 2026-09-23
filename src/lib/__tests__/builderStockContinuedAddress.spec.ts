@@ -81,10 +81,17 @@ describe('the address a comma carries onto the next line', () => {
 });
 
 describe('what it will not read as a suburb', () => {
-  it('a line that does not continue: no comma, no address', () => {
+  it('a line that does not continue: no comma, no suburb', () => {
     const { row } = read(page('Lot 4327 Jubilee Estate', 'Wyndham Vale'));
     expect(row?.suburb ?? null).toBeNull();
-    expect(row?.development_name ?? null).toBeNull();
+    /*
+     * The estate is the lot line's OWN statement and never needed the comma:
+     * `Lot 101 Watsons Reach Estate` is the whole of where a production
+     * brochure says its property is (reader version 16, and
+     * `builderStockLot101Geometry.spec.ts`). What the missing comma still
+     * withholds is the NEXT line, which is what this case is about.
+     */
+    expect(row?.development_name).toBe('Jubilee Estate');
   });
 
   it('the tail of a line that names no lot and no street number', () => {

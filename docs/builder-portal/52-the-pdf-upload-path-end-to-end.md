@@ -832,3 +832,71 @@ Under §0 case 2, it comes to the corpus as a held-out fixture first.
 
 Reader 15 is what reaches the stored document. The reader sweep re-reads it,
 and `LOT 4327`, on its fifteen-minute heartbeat.
+
+
+## 15 · The builder's second template: four facts in arrangements the reader did not know
+
+**The defect (case 1 of §0), 23 September 2026.** `Lot 101 - PICO - BROCHURE
+v002.pdf` was uploaded to the production project that afternoon and its card
+read `Lot 101`, with the icon row's `3 2 1`, and nothing else. The builder is
+the same one as §13 and §14, and this is their other template. The trace
+(`stock-reading-trace`, read-only) shows its property page prints:
+
+    PICO 8
+    Land - $238,500
+    Build - $366,000
+    TOTAL - $604,500
+    Lot 101 Watsons Reach Estate
+    Titles December 2026
+
+Every one of those is a spelling the vocabulary already had. What the reader
+did not know was the arrangement:
+
+| as the page prints it | why nothing read it | the rule now |
+|---|---|---|
+| `TOTAL - $604,500` | `total $` has always been a price heading. The `$` rides on the value, and only the reader that takes a label and a value with **no** separator retried a bare label with its value's marker. Split on the spaced hyphen, the pair went to the two readers that did not. | **A bare label is retried with its value's marker wherever a label meets its value** (`readLabelledValue`, `readVerticalPair`). The retry adds no spelling: `Land - $238,500` and `Build - $366,000` still resolve to nothing, and `TOTAL - 124.50m²` stays unread because `total m²` is not in the vocabulary. |
+| `Lot 101 Watsons Reach Estate` | `readLotHeading` reads a lot line's tail only to refuse it, because a tail may be a street. | **A lot line's tail that names itself an estate is the estate** (`estateAfterLot`). It is `readInlineFieldName`'s own reading of those words, with all its guards, and it claims `development_name` only. `Lot 315 Central Boulevard` still claims nothing but its lot. |
+| `PICO 8`, in a file named `… - PICO - …` | Filename corroboration needed every word of the line in the filename, and the filename carries only the design's family. | **The filename may name a design's family and the page its size** (`corroborateDesignFromFilename`). The family must be a *whole* segment of the filename and the last word a size (`8`, `10.5`, `20B`). Every other guard stands: an identity settled on the page, and exactly one candidate. `PICO 8` beside `PICO 10` reads neither. `PICO 2026` is not a size. `PICO SERIES` in the filename does not name the family `PICO`. |
+| `Titles December 2026` | The other template writes `Titles - Titled Land`. This one drops the separator. | **A completion after its label is read only in the shape of a completion** (`readLeadingCompletion`): a month and a year, a quarter, early, mid or late in a year, or the titled state. `Titles are expected soon` claims nothing. |
+
+**What the brochure does not state, and what the card therefore does not
+show.** The page names no street and no suburb. `Lot 101, Watsons Reach Estate`
+is the whole of where this brochure says the property is, and the card now
+reads `Lot 101, Watsons Reach Estate · PICO 8`. Its text states no lot size
+and no build size. The build size is printed only inside a *picture* of the
+house's area schedule (`TOTAL: 124.50m² | 13.40sq` in a 231 × 166 raster),
+which the text reader cannot see. The lot size is printed nowhere in the
+document: a 300 dpi render of all six pages, read by Tesseract, finds no land
+size. `Allotment up to 500m2` on page 3 is a condition in the foundation
+specification, not this lot's size. Nothing here invents either figure. A
+builder can state a figure their document does not (`manualStats.pure.ts`).
+Reading the picture is a separate change, and until it lands the fixture's
+named limit says so on every run.
+
+A held-out fixture of the class went into the corpus before any code (case 2):
+`heldout-picture-area-schedule`, which prints its area schedule as a picture.
+Run through the unfixed reader, it read exactly what production read: the lot
+and the counts. `builderStockLot101Geometry.spec.ts` asserts the reading against
+the production page's own runs, each rule beside the twin it must refuse. One
+existing assertion was renegotiated: `builderStockContinuedAddress.spec.ts` said
+`Lot 4327 Jubilee Estate` without its comma names no estate. The comma only
+ever decided the *next* line. The estate is the lot line's own statement, and
+the suburb is still refused.
+
+What this does not change, measured rather than assumed. Every PDF the corpus
+generator writes (the 36 fixtures, plus the second file of the replacement fixture) was read by the reader at `HEAD` and by this
+one, and the rows were compared with key order ignored. 36 of 37 read
+identically; the one that differs is the new fixture.
+
+The acceptance gate read 36 documents with 0 failures and 0 generative-model
+calls. It reported 8 named limits: the seven from before, plus this fixture's
+build size, which is the picture. On both routes the new fixture imports its
+lot, estate, design, counts and price through the multi-isolate hand-off. The
+isolate that parsed it decoded nothing, three successors decoded 175 to 205 ms
+each, and its pictures settle. The CPU profile is flat within noise. The
+document class totals 28,737 ms against 29,080. The worst single invocation is
+5,007 ms against 5,093. No invocation both parsed and decoded.
+
+Reader 16 is what reaches the stored document. The reader sweep re-reads it on
+its fifteen-minute heartbeat, and the importer corrects its own row, so the
+property keeps its id and its photographs.

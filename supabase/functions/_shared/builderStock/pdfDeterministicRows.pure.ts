@@ -984,9 +984,25 @@ function readLabelledNumbers(line: string): Claim[] | null {
 function readLabelledValue(line: string): Claim | null {
   const match = line.match(LABELLED_VALUE);
   if (!match) return null;
-  const field = fieldForHeader(match[1]);
+  const value = match[2].trim();
+  /*
+   * `TOTAL - $604,500` IS `total $`, THE SAME RULE AS `Package $749,000`.
+   *
+   * MEASURED 23 SEPTEMBER 2026 on `Lot 101 - PICO - BROCHURE v002.pdf`, whose
+   * price block reads `Land - $238,500`, `Build - $366,000` and `TOTAL -
+   * $604,500`. `total $` has been a price heading since the vocabulary was
+   * written; the value carries the marker, the label does not, and the
+   * separator put them in THIS reader rather than in `readLabelledNumbers`,
+   * which is the one that retried — so the package price was read by nothing.
+   * The retry is the same one `labelAtWithValueMarker` makes, over the whole
+   * label: nothing new is admitted, because a phrase the vocabulary does not
+   * spell still resolves to nothing, and `Land - $238,500` stays unread.
+   */
+  const field = fieldForHeader(match[1])
+    ?? labelAtWithValueMarker([match[1].trim()], 0, value)?.field
+    ?? null;
   if (!field) return null;
-  return { field, value: match[2].trim() };
+  return { field, value };
 }
 
 /**
@@ -1145,7 +1161,15 @@ function readVerticalPair(
   label: string,
   value: string | undefined,
 ): { claim: Claim; consumed: number } | null {
-  const bare = fieldForHeader(label);
+  /*
+   * `TOTAL` BESIDE `$604,500` IS `total $` — the retry `readLabelledNumbers`
+   * makes, made here too, because normalisation splits `TOTAL - $604,500` on
+   * its spaced hyphen into exactly this pair. Only a spelling the vocabulary
+   * already has can come of it: `total $` is the price and `total m2` is
+   * nothing, so a section's area total is still never a building size.
+   */
+  const bare = fieldForHeader(label)
+    ?? (value !== undefined ? labelAtWithValueMarker([label.trim()], 0, value)?.field ?? null : null);
   if (!bare || !BROCHURE_CLAIMABLE_FIELDS.has(bare)) return null;
   if (value === undefined) return null;
 
@@ -1463,6 +1487,31 @@ function readsAsAName(value: string): boolean {
 const LEADING_LABEL_FIELDS: ReadonlySet<string> = new Set([
   'development_name', 'project_name',
 ]);
+
+/**
+ * `Titles December 2026` — A COMPLETION STATED AFTER ITS LABEL, NO SEPARATOR.
+ *
+ * MEASURED 23 SEPTEMBER 2026 on `Lot 101 - PICO - BROCHURE v002.pdf`, where
+ * the builder's other template writes `Titles - Titled Land` and this one
+ * drops the dash. The label is a completion heading the vocabulary already
+ * resolves and the value must be the SHAPE of a completion and nothing else —
+ * a month and a year, a quarter and a year, early, mid or late in a year, or
+ * the titled state — so `Titles are expected soon` claims nothing.
+ */
+const COMPLETION_VALUE = new RegExp('^(?:'
+  + '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?\\s+\\d{4}'
+  + '|q[1-4]\\s*\\d{4}'
+  + '|(?:early|mid|late)\\s+\\d{4}'
+  + '|titled(?:\\s+land)?|registered'
+  + ')$', 'i');
+
+function readLeadingCompletion(line: string): Claim | null {
+  const tokens = String(line ?? '').trim().split(/\s+/).filter(Boolean);
+  if (tokens.length < 2 || tokens.length > 4) return null;
+  if (fieldForHeader(tokens[0]) !== 'expected_completion') return null;
+  const value = tokens.slice(1).join(' ');
+  return COMPLETION_VALUE.test(value) ? { field: 'expected_completion', value } : null;
+}
 function readLeadingFieldName(line: string): Claim | null {
   const trimmed = String(line ?? '').trim();
   const tokens = trimmed.split(/\s+/).filter(Boolean);
@@ -2377,6 +2426,28 @@ function readLotHeading(line: string): Claim | null {
   return { field: 'lot_number', value: tokens[1] };
 }
 
+/**
+ * `Lot 101 Watsons Reach Estate` — THE LOT, AND THE ESTATE IT NAMES ITSELF.
+ *
+ * `readLotHeading` reads the tail of its line only to refuse it, because a
+ * tail may be a street and nothing there decides what a tail is. One tail
+ * decides for itself: a name ending in the word that says what kind of place
+ * it is. MEASURED 23 SEPTEMBER 2026 on `Lot 101 - PICO - BROCHURE v002.pdf`,
+ * whose only statement of where the property is reads exactly that — no
+ * street, no suburb — and whose card read `Lot 101` and nothing else.
+ *
+ * It is the reading `readInlineFieldName` makes of the same words standing on
+ * a line of their own, with every guard that reader has, and it claims the
+ * estate ONLY: `Lot 315 Central Boulevard` names no field and still claims
+ * nothing but its lot.
+ */
+function estateAfterLot(line: string): Claim | null {
+  const tail = line.trim().split(/\s+/).slice(2).join(' ');
+  if (!tail) return null;
+  const named = readInlineFieldName(tail);
+  return named && named.field === 'development_name' ? named : null;
+}
+
 // ---------------------------------------------------------------------------
 // Conflict detection
 // ---------------------------------------------------------------------------
@@ -2730,6 +2801,9 @@ function corroboratedBy(line: string, names: ReadonlyArray<readonly string[]>): 
  *   • THERE MUST BE EXACTLY ONE CANDIDATE. Two unplaced names both echoed by
  *     the filename is the document declining to say which is which.
  */
+/** `8`, `10.5`, `20B` — the size a design name carries after its family. */
+const DESIGN_SIZE = /^\d{1,2}(?:\.\d{1,2})?[A-Za-z]?$/;
+
 /** An identity a document states about ITSELF, beyond the lot every one has. */
 const FILENAME_CORROBORATION_ANCHORS = [
   'development_name', 'project_name', 'address_line', 'external_reference',
@@ -2777,11 +2851,31 @@ export function corroborateDesignFromFilename(input: {
   }
 
   const fileSet = new Set(fileTokens);
+  const segments = stem.split(/\s+[-–—]\s+/).map(nameTokens).filter((tokens) => tokens.length);
   const candidates = input.unresolved.filter((line) => {
     if (!readsAsAName(line)) return false;
     const tokens = nameTokens(line);
     if (tokens.length < 1) return false;
-    return tokens.every((token) => fileSet.has(token));
+    if (tokens.every((token) => fileSet.has(token))) return true;
+    /*
+     * THE FAMILY FROM THE FILENAME, ITS SIZE FROM THE PAGE.
+     *
+     * MEASURED 23 SEPTEMBER 2026 on `Lot 101 - PICO - BROCHURE v002.pdf`: the
+     * page prints `PICO 8` in its largest type and the builder named the file
+     * `PICO`. A design is a family and a size — `Enzo 10.5`, `Cura 20B` — and
+     * a filename often carries only the family. So a line is also a candidate
+     * where everything but its LAST word is a whole segment of the filename,
+     * and that last word is a size and nothing else. The page still supplies
+     * the name, the filename still only classifies it, and every other guard
+     * below stands: the estate settled, one candidate or none.
+     */
+    const words = line.trim().split(/\s+/);
+    const size = words[words.length - 1] ?? '';
+    if (words.length < 2 || !DESIGN_SIZE.test(size)) return false;
+    const family = nameTokens(words.slice(0, -1).join(' '));
+    return family.length > 0 && !HAS_DIGIT.test(family.join(''))
+      && segments.some((segment) =>
+        segment.length === family.length && segment.every((token, at) => token === family[at]));
   });
   const distinct = [...new Set(candidates.map((line) => line.trim()))];
   if (distinct.length !== 1) return null;
@@ -3484,18 +3578,23 @@ export function readPdfBrochure(
           if (counts) found.push(...via('inline_counts', counts));
           else {
             const lot = readLotHeading(line);
-            if (lot) found.push(...via('lot_heading', [lot]));
-            else {
+            if (lot) {
+              found.push(...via('lot_heading', [lot]));
+              const estate = estateAfterLot(line);
+              if (estate) found.push(...via('inline_field_name', [estate]));
+            } else {
               const place = readNamedPlace(line);
-              const named = place ? null : readInlineFieldName(line);
+              const completion = place ? null : readLeadingCompletion(line);
+              const named = place || completion ? null : readInlineFieldName(line);
               /*
                * The established readers first, always. This one is the
                * mirror of `readInlineFieldName` and never its competitor: a
                * line it could read has a heading at the END, and a line this
                * one reads has it at the START.
                */
-              const leading = place || named ? null : readLeadingFieldName(line);
+              const leading = place || named || completion ? null : readLeadingFieldName(line);
               if (place) found.push(...via('named_place', place));
+              else if (completion) found.push(...via('leading_field_name', [completion]));
               else if (named) found.push(...via('inline_field_name', [named]));
               else if (leading) found.push(...via('leading_field_name', [leading]));
               else {
