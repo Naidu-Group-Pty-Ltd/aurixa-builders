@@ -27,11 +27,33 @@ fi
 echo "postgres ready on :$PG_PORT"
 
 if ! curl -sf -o /dev/null "http://localhost:54998/"; then
+  # The server and its configuration are part of the stack, so a fresh machine
+  # provisions them rather than depending on files a previous session left.
+  if [ ! -x "$PGRST_BIN" ]; then
+    curl -fsSL https://github.com/PostgREST/postgrest/releases/download/v12.2.3/postgrest-v12.2.3-linux-static-x64.tar.xz \
+      | tar -xJ -C "$(dirname "$PGRST_BIN")"
+  fi
+  # A hosted project's API defaults: the public schema, `extensions` on the
+  # search path, the 1000-row cap. The secret is the gateway's.
+  [ -s /var/tmp/pgrst.conf ] || cat > /var/tmp/pgrst.conf <<'CONF'
+db-uri = "postgres://authenticator:acceptance@localhost:54999/stock_acceptance"
+db-schemas = "public"
+db-anon-role = "anon"
+db-extra-search-path = "public, extensions"
+db-max-rows = 1000
+jwt-secret = "acceptance-corpus-local-jwt-secret-which-is-at-least-32-bytes"
+server-host = "127.0.0.1"
+server-port = 54998
+CONF
   # The database must exist before PostgREST can load a catalogue from it.
   psql -h localhost -p "$PG_PORT" -U postgres -Atc \
     "select 1 from pg_database where datname='stock_acceptance'" | grep -q 1 \
     || node scripts/stock-acceptance/build-database.mjs
-  ( cd /var/tmp && setsid "$PGRST_BIN" pgrst.conf < /dev/null > pgrst.log 2>&1 & )
+  # `exec`, so no shell outlives the launch. Backgrounding the whole
+  # `cd && setsid …` list left a bash waiting on PostgREST with this script's
+  # stdout still open, so a caller reading that stdout never saw EOF and the
+  # script appeared to run for hours after the stack was up.
+  ( cd /var/tmp && exec setsid "$PGRST_BIN" pgrst.conf < /dev/null > pgrst.log 2>&1 ) &
   for _ in $(seq 1 30); do curl -sf -o /dev/null "http://localhost:54998/" && break; sleep 1; done
 fi
 echo "postgrest ready on :54998"

@@ -40,7 +40,7 @@ import { AU_LOCALE } from '@/lib/aml/displayDate';
 import { BuilderSchedule } from '@/components/builder-portal/ui/BuilderSchedule';
 import { useDebounce } from '@/hooks/useDebounce';
 import {
-  importBuilderStockUrl, type StockImportSummary, type StockUploadProgress, type StockUploadResult, uploadBuilderStockFile, useAcknowledgeStockSelection, useBuilderStockHeldItems, useBuilderStockItems, useBuilderStockSelections, useBuilderStockUploads, useBuilderStockImageProgress, useArchiveBuilderStockItem, useDeleteBuilderStockSource, useEnrichPendingStockImages, useRecoverStockSourceImages, useRefreshBrochureLinks, useReprocessStockSource, useRetryStockSource,
+  importBuilderStockUrl, type StockImportSummary, type StockUploadProgress, type StockUploadOutcome, uploadIsStillReading, uploadBuilderStockFile, useAcknowledgeStockSelection, useBuilderStockHeldItems, useBuilderStockItems, useBuilderStockSelections, useBuilderStockUploads, useBuilderStockImageProgress, useArchiveBuilderStockItem, useDeleteBuilderStockSource, useEnrichPendingStockImages, useRecoverStockSourceImages, useRefreshBrochureLinks, useReprocessStockSource, useRetryStockSource,
   useSetBuilderStockAvailability, builderStockImageUrl,
 } from '@/lib/builderStockQueries';
 import {
@@ -314,7 +314,32 @@ export default function BuilderStockList() {
     void selectionsQuery.refetch();
   }, [itemsQuery, uploadsQuery, selectionsQuery]);
 
-  const reportImport = useCallback((result: StockUploadResult) => {
+  const reportImport = useCallback((result: StockUploadOutcome) => {
+    /*
+     * A DOCUMENT BIG ENOUGH TO BE READ IN STAGES HAS NO SUMMARY YET.
+     *
+     * The server invocation ran out of CPU on the one stage that cannot be
+     * handed to the image pipeline — recognising a scanned page — and
+     * dispatched its successor before answering. There is nothing to report
+     * and nothing to wait for: the sources list below refreshes on its own,
+     * and closing the page changes nothing, because the work belongs to the
+     * dispatcher now rather than to this request.
+     *
+     * Reporting a zeroed summary here would read as "0 new from 0
+     * properties", which is what an empty stock list looks like.
+     */
+    if (uploadIsStillReading(result)) {
+      setLastSummary(null);
+      setLastImageWorkPending(0);
+      toast({
+        title: 'Still reading this document',
+        description: 'It is large enough to be read in stages. '
+          + 'It will appear in your sources below when it finishes — '
+          + 'you can close this page.',
+      });
+      refreshAll();
+      return;
+    }
     const imported = result.summary;
     setLastSummary(imported);
     setLastImageWorkPending(result.imageWorkPending);

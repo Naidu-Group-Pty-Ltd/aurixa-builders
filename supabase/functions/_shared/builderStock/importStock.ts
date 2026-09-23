@@ -26,7 +26,11 @@ import {
 } from './normalise.pure.ts';
 import { parseBuilderAddressLine } from '../builderStockAddress.pure.ts';
 import { stockImageUpsertKey } from './stockImageUpsertKey.pure.ts';
+import {
+  recordStage, type ImportStageLedger,
+} from './importStageLedger.pure.ts';
 import { IMAGE_BUDGET_MS } from './importBudget.pure.ts';
+import { mayDecideRoles, mayStoreImage, roleDecodeMs, expensiveSpendMs } from './importResumeBudget.pure.ts';
 import {
   describeIdentityChange, identityDifferences, reReadHoldsSameProperty,
   stockPropertyIdentity,
@@ -54,7 +58,9 @@ import {
 import {
   anchorPdfRowsToPages, pdfAnchorPage, pdfAnchorPageOrRegion,
 } from './pdfRowAnchors.pure.ts';
-import { documentVisualKinds, eligibilityDetailFor } from './assessSourceImage.ts';
+import {
+  documentVisualKinds, documentVisualKindsPixels, eligibilityDetailFor,
+} from './assessSourceImage.ts';
 
 /** What `attachDocumentMedia` did with one picture, for a caller that counts. */
 export interface AttachedMedia {
@@ -524,6 +530,18 @@ export async function importStockRecords(
     builderUserId: string | null;
     rows: Array<Record<string, unknown>>;
     media: ExtractedMedia[];
+    /**
+     * The run's stage ledger, when the caller keeps one.
+     *
+     * Present, the RASTER half of this function — decoding, classifying and
+     * storing the document's photographs — is timed apart from the row writes
+     * it sits beside. A single figure covering both cannot say which one is
+     * near the CPU ceiling, and that is the question the 22 September kill
+     * asked. Absent everywhere else, and absent changes nothing.
+     */
+    ledger?: ImportStageLedger | null;
+    /** Commit the ledger; awaited at the raster boundary. */
+    onStage?: ((ledger: ImportStageLedger) => Promise<void>) | null;
     /** Imagery the source published against one of its own rows. */
     rowAssets?: AnchoredAssets[];
     /**
@@ -599,7 +617,38 @@ export async function importStockRecords(
       outcome.imageryOutstanding = true;
       return false;
     }
+    /*
+     * AND THE RESOURCE THAT ACTUALLY KILLS THE WORKER.
+     *
+     * The two tests above are wall clock and a count, and the 22 September
+     * production table proves neither separates the runs that lived from the
+     * ones that died: 14.3 s completed and 12.9 s was killed, nine images
+     * either side. `mayStoreImage` asks the ledger what this invocation has
+     * already SPENT on work that can kill it — which is the question, and
+     * which nothing could ask until the ledger was written forward.
+     *
+     * A caller with no ledger answers yes and behaves exactly as it does
+     * today. See `importResumeBudget.pure.ts` for where the ceiling comes
+     * from; it is a derivation, not a preference.
+     */
+    if (!mayStoreImage(input.ledger)) {
+      outcome.imageryOutstanding = true;
+      return false;
+    }
     return true;
+  };
+
+  /**
+   * Charge one completed raster step to the ledger.
+   *
+   * LOCAL ONLY — no commit. `room()` is asked once per row and a commit there
+   * would be one round trip per row; the ledger is committed at the phase
+   * boundary, which is where the diagnostic needs it, while the in-memory
+   * total is what the ceiling reads. `recordStage` ADDS, so several steps
+   * accumulate into one `image_store_ms` exactly as the stage intends.
+   */
+  const chargeRaster = (startedAt: number): void => {
+    if (input.ledger) recordStage(input.ledger, 'image_store', Date.now() - startedAt);
   };
 
   /**
@@ -1190,6 +1239,7 @@ export async function importStockRecords(
        */
       if (record.image_urls.length && room()) {
         imagesStored += record.image_urls.length;
+        const columnImagesStartedAt = Date.now();
         await storeSourceImages(db, {
           organisationId: input.organisationId,
           uploadId: input.uploadId,
@@ -1215,6 +1265,7 @@ export async function importStockRecords(
             },
           ),
         }, { fetchImage: deps.fetchImage });
+        chargeRaster(columnImagesStartedAt);
       }
     } catch (error) {
       outcome.failed += 1;
@@ -1234,22 +1285,64 @@ export async function importStockRecords(
     if (!itemId) continue;
     if (!room()) break;
     imagesStored += anchored.assets.length;
+    const rowAssetsStartedAt = Date.now();
     await storeSourceImages(db, {
       organisationId: input.organisationId,
       uploadId: input.uploadId,
       stockItemId: itemId,
       assets: anchored.assets,
     }, { fetchImage: deps.fetchImage });
+    chargeRaster(rowAssetsStartedAt);
   }
 
-  if (input.media.length && !room()) {
+  /*
+   * ATTACHING THE DOCUMENT'S PICTURES IS THE RASTER CLASS, AND IT IS TIMED
+   * APART FROM THE ROW WRITES IT SITS BESIDE.
+   *
+   * `importStockRecords` does two different kinds of work in one call and
+   * only one of them is expensive per byte: it writes property rows, which is
+   * metadata, and it decodes, classifies and stores photographs, which is the
+   * most expensive thing an import does. One `db_write_ms` covering both
+   * cannot say which is near the CPU ceiling, and that is the question the
+   * 22 September kill asked.
+   */
+  /*
+   * AND WHAT DECIDING THOSE PICTURES' ROLES WILL COST, PRICED BEFORE IT
+   * BEGINS. A paginated document's pictures are decoded to settle what each
+   * one is — every picture, in one pass, before a single one is stored — and
+   * `room()` only ever asked about the storing. Read from the pictures'
+   * headers, so pricing the decode costs nothing. See `mayDecideRoles`.
+   */
+  const rolePixels = input.media.length && input.pageTexts?.length
+    ? documentVisualKindsPixels(input.media) : 0;
+  // `room()` records its own refusal, so it is asked only where there are
+  // pictures to refuse — exactly as before.
+  const roomForPictures = input.media.length ? room() : true;
+  const rolesAffordable = mayDecideRoles(input.ledger, rolePixels);
+  if (input.media.length && (!roomForPictures || !rolesAffordable)) {
     // The document's own media is the same expensive work by another route.
     // Left whole for the enrichment pass rather than half-attributed here:
     // `attachDocumentMedia` decides roles across the WHOLE set, so running it
     // against a truncated one would be attribution on partial evidence.
     outcome.imageryOutstanding = true;
+    if (roomForPictures) {
+      console.log('[builderStock] pictures left whole for the repair sweep', {
+        phase: 'image_roles_deferred',
+        upload_id: input.uploadId,
+        pictures: input.media.length,
+        role_megapixels: Math.round(rolePixels / 100_000) / 10,
+        role_estimate_ms: Math.round(roleDecodeMs(rolePixels)),
+        spent_ms: Math.round(expensiveSpendMs(input.ledger)),
+      });
+    }
   } else await attachDocumentMedia(
-    db, { ...input, documentRowCount: records.length }, outcome.itemIds, itemIdByAnchor,
+    db, {
+      ...input,
+      documentRowCount: records.length,
+      // What this run could not afford is what the page already has a word
+      // for. See `IMAGERY_DEFERRED_WARNING`.
+      onImageryDeferred: () => { outcome.imageryOutstanding = true; },
+    }, outcome.itemIds, itemIdByAnchor,
     input.pageTexts?.length
       ? {
         labelByItemId,
@@ -1280,6 +1373,16 @@ export async function importStockRecords(
       }
       : null,
   );
+  /*
+   * COMMITTED HERE, CHARGED INSIDE.
+   *
+   * This used to charge the WHOLE span — which was right while the loop
+   * inside was unbounded and is double counting now that each picture charges
+   * itself. What is left here is the phase boundary: the ledger is written to
+   * the row so a worker killed in the next stage leaves a record of what the
+   * raster phase cost.
+   */
+  if (input.ledger && input.onStage) await input.onStage(input.ledger);
 
   /**
    * SETTLE THE POINTER. An import that stores a photograph and does not say
@@ -1509,6 +1612,28 @@ export async function attachDocumentMedia(
      * the file as a one-property document.
      */
     documentRowCount?: number;
+    /**
+     * The run's stage ledger, where the caller keeps one.
+     *
+     * THIS LOOP WAS THE UNBOUNDED HALF. `importStockRecords` asks `room()`
+     * ONCE, before calling this — and then this decoded, classified and
+     * uploaded every picture in the document with nothing checking anything.
+     * Measured: ~1.5 seconds each, 9,388 ms for eight, which is the
+     * 22 September `546 CPU Time exceeded` written out as arithmetic.
+     *
+     * ABSENT MEANS UNCHANGED. `repairSourceImages` passes none, and must not:
+     * its whole invocation is one document, it runs in the settler's own
+     * CPU-class-aware isolate, and it exists to attach the imagery this
+     * declines.
+     */
+    ledger?: ImportStageLedger | null;
+    /**
+     * Told when a picture was left for the repair, so the caller's outcome can
+     * say `imageryOutstanding` — the state the page already renders as
+     * "Images are still being found". A deferral nobody reports is
+     * indistinguishable from a document that carried no photograph.
+     */
+    onImageryDeferred?: ((count: number) => void) | null;
   },
   itemIdsInOrder: string[],
   itemIdByAnchor: Map<string, string | null>,
@@ -1586,9 +1711,22 @@ export async function attachDocumentMedia(
    * that leads with the house. Two live Palomino cards drew a green line
    * drawing badged "Builder supplied" for that reason.
    */
+  /*
+   * CHARGED AS `image_decode`, AND RUN WHOLE OR NOT AT ALL.
+   *
+   * It is bounded at `MAX_VISION_DECODES` already, and truncating it further
+   * would decide roles on partial evidence — the thing `importStockRecords`'
+   * own whole-set deferral exists to prevent. So it is charged rather than
+   * bounded: the storage loop below then sees what it cost and stops sooner,
+   * which is the safe direction.
+   */
+  const visualKindsStartedAt = Date.now();
   const visualKinds = paginated
     ? await documentVisualKinds(input.media)
     : [];
+  if (input.ledger && paginated) {
+    recordStage(input.ledger, 'image_decode', Date.now() - visualKindsStartedAt);
+  }
 
   const roles = paginated
     ? assignPdfMediaRolesPerProperty({
@@ -1604,7 +1742,26 @@ export async function attachDocumentMedia(
       container: 'the container in the builder\'s own document',
     });
 
+  let deferred = 0;
   for (const [index, media] of input.media.entries()) {
+    /*
+     * ASKED BEFORE THE PICTURE, NEVER AFTER IT.
+     *
+     * The roles above were settled across the WHOLE set, so what is left
+     * behind here is a picture whose attribution is already decided and whose
+     * bytes simply have not been stored yet. `repairSourceImagesForUpload`
+     * re-reads the same document through this same function in the settler's
+     * isolate and upserts it — which is work a component built for it does
+     * anyway, dispatched six wide the moment the import ends.
+     *
+     * The order is the document's, so what gets stored inline is what the
+     * brochure leads with, and what is deferred is what it trails with.
+     */
+    if (!mayStoreImage(input.ledger)) {
+      deferred += 1;
+      continue;
+    }
+    const mediaStartedAt = Date.now();
     const path = `${input.organisationId}/${input.uploadId}/document/${index}-${media.name.replace(/[^A-Za-z0-9._-]+/g, '-').slice(-60)}`;
     try {
       const { error: uploadError } = await db.storage
@@ -1711,7 +1868,21 @@ export async function attachDocumentMedia(
         anchor: media.anchor ?? null,
         stored: false,
       });
+    } finally {
+      // Charged whether it stored or threw: a decode that failed spent the
+      // same CPU as one that worked, and a ceiling that only counts successes
+      // is one a run of failures walks straight through.
+      if (input.ledger) recordStage(input.ledger, 'image_store', Date.now() - mediaStartedAt);
     }
+  }
+  if (deferred) {
+    input.onImageryDeferred?.(deferred);
+    console.log('[builderStock] pictures left for the repair sweep', {
+      phase: 'image_store_deferred',
+      upload_id: input.uploadId,
+      deferred,
+      of: input.media.length,
+    });
   }
   return attached;
 }

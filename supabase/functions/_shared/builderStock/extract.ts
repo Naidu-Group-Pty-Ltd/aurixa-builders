@@ -31,7 +31,10 @@ import { attachRowHyperlinks, hyperlinkTargetOf } from './sheetHyperlinks.pure.t
  * DYNAMICALLY, so an import that never meets a scan pays nothing.
  */
 import { mergeRecognisedPages, planOcr } from './ocr/ocrPolicy.pure.ts';
-import { OCR_MAX_PAGES, recogniseScannedPages } from './ocr/recogniseScan.ts';
+import {
+  OCR_MAX_PAGES, isFinalOcrRefusal, recogniseScannedPages,
+} from './ocr/recogniseScan.ts';
+import { OCR_PAGE_MS, remainingExpensiveMs } from './importResumeBudget.pure.ts';
 import { MAX_GRID_CELLS } from './sheetGrid.pure.ts';
 import { readHtmlSource } from './htmlSource.pure.ts';
 import { readOpenDocument, readPresentation, readRichText, readStructured } from './otherFormats.pure.ts';
@@ -45,6 +48,9 @@ import {
   SOURCE_ANCHOR_HEADER, settleRowAssetRoles, type AnchoredAssets,
 } from './sourceAssets.pure.ts';
 import { noPrimaryEvidence } from './sourceImageRole.pure.ts';
+import {
+  countIn, recordStage, type ImportStage, type ImportStageLedger,
+} from './importStageLedger.pure.ts';
 import type { PdfPhotoProvenance } from './pdfSourcePhoto.ts';
 import type { PdfMediaPlacement } from './pdfPrimaryImage.pure.ts';
 import type {
@@ -92,43 +98,21 @@ export interface ExtractedMedia {
 }
 
 /**
- * WHAT THIS RUN SPENT, AND HOW MANY TIMES IT DID THE EXPENSIVE THING.
+ * WHAT AN IMPORT SPENDS IS RECORDED BY `importStageLedger.pure.ts`.
  *
- * DIAGNOSTICS ONLY. Nothing reads it to make a decision, no branch is taken
- * on it, and it carries no document content — milliseconds and counts.
+ * `ExtractionTimings` used to be declared here, flat: `document_extract_ms`
+ * covered the text layer AND the positioned layout, which are two different
+ * costs over the same bytes with no way to tell which one is expensive. The
+ * 22 September CPU kill needed exactly that distinction, so the ledger is now
+ * shared with `runImport` and split at the stage boundaries — one account of
+ * one run rather than two that have to be reconciled.
  *
- * WHY THE COUNTS AND NOT JUST THE MILLISECONDS. The 22 September 2026 latency
- * investigation found the same PDF parsed TWICE for one import — once by the
- * import and once again by an upload-level sweep four minutes later — and the
- * only reason anybody noticed is that the second parse happened to log a line.
- * A duration tells you a stage was slow; a count tells you the stage ran when
- * it should not have run at all, which is the more expensive defect and the
- * one nothing here could see.
+ * DIAGNOSTICS AND PROGRESS ONLY. Milliseconds, counts and stage names; never
+ * a byte of the customer's document.
  */
-export interface ExtractionTimings {
-  /** Reading the container: the PDF text layer, the zip, the workbook. */
-  document_extract_ms?: number;
-  /** Recognition, where any page needed it. Absent means none did. */
-  ocr_ms?: number;
-  /** Pulling the pictures out of the document and deciding what they are. */
-  image_extract_ms?: number;
-  /** The deterministic reader, segmentation included. */
-  reader_ms?: number;
-  /** The region segmentation alone, where a page was divided. */
-  segmentation_ms?: number;
-  /** How many times this run opened the document itself. Should be 1. */
-  document_parses?: number;
-  /** Pages rasterised, which is only ever for recognition. */
-  rasterisations?: number;
-  /** Pages actually put through recognition. */
-  ocr_pages?: number;
-  /** Pictures taken out of the document. */
-  images_extracted?: number;
-}
-
 export interface StockExtraction {
-  /** See `ExtractionTimings`. Diagnostics; never read for a decision. */
-  timings?: ExtractionTimings;
+  /** See `importStageLedger.pure.ts`. Diagnostics and progress; never a decision. */
+  timings?: ImportStageLedger;
   /** Recorded on the upload row so a support question has an answer. */
   strategy: string;
   rows: Array<Record<string, unknown>>;
@@ -142,6 +126,20 @@ export interface StockExtraction {
    * outstanding rather than as absent. Absent on every unbudgeted path.
    */
   imageryDeferred?: DiscoveryRefusal | null;
+  /**
+   * The pages recognition still owes this document, after everything this
+   * invocation and its predecessors have settled.
+   *
+   * THE HAND-OFF SIGNAL, AND THE ONLY ONE. A non-empty list means a successor
+   * invocation has something worth doing that cannot be done anywhere else —
+   * imagery goes to the settler, row writes are free, and recognition is the
+   * one stage with nowhere else to go. An empty list, or absent, means this
+   * document is finished with the recogniser.
+   *
+   * Absent on every document that needed no recognition, which is almost all
+   * of them.
+   */
+  ocrOutstanding?: number[];
   /**
    * What text RECOGNITION did, where the PDF's own text layer was wanting.
    *
@@ -592,6 +590,44 @@ export async function extractStockFile(
      * the imagery it exists to attach. See `importBudget.pure.ts`.
      */
     budget?: ImportBudget | null;
+    /**
+     * The run's ledger, when the caller keeps one across stages.
+     *
+     * A RESUMED import passes the ledger it already has, so the stages this
+     * invocation runs are added to the account of the ones a previous
+     * invocation ran rather than starting a second one. Absent means a fresh
+     * run, which is every caller that does not resume.
+     */
+    ledger?: ImportStageLedger | null;
+    /**
+     * Commit the ledger. Awaited at every stage boundary; see `timed`.
+     *
+     * Absent means nothing is persisted and the extraction behaves exactly as
+     * it did — which is what keeps the repair sweep, the re-read and every
+     * test caller unchanged.
+     */
+    onStage?: ((ledger: ImportStageLedger) => Promise<void>) | null;
+    /**
+     * WHAT A PREVIOUS INVOCATION ALREADY RECOGNISED, and where to put what
+     * this one recognises.
+     *
+     * Recognition is the one document-class stage measured to exceed any sane
+     * CPU budget on its own — 9,223 ms over three pages, ~3,100 ms each — and
+     * it is the only stage in this extractor whose work cannot be handed to
+     * another component. So it is the only one that is checkpointed, and this
+     * is the whole of that mechanism from the extractor's side: pages it is
+     * handed are not re-read, pages it reads are handed back one at a time,
+     * and pages it could not afford are named so a successor knows what is
+     * still owed.
+     *
+     * ALL THREE ABSENT MEANS TODAY'S BEHAVIOUR, exactly: one pass, as far as
+     * the deadline allows, nothing carried and nothing reported.
+     */
+    ocrCarried?: ReadonlyMap<number, string> | null;
+    ocrSettled?: ReadonlySet<number> | null;
+    mayRecognisePage?: (() => boolean) | null;
+    onRecognisedPage?: ((page: number, text: string) => Promise<void> | void) | null;
+    onRefusedPage?: ((page: number) => Promise<void> | void) | null;
   } = {},
 ): Promise<StockExtraction> {
   const result: StockExtraction = {
@@ -602,16 +638,25 @@ export async function extractStockFile(
     media: [],
     rowAssets: [],
     warnings: [],
-    timings: {},
+    timings: options.ledger ?? {},
   };
   const timings = result.timings!;
-  /** Time one awaited phase into the run's ledger, adding to what is there. */
-  const timed = async <T>(key: keyof ExtractionTimings, run: () => Promise<T>): Promise<T> => {
+  /**
+   * Run one stage, record what it cost, and COMMIT the ledger before the next
+   * one starts.
+   *
+   * The commit is the whole point and it is awaited. A worker killed inside
+   * the next stage must leave a row saying this one finished and what it
+   * spent — which is the difference between an eight-second CPU kill you can
+   * account for and the `stage_timings: null` the 22 September one left.
+   */
+  const timed = async <T>(stage: ImportStage, run: () => Promise<T>): Promise<T> => {
     const startedAt = Date.now();
     try {
       return await run();
     } finally {
-      timings[key] = (timings[key] ?? 0) + (Date.now() - startedAt);
+      recordStage(timings, stage, Date.now() - startedAt);
+      if (options.onStage) await options.onStage(timings);
     }
   };
 
@@ -812,8 +857,8 @@ export async function extractStockFile(
       // uploaded here and the same brochure reached through a row's own link
       // cannot number their pages differently. See `pdfText.ts`.
       const { readPdfPageTexts } = await import('./pdfText.ts');
-      const pages = await timed('document_extract_ms', async () => {
-        timings.document_parses = (timings.document_parses ?? 0) + 1;
+      const pages = await timed('native_text', async () => {
+        countIn(timings, 'document_parses');
         return await readPdfPageTexts(bytes);
       });
       if (!pages.length) throw new Error('no text layer');
@@ -856,11 +901,74 @@ export async function extractStockFile(
     if (!plan.sufficient) {
       try {
         const { extractPdfPhotosByPage } = await import('./pdfSourcePhoto.ts');
-        const wanted = new Set(plan.pages);
-        const photos = await timed('image_extract_ms', async () => {
-          timings.document_parses = (timings.document_parses ?? 0) + 1;
-          return await extractPdfPhotosByPage(bytes, { maxPages: OCR_MAX_PAGES });
-        });
+        /*
+         * WHAT A PREVIOUS INVOCATION ALREADY SETTLED IS NOT ASKED AGAIN.
+         *
+         * `ocrSettled` carries the pages a successor must not spend CPU on:
+         * the ones already recognised, and the ones refused for a reason that
+         * is about the PAGE rather than about an attempt. See
+         * `FINAL_OCR_REFUSAL_REASONS` — an `out_of_time` page is deliberately
+         * NOT in it, because that refusal is a statement about a budget and
+         * re-asking is the entire point of resuming.
+         */
+        const settled = options.ocrSettled ?? new Set<number>();
+        /*
+         * AND WHAT THE RASTERISER CAN NEVER REACH IS NOT OWED EITHER.
+         * `extractPdfPhotosByPage` visits the first `OCR_MAX_PAGES` pages and
+         * no others — the reach the single pass always had — so a plan page
+         * beyond it can never yield a raster. It is settled here, in the pass
+         * that knows it, rather than costing an isolate apiece to find out.
+         */
+        const beyondReach = plan.pages
+          .filter((page) => page > OCR_MAX_PAGES && !settled.has(page));
+        const stillOwed = plan.pages
+          .filter((page) => page <= OCR_MAX_PAGES && !settled.has(page));
+        /*
+         * RASTERISE ONLY WHAT THIS INVOCATION CAN AFFORD TO RECOGNISE.
+         *
+         * Decompressing a page is charged to the same allowance recognising it
+         * is, and it happens FIRST — so without this, an invocation could
+         * rasterise eight pages, discover it has nothing left, recognise none
+         * of them and hand off; and its successor would do exactly the same,
+         * for ever, until the crossing bound stopped it. Ten isolates spent
+         * decompressing the same pages over and over is the worst outcome
+         * available here and it is produced by the mechanism meant to prevent
+         * it.
+         *
+         * AT LEAST ONE, ALWAYS — and by the measured numbers, exactly one. The
+         * allowance is 3,000 ms and a page is charged 3,100, so a fresh
+         * invocation can afford one page and never two; the floor is what
+         * makes that one rather than none, because an invocation that makes no
+         * progress is a crossing wasted. A scan of N pages therefore crosses N
+         * isolates, which is the price of never being killed. (This said the
+         * floor "never binds in practice". It binds on every invocation, and
+         * believing otherwise is how a page that could never be settled went
+         * unnoticed — see below.)
+         */
+        const affordable = Math.max(1, Math.floor(
+          remainingExpensiveMs(options.ledger) / OCR_PAGE_MS));
+        const outstanding = stillOwed.slice(0, affordable);
+        const wanted = new Set(outstanding);
+        /*
+         * COUNTED AS `ocr` RATHER THAN AS IMAGE WORK, because that is what it
+         * is: these rasters exist only to be recognised and are thrown away
+         * afterwards. Filing them under image extraction was the flat
+         * ledger's doing and it made a scanned document look like one with
+         * lots of pictures.
+         *
+         * AND ONLY THE PAGES THE PLAN WANTS ARE DECOMPRESSED. Measured
+         * 22 September 2026: this call took a page COUNT, rasterised pages
+         * 1..n and the filter below threw away what the plan had not asked
+         * for — 4,408 ms on `stress-many-images` to recognise none of them.
+         */
+        const photos = outstanding.length
+          ? await timed('ocr', async () => {
+            countIn(timings, 'document_parses');
+            return await extractPdfPhotosByPage(bytes, {
+              maxPages: OCR_MAX_PAGES, pages: outstanding,
+            });
+          })
+          : [];
         const rasters = photos
           .filter((entry) => wanted.has(entry.page))
           .map((entry) => ({
@@ -869,23 +977,80 @@ export async function extractStockFile(
             width: entry.photo.provenance.sourceWidth,
             height: entry.photo.provenance.sourceHeight,
           }));
-        timings.rasterisations = (timings.rasterisations ?? 0) + rasters.length;
-        const reading = await timed('ocr_ms', () => recogniseScannedPages(rasters, {
+        countIn(timings, 'rasterisations', rasters.length);
+        const reading = await timed('ocr', () => recogniseScannedPages(rasters, {
           deadlineAt: options.budget
             ? storageDeadlineFrom(options.budget, Date.now()) : undefined,
+          mayRecognise: options.mayRecognisePage ?? null,
+          onPage: options.onRecognisedPage ?? null,
         }));
-        timings.ocr_pages = (timings.ocr_pages ?? 0) + reading.text.size;
+        /*
+         * A PAGE THE RASTERISER COULD NOT REACH IS SETTLED, NEVER OWED.
+         *
+         * The recogniser settles every page it is HANDED — too large, no
+         * raster, unreadable. A page the plan asked for and the rasteriser
+         * found no image on was never handed to it, so it was neither read nor
+         * refused, and stayed owed. Measured 23 September 2026:
+         * `stress-heavy-brochure` logged `outstanding: 1, recognised: 0` on
+         * every crossing up to the bound — eleven isolates and forty-four
+         * document parses for a brochure that reads in one — and because each
+         * crossing takes the FIRST owed page, such a page also stood in front
+         * of every readable page behind it: `stress-many-images` sat at six
+         * owed pages for five crossings without attempting one of them.
+         * Before the continuation existed the page was simply passed over in
+         * the one pass there was. `no_raster` is the final refusal that says
+         * so, and it is final because the same bytes carry the same images
+         * every time they are read.
+         */
+        const rasterised = new Set(rasters.map((raster) => raster.page));
+        const refusals = [
+          ...[...beyondReach, ...outstanding.filter((page) => !rasterised.has(page))]
+            .map((page) => ({ page, reason: 'no_raster' as const })),
+          ...reading.refusals,
+        ];
+        /*
+         * A REFUSAL THAT IS ABOUT THE PAGE IS REPORTED SO IT IS NEVER ASKED
+         * AGAIN. One that is about the attempt is not — it stays outstanding
+         * and a successor retries it with a fresh allowance.
+         */
+        if (options.onRefusedPage) {
+          for (const refusal of refusals) {
+            if (isFinalOcrRefusal(refusal)) await options.onRefusedPage(refusal.page);
+          }
+        }
+        /*
+         * THE CARRIED PAGES ARE PART OF THE READING.
+         *
+         * A successor that recognised page 5 and was handed pages 1 and 3 by
+         * its predecessor must produce the same document as one invocation
+         * that read all three — otherwise resuming would change what the
+         * deterministic reader sees, which is the one thing a resume may
+         * never do.
+         */
+        const everyPage = new Map<number, string>(options.ocrCarried ?? []);
+        for (const [page, text] of reading.text) everyPage.set(page, text);
+        countIn(timings, 'ocr_pages', reading.text.size);
         result.ocr = {
           attempted: plan.pages.length,
-          read: reading.text.size,
-          recognisedPages: [...reading.text.keys()].sort((a, b) => a - b),
-          refusals: reading.refusals,
+          read: everyPage.size,
+          recognisedPages: [...everyPage.keys()].sort((a, b) => a - b),
+          refusals,
           available: reading.available,
           ms: reading.ms,
           imageOnly: plan.imageOnly,
         };
-        if (reading.text.size) {
-          result.pageTexts = mergeRecognisedPages(result.pageTexts ?? [], reading.text);
+        /*
+         * PAGES THIS DEPLOYMENT STILL OWES — the plan's pages that neither
+         * this invocation nor any before it has settled. A non-empty list is
+         * the extractor saying "a successor has something worth doing"; an
+         * empty one is what lets the run finish.
+         */
+        result.ocrOutstanding = plan.pages
+          .filter((page) => !everyPage.has(page)
+            && !settled.has(page)
+            && !refusals.some((r) => r.page === page && isFinalOcrRefusal(r)));
+        if (everyPage.size) {
+          result.pageTexts = mergeRecognisedPages(result.pageTexts ?? [], everyPage);
           const recognised = (result.pageTexts ?? []).join('\n');
           result.text = recognised.trim()
             ? recognised.slice(0, MAX_TEXT_CHARS) : result.text;
@@ -953,8 +1118,8 @@ export async function extractStockFile(
        * before anything had asked what they were. Discovery now hands over all
        * of them and the role is settled where the property is known.
        */
-      const found = await timed('image_extract_ms', async () => {
-        timings.document_parses = (timings.document_parses ?? 0) + 1;
+      const found = await timed('image_discovery', async () => {
+        countIn(timings, 'document_parses');
         return await discoverPdfSourceAssets(bytes);
       });
       result.pageOrderAuthoritative = found.pageOrderAuthoritative;
@@ -1082,8 +1247,8 @@ export async function extractStockFile(
        */
       const pageTexts = result.pageTexts ?? [];
       const { readPdfTextLayout } = await import('./pdfTextLayout.ts');
-      const layout = await timed('document_extract_ms', async () => {
-        timings.document_parses = (timings.document_parses ?? 0) + 1;
+      const layout = await timed('positioned_layout', async () => {
+        countIn(timings, 'document_parses');
         return await readPdfTextLayout(bytes);
       });
       const positionedPages: PdfTextLayoutPage[] | null = layout.ok ? layout.pages : null;
@@ -1111,11 +1276,21 @@ export async function extractStockFile(
           ? (options.documentName ?? '')
           : filename,
       });
-      timings.reader_ms = (timings.reader_ms ?? 0) + (Date.now() - readerStartedAt);
-      if (typeof reading.diagnostics.segmentationMs === 'number') {
-        timings.segmentation_ms = (timings.segmentation_ms ?? 0)
-          + reading.diagnostics.segmentationMs;
-      }
+      /*
+       * SEGMENTATION IS SUBTRACTED FROM THE READER RATHER THAN NESTED IN IT.
+       * The two run in one synchronous call, so timing them as parent and
+       * child would double-count the child against the run's total — and the
+       * total is what decides whether a stage boundary is needed.
+       */
+      const segmentationMs = typeof reading.diagnostics.segmentationMs === 'number'
+        ? reading.diagnostics.segmentationMs : 0;
+      const normalisationMs = typeof reading.diagnostics.normalisationMs === 'number'
+        ? reading.diagnostics.normalisationMs : 0;
+      recordStage(timings, 'segmentation', segmentationMs);
+      recordStage(timings, 'normalisation', normalisationMs);
+      recordStage(timings, 'property_reader',
+        Math.max(0, (Date.now() - readerStartedAt) - segmentationMs - normalisationMs));
+      if (options.onStage) await options.onStage(timings);
       result.deterministicReading = {
         status: reading.status,
         reason: reading.reason,
@@ -1196,7 +1371,7 @@ export async function extractStockFile(
        * warning, because a builder has nothing to do about it.
        */
     }
-    timings.images_extracted = result.media.length;
+    countIn(timings, 'images_extracted', result.media.length);
     return result;
   }
 

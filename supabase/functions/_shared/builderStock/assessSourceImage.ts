@@ -130,6 +130,56 @@ export async function eligibilityDetailFor(
     await assessMarketplaceEligibility(bytes, role), await sha256Hex(bytes));
 }
 
+type RoleDecodeCandidate = {
+  bytes?: Uint8Array | null;
+  placement?: { placementsOnPage?: number; pagesDrawnOn?: number } | null;
+};
+
+/**
+ * Would `documentVisualKinds` decode this picture? One predicate, so the
+ * estimate below and the decode it estimates can never come to disagree about
+ * which pictures they mean.
+ */
+function decodedForItsKind(entry: RoleDecodeCandidate): boolean {
+  const placement = entry.placement;
+  // The same elimination `selectCoverHero` applies. Anything it drops is a
+  // decode nobody would have read.
+  if (placement && ((placement.placementsOnPage ?? 1) > 1 || (placement.pagesDrawnOn ?? 1) > 1)) {
+    return false;
+  }
+  const bytes = entry.bytes;
+  if (!bytes?.length) return false;
+  return !oversizedForInlineDecode(bytes);
+}
+
+/**
+ * How many pixels `documentVisualKinds` would decode for these pictures,
+ * read from their HEADERS — nothing is decoded to answer it.
+ *
+ * It exists because the decode is one step with no gate inside it: the whole
+ * set is classified or none of it is, since roles decided on part of the set
+ * are decided on partial evidence. A step that size has to be priced BEFORE it
+ * begins, and measured 23 September 2026 it was not: `stress-multi-property`
+ * spent 4,854 ms here in one unguarded pass, past the importer's whole
+ * allowance, after the document had already been read. A header that cannot
+ * be read is charged as the largest picture decoded inline, because an
+ * estimate that errs low is the one that kills the worker.
+ */
+export function documentVisualKindsPixels(
+  media: ReadonlyArray<RoleDecodeCandidate>,
+  limit = MAX_VISION_DECODES,
+): number {
+  let pixels = 0;
+  let counted = 0;
+  for (const entry of media) {
+    if (counted >= limit) break;
+    if (!decodedForItsKind(entry)) continue;
+    counted += 1;
+    pixels += imageHeaderPixels(entry.bytes as Uint8Array) ?? MAX_INLINE_DECODE_PIXELS;
+  }
+  return pixels;
+}
+
 /**
  * What each of a document's pictures IS, for the ones that could lead a card.
  *
@@ -147,25 +197,15 @@ export async function eligibilityDetailFor(
  * reader treats as "nothing is known" — the state before this existed.
  */
 export async function documentVisualKinds(
-  media: ReadonlyArray<{
-    bytes?: Uint8Array | null;
-    placement?: { placementsOnPage?: number; pagesDrawnOn?: number } | null;
-  }>,
+  media: ReadonlyArray<RoleDecodeCandidate>,
   limit = MAX_VISION_DECODES,
 ): Promise<Array<VisualKind | null>> {
   const kinds: Array<VisualKind | null> = media.map(() => null);
   let spent = 0;
   for (const [index, entry] of media.entries()) {
     if (spent >= limit) break;
-    const placement = entry.placement;
-    // The same elimination `selectCoverHero` applies. Anything it drops is a
-    // decode nobody would have read.
-    if (placement && ((placement.placementsOnPage ?? 1) > 1 || (placement.pagesDrawnOn ?? 1) > 1)) {
-      continue;
-    }
-    const bytes = entry.bytes;
-    if (!bytes?.length) continue;
-    if (oversizedForInlineDecode(bytes)) continue;
+    if (!decodedForItsKind(entry)) continue;
+    const bytes = entry.bytes as Uint8Array;
     spent += 1;
     try {
       const result = await decodeThumbnailResult(bytes);

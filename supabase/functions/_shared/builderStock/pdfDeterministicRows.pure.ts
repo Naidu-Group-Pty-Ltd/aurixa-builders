@@ -422,6 +422,14 @@ export interface PdfDeterministicReading {
      * appears only on the interesting path cannot do it.
      */
     segmentationMs?: number;
+    /**
+     * What normalisation cost inside this reading. See `normalisationMs`.
+     *
+     * Reported so the caller can subtract it from the reader's own figure
+     * rather than leaving it buried — one of the named costs an import has to
+     * account for, and it has no seam of its own to time.
+     */
+    normalisationMs?: number;
   };
 }
 
@@ -2367,6 +2375,36 @@ const SAME_COLUMN_TOLERANCE = 12;
  * against letter-spaced type, which is how one idea comes to be written five
  * times. The rules moved; the call sites did not have to.
  */
+/**
+ * WHAT NORMALISATION HAS COST THIS READING, IN MILLISECONDS.
+ *
+ * Normalisation is not a stage of its own — it runs inside the reader, once
+ * per page and once per layout, and there is no seam to wrap. But it is one
+ * of the named costs the importer has to account for, and "it is inside the
+ * reader somewhere" is not an account. So the two entry points add to a
+ * counter the reading resets and reports, and the caller SUBTRACTS it from
+ * the reader's own figure — the same rule segmentation already answers to,
+ * for the same reason: timing a child inside a parent double-counts it
+ * against the run's total, and the total is what decides whether a stage
+ * boundary is needed.
+ *
+ * Module-level and single-threaded, which an isolate is. It is read only
+ * between `resetNormalisationClock` and the end of the same synchronous
+ * reading.
+ */
+let normalisationMs = 0;
+const resetNormalisationClock = (): void => { normalisationMs = 0; };
+const normalisationSpent = (): number => Math.round(normalisationMs);
+/** Normalise, and charge what it cost to this reading. */
+function timedNormaliseUnits(raw: readonly RawUnit[]): NormalisedUnit[] {
+  const startedAt = Date.now();
+  try {
+    return normaliseUnits(raw);
+  } finally {
+    normalisationMs += Date.now() - startedAt;
+  }
+}
+
 function unitsFromPageText(page: string): BrochureUnit[] {
   /*
    * WITHOUT POSITIONS NOTHING CHANGES, and that is asserted rather than hoped.
@@ -2378,7 +2416,7 @@ function unitsFromPageText(page: string): BrochureUnit[] {
    */
   const units: BrochureUnit[] = [];
   for (const line of String(page ?? '').split(/\r?\n/)) {
-    for (const unit of normaliseUnits([{ text: line, x: 0, row: 0 }])) {
+    for (const unit of timedNormaliseUnits([{ text: line, x: 0, row: 0 }])) {
       units.push({ ...unit, x: 0, row: units.length });
     }
   }
@@ -2398,7 +2436,7 @@ function unitsFromLayout(items: readonly PdfTextItem[]): BrochureUnit[] {
       raw.push({ text: cell.text, x: cell.x, row, width: cell.width });
     }
   });
-  return normaliseUnits(raw);
+  return timedNormaliseUnits(raw);
 }
 
 /** The unit drawn beside this one, on the same visual line. */
@@ -4729,7 +4767,13 @@ export function readPdfDeterministicRows(input: {
   const schedule = positioned && positioned.length && mayHoldSchedule(pageTexts)
     ? assemblePdfSchedule(positioned)
     : null;
-  if (schedule?.status === 'complete') return schedule;
+  if (schedule?.status === 'complete') {
+    // EVERY exit reports it, or a schedule-read document accounts for none of
+    // its normalisation and the caller's subtraction silently over-charges
+    // the reader.
+    schedule.diagnostics.normalisationMs = normalisationSpent();
+    return schedule;
+  }
 
   /*
    * ======================================================================
@@ -4757,6 +4801,7 @@ export function readPdfDeterministicRows(input: {
    * returns null and the readers below see exactly what they have always
    * seen.
    */
+  resetNormalisationClock();
   let regionsFound = 0;
   let regionsAbandoned = '';
   let segmentationMs = 0;
@@ -4769,6 +4814,7 @@ export function readPdfDeterministicRows(input: {
     segmentationMs = Date.now() - segmentationStartedAt;
     if (segmented.reading) {
       segmented.reading.diagnostics.segmentationMs = segmentationMs;
+      segmented.reading.diagnostics.normalisationMs = normalisationSpent();
       return segmented.reading;
     }
     regionsFound = segmented.found;
@@ -4777,6 +4823,7 @@ export function readPdfDeterministicRows(input: {
 
   const brochure = readBrochure();
   brochure.diagnostics.segmentationMs = segmentationMs;
+  brochure.diagnostics.normalisationMs = normalisationSpent();
   /*
    * REGIONS WERE FOUND AND THE READING WAS ABANDONED, so the document is read
    * exactly as it was before — and the log says so. A fallback that is silent
@@ -4797,6 +4844,7 @@ export function readPdfDeterministicRows(input: {
   if (schedule) {
     const answer = moreEvidencedRefusal(schedule, brochure);
     answer.diagnostics.segmentationMs = segmentationMs;
+    answer.diagnostics.normalisationMs = normalisationSpent();
     if (regionsFound) {
       answer.diagnostics.regionsFound = regionsFound;
       answer.diagnostics.regionsAbandoned = regionsAbandoned;

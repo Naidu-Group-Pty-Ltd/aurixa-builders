@@ -44,10 +44,41 @@ export interface OcrPageRefusal {
   reason: 'no_raster' | 'too_large' | 'out_of_time' | 'unreadable' | 'engine_unavailable';
 }
 
+/**
+ * WHICH REFUSALS ARE FINAL, AND WHY THE DISTINCTION IS LOAD-BEARING.
+ *
+ * A checkpointed import asks these pages again in a fresh isolate, so it has
+ * to know which refusals are statements about the PAGE and which are
+ * statements about the ATTEMPT. `too_large`, `unreadable` and `no_raster`
+ * describe the page and will say the same thing for ever — re-asking spends
+ * three seconds to be told again. `out_of_time` and `engine_unavailable`
+ * describe this invocation and this deployment, and treating either as final
+ * would silently lose a readable page the moment the budget was tight.
+ *
+ * The caller's checkpoint settles only what this list names.
+ */
+export const FINAL_OCR_REFUSAL_REASONS: ReadonlyArray<OcrPageRefusal['reason']> =
+  ['no_raster', 'too_large', 'unreadable'];
+
+export const isFinalOcrRefusal = (refusal: OcrPageRefusal): boolean =>
+  FINAL_OCR_REFUSAL_REASONS.includes(refusal.reason);
+
 export interface OcrReading {
   /** 1-based page number to the text recognised on it. */
   text: Map<number, string>;
   refusals: OcrPageRefusal[];
+  /**
+   * Pages this invocation neither read NOR refused, because it ran out of the
+   * CPU it may spend before reaching them.
+   *
+   * A THIRD STATE, AND IT HAS TO BE. A refusal is a statement about the PAGE —
+   * too large, unreadable, no raster — and it is final: nobody asks again. A
+   * deferral is a statement about this INVOCATION, and the whole point of it
+   * is that somebody asks again, in a fresh isolate, with a fresh allowance.
+   * Filing one as the other either loses a readable page for ever or asks the
+   * recogniser for ever for a page it has already said it cannot read.
+   */
+  deferred: number[];
   /** Milliseconds spent, for the import log. */
   ms: number;
   /** False where the engine or its language data could not be obtained. */
@@ -74,26 +105,46 @@ export interface OcrPageRaster {
  */
 export async function recogniseScannedPages(
   rasters: readonly OcrPageRaster[],
-  options: { deadlineAt?: number } = {},
+  options: {
+    deadlineAt?: number;
+    /**
+     * Asked BEFORE each page, and the answer stops the pass without refusing
+     * anything. This is how a scanned document crosses isolates: recognition
+     * is the one document-class stage measured to exceed any sane CPU budget
+     * on its own (9,223 ms over three pages), and it is already page-wise, so
+     * the only thing missing was somewhere to stop and somewhere to put what
+     * had been read. Absent means "as far as the deadline allows", which is
+     * exactly today's behaviour.
+     */
+    mayRecognise?: (() => boolean) | null;
+    /**
+     * Handed each page AS IT IS READ, so the successor does not pay for it
+     * again. Awaited, because a checkpoint written after the worker is gone is
+     * not a checkpoint. A throw here is swallowed: durability is an
+     * optimisation and recognition is the deliverable.
+     */
+    onPage?: ((page: number, text: string) => Promise<void> | void) | null;
+  } = {},
 ): Promise<OcrReading> {
   const startedAt = Date.now();
   const deadline = Math.min(
     options.deadlineAt ?? Number.POSITIVE_INFINITY, startedAt + OCR_MAX_MS);
   const text = new Map<number, string>();
   const refusals: OcrPageRefusal[] = [];
+  const deferred: number[] = [];
 
   const wanted = rasters.slice(0, OCR_MAX_PAGES);
   for (const extra of rasters.slice(OCR_MAX_PAGES)) {
     refusals.push({ page: extra.page, reason: 'out_of_time' });
   }
-  if (!wanted.length) return { text, refusals, ms: 0, available: true };
+  if (!wanted.length) return { text, refusals, deferred, ms: 0, available: true };
 
   const langPath = await languageDataDirectory();
   if (!langPath) {
     for (const raster of wanted) {
       refusals.push({ page: raster.page, reason: 'engine_unavailable' });
     }
-    return { text, refusals, ms: Date.now() - startedAt, available: false };
+    return { text, refusals, deferred, ms: Date.now() - startedAt, available: false };
   }
 
   let worker: { recognize: (b: unknown) => Promise<{ data: { text?: string } }>;
@@ -114,11 +165,23 @@ export async function recogniseScannedPages(
     for (const raster of wanted) {
       refusals.push({ page: raster.page, reason: 'engine_unavailable' });
     }
-    return { text, refusals, ms: Date.now() - startedAt, available: false };
+    return { text, refusals, deferred, ms: Date.now() - startedAt, available: false };
   }
 
   try {
     for (const raster of wanted) {
+      /*
+       * THE HAND-OFF POINT. Asked before the page, so the page that would
+       * exceed the allowance is the one that does not run — the rule
+       * `importStock.ts` has stated since it was written. Every remaining
+       * page is DEFERRED rather than refused, and they are enumerated rather
+       * than the loop being broken, so the caller's checkpoint knows exactly
+       * which pages a successor still owes.
+       */
+      if (options.mayRecognise && !options.mayRecognise()) {
+        deferred.push(raster.page);
+        continue;
+      }
       if (Date.now() > deadline) {
         refusals.push({ page: raster.page, reason: 'out_of_time' });
         continue;
@@ -147,6 +210,10 @@ export async function recogniseScannedPages(
           continue;
         }
         text.set(raster.page, read);
+        // DURABLE BEFORE THE NEXT PAGE IS ATTEMPTED. Three seconds of CPU is
+        // what this line is protecting; a throw inside it costs that and
+        // nothing else, so it is swallowed.
+        try { await options.onPage?.(raster.page, read); } catch { /* see above */ }
       } catch {
         refusals.push({ page: raster.page, reason: 'unreadable' });
       }
@@ -155,5 +222,5 @@ export async function recogniseScannedPages(
     try { await worker?.terminate(); } catch { /* nothing to report */ }
   }
 
-  return { text, refusals, ms: Date.now() - startedAt, available: true };
+  return { text, refusals, deferred, ms: Date.now() - startedAt, available: true };
 }

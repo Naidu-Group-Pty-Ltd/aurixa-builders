@@ -22,6 +22,20 @@ import {
 } from './stockFieldCompletion.pure.ts';
 import type { StockFileClassification } from './fileTypes.pure.ts';
 import { extractStockFile, StockExtractionError } from './extract.ts';
+import {
+  classSpendMs, countIn, ledgerTotalMs, mergeLedgers, recordStage,
+  type ImportStageLedger,
+} from './importStageLedger.pure.ts';
+import { watchImportTermination } from './importTermination.ts';
+import {
+  isImportContinuation, type RunImportContinuation,
+} from './importContinuation.pure.ts';
+import {
+  checkpointPages, checkpointSettledPages, mayContinue, openCheckpoint,
+  readCheckpoint, withContinuation, withRecogniserUnavailable,
+  withRecognisedPage, withRefusedPage, type ImportCheckpoint,
+} from './importCheckpoint.pure.ts';
+import { mayRecognisePage } from './importResumeBudget.pure.ts';
 import type { PdfDeterministicDiagnostics } from './extract.ts';
 import { extractStockRowsFromImages, extractStockRowsFromText } from './modelExtract.ts';
 import { StockModelExtractionError, modelFailureFromRouterError } from './modelExtractionFailure.pure.ts';
@@ -46,6 +60,61 @@ export interface RunImportInput {
   builderUserId: string;
   upload: { id: string; original_filename: string };
   bytes: Uint8Array;
+  /**
+   * The stage ledger this run continues, where it continues one.
+   *
+   * Present on a RESUMED import: the stages this invocation runs are added to
+   * the account of the ones a previous invocation ran, rather than opening a
+   * second account of the same upload. Absent — which is every caller that
+   * does not resume — starts a fresh ledger and behaves exactly as before.
+   * See `importStageLedger.pure.ts`.
+   */
+  ledger?: Record<string, unknown> | null;
+  /**
+   * The checkpoint this upload row already carries, verbatim from
+   * `builder_stock_uploads.import_checkpoint`.
+   *
+   * Handed in raw rather than parsed, because the parse is where the digest is
+   * checked and that check belongs beside the bytes it is about. A checkpoint
+   * for a different document is discarded here, not upstream, so no caller can
+   * forget to. See `importCheckpoint.pure.ts`.
+   */
+  storedCheckpoint?: unknown;
+  /**
+   * Is this invocation a SUCCESSOR, or a fresh attempt at this upload?
+   *
+   * The crossing counter bounds one import ATTEMPT, not the lifetime of a row.
+   * A builder who re-reads a linked stock list four times would otherwise
+   * spend the whole allowance on the fourth read and be refused a
+   * continuation it is entitled to — while the recognised text itself is the
+   * document's and is rightly kept, because it is keyed on the digest and
+   * re-recognising identical bytes is pure waste.
+   */
+  resumed?: boolean;
+  /**
+   * MAY THIS RUN BE HANDED TO A SUCCESSOR AT ALL?
+   *
+   * A continuation re-reads the STORED BYTES and nothing else. That is a
+   * faithful reproduction of a file import and it is NOT a faithful
+   * reproduction of a linked one: a Google Sheets or Notion import carries
+   * `documentName`, `baseUrl`, `isNotionSource`, `rowAssets`, `linkDiscovery`
+   * and `sheetTab` alongside the bytes, every one of them evidence the reader
+   * uses, and a successor that re-read the snapshot without them would
+   * produce a DIFFERENT document from its predecessor. Which reading a
+   * customer got would then depend on where the CPU happened to run out.
+   *
+   * So only the callers that can be reproduced say so, and the rest degrade
+   * exactly as they do today — which is now safe, because the CPU ceiling
+   * stops recognition on EVERY path whether or not a hand-off follows. What
+   * a linked source loses by not being continued is some recognised pages on
+   * a scanned document; what it would lose by being continued wrongly is its
+   * own metadata.
+   *
+   * In practice the two barely overlap: a Sheets or Notion source is a
+   * spreadsheet or a page, never a scan, so it never reaches recognition at
+   * all. This is the rule stated rather than the coincidence relied on.
+   */
+  resumableFromStoredBytes?: boolean;
   /**
    * WHAT THE DOCUMENT IS CALLED, as distinct from what this upload is LABELLED.
    *
@@ -179,7 +248,20 @@ export interface RunImportSuccess {
   uploadStatus: 'enriching' | 'partially_complete';
 }
 
-export type RunImportResult = RunImportSuccess | RunImportFailure;
+/*
+ * THE HAND-OFF SHAPE LIVES IN ITS OWN MODULE AND IS RE-EXPORTED HERE.
+ *
+ * Because the reader sweep needs the predicate and cannot load this file: it
+ * imports everything else here as a TYPE only, since `runImport.ts` pulls in
+ * `unpdf`, `xlsx` and `tesseract.js` from `https://esm.sh/…`. See
+ * `importContinuation.pure.ts`, which also carries why this is neither a
+ * success nor a failure.
+ */
+export { isImportContinuation } from './importContinuation.pure.ts';
+export type { RunImportContinuation } from './importContinuation.pure.ts';
+
+export type RunImportResult =
+  RunImportSuccess | RunImportContinuation | RunImportFailure;
 
 /**
  * Run the pipeline for one upload row whose bytes are already in hand.
@@ -189,6 +271,16 @@ export type RunImportResult = RunImportSuccess | RunImportFailure;
  */
 export async function runStockImport(input: RunImportInput): Promise<RunImportResult> {
   const result = await importOnce(input);
+  /*
+   * NARROWED ONCE. A continuation carries `ok: true` and no summary, so every
+   * `result.ok ? result.summary…` below would be reading a field that is not
+   * there. One binding says what a SUCCESS is and the rest read it.
+   */
+  const done = isImportContinuation(result) ? null : (result.ok ? result : null);
+  /** `imported`, `continued`, or the refusal's own safe code. */
+  const outcomeWord = isImportContinuation(result)
+    ? 'continued'
+    : (result.ok ? 'imported' : result.code);
   /*
    * ONE LINE PER IMPORT, ON EVERY PATH.
    *
@@ -202,39 +294,39 @@ export async function runStockImport(input: RunImportInput): Promise<RunImportRe
       uploadId: input.upload.id,
       organisationId: input.organisationId,
       sourceKind: input.sourceKind ?? 'file',
-      strategy: result.ok ? result.strategy : null,
+      strategy: done ? done.strategy : null,
       byteSize: input.bytes.length,
       sheetGid: input.sheetTab?.gid ?? null,
       sheetAuthority: input.sheetTab?.authority ?? null,
       sheetTabCount: input.sheetTab?.tabCount ?? null,
       linkDiscovery: input.linkDiscovery?.state ?? null,
-      detected: result.ok ? result.summary.detected : null,
-      imported: result.ok ? result.summary.imported : null,
-      updated: result.ok ? result.summary.updated : null,
-      failed: result.ok ? result.summary.failed : null,
-      withSourceImage: result.ok ? result.summary.withSourceImage : null,
-      imageryOutstanding: result.ok ? result.summary.imageryOutstanding : null,
-      imageryDeferred: result.ok ? (result.summary.imageryDeferred ?? null) : null,
-      completedFields: result.ok ? (result.summary.completedFields ?? null) : null,
+      detected: done ? done.summary.detected : null,
+      imported: done ? done.summary.imported : null,
+      updated: done ? done.summary.updated : null,
+      failed: done ? done.summary.failed : null,
+      withSourceImage: done ? done.summary.withSourceImage : null,
+      imageryOutstanding: done ? done.summary.imageryOutstanding : null,
+      imageryDeferred: done ? (done.summary.imageryDeferred ?? null) : null,
+      completedFields: done ? (done.summary.completedFields ?? null) : null,
       // The safe CODE, never the builder-facing sentence and never the detail:
       // a detail is a provider's own words about a document we do not own.
-      outcome: result.ok ? 'imported' : result.code,
+      outcome: outcomeWord,
       /*
        * AND WHY A FIELD IS EMPTY, on a run that SUCCEEDED. Logged only on
        * the failure path before, which left "it imported but the land size
        * is blank" answerable in no way except by obtaining the PDF.
        */
-      deterministic: result.ok && result.deterministicReading
+      deterministic: done && done.deterministicReading
         ? {
-          status: result.deterministicReading.status,
-          reason: result.deterministicReading.reason,
-          fieldsRead: result.deterministicReading.diagnostics.fieldsRead,
-          disputedFields: result.deterministicReading.diagnostics.disputedFields ?? null,
-          visualOnlyFields: result.deterministicReading.diagnostics.visualOnlyFields ?? null,
-          declinedFields: result.deterministicReading.diagnostics.declinedFields ?? null,
-          readBy: result.deterministicReading.diagnostics.readBy ?? null,
-          ignoredLines: result.deterministicReading.diagnostics.ignoredLines ?? null,
-          unaccountedLines: result.deterministicReading.diagnostics.unaccountedLines ?? null,
+          status: done.deterministicReading.status,
+          reason: done.deterministicReading.reason,
+          fieldsRead: done.deterministicReading.diagnostics.fieldsRead,
+          disputedFields: done.deterministicReading.diagnostics.disputedFields ?? null,
+          visualOnlyFields: done.deterministicReading.diagnostics.visualOnlyFields ?? null,
+          declinedFields: done.deterministicReading.diagnostics.declinedFields ?? null,
+          readBy: done.deterministicReading.diagnostics.readBy ?? null,
+          ignoredLines: done.deterministicReading.diagnostics.ignoredLines ?? null,
+          unaccountedLines: done.deterministicReading.diagnostics.unaccountedLines ?? null,
         }
         : null,
     }));
@@ -257,6 +349,76 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
    */
   const runBudget = openImportBudget(Date.now(), bytes.length);
 
+  /*
+   * ═══════════════════════════════════════════════════════════════════════
+   * THE LEDGER, AND WHY IT IS COMMITTED AT EVERY STAGE RATHER THAN AT THE END
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * MEASURED 22 September 2026: `LOT 550 - ENZO 8.5 MODERN- BROCHURE V002.pdf`
+   * (8,530,307 bytes) reached `POST builder-portal-stock -> 546  CPU Time
+   * exceeded` eight seconds into processing, and the row it left behind read
+   * `stage_timings: null`. The run that survives tells you what it spent; the
+   * run that DIES tells you nothing, and the run that dies is the only one
+   * worth measuring.
+   *
+   * So each stage commits before the next one starts. One small UPDATE per
+   * stage, awaited, and a worker killed anywhere leaves a row naming the last
+   * stage that finished and what every finished stage cost — the stage after
+   * the last entry is the one that killed it.
+   *
+   * BEST-EFFORT AND NEVER FATAL: a deployment whose migration has not been
+   * dispatched has no column for this, and an import must not fail over a
+   * diagnostic. See `importStageLedger.pure.ts`.
+   */
+  /*
+   * TWO ACCOUNTS, AND THE DISTINCTION IS LOAD-BEARING.
+   *
+   * `inherited` is what previous invocations of THIS import already spent, and
+   * it is only ever written back out — it is the import's total, which is what
+   * a support question needs.
+   *
+   * `ledger` is THIS invocation's own account, and it starts EMPTY. Every
+   * budget decision reads it, because an allowance belongs to a worker rather
+   * than to a document: a successor that inherited its predecessor's spend
+   * would arrive with nothing left, decline every step, hand off again, and
+   * the import would spend all ten of its crossings achieving nothing — the
+   * exact failure a resumable importer exists to prevent, produced by the
+   * mechanism meant to prevent it.
+   *
+   * `mergeLedgers` puts them together at the moment of writing.
+   */
+  const inherited = (input.ledger as ImportStageLedger | undefined) ?? {};
+  const ledger: ImportStageLedger = {};
+  /*
+   * AND IF THE RUNTIME TAKES THE WORKER, IT SAYS WHICH RESOURCE IT TOOK IT
+   * FOR. `546` means the worker went away and nothing else; the last
+   * completed stage plus the reason is the whole diagnosis. See
+   * `importTermination.ts`.
+   */
+  const termination = watchImportTermination('builderStock');
+  termination.watch(ledger);
+  const commitLedger = async (current: ImportStageLedger): Promise<void> => {
+    try {
+      const whole = mergeLedgers(inherited, current);
+      await supabase.from('builder_stock_uploads')
+        .update({ stage_timings: { ...whole, total_ms: ledgerTotalMs(whole) } })
+        .eq('id', upload.id)
+        .eq('organisation_id', organisationId);
+    } catch { /* a diagnostic never fails the deliverable */ }
+  };
+  /** Run one of THIS module's stages into the same ledger the extractor uses. */
+  const stage = async <T>(
+    name: Parameters<typeof recordStage>[1], run: () => Promise<T>,
+  ): Promise<T> => {
+    const startedAt = Date.now();
+    try {
+      return await run();
+    } finally {
+      recordStage(ledger, name, Date.now() - startedAt);
+      await commitLedger(ledger);
+    }
+  };
+
   if (!bytes.length) {
     return fail('empty_file', sourceKind === 'url'
       ? 'That address returned an empty document.'
@@ -268,7 +430,37 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
 
   // `sha256Hex` is typed for a plain-ArrayBuffer view; a Uint8Array that
   // reached us through a stream reader carries the wider `ArrayBufferLike`.
-  const sha = await sha256Hex(bytes as Uint8Array<ArrayBuffer>);
+  const sha = await stage('document_open',
+    () => sha256Hex(bytes as Uint8Array<ArrayBuffer>));
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════
+   * WHAT A PREVIOUS INVOCATION OF THIS IMPORT ALREADY PAID FOR
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * Read HERE, immediately after the digest, because the digest is what makes
+   * it safe: a checkpoint belongs to one document, and a linked stock list is
+   * linked precisely because the builder keeps editing it. Yesterday's
+   * recognised text merged into today's sheet is a property described by a
+   * document that no longer says that.
+   *
+   * Absent, unreadable, or a different document's: `readCheckpoint` answers
+   * null and this import runs exactly as it always has.
+   */
+  let checkpoint: ImportCheckpoint =
+    readCheckpoint(input.storedCheckpoint, sha) ?? openCheckpoint(sha);
+  // A fresh attempt starts the crossing count again; the recognised pages it
+  // inherited are kept, because they are facts about the bytes.
+  if (!input.resumed) checkpoint = { ...checkpoint, continuations: 0 };
+  const commitCheckpoint = async (): Promise<void> => {
+    try {
+      await supabase.from('builder_stock_uploads')
+        .update({ import_checkpoint: checkpoint })
+        .eq('id', upload.id)
+        .eq('organisation_id', organisationId);
+    } catch { /* durability is an optimisation; recognition is the deliverable */ }
+  };
+  const carriedPages = checkpointPages(checkpoint);
 
   // Duplicate guard. The same BYTES from the same organisation have already
   // produced whatever they were going to — which is why a URL is not the key:
@@ -327,12 +519,114 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
        */
       organisationName: input.organisationName,
       budget: runBudget,
+      // ONE ACCOUNT OF ONE RUN: the extractor records its stages into the
+      // same ledger and commits through the same hook.
+      ledger,
+      onStage: commitLedger,
+      /*
+       * AND THE ONE STAGE THAT CAN CROSS AN ISOLATE.
+       *
+       * Recognition is the only document-class stage measured to exceed any
+       * sane CPU budget on its own (9,223 ms over three pages) and the only
+       * one with nowhere else to send its work — imagery goes to the settler,
+       * row writes are free. So it is the only stage that is checkpointed,
+       * and this is the whole of it: what has already been read, what must
+       * not be asked again, whether there is room for another page, and where
+       * to put each page the moment it is read.
+       */
+      ocrCarried: carriedPages,
+      ocrSettled: checkpointSettledPages(checkpoint),
+      mayRecognisePage: () => mayRecognisePage(ledger),
+      onRecognisedPage: async (page, text) => {
+        checkpoint = withRecognisedPage(checkpoint, page, text);
+        await commitCheckpoint();
+      },
+      onRefusedPage: async (page) => {
+        checkpoint = withRefusedPage(checkpoint, page);
+        await commitCheckpoint();
+      },
     });
   } catch (error) {
     if (error instanceof StockExtractionError) {
       return fail(error.code, error.safeMessage, String((error as { underlying?: unknown }).underlying ?? ''));
     }
     throw error;
+  }
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════
+   * THE HAND-OFF, AND WHY IT IS HERE AND NOT LATER
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * A document whose recognition is unfinished is a document that has not
+   * been READ. Everything below this line reads it: the deterministic reader,
+   * the segmentation, the field completion, the property rows. Running any of
+   * it against a partial text and then running it again on the successor
+   * would produce two different readings of one document and write the first
+   * one to a customer's card — which is worse than being slow.
+   *
+   * So the run stops HERE, having spent its allowance on the one thing only
+   * it can do, and the successor picks up from the checkpoint. The properties
+   * are written exactly once, by whichever invocation finally holds the whole
+   * document.
+   *
+   * THE SUCCESSOR IS DISPATCHED NOW. Not by the minute tick, not by the
+   * fifteen-minute sweep: `builder_stock_dispatch_import_continuation` is the
+   * same signed internal dispatcher that fans the image settler out, and it
+   * is called before this returns.
+   */
+  const ocrOutstanding = extraction.ocrOutstanding ?? [];
+  if (ocrOutstanding.length && input.resumableFromStoredBytes) {
+    /*
+     * A DEPLOYMENT WITH NO RECOGNISER MUST NOT BE ASKED AGAIN.
+     *
+     * `available: false` means the engine or its language data could not be
+     * obtained here, which is a fact about the deployment and will be just as
+     * true in the successor. Continuing would spend ten isolates discovering
+     * it ten times; the right answer is to read the document with whatever
+     * text it has, which is what the code below already does honestly.
+     */
+    if (extraction.ocr && extraction.ocr.available === false) {
+      checkpoint = withRecogniserUnavailable(checkpoint);
+      await commitCheckpoint();
+    } else if (mayContinue(checkpoint)) {
+      checkpoint = withContinuation(checkpoint);
+      await commitCheckpoint();
+      console.log('[builderStock] import handed to a successor', {
+        phase: 'import_handoff',
+        upload_id: upload.id,
+        reason: 'ocr_outstanding',
+        outstanding: ocrOutstanding.length,
+        recognised: checkpointPages(checkpoint).size,
+        continuations: checkpoint.continuations,
+        spent_ms: ledgerTotalMs(ledger),
+      });
+      termination.done();
+      /*
+       * THE DISPATCH IS THE CALLER'S, AND THE ORDERING IS THE WHOLE REASON.
+       *
+       * This invocation still HOLDS the import claim. A successor dispatched
+       * from here would arrive within a few hundred milliseconds, find the
+       * row claimed, correctly do nothing — and the import would then wait on
+       * the minute tick, which is precisely the cron dependency this design
+       * exists to remove. So the caller releases first and dispatches second,
+       * in that order, and `dispatchImportContinuation` is the one place that
+       * pairing is written down.
+       */
+      return {
+        ok: true,
+        continued: true,
+        reason: 'ocr_outstanding',
+        outstanding: ocrOutstanding.length,
+        continuations: checkpoint.continuations,
+      };
+    }
+    /*
+     * PAST THE CROSSING BOUND, the run finishes with what it has. The pages it
+     * could not reach are named in `result.ocr.refusals` and the document is
+     * read from the text that exists — the same honest degradation a scan the
+     * recogniser could not read has always produced.
+     */
   }
 
   /*
@@ -763,6 +1057,7 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     ?? { state: 'complete', method: `native:${strategy}` };
 
   const recordsStartedAt = Date.now();
+  const rasterBeforeRecords = classSpendMs(ledger, 'raster');
   const outcome = await importStockRecords(supabase, {
     organisationId,
     uploadId: upload.id,
@@ -784,35 +1079,42 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     // Derived from the run's own clock rather than restarted here, which is
     // the half of this defect that had a budget and spent it from zero.
     imageDeadlineAt: storageDeadlineFrom(runBudget, Date.now()),
+    // ONE ACCOUNT OF ONE RUN. The raster half of that call records itself.
+    ledger,
+    onStage: commitLedger,
   });
-  const dbWriteMs = Date.now() - recordsStartedAt;
+  /*
+   * THE ROW WRITES ARE WHAT IS LEFT ONCE THE RASTER WORK IS TAKEN OUT.
+   *
+   * `importStockRecords` does two different kinds of work in one call and
+   * only one of them is expensive per byte. Timing the whole call as
+   * `db_write` would put the photographs' cost under a metadata heading and
+   * hide the thing the measurement is for; subtracting what the raster stage
+   * already recorded is the same rule the reader and the segmenter answer to
+   * one level up.
+   */
+  /*
+   * THE WHOLE RASTER CLASS, NOT ONE STAGE OF IT. This subtracted
+   * `image_store_ms` alone, and the decode that settles each picture's role is
+   * charged as `image_decode` inside the same call — so on
+   * `stress-multi-property` it was counted twice and `db_write` read 5,009 ms
+   * for row writes that cost tens. Taken as the difference across the call,
+   * so raster work charged before it is not subtracted from it.
+   */
+  const rasterDuringRecords = classSpendMs(ledger, 'raster') - rasterBeforeRecords;
+  recordStage(ledger, 'db_write',
+    Math.max(0, (Date.now() - recordsStartedAt) - rasterDuringRecords));
+  await commitLedger(ledger);
 
   /*
-   * WHAT THIS RUN SPENT, WRITTEN DOWN WHERE SOMEBODY CAN READ IT LATER.
-   *
-   * DIAGNOSTICS ONLY — milliseconds and counts, never a byte of the builder's
-   * document, and nothing branches on it. It exists because the 22 September
-   * 2026 latency investigation had to reconstruct every stage of this pipeline
-   * from log-line coincidence, and got the resource wrong twice before the
-   * runtime named it. `document_parses` is the one to watch: a single import
-   * legitimately opens the PDF three times (text layer, layout, images), and
-   * anything above that is a stage running twice.
-   *
-   * BEST-EFFORT, exactly as the kick below is: a deployment whose migration
-   * has not been dispatched has no column for this and must not fail an
-   * import over a diagnostic.
+   * WHAT THIS RUN SPENT IS ALREADY WRITTEN DOWN — this block used to do it
+   * here, at the end, and that is exactly why the 22 September CPU kill left
+   * `stage_timings: null` on an import that had spent eight seconds. The
+   * ledger is committed at every stage boundary now; what is added here is
+   * only what this point of the run knows and the stages did not.
    */
-  try {
-    await supabase.from('builder_stock_uploads').update({
-      stage_timings: {
-        ...(extraction.timings ?? {}),
-        db_write_ms: dbWriteMs,
-        total_ms: Date.now() - runBudget.startedAt,
-        strategy,
-        rows_detected: outcome.detected,
-      },
-    }).eq('id', upload.id).eq('organisation_id', organisationId);
-  } catch { /* a diagnostic never fails the deliverable */ }
+  countIn(ledger, 'rows_detected', outcome.detected);
+  ledger.strategy = strategy;
 
   if (!outcome.detected) {
     /**
@@ -923,6 +1225,7 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
    * BEST-EFFORT BY DESIGN: the every-minute tick reaches the same queue, so
    * a deployment mid-migration or a pg_net hiccup costs latency, never work.
    */
+  const kickStartedAt = Date.now();
   try {
     const { error: kickError } = await input.supabase
       .rpc('builder_stock_kick_image_work', { p_upload_id: input.upload.id });
@@ -933,6 +1236,9 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
       });
     }
   } catch { /* the cron tick is the guarantee */ }
+  recordStage(ledger, 'initial_image_work', Date.now() - kickStartedAt);
+  await commitLedger(ledger);
+  const finalisationStartedAt = Date.now();
 
   /*
    * AND ASK WHETHER THIS UPLOAD CAN BE PUBLISHED, BECAUSE NOTHING ELSE WILL
@@ -967,6 +1273,13 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
       p_upload_id: input.upload.id,
     });
   } catch { /* the settler and the cron tick both ask again */ }
+  recordStage(ledger, 'finalisation', Date.now() - finalisationStartedAt);
+  await commitLedger(ledger);
+  /*
+   * THE RUN IS OVER, so a termination from here on is the ordinary end-of-
+   * request drop and must not be reported as an import dying mid-stage.
+   */
+  termination.done();
 
   return {
     ok: true,

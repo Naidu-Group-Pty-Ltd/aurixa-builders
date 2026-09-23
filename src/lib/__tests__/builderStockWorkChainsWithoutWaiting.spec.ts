@@ -299,22 +299,16 @@ describe('the diagnostics say what was spent and what was waited for', () => {
 
   it('counts the times a run opened the document', () => {
     /*
-     * The count, not just the duration. A single import legitimately opens
-     * the PDF three times — text layer, layout, images — and the 22 September
-     * investigation found a FOURTH, four minutes later, from an upload-level
-     * sweep re-reading the same file. A duration says a stage was slow; a
-     * count says a stage ran that should not have run at all.
-     */
-    const extract = read('supabase/functions/_shared/builderStock/extract.ts');
-    expect(extract).toContain('document_parses?: number;');
-    /*
      * FOUR SITES, because the OCR branch rasterises from its own parse: the
      * text layer, the positioned layout, the image discovery and — only for a
      * scan — the page photographs. A native single-property PDF therefore
      * reports three and a scanned one four, which is exactly the distinction
      * the count exists to make visible.
      */
-    expect((extract.match(/timings\.document_parses = \(timings\.document_parses \?\? 0\) \+ 1/g) ?? []))
+    const extract = read('supabase/functions/_shared/builderStock/extract.ts');
+    expect(read('supabase/functions/_shared/builderStock/importStageLedger.pure.ts'))
+      .toContain("'document_open'");
+    expect((extract.match(/countIn\(timings, 'document_parses'\)/g) ?? []))
       .toHaveLength(4);
   });
 

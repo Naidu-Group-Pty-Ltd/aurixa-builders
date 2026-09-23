@@ -393,13 +393,36 @@ describe('a request body is bounded before anyone is authenticated', () => {
     'builder-portal-workspace', 'builder-portal-verify', 'builder-network-connections',
   ];
 
+  /**
+   * THE PROPERTY IS "BOUNDED BEFORE AUTHENTICATED", NOT "SPELLED THIS WAY".
+   *
+   * This asserted the literal `readBoundedJson(req, DEFAULT_MAX_BODY_BYTES)`,
+   * which was the only bounded reader any of these handlers used. One of them
+   * now needs the RAW text as well as the parsed object — `verifyInternal`
+   * hashes the exact bytes the signer hashed, and a re-serialised object is a
+   * different string — so it reads through `enforceRawBodyLimit`, which is
+   * the SAME limiter: `readBoundedJson` delegates to `enforceJsonBodyLimit`,
+   * which delegates to `enforceRawBodyLimit`. Same ceiling, same streaming
+   * cancel, same point in the request.
+   *
+   * So the assertion names both readers and keeps the two things that
+   * actually matter: the ceiling is `DEFAULT_MAX_BODY_BYTES`, and the bound
+   * is taken before the session is resolved. Pinning a spelling here would
+   * have forced the signature check to be done wrongly or not at all.
+   */
+  const BOUNDED_READERS = [
+    'readBoundedJson(req, DEFAULT_MAX_BODY_BYTES)',
+    'enforceRawBodyLimit(req, DEFAULT_MAX_BODY_BYTES)',
+  ];
+
   it.each(HANDLERS)('%s reads a bounded body', (fn) => {
     const source = readCode(FN(fn));
-    expect(source).toContain('readBoundedJson(req, DEFAULT_MAX_BODY_BYTES)');
+    const used = BOUNDED_READERS.filter((reader) => source.includes(reader));
+    expect(used.length).toBeGreaterThan(0);
     expect(source).not.toContain('await req.json()');
     // The bound is taken before the session is resolved, which is the point.
-    expect(source.indexOf('readBoundedJson'))
-      .toBeLessThan(source.indexOf('resolveBuilderSession(supabase, req)'));
+    const boundedAt = Math.min(...used.map((reader) => source.indexOf(reader)));
+    expect(boundedAt).toBeLessThan(source.indexOf('resolveBuilderSession(supabase, req)'));
   });
 });
 
