@@ -53,6 +53,7 @@ import {
 } from './importStageLedger.pure.ts';
 import type { PdfPhotoProvenance } from './pdfSourcePhoto.ts';
 import type { PdfMediaPlacement } from './pdfPrimaryImage.pure.ts';
+import type { PdfFigure } from './pdfFigures.pure.ts';
 import type {
   PdfDeterministicReading, PdfTextLayoutPage,
 } from './pdfDeterministicRows.pure.ts';
@@ -195,6 +196,13 @@ export interface StockExtraction {
    * NAMES only, so it is safe to log.
    */
   deterministicReading?: PdfDeterministicDiagnostics;
+  /**
+   * Insets a PDF draws that may state a figure only as a picture — an area
+   * schedule printed as a raster — as offsets into the document, never
+   * decoded here. Which are read, and by which isolate, is decided once the
+   * property is known. See `pdfFigures.pure.ts`. Absent for every other format.
+   */
+  pdfFigures?: PdfFigure[];
   /**
    * The record the deterministic reader HAD when it stood down.
    *
@@ -1123,6 +1131,7 @@ export async function extractStockFile(
         return await discoverPdfSourceAssets(bytes);
       });
       result.pageOrderAuthoritative = found.pageOrderAuthoritative;
+      result.pdfFigures = found.figures;
       let pdfSkipped = 0;
       let pdfCapped = false;
       let pdfTotalBytes = 0;

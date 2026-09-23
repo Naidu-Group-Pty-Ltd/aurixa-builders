@@ -49,6 +49,7 @@
  * Pure: no IO, no clock.
  */
 import type { RowLinkDiscovery } from './suppliedEvidence.pure.ts';
+import { readPdfFigures, type PdfFigure } from './pdfFigures.pure.ts';
 
 /** The shape's own version, so a successor can refuse one it does not know. */
 export const IMPORT_HANDOVER_VERSION = 1;
@@ -84,6 +85,14 @@ export interface ImportDecision {
   deterministicUnaccounted: string[] | null;
   deterministicIgnored: string[] | null;
   deterministicPlacement: string[] | null;
+  /**
+   * Insets on the property's own page that may state the building size the
+   * rows do not — offsets into the document, read by a successor that never
+   * parses it. Empty wherever the rows state one, or nothing qualifies. See
+   * `pdfFigures.pure.ts`. Absent on a hand-off written before this existed,
+   * which reads as none.
+   */
+  figures?: PdfFigure[];
 }
 
 /** The whole of what rides in an `import` read's manifest. */
@@ -154,5 +163,8 @@ export function readImportHandover(
     deterministicUnaccounted: unaccounted,
     deterministicIgnored: ignored,
     deterministicPlacement: placement,
+    // Absent on a hand-off written before figures existed, and kept absent so
+    // it comes back exactly as it went; the reader treats absent as none.
+    ...(decision.figures !== undefined ? { figures: readPdfFigures(decision.figures) } : {}),
   };
 }

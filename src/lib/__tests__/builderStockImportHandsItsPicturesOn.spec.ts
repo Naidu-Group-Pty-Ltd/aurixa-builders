@@ -64,6 +64,17 @@ describe('the decision is bound to the attempt that made it', () => {
     expect(readImportHandover(stored, 'token-1')).toEqual(decision());
   });
 
+  it('carries the figures a successor may read, and drops any it cannot trust', () => {
+    const figure = {
+      page: 1, objectNumber: 1899, width: 231, height: 166, start: 5000, end: 9000, flate: true,
+      drawn: { x: 45.3, y: 79.9, width: 151.2, height: 108.6 }, sha256: 'f'.repeat(64),
+    };
+    const stored = JSON.parse(JSON.stringify(composeImportHandover('token-1', decision({
+      figures: [figure, { ...figure, sha256: 'tampered' }],
+    }))));
+    expect(readImportHandover(stored, 'token-1')?.figures).toEqual([figure]);
+  });
+
   it('is refused for any other token, a missing one, or a shape this build does not know', () => {
     const stored = composeImportHandover('token-1', decision());
     expect(readImportHandover(stored, 'token-2')).toBeNull();
@@ -123,8 +134,10 @@ describe('the checkpoint carries the hand-off, and a fresh attempt never adopts 
 
 // ---------------------------------------------------------------------------
 describe('the crossings are bounded by a proof, not a preference', () => {
-  it('the bound is one hand-off plus one crossing per picture the role decision can read', () => {
-    expect(MAX_PICTURE_CROSSINGS).toBe(1 + MAX_KIND_CANDIDATES);
+  it('the bound is one hand-off, one reading of the figures, and one crossing per picture the role decision can read', () => {
+    // The figures are read once per hand-off, in a crossing of their own, and
+    // their verdict is recorded whatever it is (`pdfFigures.pure.ts`).
+    expect(MAX_PICTURE_CROSSINGS).toBe(2 + MAX_KIND_CANDIDATES);
     // And that set is the decoder's own: named once, imported by both.
     const assess = read('supabase/functions/_shared/builderStock/assessSourceImage.ts');
     expect(assess).toContain('const MAX_VISION_DECODES = MAX_KIND_CANDIDATES;');
@@ -170,7 +183,7 @@ describe('the parse isolate stops before any picture is decoded', () => {
   it('the hand-off is made after the reading is decided and before the tail runs', () => {
     const decided = run.indexOf('const decided: DecidedImport = {');
     const handOff = run.indexOf('const handed = await handPicturesOver(supabase, {');
-    const tail = run.lastIndexOf('return await finishDecided(decided);');
+    const tail = run.lastIndexOf('return await finishDecided(finishing);');
     expect(decided).toBeGreaterThan(-1);
     expect(handOff).toBeGreaterThan(decided);
     expect(tail).toBeGreaterThan(handOff);
@@ -182,7 +195,7 @@ describe('the parse isolate stops before any picture is decoded', () => {
 
   it('a hand-off is returned only once the checkpoint naming it has landed', () => {
     const block = run.slice(run.indexOf('const handed = await handPicturesOver(supabase, {'),
-      run.lastIndexOf('return await finishDecided(decided);'));
+      run.lastIndexOf('return await finishDecided(finishing);'));
     expect(block).toContain('handedOn = await commitCheckpoint();');
     expect(block).toContain('await discardHandedOverPictures(supabase, { organisationId, uploadId: upload.id });');
     expect(block.indexOf('if (handedOn) {')).toBeGreaterThan(block.indexOf('handedOn = await commitCheckpoint();'));
@@ -201,8 +214,9 @@ describe('the parse isolate stops before any picture is decoded', () => {
     const branch = run.slice(run.indexOf('const handoverToken = input.resumed'),
       run.indexOf('let extraction;'));
     const learn = branch.indexOf("uploadId: upload.id, purpose: 'import', loaded: taken.loaded,");
-    const handOn = branch.indexOf("reason: 'pictures_outstanding',");
-    const finish = branch.indexOf('const finished = await finishDecided(decidedFromHandover(taken), {');
+    const handOn = branch.indexOf("reason: 'pictures_outstanding',", learn);
+    const finish = branch.indexOf(
+      'const finished = await finishDecided(decidedFromHandover(taken, figureVerdictOf(checkpoint)), {');
     const discard = branch.indexOf('await discardHandedOverPictures(supabase, { organisationId, uploadId: upload.id });');
     expect(learn).toBeGreaterThan(-1);
     expect(handOn).toBeGreaterThan(learn);
@@ -237,11 +251,11 @@ describe('the attach that runs in the successor decodes no kind it was handed', 
 describe('the isolate that attaches decodes what a settler decode isolate may, no more', () => {
   it('the successor passes the settler\'s own allowance, and the inline path passes none', () => {
     const run = read('supabase/functions/_shared/builderStock/runImport.ts');
-    expect(run).toContain(`const finished = await finishDecided(decidedFromHandover(taken), {
+    expect(run).toContain(`const finished = await finishDecided(decidedFromHandover(taken, figureVerdictOf(checkpoint)), {
         eligibilityDecodes: DECODES_PER_INVOCATION,
       });`);
     expect(run).toContain('eligibilityDecodes: attach.eligibilityDecodes ?? null,');
-    expect(run.lastIndexOf('return await finishDecided(decided);')).toBeGreaterThan(-1);
+    expect(run.lastIndexOf('return await finishDecided(finishing);')).toBeGreaterThan(-1);
   });
 
   it('past the allowance a picture is still stored, with no verdict rather than a guessed one', () => {

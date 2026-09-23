@@ -870,8 +870,7 @@ document: a 300 dpi render of all six pages, read by Tesseract, finds no land
 size. `Allotment up to 500m2` on page 3 is a condition in the foundation
 specification, not this lot's size. Nothing here invents either figure. A
 builder can state a figure their document does not (`manualStats.pure.ts`).
-Reading the picture is a separate change, and until it lands the fixture's
-named limit says so on every run.
+Reading the picture is §16.
 
 A held-out fixture of the class went into the corpus before any code (case 2):
 `heldout-picture-area-schedule`, which prints its area schedule as a picture.
@@ -899,4 +898,133 @@ document class totals 28,737 ms against 29,080. The worst single invocation is
 
 Reader 16 is what reaches the stored document. The reader sweep re-reads it on
 its fifteen-minute heartbeat, and the importer corrects its own row, so the
+property keeps its id and its photographs.
+
+
+## 16 · A build size the page prints only as a picture
+
+**The defect (case 1 of §0), 23 September 2026.** After reader 16 (§15),
+`Lot 101 - PICO - BROCHURE v002.pdf` reads its lot, estate, design, price and
+titles, and its card still reads `HOME —`. The house's size is printed once, in
+a 231 × 166 raster of its area schedule drawn across 3.3% of the property page:
+
+    AREA SCHEDULE
+    DWELLING:    90.11m²    9.70sq
+    GARAGE:      22.59m²    2.43sq
+    COURT:        4.69m²    0.50sq
+    PORCH:        7.11m²    0.77sq
+    TOTAL:      124.50m²   13.40sq
+
+No text reader can see a picture, and the photograph rules refuse this one on
+sight, correctly: it is below their pixel floor and their page-share floor
+because it is not a photograph.
+
+**Where it is read, and where it is not.** Reading a picture means decoding it,
+and an isolate that parsed a PDF decodes none of its pictures
+(`documentRead.pure.ts`; doc 54 §11). So the work is split:
+
+1. **The isolate that parses the document** notes the *insets* on each page
+   while it already walks the drawing instructions (`figureCandidatesFrom`).
+   An inset is a DCT or raw-sample raster of 120 × 60 pixels to a megapixel,
+   drawn across at most 8% of the page, of a table's proportions, drawn once on
+   one page. Nothing is decoded. Once the rows are decided, it chooses which
+   insets are worth reading (`figuresToRead`), and every condition is a
+   refusal. There must be one property. Its row must state no building size,
+   and the reader must not have disputed one. The inset must sit on a page that
+   states the price. At most three are chosen, in reading order. The chosen
+   insets travel in the hand-off as byte offsets into the document, with the
+   SHA-256 of those bytes.
+2. **A successor that never parsed the document** slices each inset out of the
+   same bytes its hand-off is bound to and proves the digest. It wraps raw
+   samples losslessly with the same `pictureFromStream` the photographs use,
+   then decodes the picture and makes it readable (`figureRaster.pure.ts`). It
+   recognises the picture with the same Tesseract and language model the scans
+   use (`recogniseFigures`, one block of text at 300 dpi). This happens once
+   per hand-off, in a crossing of its own before the kinds. The verdict (read,
+   refused with a reason per inset, or recognition unavailable) is written to
+   the import's checkpoint whatever it is. `MAX_PICTURE_CROSSINGS` is derived
+   one higher for it.
+3. **Whichever isolate finishes the import** applies the verdict. It can only
+   *fill* the one property's building size, and only where the text left it
+   empty (`withFigureApplied`).
+
+**A linked brochure reads the same figure, in the one isolate it has.** The
+acceptance gate's transport check caught this on the first full run. A
+brochure linked by URL is re-fetched rather than stored, so no successor can
+reproduce its run, and its pictures have always been decoded in the isolate
+that read it. Route A (upload) read `129.59`; route B (the same bytes, linked)
+left the building size empty. So a linked source reads its figures inline,
+with the same `readFigures`. It does so only where they fit inside the ceiling
+that invocation's other picture work already answers to (`mayReadFigures`:
+the engine and each figure priced at about twice what was measured). A stored
+document never reads one there, and one whose hand-off could not be written
+finishes without its figures rather than decode beside its parse.
+
+**Recognition is not believed; the picture's arithmetic is**
+(`areaSchedulePicture.pure.ts`). Text a PDF states is exact, but recognition
+misreads characters. So a total is taken only when the picture proves it with
+statements it makes independently of that total:
+
+- **Squares.** Australian builders print each area in square metres *and* in
+  squares (one square is 9.290304 m²). The printed squares must *exactly*
+  equal the total divided by 9.290304, rounded or cut off to the hundredth.
+  There is no band either side.
+- **Parts.** Every part must be legible, and the parts must sum to the total
+  within what two printed decimals allow.
+
+The schedule must also name a part of a dwelling, using the same vocabulary as
+the text reader, imported rather than restated. A picture with two different
+totals states none.
+
+**What production said, read-only, from the stored document.** The product's
+first preparation followed the synthetic fixture: enlarge to 300 dpi at the
+printed size, then paint out the table's rules, which are what defeat
+recognition on a small table. On the real picture it read
+`TOTAL: 12450m* 13.40sq`: the total's decimal point, the smallest mark the
+picture prints, was lost. The prover refused the result as implausible, so
+nothing would have been written. The trace then read the real picture under 24
+preparations. Almost all of them lost or spaced that point (`12450`,
+`124 50`), and every one read the squares as `13.40`.
+
+That measurement is the rule's last clause. **The squares place a decimal point
+that recognition lost** (`areaProvedBySquares`). Placements of the same digits
+differ by powers of ten, so at most one can equal the printed squares, and it is
+taken only when it is the only one. The digits are never changed, a misread
+digit still breaks the identity, and a figure with no point and no squares
+proves nothing. Parts whose points were lost can never prove a total, because
+they can agree at the wrong size (`901 + 225 + 47 + 72 = 1245`).
+
+The exact identity has its own measurement. One preparation read `129.59` as
+`129.50`, which is 13.94 squares against the printed 13.95. A hundredth's
+tolerance would have taken it; the exact identity does not.
+
+Replayed through the final prover, the 24 production readings gave 19 correct
+readings of `124.50`, 5 refusals and 0 wrong values. The fixture's 24 gave 12
+correct readings, 12 refusals and 0 wrong values. The product's own
+preparation reads both pictures under both segmentation modes tried.
+
+Run by the product's own `readFigures` over the stored production document
+(read-only trace, 23 September 2026), the verdict is `read`, `124.50`, proved
+by squares, in 453 ms. Recognition wrote `TOTAL: 12450m* 13.40sq`, and the
+squares placed the point.
+
+The acceptance gate read 36 documents with 0 failures, 7 named limits and 0
+generative-model calls. The fixture's named limit is lifted: both routes now
+import `129.59`, and the transport check holds. The isolate that parsed it
+decoded nothing, the figure's own invocation spent 604 ms, and the kinds and
+the attach followed in three more. The CPU profile is flat within noise on the
+stress corpus: document class 28,765 ms against 28,737, and worst single
+invocation 5,000 ms against 5,007. No invocation both parsed and decoded, and
+the figure invocation costs 654 ms of the 3,000 ms ceiling.
+
+**What it does not do.** It never speaks over a build size the text states. It
+never settles a dispute, and never reads for a document with several
+properties. It adds no generative model: recognition is Tesseract, and the only
+judgement is arithmetic the picture itself prints. A schedule printed without
+squares whose parts are not all legible is refused. So is an integer schedule
+without squares, because a figure with no decimal point has no known size. Both
+refusals are the safe direction.
+
+Reader 17 is what reaches the stored document. The reader sweep re-reads it,
+the successor reads its schedule, and the importer corrects its own row, so the
 property keeps its id and its photographs.

@@ -199,6 +199,37 @@ export function mayDecideRoles(
 }
 
 /**
+ * What reading the figures a page prints only as pictures costs
+ * (`readFigures.ts`), MEASURED: the recogniser brought up once — 341 ms in
+ * this runtime (`recogniseScan.ts`) — and each small picture recognised — the
+ * production area schedule took 453 ms end to end, engine included, on the
+ * trace runner. Both are taken at about twice what was measured, because an
+ * estimate that errs low is the one that kills the worker.
+ */
+export const FIGURE_ENGINE_MS = 700;
+export const FIGURE_READ_MS = 500;
+
+/**
+ * May this invocation read `count` figures here, in the isolate that read the
+ * document?
+ *
+ * ONLY ASKED WHERE A DOCUMENT'S PICTURES ARE DECODED INLINE BY DESIGN — a
+ * linked source, re-fetched, which no successor can reproduce. A stored
+ * document hands its figures on instead and never asks. Like `mayDecideRoles`
+ * it must fit INSIDE the ceiling, because it is an estimate; declining costs
+ * the building size a picture alone states, and nothing else.
+ */
+export function mayReadFigures(
+  ledger: ImportStageLedger | null | undefined,
+  count: number,
+): boolean {
+  if (count <= 0) return false;
+  if (!ledger) return true;
+  return expensiveSpendMs(ledger) + FIGURE_ENGINE_MS + FIGURE_READ_MS * count
+    <= EXPENSIVE_SPEND_CEILING_MS;
+}
+
+/**
  * How many milliseconds of expensive work are left before the ceiling.
  *
  * For the one caller that needs a DEADLINE rather than a yes/no — the image

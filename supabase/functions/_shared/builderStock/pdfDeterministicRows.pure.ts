@@ -363,6 +363,22 @@ export interface PdfDeterministicReading {
      */
     outrankedFields?: string[];
     /**
+     * The pages that stated the price, 1-based: the property's own pages
+     * (`measurementAuthority.pure.ts`), and the only pages a picture may be
+     * read for a figure the text does not state (`pdfFigures.pure.ts`). Page
+     * numbers only, so safe to log. Set by the whole-document reading alone —
+     * a page divided into several properties has no one property page.
+     */
+    pricePages?: number[];
+    /**
+     * What reading the property page's small pictures came to, where the text
+     * stated no building size and one was read — `read` and its proofs, or
+     * `refused` and a reason per picture, or `unavailable`. Set by the import
+     * successor that read them (`readFigures.ts`), never by this reader, and
+     * words only. See `pdfFigures.pure.ts`.
+     */
+    figures?: string[];
+    /**
      * Set where a bed/bath/car row of bare numbers was read because the
      * document's own floor plan named the same number of bedrooms.
      */
@@ -4148,6 +4164,9 @@ export function readPdfBrochure(
     }
   }
   if (outranked.length) diagnostics.outrankedFields = outranked.sort();
+  if (pricePages.size) {
+    diagnostics.pricePages = [...pricePages].map((index) => index + 1).sort((a, b) => a - b);
+  }
 
   /*
    * THE SECOND PRINTING IS NOT A SECOND FACT.
