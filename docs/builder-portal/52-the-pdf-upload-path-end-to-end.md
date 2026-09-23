@@ -17,7 +17,7 @@ expectation was wrong rather than the code.
 
 **The PDF ingestion architecture is the supported baseline as of 22 September
 2026** (reader 13, `builder-portal-stock` v562, `builder-stock-image-settler`
-v564). It is not frozen because it is finished — §12 lists what is still open —
+v564), and reader 14 on 23 September (§13). It is not frozen because it is finished — §12 lists what is still open —
 but because it has been measured, and the measurement is what a change has to
 beat.
 
@@ -710,3 +710,41 @@ be discovered.
 
 None of the four is a wrong value. Every one is a refusal or an absence, which
 is the standard a named limit has to meet.
+
+## 13 · A package brochure that printed everything and imported two fields
+
+**The defect (case 1 of §0), 23 September 2026.** `LOT 4327 Jubilee Estate -
+ENZO 10.5 MODERN - BROCHURE V002 - Copy.pdf` (7,762,286 bytes; the only live
+source on the production project) imported its price and its land size. The
+card read `Lot 4327, · Specifications`, with three dashes for bedrooms,
+bathrooms and car spaces, and `HOME —`. The page prints the estate, the
+suburb, the design, the three counts and the house's total area. The stored
+document was read back with `scripts/ops/stock-reading-trace.ts`
+(production-rollout phase `stock-reading-trace`, read-only). That showed five
+separate causes, each of which cost one field. None of them is specific to
+this builder. They are properties of a layout class: a package brochure with a
+design in display type, an icon row, a two-line address and an area schedule.
+Three held-out fixtures of that class were added to the corpus before any
+code (case 2): `heldout-icon-row-estate-locality`,
+`heldout-icon-row-street-locality`, and the negative
+`heldout-icon-row-plan-disagrees`.
+
+| cause, as the page drew it | the rule now |
+|---|---|
+| A raised `2` (`91.91m²`) was drawn 3.3 points above its figure, on the `Specifications` heading's baseline, and was grouped with the heading. | **A superscript belongs to the figure it abuts** (`liftedSuperscripts`). It must be smaller than the figure, raised by less than the figure's own height, and start where the figure ends. Without extractor heights, nothing moves. |
+| `Total:` was set 2.9 points above its own `129.5m²`. | **A label ending in a colon owns a value drifted less than a third of a line** (`joinDriftedLabelValues`). The value must be beside it, at a similar size, and within reach. Directly under the label is still the pair reader's case. |
+| `House` over `Specifications` was taken for the house design, which blocked the corroboration of the page's own `Enzo 10.5`. | **A section heading is never a name** (`a_section_heading_is_not_a_name` in `fieldTypes.pure.ts`). A value made only of section nouns and their qualifiers, with no digit, is declined as a design or an estate. |
+| `Lot 4327 Jubilee Estate,` over `Wyndham Vale`. | **A trailing comma is the document saying the address continues** (`readContinuedAddress`). The suburb is read, and no state or postcode the page does not print is invented. Without the comma the old refusal stands (`builderStockAddressBlock.spec.ts` records the renegotiation). |
+| The icon row `3 2 2` had nothing to key it: the floor plan is a picture and there is no siting page. | **An icon row is read in its printed order, bed · bath · car, only where nothing else keys it** (`readOrderedIconRow`). Each guard refuses rather than guesses, and each is the only thing standing between some row and a reading in `builderStockIconRowOrder.spec.ts`: implausible counts, gaps too narrow for a pictogram, anything drawn between the figures, zero-padding, widths nobody measured, a second different row, a row on a page that does not name the lot, and a plan that names more bedrooms than the row (the negative fixture). |
+| No label says "build size"; the house schedule ends `Total: 129.5m²`. | **The total of the house's one area schedule is its building size where nothing labelled competes** (`areaSchedule.pure.ts`). The schedule needs two or more dwelling parts, a total that is at least its largest part and within 25% of their sum, and exactly one such schedule on the document. It never speaks over a labelled figure, which is why its first version was deleted (Lot 315). |
+
+`builderStockLot4327Geometry.spec.ts` asserts all five against the production
+page's own runs, printed by the trace. The acceptance gate read 33 documents
+with 0 failures and 0 generative-model calls. The three new fixtures import
+every expected field through the multi-isolate hand-off, the negative fixture
+leaves its counts empty, and no other document's expectation moved.
+
+Reader 14 is what reaches the stored document. The reader sweep that re-reads
+it had to change first, because this document is `LOT 550`'s class. See
+`54-what-the-importer-spends.md` §11.5.
+

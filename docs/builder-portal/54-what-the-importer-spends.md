@@ -557,3 +557,59 @@ promises today:
 Until one of them is built, `builderStockReaderSweep.spec.ts` fails any change
 that raises the reader version while the sweep still re-reads inline. That
 change is the one that would cause the outage, and the test names the reason.
+
+### 11.5 The sweep crosses too, and a tick is counted before it works
+
+Built on 23 September 2026. It was needed by the first reader change after the
+fence: reader 14 (`52-the-pdf-upload-path-end-to-end.md` §13) was written for
+`LOT 4327 Jubilee Estate - ENZO 10.5 MODERN - BROCHURE V002 - Copy.pdf`. That
+document is 7,762,286 bytes of `LOT 550`'s class and the only live source on
+the production project.
+
+Both options above are used, each where it breaks no promise:
+
+- **A settled list converges over the sweep's own ticks.** The re-read is the
+  call "Read again" makes on a file: the stored checkpoint and
+  `resumableFromStoredBytes`. Where the import would hand its pictures on, the
+  sweep hands them on too. It records that it did, releases the claim, and
+  starts the next settler at once through `builder_stock_dispatch_reader_sweep`
+  (the same signed dispatcher, and an accelerator only). That settler's quiet
+  exit resumes the checkpoint. The fifteen-minute heartbeat is the recovery.
+  No status is written, so a settled list never looks busy.
+- **A row that is already `parsing` is an import**, either a first pass the
+  sweep adopted or an import that was abandoned. It goes to the import's own
+  successor through `releaseThenContinue`, and `continueStockImport` finishes
+  it with the columns every import finishes with. Nothing settled is moved
+  through `parsing`.
+
+The durable record the first option needs is `reader_sweep_attempt`
+(`readerSweepAttempt.pure.ts`, migration `20260923120000`). It carries three
+rules:
+
+- **A successor resumes only its own checkpoint.** Every import attempt stamps
+  `processing_started_at` when it begins, and no continuation refreshes it, so
+  that stamp is the fingerprint. A settled row's checkpoint belongs to its
+  import: its crossings are spent and its hand-off is already discarded.
+  Resuming it would read inline with no crossings left, which is `LOT 550` by
+  another route. A chain resumes only where it has handed on and the stamp is
+  unchanged. Anything else is a fresh attempt, which discards what an earlier
+  attempt handed on.
+- **A tick is written down before it works.** The tick the runtime kills can
+  write nothing afterwards, so `started` is recorded first. A tick that later
+  reads `started` or `fault` counts it as unfinished. After
+  `MAX_UNFINISHED_SWEEP_TICKS` (two) the sweep stops asking that document at
+  that version, stamps it `gave_up`, and moves on. The rows the document
+  already produced are left as they are. A tick whose start cannot be recorded
+  does not start.
+- **One reader per document, and one read per tick.** `claimImport` is taken
+  before the row is looked at again, so the sweep can never be a second reader
+  beside an import, a continuation or another settler. The per-tick budget
+  counts reads started, not reads finished. A read that faulted used the tick's
+  parse too.
+
+The fence in `builderStockReaderSweep.spec.ts` is now the specification of
+this. The sweep reads with `resumableFromStoredBytes`, a successor resumes only
+where `plan.resumes`, the claim comes first, and the record is written before
+`runImport` is called. Removing any of them fails the spec, the same way
+raising the version used to.
+

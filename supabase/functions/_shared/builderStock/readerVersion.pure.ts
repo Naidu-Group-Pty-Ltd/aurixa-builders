@@ -48,8 +48,10 @@
  * the current version WITHOUT being read: it is settled, not skipped, and it
  * never comes back.
  *
- * Pure: no imports, no IO, no clock beyond what a caller hands it.
+ * Pure: no IO, no clock beyond what a caller hands it. Its one import is
+ * pure too — the sweep's own attempt record, `readerSweepAttempt.pure.ts`.
  */
+import { sweepHandedOnThisParse } from './readerSweepAttempt.pure.ts';
 
 /**
  * THE READER'S OWN VERSION. Raise it when a change to the deterministic
@@ -184,7 +186,7 @@
  * Every document already imported is read again, because a document whose
  * headings were unreadable was read without them.
  */
-export const DETERMINISTIC_READER_VERSION = 13;
+export const DETERMINISTIC_READER_VERSION = 14;
 
 /*
  * VERSION 11 — A PHRASE'S OWN WORDS ARE HEADINGS TOO.
@@ -258,6 +260,43 @@ export const DETERMINISTIC_READER_VERSION = 13;
  * That is what makes it safe to raise for all of them at once.
  */
 
+/*
+ * VERSION 14 — A PACKAGE BROCHURE'S OWN LAYOUT, AND THE RE-READ THAT CAN
+ * FINALLY CARRY IT.
+ *
+ * MEASURED 23 SEPTEMBER 2026 on the only live source on the production
+ * project, `LOT 4327 Jubilee Estate - ENZO 10.5 MODERN - BROCHURE V002 -
+ * Copy.pdf`: it imported its price and its land size and nothing else — no
+ * address, no bedrooms, bathrooms or car spaces, no build size, no design —
+ * while the page prints every one of them. Read back out of the stored
+ * document, five separate defects each cost one field, and every one is a
+ * rule about the document CLASS:
+ *
+ *   • a raised `2` (`91.91m²`) sat on a heading's baseline and was grouped
+ *     with the heading (`liftedSuperscripts`);
+ *   • `Total:` was set 2.9 points above its own value
+ *     (`joinDriftedLabelValues`);
+ *   • `House Specifications` was taken for the house design and blocked the
+ *     filename's `Enzo 10.5` (`a_section_heading_is_not_a_name`);
+ *   • `Lot 4327 Jubilee Estate,` over `Wyndham Vale` — the comma is the
+ *     document saying the address continues (`readContinuedAddress`);
+ *   • the icon row `3 2 2` had nothing to key it, and is now read in its
+ *     printed order under guards that each refuse rather than guess
+ *     (`readOrderedIconRow`), with the build size taken from the house's one
+ *     area schedule where nothing labels it (`readAreaScheduleTotal`).
+ *
+ * A different row from bytes that have not changed, which is the bar.
+ *
+ * AND IT WAS FENCED UNTIL THE SWEEP COULD RE-READ WITHOUT DYING. Raising this
+ * makes every stored source outstanding, and the sweep re-read each one
+ * inline — parse and decode in one isolate, which is where LOT 550 killed the
+ * settler fifteen times over two days. That source is 7.76 MB of the same
+ * class. The sweep now reads the way the import does, handing a paginated
+ * document's pictures to a later isolate and continuing across its own
+ * ticks, and a document that kills a tick is asked a bounded number of times
+ * rather than for ever. See `readerSweepAttempt.pure.ts`.
+ */
+
 /** Where the marker lives. Named once; two spellings is how two ends drift. */
 export const READER_SETTLED_VERSION_COLUMN = 'reader_settled_version';
 
@@ -275,6 +314,12 @@ export interface ReaderSweepUpload {
   created_at?: unknown;
   /** Which failure, where the status is `failed`. See `OUR_FAILURE_CODES`. */
   error_code?: unknown;
+  /**
+   * The sweep's own record of a re-read in progress. Read here for one
+   * question alone — is a `parsing` row the sweep's own hand-off — and see
+   * `sweepHandedOnThisParse` for why that is not `parse_in_flight`.
+   */
+  reader_sweep_attempt?: unknown;
 }
 
 /**
@@ -465,7 +510,16 @@ export function readerReReadRefusal(
     const startedAt = Date.parse(String(upload?.processing_started_at ?? ''));
     const abandoned = !Number.isFinite(startedAt)
       || (now - startedAt) > ABANDONED_PARSE_MS;
-    if (!abandoned) return 'parse_in_flight';
+    /*
+     * EXCEPT THE SWEEP'S OWN READ, HANDED ON. A row the sweep claimed and
+     * handed to a successor is `parsing` with a stamp the sweep wrote seconds
+     * ago, and nobody else is its successor. The claim is still taken before
+     * a byte is read, so a live import is never joined. See
+     * `sweepHandedOnThisParse`.
+     */
+    if (!abandoned && !sweepHandedOnThisParse(upload, DETERMINISTIC_READER_VERSION)) {
+      return 'parse_in_flight';
+    }
   }
 
   /*
