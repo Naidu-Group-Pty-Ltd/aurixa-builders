@@ -204,3 +204,105 @@ describe('saving', () => {
     expect(within(screen.getByRole('alert')).getByText(/between 0 and 99/)).toBeTruthy();
   });
 });
+
+/**
+ * AND WHERE THE PROPERTY IS.
+ *
+ * `Lot 101 - PICO - BROCHURE v002.pdf` names its lot and its estate and no
+ * street, suburb, state or postcode — read on every page and in every picture.
+ * Its card could be placed on no marketplace, and the builder had nowhere to
+ * say where the lot is. The same dialog takes the address now, under the same
+ * rules as the figures. The places below are placeholders, never a customer's.
+ */
+describe('the address', () => {
+  const lot101 = (over: Partial<BuilderStockItem> = {}) => item({
+    address_line: null, suburb: null, state: null, postcode: null,
+    lot_number: '101', development_name: 'Watsons Reach Estate',
+    bedrooms: 3, bathrooms: 2, car_spaces: 1, building_size_sqm: 124.5, land_size_sqm: null,
+    ...over,
+  });
+
+  it('asks to COMPLETE the schedule where no suburb was given, however complete the figures', () => {
+    draw(<BuilderStockFiguresButton item={lot101({ land_size_sqm: 312 })} />);
+    const control = screen.getByRole('button', { name: /Complete the schedule/i });
+    expect(control.getAttribute('data-figures')).toBe('outstanding');
+  });
+
+  it('says every part the brochure did not name was not specified, rather than showing bare boxes', () => {
+    draw(<BuilderStockFiguresButton item={lot101()} />);
+    open();
+    // Four parts of the address and the land size.
+    expect(screen.getAllByText('Not specified').length).toBe(5);
+    expect(boxFor(/^Street address/).value).toBe('');
+    expect(boxFor(/^Suburb/).value).toBe('');
+    expect((screen.getByLabelText(/^State/) as HTMLSelectElement).value).toBe('');
+    expect(boxFor(/^Postcode/).value).toBe('');
+  });
+
+  it('shows the stock list’s reading of each part where it gave one', () => {
+    draw(<BuilderStockFiguresButton item={item()} />);
+    open();
+    expect(screen.getByText('Stock list: Lot 324 Dapple Avenue')).toBeTruthy();
+    expect(screen.getByText('Stock list: Armstrong Creek')).toBeTruthy();
+    expect(screen.getByText('Stock list: VIC')).toBeTruthy();
+    expect(screen.getByText('Stock list: 3217')).toBeTruthy();
+  });
+
+  it('seeds ONLY the parts the builder stated, and shows the document’s reading under them', () => {
+    draw(<BuilderStockFiguresButton item={lot101({
+      suburb: 'Sample Rise', state: 'VIC', stated_suburb: null, stated_state: null,
+      manual_location: { suburb: 'Sample Rise', state: 'VIC' },
+    })} />);
+    open();
+    expect(boxFor(/^Suburb/).value).toBe('Sample Rise');
+    expect((screen.getByLabelText(/^State/) as HTMLSelectElement).value).toBe('VIC');
+    // The row carries the builder's suburb; the brochure named none.
+    expect(boxFor(/^Street address/).value).toBe('');
+    expect(screen.getAllByText('Not specified').length).toBe(5);
+  });
+
+  it('sends every part, a typed one as text and an empty one as null', () => {
+    draw(<BuilderStockFiguresButton item={lot101()} />);
+    open();
+    fireEvent.change(boxFor(/^Suburb/), { target: { value: 'Sample Rise' } });
+    fireEvent.change(screen.getByLabelText(/^State/), { target: { value: 'VIC' } });
+    fireEvent.change(boxFor(/^Postcode/), { target: { value: '3999' } });
+    fireEvent.click(screen.getByRole('button', { name: /Save schedule/i }));
+
+    expect(mutate).toHaveBeenCalledTimes(1);
+    const [payload] = mutate.mock.calls[0];
+    expect(payload.location).toEqual({
+      address_line: null, suburb: 'Sample Rise', state: 'VIC', postcode: '3999',
+    });
+    // The figures still travel beside it, every one of them.
+    expect(Object.keys(payload.stats).sort()).toEqual(
+      ['bathrooms', 'bedrooms', 'building_size_sqm', 'car_spaces', 'land_size_sqm']);
+  });
+
+  it('can be saved once only the address has changed', () => {
+    draw(<BuilderStockFiguresButton item={lot101()} />);
+    open();
+    expect((screen.getByRole('button', { name: /Save schedule/i }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(boxFor(/^Suburb/), { target: { value: 'Sample Rise' } });
+    expect((screen.getByRole('button', { name: /Save schedule/i }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('offers exactly the eight states the column admits, and "not stated" first', () => {
+    draw(<BuilderStockFiguresButton item={lot101()} />);
+    open();
+    const options = [...(screen.getByLabelText(/^State/) as HTMLSelectElement).options].map((o) => o.value);
+    expect(options).toEqual(['', 'ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA']);
+  });
+});
+
+describe('a form nine rows tall still reaches its Save button', () => {
+  it('scrolls inside its own height at every width, rather than painting past the screen', () => {
+    draw(<BuilderStockFiguresButton item={item()} />);
+    open();
+    const dialog = screen.getByRole('dialog');
+    // The default above 640px is `sm:overflow-visible`; declaring an overflow
+    // withholds it, so the 85dvh ceiling scrolls instead of spilling.
+    expect(dialog.className).toContain('overflow-y-auto');
+    expect(dialog.className).not.toContain('sm:overflow-visible');
+  });
+});

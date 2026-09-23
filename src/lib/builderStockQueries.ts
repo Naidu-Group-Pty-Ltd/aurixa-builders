@@ -16,7 +16,7 @@ import {
 } from '../../supabase/functions/_shared/builderStock/imageProgress.pure';
 import type {
   BuilderStockItem, BuilderStockSelectionForBuilder, BuilderStockUpload,
-  ManualStatField,
+  ManualStatField, StatedLocationField,
 } from '@/lib/builderStock';
 
 export const builderStockKeys = {
@@ -548,11 +548,19 @@ export function useSetBuilderStockManualStats() {
     mutationFn: (input: {
       stockItemId: string;
       stats: Partial<Record<ManualStatField, number | null>>;
+      /*
+       * Where the property is, under the same rule: every part sent, a
+       * cleared box as `null`. Optional only so a caller that states figures
+       * alone says nothing about the address — which the server reads as
+       * "keep it", never as "clear it".
+       */
+      location?: Partial<Record<StatedLocationField, string | null>>;
     }) =>
       invoke<{ record: BuilderStockItem }>({
         operation: 'set_manual_stats',
         stock_item_id: input.stockItemId,
         stats: input.stats,
+        ...(input.location ? { location: input.location } : {}),
       }),
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: builderStockKeys.root() }); },
   });

@@ -21,6 +21,14 @@ import {
   MANUAL_STAT_SPECS, MANUAL_STAT_FIELDS, manualStatFields,
   type ManualStatField, type ManualStatSpec,
 } from '../../supabase/functions/_shared/builderStock/manualStats.pure';
+/*
+ * And where the property is — the same statement, the same rule, imported for
+ * the same reason. See `statedLocation.pure.ts`.
+ */
+import {
+  STATED_LOCATION_SPECS, STATED_LOCATION_FIELDS, STATED_STATES, statedLocationFields,
+  type StatedLocation, type StatedLocationField, type StatedLocationSpec,
+} from '../../supabase/functions/_shared/builderStock/statedLocation.pure';
 import {
   comparePrimaryEvidence, isPrimaryRole, readStoredEvidenceLevel, readStoredRole,
 } from '../../supabase/functions/_shared/builderStock/sourceImageRole.pure';
@@ -171,6 +179,23 @@ export interface BuilderStockItem {
   stated_car_spaces?: number | null;
   stated_building_size_sqm?: number | null;
   stated_land_size_sqm?: number | null;
+  /**
+   * WHERE THE BUILDER SAID THE PROPERTY IS, where their stock list did not.
+   *
+   * `address_line`, `suburb`, `state` and `postcode` above are already the
+   * EFFECTIVE values, exactly as the figures are: the server lays these parts
+   * over the document's in `applyStatedLocation`. This is the builder's
+   * statement itself — what the dialog is seeded from — and `stated_*` below
+   * carries what the document said underneath each part they replaced.
+   *
+   * Optional for the reason `manual_stats` is: a server that predates it sends
+   * nothing, and nothing means "not stated".
+   */
+  manual_location?: StatedLocation | null;
+  stated_address_line?: string | null;
+  stated_suburb?: string | null;
+  stated_state?: string | null;
+  stated_postcode?: string | null;
   /**
    * The house on the land — `Vanta 20`, `Nex 20`, `Cura 20B`.
    *
@@ -951,6 +976,14 @@ export interface ManualStatsReading {
   stated: ManualStatField[];
   /** Fields still empty — neither the document nor the builder gave one. */
   missing: ManualStatField[];
+  /**
+   * No suburb, from the document or the builder. A property that cannot be
+   * placed in a suburb has no address a client or a map can use, whatever
+   * else its line says — `Lot 101, Watsons Reach Estate` is the case.
+   */
+  addressMissing: boolean;
+  /** Any part of the address was stated by the builder. */
+  addressStated: boolean;
   /** One line under the schedule, or null where there is nothing to say. */
   note: string | null;
   /** What the control offers, which changes with what is outstanding. */
@@ -985,6 +1018,19 @@ export function describeManualStats(item: BuilderStockItem): ManualStatsReading 
     const spec = MANUAL_STAT_SPECS.find((entry) => entry.field === field);
     return spec?.prose ?? (spec?.label ?? field).toLowerCase();
   };
+  /*
+   * THE ADDRESS IS ONE ENTRY IN THE NOTE, not four. "Not specified: street
+   * address, suburb, state and postcode" names four boxes where a builder is
+   * thinking of one fact, and would push the figures they also owe off the
+   * end of the line. The suburb decides it: a street with no suburb places
+   * nothing, and a suburb with no street (a lot on a road not yet numbered)
+   * is a real, usable address.
+   */
+  const suburb = (item.suburb ?? '').trim();
+  const addressMissing = suburb === '';
+  const addressStated = statedLocationFields(item as unknown as Record<string, unknown>).length > 0;
+  const missingLabels = [...(addressMissing ? ['address'] : []), ...missing.map(labelOf)];
+  const statedLabels = [...(addressStated ? ['address'] : []), ...stated.map(labelOf)];
 
   /*
    * LABEL FIRST, THEN THE FIELDS. The brand's voice is "precise, unhurried,
@@ -997,23 +1043,23 @@ export function describeManualStats(item: BuilderStockItem): ManualStatsReading 
    * rather than one run-on.
    */
   const sentences: string[] = [];
-  if (missing.length) {
-    sentences.push(`Not specified in your stock list: ${sentenceList(missing.map(labelOf))}.`);
+  if (missingLabels.length) {
+    sentences.push(`Not specified in your stock list: ${sentenceList(missingLabels)}.`);
   }
-  if (stated.length) {
-    sentences.push(`Supplied by you: ${sentenceList(stated.map(labelOf))}.`);
+  if (statedLabels.length) {
+    sentences.push(`Supplied by you: ${sentenceList(statedLabels)}.`);
   }
   const note = sentences.length ? sentences.join(' ') : null;
 
   return {
-    stated, missing, note,
+    stated, missing, addressMissing, addressStated, note,
     /*
      * The act, named and stopped. "Add these figures" leant on a demonstrative
      * and "Edit figures" named a form rather than the record; both sit under a
      * ruled SCHEDULE, which is the artefact a builder already works in and the
      * noun the rest of this portal uses.
      */
-    action: missing.length ? 'Complete the schedule' : 'Update the schedule',
+    action: missing.length || addressMissing ? 'Complete the schedule' : 'Update the schedule',
   };
 }
 
@@ -1023,5 +1069,8 @@ export function describeManualStats(item: BuilderStockItem): ManualStatsReading 
  */
 export {
   MANUAL_STAT_SPECS, MANUAL_STAT_FIELDS, manualStatFields,
+  STATED_LOCATION_SPECS, STATED_LOCATION_FIELDS, STATED_STATES, statedLocationFields,
 };
-export type { ManualStatField, ManualStatSpec };
+export type {
+  ManualStatField, ManualStatSpec, StatedLocation, StatedLocationField, StatedLocationSpec,
+};

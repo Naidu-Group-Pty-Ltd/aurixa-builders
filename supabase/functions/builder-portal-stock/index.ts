@@ -115,7 +115,12 @@ import {
   BUILDER_ANNOUNCEMENT_SELECT, STOCK_AVAILABILITY_STATUSES, STOCK_IMAGE_SELECT,
   STOCK_ITEM_SELECT, STOCK_UPLOAD_SELECT, stockPagination,
 } from '../_shared/builderStock/projection.pure.ts';
-import { applyManualStatsToAll, parseManualStats } from '../_shared/builderStock/manualStats.pure.ts';
+import {
+  applyManualStatsToAll, parseManualStats, readManualStats,
+} from '../_shared/builderStock/manualStats.pure.ts';
+import {
+  applyStatedLocation, parseStatedLocation, readStatedLocation,
+} from '../_shared/builderStock/statedLocation.pure.ts';
 import {
   prepareLinkedStockSource,
 } from '../_shared/builderStock/linkedSource.ts';
@@ -1997,6 +2002,14 @@ Deno.serve(async (req) => {
      * column `writablePatch` does not name, which is the whole point: a
      * figure written to `bedrooms` would survive a silent stock list and be
      * destroyed by the next one that speaks. The overlay happens on read.
+     *
+     * AND WHERE THE PROPERTY IS. `Lot 101 - PICO - BROCHURE v002.pdf` names
+     * its lot and its estate and no street, suburb, state or postcode, so no
+     * marketplace could place it. The same statement carries those four parts
+     * (`statedLocation.pure.ts`), under the same rule and for the same reason:
+     * the address columns are cleared by a same-source re-read that states
+     * nothing, so an address typed into them would not outlive the next
+     * reader release.
      */
     if (operation === 'set_manual_stats') {
       if (!await can('edit')) {
@@ -2005,19 +2018,43 @@ Deno.serve(async (req) => {
       const item = await loadItem(cleanText(body.stock_item_id, 64));
       if (!item) return notFoundHere('That property');
 
-      const { stats, errors } = parseManualStats(body.stats, {
-        recordedAt: new Date().toISOString(),
-        recordedBy: me.id,
-      });
+      const recordedAt = new Date().toISOString();
+      /*
+       * THE FIGURES AND THE PLACE ARE ONE STATEMENT, stored together in
+       * `manual_stats.values` and written in one update, so a builder's
+       * correction is never half-saved.
+       *
+       * A PART THE REQUEST DOES NOT MENTION IS KEPT, NOT WITHDRAWN. The
+       * dialog sends both, every time, with `null` for a cleared box — that
+       * is a withdrawal. A request with no `location` at all is a client that
+       * predates stating one (a tab opened before the deploy), and treating
+       * its silence as "clear the address" would erase a builder's statement
+       * because somebody else saved a bedroom count. The same holds for
+       * `stats` the other way round.
+       */
+      const figures = body.stats === undefined
+        ? { stats: readManualStats(item.manual_stats), errors: [] }
+        : parseManualStats(body.stats, { recordedAt, recordedBy: me.id });
+      const place = body.location === undefined
+        ? { location: readStatedLocation(item.manual_stats) ?? {}, errors: [] }
+        : parseStatedLocation(body.location);
+      const errors = [...figures.errors, ...place.errors];
       /*
        * REFUSED, NEVER CLAMPED. Turning a mistyped 3000 into 99 records a
        * bedroom count nobody stated, on a card a client reads — the same
        * class as a fabricated price, which is the one thing the extraction
-       * prompt's first rule exists to prevent.
+       * prompt's first rule exists to prevent. A suburb with a number in it
+       * is refused for the same reason: it is a postcode or a lot in the
+       * wrong box, and storing it would place the property somewhere else.
        */
       if (errors.length) {
         return json({ error: errors[0].message, code: 'invalid_stat', fields: errors }, 400);
       }
+      const values = { ...(figures.stats?.values ?? {}), ...place.location };
+      // Every part cleared is a withdrawal of the whole statement.
+      const stats = Object.keys(values).length
+        ? { values, recorded_at: recordedAt, recorded_by: me.id }
+        : null;
 
       const { data, error } = await supabase
         .from('builder_stock_items')
@@ -2044,6 +2081,8 @@ Deno.serve(async (req) => {
             car_spaces: item.car_spaces ?? null,
             building_size_sqm: item.building_size_sqm ?? null,
             land_size_sqm: item.land_size_sqm ?? null,
+            address_line: item.address_line ?? null, suburb: item.suburb ?? null,
+            state: item.state ?? null, postcode: item.postcode ?? null,
           },
         },
         newState: { manual_stats: stats },
@@ -2494,7 +2533,13 @@ async function decorateItems(
    * applies the overlay" case in `builderStockManualStats.test.ts` reads both
    * sources and fails either one that stops.
    */
-  items = applyManualStatsToAll(items);
+  /*
+   * THE PLACE FIRST. `applyManualStats` rewrites `manual_stats` to the five
+   * figures, so a stated location read after it would read nothing — and the
+   * builder's address would vanish from their own card while still being
+   * stored. See `_shared/builderStock/statedLocation.pure.ts`.
+   */
+  items = applyManualStatsToAll(items.map(applyStatedLocation));
   const ids = items.map((item) => item.id);
 
   const [{ data: images }, { data: selections }, { data: rows }] = await Promise.all([
