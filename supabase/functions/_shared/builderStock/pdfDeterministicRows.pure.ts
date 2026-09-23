@@ -131,6 +131,9 @@ import {
 } from './floorPlanCounts.pure.ts';
 import { readAreaScheduleTotal } from './areaSchedule.pure.ts';
 import {
+  MEASURED_FIELDS, settleMeasurement, type MeasurementStatement,
+} from './measurementAuthority.pure.ts';
+import {
   pdfRegionAnchor, segmentPropertyRegions,
   type PageSegmentation, type RegionBox,
 } from './propertyRegions.pure.ts';
@@ -352,6 +355,13 @@ export interface PdfDeterministicReading {
      * chosen between — see the conflict gate in `readPdfBrochure`.
      */
     disputedFields?: string[];
+    /**
+     * A lot size or build size the PROPERTY'S OWN PAGE stated, where another
+     * page — a siting plan, a specification sheet — stated a different figure
+     * and was outranked rather than allowed to dispute it. Names only. See
+     * `measurementAuthority.pure.ts`.
+     */
+    outrankedFields?: string[];
     /**
      * Set where a bed/bath/car row of bare numbers was read because the
      * document's own floor plan named the same number of bedrooms.
@@ -2419,7 +2429,39 @@ function sameMeasurement(left: number, right: number, a: string, b: string): boo
   return Math.round(left * factor) === Math.round(right * factor);
 }
 
+/**
+ * ONE PLACE, WITH AND WITHOUT THE WORD THAT SAYS WHAT KIND OF PLACE IT IS.
+ *
+ * MEASURED 23 SEPTEMBER 2026 on `LOT 927 - ENZO 10.5 - BROCHURE V002.pdf`:
+ * the property's page prints `(Banyan Place Estate)` under its address and the
+ * siting plan's form reads `Estate: Banyan Place`. The label already says
+ * what the second one is, so the siting spelled the same place without the
+ * word — and the reader disputed the estate and dropped it, over a document
+ * that names exactly one.
+ *
+ * So a trailing `Estate` is not part of the comparison, and nothing else is
+ * forgiven: `Banyan Place` and `Banyan Rise` still disagree, and a value that
+ * is nothing BUT the word names no place. The spelling that carries the word
+ * is the one kept — see `namesItsKind` — because it is the one that says what
+ * the name is.
+ */
+function placeWords(value: string): string[] {
+  const words = value.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return words.length > 1 && words[words.length - 1] === 'estate'
+    ? words.slice(0, -1)
+    : words;
+}
+
+/** Does this development name end in the word that says it is an estate? */
+function namesItsKind(value: string): boolean {
+  const words = value.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return words.length > 1 && words[words.length - 1] === 'estate';
+}
+
 function sameValue(field: string, a: string, b: string): boolean {
+  if (field === 'development_name') {
+    return placeWords(a).join('') === placeWords(b).join('');
+  }
   if (field === 'price') {
     const left = coercePrice(a);
     const right = coercePrice(b);
@@ -3317,6 +3359,23 @@ export function readPdfBrochure(
    * in its printed order only on the page that names the lot.
    */
   const lotPages = new Set<number>();
+  /**
+   * THE PAGES THAT PRICE THE PROPERTY — where a price was read. Numbers only.
+   * A lot size or build size stated on one of them is the builder's own
+   * statement of the property and stands over a figure any other page states;
+   * see `measurementAuthority.pure.ts`.
+   */
+  const pricePages = new Set<number>();
+  /**
+   * EVERY STATEMENT OF A LOT SIZE OR A BUILD SIZE, WITH ITS PAGE. Held rather
+   * than claimed as it is met, because which page prices the property is
+   * known only once every page has been read — the price may be printed below
+   * the sizes, or on a later page than a siting plan that also states them.
+   */
+  const measurements: MeasurementStatement<ClaimSource>[] = [];
+  /** What the reading had claimed, or was holding to settle, for a refusal's log. */
+  const fieldsSoFar = () =>
+    [...new Set([...claimed.keys(), ...measurements.map((m) => m.field)])].sort();
   /*
    * INDEXED, NOT `forEach`. This loop `return`s a refusal from inside itself
    * on a conflict and on the line ceiling; inside a callback those returns
@@ -3829,6 +3888,21 @@ export function readPdfBrochure(
           continue;
         }
         if (claim.field === 'lot_number') lotPages.add(pageIndex);
+        if (claim.field === 'price') pricePages.add(pageIndex);
+        /*
+         * A LOT SIZE OR A BUILD SIZE IS SETTLED WHEN THE DOCUMENT HAS FINISHED
+         * SPEAKING, not as it is met. Two figures for one of them are not
+         * always one statement made twice: the property's own page and a
+         * siting consultant's drawing measure different things, and which of
+         * them is the property's page is not known until every page is read.
+         * See `measurementAuthority.pure.ts`.
+         */
+        if (MEASURED_FIELDS.has(claim.field)) {
+          measurements.push({
+            field: claim.field, value: claim.value, via: claim.via, page: pageIndex,
+          });
+          continue;
+        }
         const existing = claimed.get(claim.field);
         if (existing === undefined) {
           claimed.set(claim.field, claim.value);
@@ -3866,7 +3940,7 @@ export function readPdfBrochure(
            */
           if (MATERIAL_FIELDS.has(claim.field)) {
             diagnostics.conflictField = claim.field;
-            diagnostics.fieldsRead = [...claimed.keys()].sort();
+            diagnostics.fieldsRead = fieldsSoFar();
             /*
              * THE TWO ANSWERS THEMSELVES, AND NOT JUST THE NAME OF THE
              * QUESTION.
@@ -3896,6 +3970,17 @@ export function readPdfBrochure(
           continue;
         }
         /*
+         * THE SAME PLACE, SPELLED WITH THE WORD THAT SAYS WHAT IT IS. Whichever
+         * page came first, the estate keeps the spelling that names itself
+         * one — `Banyan Place Estate` over `Banyan Place`. See `placeWords`.
+         */
+        if (claim.field === 'development_name'
+          && namesItsKind(claim.value) && !namesItsKind(existing)) {
+          claimed.set(claim.field, claim.value);
+          if (claim.via) readBy.set(claim.field, claim.via);
+          continue;
+        }
+        /*
          * THE SAME MEASUREMENT, WRITTEN MORE PRECISELY. Where two readings
          * reconcile, the finer one is the document being exact rather than
          * the document repeating itself: `Site Area: 320.72 m²` is what
@@ -3915,12 +4000,55 @@ export function readPdfBrochure(
      * whatever the rest of it said.
      */
     if (scanned > MAX_LINES_SCANNED) {
-      diagnostics.fieldsRead = [...claimed.keys()].sort();
+      diagnostics.fieldsRead = fieldsSoFar();
       diagnostics.unaccountedLines = unresolved.length;
       diagnostics.incidentalLines = incidental;
       return refuse('incomplete', 'line_ceiling_reached', diagnostics);
     }
   }
+
+  /*
+   * =====================================================================
+   * THE LOT SIZE AND THE BUILD SIZE, NOW THAT EVERY PAGE HAS SPOKEN.
+   * =====================================================================
+   *
+   * The page that prices the property states its measurements; a siting
+   * plan or a specification sheet may refine one of those figures or fill
+   * one it never states, and may not overrule it. A document that prices
+   * nothing reads as before. See `measurementAuthority.pure.ts`, whose
+   * header carries the production brochure this was measured on.
+   *
+   * The house's area schedule is asked here only on the property's own
+   * pages, as that page's statement of the build; the document-wide
+   * schedule below remains the last opinion, for a document whose property
+   * page states neither.
+   */
+  const outranked: string[] = [];
+  for (const field of MEASURED_FIELDS) {
+    const settled = settleMeasurement<ClaimSource>({
+      field,
+      statements: measurements,
+      pricePages,
+      compare: { same: sameValue, finer: (a, b) => decimalsIn(a) > decimalsIn(b) },
+      propertySchedule: field === 'building_size_sqm'
+        ? () => {
+          const schedule = readAreaScheduleTotal(
+            pages.filter((_, index) => pricePages.has(index)));
+          return schedule && acceptFieldValue(field, schedule.value, 'label').accepted
+            ? { value: schedule.value, via: 'area_schedule' }
+            : null;
+        }
+        : undefined,
+    });
+    if (settled.kind === 'disputed') {
+      disputed.add(field);
+    } else if (settled.kind === 'read') {
+      claimed.set(field, settled.value);
+      if (settled.via) readBy.set(field, settled.via);
+      if (settled.outranked) outranked.push(field);
+    }
+  }
+  if (outranked.length) diagnostics.outrankedFields = outranked.sort();
 
   /*
    * THE SECOND PRINTING IS NOT A SECOND FACT.
@@ -4071,6 +4199,11 @@ export function readPdfBrochure(
    * left disagreeing rather than handed a third figure. See
    * `areaSchedule.pure.ts` for why this was removed once and is back only as
    * the one opinion a document without a build label offers.
+   *
+   * The schedule on the PROPERTY'S OWN page has already been asked, above,
+   * because there it is that page's statement of the build and outranks a
+   * label on a siting plan. This is the document-wide reading, for a
+   * document that prices nothing or whose schedule sits on another page.
    */
   if (!claimed.has('building_size_sqm') && !disputed.has('building_size_sqm')) {
     const schedule = readAreaScheduleTotal(pages);

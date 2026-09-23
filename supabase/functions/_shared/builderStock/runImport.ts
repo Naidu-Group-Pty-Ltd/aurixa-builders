@@ -406,6 +406,7 @@ export async function runStockImport(input: RunImportInput): Promise<RunImportRe
           reason: done.deterministicReading.reason,
           fieldsRead: done.deterministicReading.diagnostics.fieldsRead,
           disputedFields: done.deterministicReading.diagnostics.disputedFields ?? null,
+          outrankedFields: done.deterministicReading.diagnostics.outrankedFields ?? null,
           visualOnlyFields: done.deterministicReading.diagnostics.visualOnlyFields ?? null,
           declinedFields: done.deterministicReading.diagnostics.declinedFields ?? null,
           readBy: done.deterministicReading.diagnostics.readBy ?? null,
@@ -780,6 +781,7 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
           fields_read: reading.diagnostics.fieldsRead ?? null,
           conflict_field: reading.diagnostics.conflictField ?? null,
           disputed_fields: reading.diagnostics.disputedFields ?? null,
+          outranked_fields: reading.diagnostics.outrankedFields ?? null,
           // These live BESIDE the projection, never inside it: the projection
           // is the safe-to-log one and a value the document stated may not
           // enter it. See their notes on `StockExtraction`.

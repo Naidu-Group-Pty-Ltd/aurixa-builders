@@ -28,6 +28,15 @@
  * of one were found and dropped. It is not a second opinion; it is the only
  * opinion the document offers.
  *
+ * ONE EXCEPTION, AND IT IS A STATEMENT ABOUT PAGES, NOT ABOUT SCHEDULES.
+ * MEASURED 23 SEPTEMBER 2026 on `LOT 927`: the house's `Total: 129.5m²` sits on
+ * the page that prices the property, and a siting consultant's `Build Area:
+ * 131.6 m2` on the page after it — so the siting's label won and the card read
+ * `HOME 132 m²`. The page that prices a property is its own statement of what
+ * is on offer, so a schedule on THAT page is asked before any other page's
+ * label (`measurementAuthority.pure.ts`). It still never speaks over a figure
+ * its own page labels, and never where its own page disputes one.
+ *
  * WHAT MAKES IT A HOUSE'S SCHEDULE AND NOT ANY TOTAL. Every row is a label
  * this module recognises as a PART OF A DWELLING (`Enclosed`, `Ground Floor`,
  * `Garage`, `Porch`, `Alfresco` …) beside an area in square metres, set in one

@@ -151,6 +151,8 @@ export interface UploadTelemetry {
    * for the question that keeps being asked: a brochure imported, and three
    * of its fields are empty — why? `fieldsRead` says what was taken,
    * `disputedFields` says what the document contradicted itself about,
+   * `outrankedFields` says which lot or build size the property's own page
+   * settled over a different figure on another page (a siting plan's),
    * `visualOnlyFields` says what exists only as an icon, and `ignoredLines`
    * says how much of the page was furniture. Without them a missing field
    * is indistinguishable from a field the document never stated, and the
@@ -164,6 +166,7 @@ export interface UploadTelemetry {
     reason?: string | null;
     fieldsRead?: string[] | null;
     disputedFields?: string[] | null;
+    outrankedFields?: string[] | null;
     visualOnlyFields?: string[] | null;
     declinedFields?: string[] | null;
     /** `field:reader` for each field claimed — how, not just what. */
@@ -211,6 +214,7 @@ export function uploadTelemetry(input: UploadTelemetry): TelemetryRecord {
      */
     deterministic_fields: names(input.deterministic?.fieldsRead),
     deterministic_disputed: names(input.deterministic?.disputedFields),
+    deterministic_outranked: names(input.deterministic?.outrankedFields),
     deterministic_visual_only: names(input.deterministic?.visualOnlyFields),
     deterministic_declined: names(input.deterministic?.declinedFields),
     deterministic_read_by: names(input.deterministic?.readBy),
