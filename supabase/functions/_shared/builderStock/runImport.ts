@@ -32,10 +32,11 @@ import {
 } from './importContinuation.pure.ts';
 import {
   checkpointPages, checkpointSettledPages, crossingsSpent, figureVerdictOf, freshAttempt,
-  mayContinue, mayCrossForPictures, openCheckpoint, pictureHandover,
-  readCheckpoint, storedPictureHandover, withContinuation, withFigureVerdict,
+  lostRecognitions, mayContinue, mayCrossForPictures, openCheckpoint, pictureHandover,
+  readCheckpoint, scanRastersOwed, storedPictureHandover, withContinuation, withFigureVerdict,
   withPictureCrossing, withPictureHandover, withRecogniserUnavailable, withRecognisedPage,
-  withRefusedPage, type ImportCheckpoint,
+  withRecognitionBegun, withRecognitionEnded, withRecognitionLost, withRefusedPage,
+  withScanRasters, type ImportCheckpoint,
 } from './importCheckpoint.pure.ts';
 import {
   figuresToRead, withFigureApplied, type FigureVerdict, type PdfFigure,
@@ -49,7 +50,13 @@ import {
   takeHandedOverPictures, type TakenHandover,
 } from './importHandover.ts';
 import type { ImportDecision } from './importHandover.pure.ts';
-import { mayReadFigures, mayRecognisePage } from './importResumeBudget.pure.ts';
+import {
+  mayReadFigures, mayRecognisePage, OCR_PAGE_MS, remainingExpensiveMs,
+} from './importResumeBudget.pure.ts';
+import {
+  isFinalOcrRefusal, recogniseScannedPages, type OcrPageRaster,
+} from './ocr/recogniseScan.ts';
+import { photoAtLocation } from './pdfSourcePhoto.ts';
 import type {
   ExtractedMedia, PdfDeterministicDiagnostics, StockExtraction,
 } from './extract.ts';
@@ -269,7 +276,7 @@ export interface RunImportSuccess {
  *
  * Because the reader sweep needs the predicate and cannot load this file: it
  * imports everything else here as a TYPE only, since `runImport.ts` pulls in
- * `unpdf`, `xlsx` and `tesseract.js` from `https://esm.sh/…`. See
+ * `unpdf` and `xlsx` from `https://esm.sh/…`. See
  * `importContinuation.pure.ts`, which also carries why this is neither a
  * success nor a failure.
  */
@@ -599,7 +606,6 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
       return false;
     }
   };
-  const carriedPages = checkpointPages(checkpoint);
   /*
    * AND WHAT A PREVIOUS ATTEMPT HANDED ON IS PUT AWAY. A fresh attempt decides
    * for itself (`freshAttempt`), so a read an earlier attempt handed to a
@@ -969,6 +975,155 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
 
   /*
    * ═══════════════════════════════════════════════════════════════════════
+   * THE SUCCESSOR OF AN OCR HAND-OFF RECOGNISES, AND PARSES NOTHING
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * The isolate that parsed this document LOCATED every owed page's picture
+   * and recognised none of them (`extract.ts`, `handoff`). This one holds the
+   * same bytes — the checkpoint is bound to their digest — so it makes the
+   * picture from the recorded stream alone (`photoAtLocation`: no page is
+   * read, and a stream that is not the recorded one makes nothing),
+   * recognises it with the engine running in THIS isolate (`ocr/engine.ts` —
+   * the hosted runtime would not start the worker the old library ran it in),
+   * writes the text down and hands on. The picture is the one a single pass
+   * made, and the engine, model and parameters are the ones it used, so the
+   * text is too; the document is read, once, by an isolate that recognises
+   * nothing.
+   *
+   * ONE PAGE, AS THE ALLOWANCE HAS ALWAYS AFFORDED — AND NEVER TWICE. The page
+   * is marked BEGUN before the engine is asked, and the mark is cleared when
+   * the pass ends, so a page still marked when the next isolate arrives is one
+   * whose worker died on it. That page is never asked again in this attempt
+   * and recognition stops (`withRecognitionLost`): on the hosted runtime a
+   * worker dies of spending past its allowance, so asking again is dying
+   * again, and the recovery that restarts a dead import is bounded — a page
+   * recognised twice is how a document with a few heavy scans would end up
+   * read by nobody.
+   */
+  let recognitionUnrecordable = false;
+  /*
+   * AND NEVER ONCE THE DOCUMENT HAS BEEN READ. A picture hand-off is written
+   * by the isolate that read the document, so its presence means recognition
+   * is over for this attempt, whatever the checkpoint still locates: a page
+   * recognised after the reading is a page the properties never saw.
+   */
+  if (input.resumed && input.resumableFromStoredBytes && !pictureHandover(checkpoint)) {
+    const lost = lostRecognitions(checkpoint);
+    if (lost.length) {
+      checkpoint = withRecognitionLost(checkpoint, lost);
+      await commitCheckpoint();
+      console.warn('[builderStock] a scanned page was begun and never reported back', {
+        phase: 'ocr_lost',
+        upload_id: upload.id,
+        pages: lost,
+        recognised: checkpointPages(checkpoint).size,
+      });
+      // Recognition is over for this attempt, and this isolate has parsed and
+      // recognised nothing — so it reads the document itself, below, with
+      // every page that was recognised before the loss.
+    } else {
+      const owed = scanRastersOwed(checkpoint);
+      if (owed.length && mayContinue(checkpoint)) {
+        const taking = owed.slice(0, Math.max(1, Math.floor(
+          remainingExpensiveMs(ledger) / OCR_PAGE_MS)));
+        checkpoint = withRecognitionBegun(checkpoint, taking.map((location) => location.page));
+        if (await commitCheckpoint()) {
+          const rasters: OcrPageRaster[] = [];
+          const noRaster: number[] = [];
+          await stage('ocr', async () => {
+            for (const location of taking) {
+              const photo = await photoAtLocation(bytes, location).catch(() => null);
+              if (!photo) {
+                noRaster.push(location.page);
+                continue;
+              }
+              rasters.push({
+                page: location.page,
+                bytes: photo.bytes,
+                width: photo.provenance.sourceWidth,
+                height: photo.provenance.sourceHeight,
+              });
+            }
+          });
+          countIn(ledger, 'rasterisations', rasters.length);
+          const reading = await stage('ocr', () => recogniseScannedPages(rasters, {
+            deadlineAt: storageDeadlineFrom(runBudget, Date.now()),
+            mayRecognise: () => mayRecognisePage(ledger),
+            onPage: async (page, text) => {
+              /*
+               * THE TEXT IS THE ONLY WAY THE PAGE REACHES THE READING, which
+               * happens in another isolate. A page too long for the checkpoint
+               * cannot travel there, and recognising it again where the
+               * document is read is exactly what this split exists to stop —
+               * so it is refused, and named, rather than silently lost.
+               */
+              const kept = withRecognisedPage(checkpoint, page, text);
+              checkpoint = kept === checkpoint ? withRefusedPage(checkpoint, page) : kept;
+              await commitCheckpoint();
+            },
+          }));
+          countIn(ledger, 'ocr_pages', reading.text.size);
+          countIn(ledger, 'ocr_attempted', reading.text.size
+            + reading.refusals.filter((refusal) => refusal.reason === 'unreadable').length);
+          // Counted after the last stage committed, so committed here: a count
+          // that never reaches the row is an account of nothing.
+          await commitLedger(ledger);
+          for (const page of noRaster) checkpoint = withRefusedPage(checkpoint, page);
+          for (const refusal of reading.refusals) {
+            if (isFinalOcrRefusal(refusal)) checkpoint = withRefusedPage(checkpoint, refusal.page);
+          }
+          // A statement about this deployment, and just as true in the next
+          // isolate: nothing more is recognised in this attempt.
+          if (!reading.available) checkpoint = withRecogniserUnavailable(checkpoint);
+          checkpoint = withContinuation(withRecognitionEnded(checkpoint));
+          await commitCheckpoint();
+          const outstanding = scanRastersOwed(checkpoint).length;
+          console.log('[builderStock] import handed to a successor', {
+            phase: 'import_handoff',
+            upload_id: upload.id,
+            reason: 'ocr_outstanding',
+            recognised_here: reading.text.size,
+            available: reading.available,
+            outstanding,
+            recognised: checkpointPages(checkpoint).size,
+            continuations: checkpoint.continuations,
+            ocr_ms: reading.ms,
+            spent_ms: ledgerTotalMs(ledger),
+          });
+          termination.done();
+          /*
+           * ALWAYS HANDED ON, whatever the pass came to: this isolate has run
+           * the engine, so it reads nothing. Its successor recognises the next
+           * page, or — none owed, the recogniser gone, or the bound reached —
+           * reads the document with every page that was recognised.
+           */
+          return {
+            ok: true,
+            continued: true,
+            reason: 'ocr_outstanding',
+            outstanding,
+            continuations: checkpoint.continuations,
+          };
+        }
+        /*
+         * THE MARK COULD NOT BE WRITTEN, so "never twice" could not be kept
+         * and nothing is recognised. This isolate has parsed and recognised
+         * nothing, so it reads the document below with what was recognised,
+         * recognising nothing more — the honest degradation a run past its
+         * bound has always had.
+         */
+        recognitionUnrecordable = true;
+        // Nor may the unwritten mark ride out on a later write as a page begun.
+        checkpoint = withRecognitionEnded(checkpoint);
+        console.warn('[builderStock] a scanned page could not be marked; reading without it', {
+          phase: 'ocr_begin', upload_id: upload.id, pages: taking.map((location) => location.page),
+        });
+      }
+    }
+  }
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════
    * THE SUCCESSOR OF A PICTURE HAND-OFF READS NOTHING
    * ═══════════════════════════════════════════════════════════════════════
    *
@@ -1097,9 +1252,26 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     });
   }
 
-  let extraction;
-  try {
-    extraction = await extractStockFile(bytes, upload.original_filename, classification, {
+  /*
+   * WHERE THIS RUN'S RECOGNITION HAPPENS — decided here, once, because only
+   * this module knows whether a successor can reproduce the run.
+   *
+   *   • A run no successor can reproduce (a linked source) recognises where it
+   *     parsed, one page deep, exactly as it always has: `inline`.
+   *   • A stored document that may still cross an isolate locates what is
+   *     owed and hands it on, recognising nothing: `handoff`. With nothing
+   *     owed — every page recognised by the isolates before this one — the
+   *     same mode simply reads the document.
+   *   • Past the crossing bound, with the recogniser gone or a page lost, a
+   *     stored document is read with what was recognised: `carried`.
+   *
+   * A stored document is never recognised in the isolate that parsed it.
+   */
+  const ocrMode: 'inline' | 'handoff' | 'carried' = !input.resumableFromStoredBytes
+    ? 'inline'
+    : (mayContinue(checkpoint) && !recognitionUnrecordable ? 'handoff' : 'carried');
+  const extractAs = (mode: 'inline' | 'handoff' | 'carried') => extractStockFile(
+    bytes, upload.original_filename, classification, {
       documentName,
       baseUrl: input.baseUrl,
       /*
@@ -1125,7 +1297,9 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
        * not be asked again, whether there is room for another page, and where
        * to put each page the moment it is read.
        */
-      ocrCarried: carriedPages,
+      ocrMode: mode,
+      ocrUnavailable: checkpoint.ocr?.unavailable === true,
+      ocrCarried: checkpointPages(checkpoint),
       ocrSettled: checkpointSettledPages(checkpoint),
       mayRecognisePage: () => mayRecognisePage(ledger),
       onRecognisedPage: async (page, text) => {
@@ -1137,87 +1311,85 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
         await commitCheckpoint();
       },
     });
+
+  let extraction;
+  try {
+    extraction = await extractAs(ocrMode);
+
+    /*
+     * ═════════════════════════════════════════════════════════════════════
+     * THE HAND-OFF, AND WHY IT IS HERE AND NOT LATER
+     * ═════════════════════════════════════════════════════════════════════
+     *
+     * A document whose recognition is unfinished is a document that has not
+     * been READ. Everything below this line reads it: the deterministic
+     * reader, the segmentation, the field completion, the property rows.
+     * Running any of it against a partial text and then running it again on
+     * the successor would produce two different readings of one document and
+     * write the first one to a customer's card — which is worse than being
+     * slow.
+     *
+     * So the run stops HERE, having located what is owed and recognised none
+     * of it, and the successors recognise it a page at a time from where the
+     * pictures were recorded. The properties are written exactly once, by the
+     * invocation that finally holds the whole document.
+     *
+     * THE SUCCESSOR IS DISPATCHED NOW. Not by the minute tick, not by the
+     * fifteen-minute sweep: `builder_stock_dispatch_import_continuation` is
+     * the same signed internal dispatcher that fans the image settler out,
+     * and it is called before this returns.
+     */
+    if (extraction.ocrRasters?.length) {
+      const beforeHandOff = checkpoint;
+      checkpoint = withContinuation(withScanRasters(checkpoint, extraction.ocrRasters));
+      if (await commitCheckpoint()) {
+        console.log('[builderStock] import handed to a successor', {
+          phase: 'import_handoff',
+          upload_id: upload.id,
+          reason: 'ocr_outstanding',
+          outstanding: extraction.ocrRasters.length,
+          recognised: checkpointPages(checkpoint).size,
+          continuations: checkpoint.continuations,
+          spent_ms: ledgerTotalMs(ledger),
+        });
+        termination.done();
+        /*
+         * THE DISPATCH IS THE CALLER'S, AND THE ORDERING IS THE WHOLE REASON.
+         *
+         * This invocation still HOLDS the import claim. A successor dispatched
+         * from here would arrive within a few hundred milliseconds, find the
+         * row claimed, correctly do nothing — and the import would then wait
+         * on the minute tick, which is precisely the cron dependency this
+         * design exists to remove. So the caller releases first and dispatches
+         * second, in that order, and `dispatchImportContinuation` is the one
+         * place that pairing is written down.
+         */
+        return {
+          ok: true,
+          continued: true,
+          reason: 'ocr_outstanding',
+          outstanding: extraction.ocrRasters.length,
+          continuations: checkpoint.continuations,
+        };
+      }
+      /*
+       * WHERE THE PICTURES ARE COULD NOT BE WRITTEN DOWN, so no successor
+       * could find them. This run reads the document with what was already
+       * recognised and recognises nothing — the same honest degradation a run
+       * past its crossing bound has — rather than recognising beside the parse.
+       */
+      console.warn('[builderStock] owed pages could not be recorded; reading without them', {
+        phase: 'import_handoff', upload_id: upload.id, outstanding: extraction.ocrRasters.length,
+      });
+      // Nor may locations nobody will recognise ride out on a later write.
+      checkpoint = beforeHandOff;
+      extraction = await extractAs('carried');
+    }
   } catch (error) {
     if (error instanceof StockExtractionError) {
       return fail(error.code, error.safeMessage, String((error as { underlying?: unknown }).underlying ?? ''));
     }
     throw error;
-  }
-
-  /*
-   * ═══════════════════════════════════════════════════════════════════════
-   * THE HAND-OFF, AND WHY IT IS HERE AND NOT LATER
-   * ═══════════════════════════════════════════════════════════════════════
-   *
-   * A document whose recognition is unfinished is a document that has not
-   * been READ. Everything below this line reads it: the deterministic reader,
-   * the segmentation, the field completion, the property rows. Running any of
-   * it against a partial text and then running it again on the successor
-   * would produce two different readings of one document and write the first
-   * one to a customer's card — which is worse than being slow.
-   *
-   * So the run stops HERE, having spent its allowance on the one thing only
-   * it can do, and the successor picks up from the checkpoint. The properties
-   * are written exactly once, by whichever invocation finally holds the whole
-   * document.
-   *
-   * THE SUCCESSOR IS DISPATCHED NOW. Not by the minute tick, not by the
-   * fifteen-minute sweep: `builder_stock_dispatch_import_continuation` is the
-   * same signed internal dispatcher that fans the image settler out, and it
-   * is called before this returns.
-   */
-  const ocrOutstanding = extraction.ocrOutstanding ?? [];
-  if (ocrOutstanding.length && input.resumableFromStoredBytes) {
-    /*
-     * A DEPLOYMENT WITH NO RECOGNISER MUST NOT BE ASKED AGAIN.
-     *
-     * `available: false` means the engine or its language data could not be
-     * obtained here, which is a fact about the deployment and will be just as
-     * true in the successor. Continuing would spend ten isolates discovering
-     * it ten times; the right answer is to read the document with whatever
-     * text it has, which is what the code below already does honestly.
-     */
-    if (extraction.ocr && extraction.ocr.available === false) {
-      checkpoint = withRecogniserUnavailable(checkpoint);
-      await commitCheckpoint();
-    } else if (mayContinue(checkpoint)) {
-      checkpoint = withContinuation(checkpoint);
-      await commitCheckpoint();
-      console.log('[builderStock] import handed to a successor', {
-        phase: 'import_handoff',
-        upload_id: upload.id,
-        reason: 'ocr_outstanding',
-        outstanding: ocrOutstanding.length,
-        recognised: checkpointPages(checkpoint).size,
-        continuations: checkpoint.continuations,
-        spent_ms: ledgerTotalMs(ledger),
-      });
-      termination.done();
-      /*
-       * THE DISPATCH IS THE CALLER'S, AND THE ORDERING IS THE WHOLE REASON.
-       *
-       * This invocation still HOLDS the import claim. A successor dispatched
-       * from here would arrive within a few hundred milliseconds, find the
-       * row claimed, correctly do nothing — and the import would then wait on
-       * the minute tick, which is precisely the cron dependency this design
-       * exists to remove. So the caller releases first and dispatches second,
-       * in that order, and `dispatchImportContinuation` is the one place that
-       * pairing is written down.
-       */
-      return {
-        ok: true,
-        continued: true,
-        reason: 'ocr_outstanding',
-        outstanding: ocrOutstanding.length,
-        continuations: checkpoint.continuations,
-      };
-    }
-    /*
-     * PAST THE CROSSING BOUND, the run finishes with what it has. The pages it
-     * could not reach are named in `result.ocr.refusals` and the document is
-     * read from the text that exists — the same honest degradation a scan the
-     * recogniser could not read has always produced.
-     */
   }
 
   /*

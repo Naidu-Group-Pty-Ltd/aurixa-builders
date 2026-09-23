@@ -31,6 +31,7 @@ import { attachRowHyperlinks, hyperlinkTargetOf } from './sheetHyperlinks.pure.t
  * DYNAMICALLY, so an import that never meets a scan pays nothing.
  */
 import { mergeRecognisedPages, planOcr } from './ocr/ocrPolicy.pure.ts';
+import type { ScanRasterLocation } from './ocr/scanRaster.pure.ts';
 import {
   OCR_MAX_PAGES, isFinalOcrRefusal, recogniseScannedPages,
 } from './ocr/recogniseScan.ts';
@@ -141,6 +142,13 @@ export interface StockExtraction {
    * of them.
    */
   ocrOutstanding?: number[];
+  /**
+   * Where each owed page's picture is, with the digest of every stream named —
+   * set by `handoff` alone, and only where a page is owed. The recognition
+   * isolates make each picture from this and never parse the document. See
+   * `ocr/scanRaster.pure.ts`.
+   */
+  ocrRasters?: ScanRasterLocation[];
   /**
    * What text RECOGNITION did, where the PDF's own text layer was wanting.
    *
@@ -636,6 +644,21 @@ export async function extractStockFile(
     mayRecognisePage?: (() => boolean) | null;
     onRecognisedPage?: ((page: number, text: string) => Promise<void> | void) | null;
     onRefusedPage?: ((page: number) => Promise<void> | void) | null;
+    /**
+     * WHERE RECOGNITION HAPPENS, which only the caller can know.
+     *
+     *   `inline`  — here, one page deep: a caller no successor can reproduce
+     *               (a linked source), and every caller that says nothing.
+     *   `handoff` — never here: the owed pages' pictures are LOCATED and
+     *               returned in `ocrRasters`, with nothing decoded, and the
+     *               reading waits for a successor that holds every page.
+     *   `carried` — never here, and nothing located: the document is read
+     *               with what `ocrCarried` holds. The isolate that finishes a
+     *               stored import, and the image settler's re-read.
+     */
+    ocrMode?: 'inline' | 'handoff' | 'carried';
+    /** `carried` only: the attempt found no recogniser, and says so. */
+    ocrUnavailable?: boolean;
   } = {},
 ): Promise<StockExtraction> {
   const result: StockExtraction = {
@@ -908,7 +931,6 @@ export async function extractStockFile(
     const plan = planOcr(result.pageTexts ?? []);
     if (!plan.sufficient) {
       try {
-        const { extractPdfPhotosByPage } = await import('./pdfSourcePhoto.ts');
         /*
          * WHAT A PREVIOUS INVOCATION ALREADY SETTLED IS NOT ASKED AGAIN.
          *
@@ -932,142 +954,267 @@ export async function extractStockFile(
         const stillOwed = plan.pages
           .filter((page) => page <= OCR_MAX_PAGES && !settled.has(page));
         /*
-         * RASTERISE ONLY WHAT THIS INVOCATION CAN AFFORD TO RECOGNISE.
-         *
-         * Decompressing a page is charged to the same allowance recognising it
-         * is, and it happens FIRST — so without this, an invocation could
-         * rasterise eight pages, discover it has nothing left, recognise none
-         * of them and hand off; and its successor would do exactly the same,
-         * for ever, until the crossing bound stopped it. Ten isolates spent
-         * decompressing the same pages over and over is the worst outcome
-         * available here and it is produced by the mechanism meant to prevent
-         * it.
-         *
-         * AT LEAST ONE, ALWAYS — and by the measured numbers, exactly one. The
-         * allowance is 3,000 ms and a page is charged 3,100, so a fresh
-         * invocation can afford one page and never two; the floor is what
-         * makes that one rather than none, because an invocation that makes no
-         * progress is a crossing wasted. A scan of N pages therefore crosses N
-         * isolates, which is the price of never being killed. (This said the
-         * floor "never binds in practice". It binds on every invocation, and
-         * believing otherwise is how a page that could never be settled went
-         * unnoticed — see below.)
+         * THE ONE PARSE A SCAN'S PICTURES COST, whichever isolate asks for it:
+         * finding each page's raster means reading the page again. Counted as
+         * `ocr` rather than as image work, because that is what it is — these
+         * rasters exist only to be recognised — and counted as a PARSE, which
+         * is what the isolation rule is judged on.
          */
-        const affordable = Math.max(1, Math.floor(
-          remainingExpensiveMs(options.ledger) / OCR_PAGE_MS));
-        const outstanding = stillOwed.slice(0, affordable);
-        const wanted = new Set(outstanding);
-        /*
-         * COUNTED AS `ocr` RATHER THAN AS IMAGE WORK, because that is what it
-         * is: these rasters exist only to be recognised and are thrown away
-         * afterwards. Filing them under image extraction was the flat
-         * ledger's doing and it made a scanned document look like one with
-         * lots of pictures.
-         *
-         * AND ONLY THE PAGES THE PLAN WANTS ARE DECOMPRESSED. Measured
-         * 22 September 2026: this call took a page COUNT, rasterised pages
-         * 1..n and the filter below threw away what the plan had not asked
-         * for — 4,408 ms on `stress-many-images` to recognise none of them.
-         */
-        const photos = outstanding.length
-          ? await timed('ocr', async () => {
+        const parseForScans = <T>(run: () => Promise<T>): Promise<T> =>
+          timed('ocr', async () => {
             countIn(timings, 'document_parses');
-            return await extractPdfPhotosByPage(bytes, {
-              maxPages: OCR_MAX_PAGES, pages: outstanding,
-            });
-          })
-          : [];
-        const rasters = photos
-          .filter((entry) => wanted.has(entry.page))
-          .map((entry) => ({
-            page: entry.page,
-            bytes: entry.photo.bytes,
-            width: entry.photo.provenance.sourceWidth,
-            height: entry.photo.provenance.sourceHeight,
-          }));
-        countIn(timings, 'rasterisations', rasters.length);
-        const reading = await timed('ocr', () => recogniseScannedPages(rasters, {
-          deadlineAt: options.budget
-            ? storageDeadlineFrom(options.budget, Date.now()) : undefined,
-          mayRecognise: options.mayRecognisePage ?? null,
-          onPage: options.onRecognisedPage ?? null,
-        }));
+            return await run();
+          });
         /*
-         * A PAGE THE RASTERISER COULD NOT REACH IS SETTLED, NEVER OWED.
-         *
-         * The recogniser settles every page it is HANDED — too large, no
-         * raster, unreadable. A page the plan asked for and the rasteriser
-         * found no image on was never handed to it, so it was neither read nor
-         * refused, and stayed owed. Measured 23 September 2026:
-         * `stress-heavy-brochure` logged `outstanding: 1, recognised: 0` on
-         * every crossing up to the bound — eleven isolates and forty-four
-         * document parses for a brochure that reads in one — and because each
-         * crossing takes the FIRST owed page, such a page also stood in front
-         * of every readable page behind it: `stress-many-images` sat at six
-         * owed pages for five crossings without attempting one of them.
-         * Before the continuation existed the page was simply passed over in
-         * the one pass there was. `no_raster` is the final refusal that says
-         * so, and it is final because the same bytes carry the same images
-         * every time they are read.
-         */
-        const rasterised = new Set(rasters.map((raster) => raster.page));
-        const refusals = [
-          ...[...beyondReach, ...outstanding.filter((page) => !rasterised.has(page))]
-            .map((page) => ({ page, reason: 'no_raster' as const })),
-          ...reading.refusals,
-        ];
-        /*
-         * A REFUSAL THAT IS ABOUT THE PAGE IS REPORTED SO IT IS NEVER ASKED
-         * AGAIN. One that is about the attempt is not — it stays outstanding
-         * and a successor retries it with a fresh allowance.
-         */
-        if (options.onRefusedPage) {
-          for (const refusal of refusals) {
-            if (isFinalOcrRefusal(refusal)) await options.onRefusedPage(refusal.page);
-          }
-        }
-        /*
-         * THE CARRIED PAGES ARE PART OF THE READING.
-         *
+         * THE CARRIED PAGES ARE PART OF THE READING, whichever mode read them.
          * A successor that recognised page 5 and was handed pages 1 and 3 by
          * its predecessor must produce the same document as one invocation
          * that read all three — otherwise resuming would change what the
          * deterministic reader sees, which is the one thing a resume may
          * never do.
          */
-        const everyPage = new Map<number, string>(options.ocrCarried ?? []);
-        for (const [page, text] of reading.text) everyPage.set(page, text);
-        countIn(timings, 'ocr_pages', reading.text.size);
-        result.ocr = {
-          attempted: plan.pages.length,
-          read: everyPage.size,
-          recognisedPages: [...everyPage.keys()].sort((a, b) => a - b),
-          refusals,
-          available: reading.available,
-          ms: reading.ms,
-          imageOnly: plan.imageOnly,
-        };
-        /*
-         * PAGES THIS DEPLOYMENT STILL OWES — the plan's pages that neither
-         * this invocation nor any before it has settled. A non-empty list is
-         * the extractor saying "a successor has something worth doing"; an
-         * empty one is what lets the run finish.
-         */
-        result.ocrOutstanding = plan.pages
-          .filter((page) => !everyPage.has(page)
-            && !settled.has(page)
-            && !refusals.some((r) => r.page === page && isFinalOcrRefusal(r)));
-        if (everyPage.size) {
+        const adoptRecognised = (everyPage: ReadonlyMap<number, string>): void => {
+          if (!everyPage.size) return;
           result.pageTexts = mergeRecognisedPages(result.pageTexts ?? [], everyPage);
           const recognised = (result.pageTexts ?? []).join('\n');
           result.text = recognised.trim()
             ? recognised.slice(0, MAX_TEXT_CHARS) : result.text;
-        }
-        if (!reading.available) {
-          result.warnings.push(
-            'This PDF looks like a scan and text recognition was not available in '
-            + 'this deployment, so its pages could not be read.',
-          );
+        };
+        const unavailableWarning = 'This PDF looks like a scan and text recognition was not '
+          + 'available in this deployment, so its pages could not be read.';
+        const mode = options.ocrMode ?? 'inline';
+
+        if (mode === 'handoff') {
+          /*
+           * ═══════════════════════════════════════════════════════════════
+           * THE ISOLATE THAT PARSED THE DOCUMENT RECOGNISES NONE OF IT.
+           * ═══════════════════════════════════════════════════════════════
+           *
+           * The engine runs in the isolate that asks now (`ocr/engine.ts`),
+           * because the hosted runtime would not start the worker the old
+           * library ran it in — measured 23 September 2026, `Not implemented:
+           * Worker.prototype.constructor`, and a fully scanned brochure
+           * refused `pdf_no_text_layer`. That puts recognition's whole cost
+           * in the asking isolate, so it must not be this one: the rule the
+           * picture hand-off keeps, that an isolate which parsed a PDF decodes
+           * none of its pictures (`documentRead.pure.ts`), holds here too.
+           *
+           * So this pass only FINDS each owed page's picture — the raster the
+           * page leads with, or the one flattened raster it is — and where its
+           * stream sits in the bytes, with the stream's digest. Nothing is
+           * decoded. Each page is then recognised by an isolate of its own
+           * that parses nothing (`runImport.ts`), from exactly the picture
+           * the single pass would have made (`photoAtLocation`), and the
+           * document is read by an isolate that recognises nothing.
+           *
+           * Every owed page is located at once, because locating is a parse
+           * and costs tens of milliseconds: a page with no picture is settled
+           * here, as the single pass settled it, rather than costing an
+           * isolate to find out.
+           */
+          const { locatePdfPhotosByPage, recordedScanRaster } = await import('./pdfSourcePhoto.ts');
+          const located = stillOwed.length
+            ? await parseForScans(() => locatePdfPhotosByPage(bytes, {
+              maxPages: OCR_MAX_PAGES, pages: stillOwed,
+            }))
+            : [];
+          const locatedPages = new Set(located.map((location) => location.page));
+          // The same final refusal the single pass gave a page it could not
+          // rasterise, given here for the page no picture was found on.
+          const refusals = [...beyondReach, ...stillOwed.filter((page) => !locatedPages.has(page))]
+            .map((page) => ({ page, reason: 'no_raster' as const }));
+          if (options.onRefusedPage) {
+            for (const refusal of refusals) await options.onRefusedPage(refusal.page);
+          }
+          const everyPage = new Map<number, string>(options.ocrCarried ?? []);
+          result.ocr = {
+            attempted: plan.pages.length,
+            read: everyPage.size,
+            recognisedPages: [...everyPage.keys()].sort((a, b) => a - b),
+            refusals,
+            available: true,
+            ms: 0,
+            imageOnly: plan.imageOnly,
+          };
+          adoptRecognised(everyPage);
+          result.ocrOutstanding = [...locatedPages].sort((a, b) => a - b);
+          if (located.length) {
+            countIn(timings, 'ocr_located', located.length);
+            result.ocrRasters = await timed('ocr', () => Promise.all(
+              located.map((location) => recordedScanRaster(bytes, location))));
+            /*
+             * AND THE READING WAITS. A document whose recognition is owed has
+             * not been read, and everything below this line reads it — so it
+             * is read once, by the isolate that holds every page, and not here
+             * on a partial text that would be thrown away.
+             */
+            return result;
+          }
+        } else if (mode === 'carried') {
+          /*
+           * NEVER RECOGNISES — READS WITH WHAT WAS RECOGNISED BEFORE.
+           *
+           * The isolate that reads a document whose pages were recognised
+           * elsewhere; the one that finishes an import past its crossing bound
+           * or after the recogniser stopped; and the image settler's re-read,
+           * which decodes pictures and must never add an engine to that. A
+           * page nobody recognised is named as unread for this attempt, never
+           * settled: it is a statement about the attempt, not the page.
+           */
+          const everyPage = new Map<number, string>(options.ocrCarried ?? []);
+          const unread = options.ocrUnavailable ? 'engine_unavailable' as const : 'out_of_time' as const;
+          const refusals = [
+            ...beyondReach.map((page) => ({ page, reason: 'no_raster' as const })),
+            ...stillOwed.map((page) => ({ page, reason: unread })),
+          ];
+          if (options.onRefusedPage) {
+            for (const refusal of refusals) {
+              if (isFinalOcrRefusal(refusal)) await options.onRefusedPage(refusal.page);
+            }
+          }
+          result.ocr = {
+            attempted: plan.pages.length,
+            read: everyPage.size,
+            recognisedPages: [...everyPage.keys()].sort((a, b) => a - b),
+            refusals,
+            available: !options.ocrUnavailable,
+            ms: 0,
+            imageOnly: plan.imageOnly,
+          };
+          result.ocrOutstanding = [];
+          adoptRecognised(everyPage);
+          if (options.ocrUnavailable) result.warnings.push(unavailableWarning);
+        } else {
+          /*
+           * RECOGNISED HERE, BECAUSE NO SUCCESSOR CAN REPRODUCE THIS READ.
+           *
+           * A linked source is read in one isolate or not at all: a successor
+           * re-reads stored bytes and nothing else, while a link's name,
+           * address and row assets are evidence the reader uses
+           * (`resumableFromStoredBytes` in `runImport.ts`). So a linked scan is
+           * recognised where it was parsed — the exception a linked source's
+           * figures already take (`mayReadFigures`), bounded as it always was:
+           * the one page this invocation's allowance reaches, and the rest left
+           * unread. A caller that states no mode lands here too, which is what
+           * keeps a script or a unit test reading exactly as it did.
+           */
+          const { extractPdfPhotosByPage } = await import('./pdfSourcePhoto.ts');
+          /*
+           * RASTERISE ONLY WHAT THIS INVOCATION CAN AFFORD TO RECOGNISE.
+           *
+           * Decompressing a page is charged to the same allowance recognising it
+           * is, and it happens FIRST — so without this, an invocation could
+           * rasterise eight pages, discover it has nothing left, recognise none
+           * of them and hand off; and its successor would do exactly the same,
+           * for ever, until the crossing bound stopped it. Ten isolates spent
+           * decompressing the same pages over and over is the worst outcome
+           * available here and it is produced by the mechanism meant to prevent
+           * it.
+           *
+           * AT LEAST ONE, ALWAYS — and by the measured numbers, exactly one. The
+           * allowance is 3,000 ms and a page is charged 3,100, so a fresh
+           * invocation can afford one page and never two; the floor is what
+           * makes that one rather than none, because an invocation that makes no
+           * progress is a crossing wasted. A linked scan is therefore recognised
+           * one page deep, which is the price of never being killed. (This said the
+           * floor "never binds in practice". It binds on every invocation, and
+           * believing otherwise is how a page that could never be settled went
+           * unnoticed — see below.)
+           */
+          const affordable = Math.max(1, Math.floor(
+            remainingExpensiveMs(options.ledger) / OCR_PAGE_MS));
+          const outstanding = stillOwed.slice(0, affordable);
+          const wanted = new Set(outstanding);
+          /*
+           * COUNTED AS `ocr` RATHER THAN AS IMAGE WORK, because that is what it
+           * is: these rasters exist only to be recognised and are thrown away
+           * afterwards. Filing them under image extraction was the flat
+           * ledger's doing and it made a scanned document look like one with
+           * lots of pictures.
+           *
+           * AND ONLY THE PAGES THE PLAN WANTS ARE DECOMPRESSED. Measured
+           * 22 September 2026: this call took a page COUNT, rasterised pages
+           * 1..n and the filter below threw away what the plan had not asked
+           * for — 4,408 ms on `stress-many-images` to recognise none of them.
+           */
+          const photos = outstanding.length
+            ? await parseForScans(() => extractPdfPhotosByPage(bytes, {
+              maxPages: OCR_MAX_PAGES, pages: outstanding,
+            }))
+            : [];
+          const rasters = photos
+            .filter((entry) => wanted.has(entry.page))
+            .map((entry) => ({
+              page: entry.page,
+              bytes: entry.photo.bytes,
+              width: entry.photo.provenance.sourceWidth,
+              height: entry.photo.provenance.sourceHeight,
+            }));
+          countIn(timings, 'rasterisations', rasters.length);
+          const reading = await timed('ocr', () => recogniseScannedPages(rasters, {
+            deadlineAt: options.budget
+              ? storageDeadlineFrom(options.budget, Date.now()) : undefined,
+            mayRecognise: options.mayRecognisePage ?? null,
+            onPage: options.onRecognisedPage ?? null,
+          }));
+          /*
+           * A PAGE THE RASTERISER COULD NOT REACH IS SETTLED, NEVER OWED.
+           *
+           * The recogniser settles every page it is HANDED — too large, no
+           * raster, unreadable. A page the plan asked for and the rasteriser
+           * found no image on was never handed to it, so it was neither read nor
+           * refused, and stayed owed. Measured 23 September 2026:
+           * `stress-heavy-brochure` logged `outstanding: 1, recognised: 0` on
+           * every crossing up to the bound — eleven isolates and forty-four
+           * document parses for a brochure that reads in one — and because each
+           * crossing takes the FIRST owed page, such a page also stood in front
+           * of every readable page behind it: `stress-many-images` sat at six
+           * owed pages for five crossings without attempting one of them.
+           * Before the continuation existed the page was simply passed over in
+           * the one pass there was. `no_raster` is the final refusal that says
+           * so, and it is final because the same bytes carry the same images
+           * every time they are read.
+           */
+          const rasterised = new Set(rasters.map((raster) => raster.page));
+          const refusals = [
+            ...[...beyondReach, ...outstanding.filter((page) => !rasterised.has(page))]
+              .map((page) => ({ page, reason: 'no_raster' as const })),
+            ...reading.refusals,
+          ];
+          /*
+           * A REFUSAL THAT IS ABOUT THE PAGE IS REPORTED SO IT IS NEVER ASKED
+           * AGAIN. One that is about the attempt is not — it stays outstanding
+           * and a successor retries it with a fresh allowance.
+           */
+          if (options.onRefusedPage) {
+            for (const refusal of refusals) {
+              if (isFinalOcrRefusal(refusal)) await options.onRefusedPage(refusal.page);
+            }
+          }
+          const everyPage = new Map<number, string>(options.ocrCarried ?? []);
+          for (const [page, text] of reading.text) everyPage.set(page, text);
+          countIn(timings, 'ocr_pages', reading.text.size);
+          result.ocr = {
+            attempted: plan.pages.length,
+            read: everyPage.size,
+            recognisedPages: [...everyPage.keys()].sort((a, b) => a - b),
+            refusals,
+            available: reading.available,
+            ms: reading.ms,
+            imageOnly: plan.imageOnly,
+          };
+          /*
+           * PAGES THIS DEPLOYMENT STILL OWES — the plan's pages that neither
+           * this invocation nor any before it has settled. A non-empty list is
+           * the extractor saying "a successor has something worth doing"; an
+           * empty one is what lets the run finish.
+           */
+          result.ocrOutstanding = plan.pages
+            .filter((page) => !everyPage.has(page)
+              && !settled.has(page)
+              && !refusals.some((r) => r.page === page && isFinalOcrRefusal(r)));
+          adoptRecognised(everyPage);
+          if (!reading.available) result.warnings.push(unavailableWarning);
         }
       } catch (error) {
         // Recognition can never fail an import. A document it could not read

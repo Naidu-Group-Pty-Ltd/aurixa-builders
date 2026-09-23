@@ -15,10 +15,23 @@
  * whole reason this exists, and it is why no model host is reachable from this
  * path.
  *
- * WHAT IT COSTS, MEASURED in this runtime on a 1240x500 page: 341 ms to bring
- * the worker up, 188 ms to recognise. The worker is built once per isolate and
- * reused; the ceilings below are what stop one enormous scan spending an
- * invocation that other properties are waiting for.
+ * WHERE IT RUNS: IN THE ISOLATE THAT ASKS (`engine.ts`, `engineDriver.ts`).
+ * `tesseract.js` runs the same engine in a worker it spawns, and the hosted
+ * edge runtime will not construct one — measured in production on
+ * 23 September 2026, the scanned-page pass logged `Not implemented:
+ * Worker.prototype.constructor` and a fully scanned brochure was refused
+ * `pdf_no_text_layer`. The figure reader had already moved for the same
+ * reason. Same engine build, same model, same calls and the same parameters —
+ * the library's own worker defaults and nothing else — so the same text:
+ * fourteen scanned pages across six documents, recognised both ways, came
+ * back byte-identical.
+ *
+ * WHAT IT COSTS, MEASURED under the Deno CLI on 1240x1754 scans: 250-620 ms
+ * for a sparse page and 4.1-4.4 s for one dense with text. That is the whole
+ * cost of the isolate that asks, which is why a stored document is never
+ * recognised in the isolate that parsed it (`ocr/scanRaster.pure.ts`). The
+ * ceilings below are what stop one enormous scan spending an invocation that
+ * other properties are waiting for.
  */
 import { MIN_PAGE_TEXT_CHARS } from './ocrPolicy.pure.ts';
 import { languageDataDirectory } from './languageData.ts';
@@ -95,47 +108,6 @@ export interface OcrPageRaster {
   height?: number;
 }
 
-/** The engine, as the two passes below use it. */
-interface Recogniser {
-  recognize: (b: unknown) => Promise<{ data: { text?: string } }>;
-  setParameters?: (p: Record<string, string>) => Promise<unknown>;
-  terminate: () => Promise<unknown>;
-}
-
-/**
- * The engine, brought up once for one pass, or null where it cannot be.
- * Never throws: an engine that will not load is an answer, not a fault.
- */
-async function openRecogniser(langPath: string): Promise<Recogniser | null> {
-  try {
-    const mod = await import('https://esm.sh/tesseract.js@5.1.1');
-    const createWorker = (mod as { createWorker?: unknown }).createWorker
-      ?? (mod as { default?: { createWorker?: unknown } }).default?.createWorker;
-    if (typeof createWorker !== 'function') throw new Error('no createWorker');
-    return await (createWorker as (
-      l: string, o: number, c: Record<string, unknown>,
-    ) => Promise<Recogniser>)('eng', 1, {
-      langPath, gzip: true, cachePath: '/tmp',
-      // The engine's own logging is not this product's log.
-      logger: () => {},
-    });
-  } catch (error) {
-    /*
-     * AN ANSWER, AND ONE THAT SAYS WHY. This returned null in silence, and a
-     * figure read in production answered `recognition_unavailable` on
-     * 23 September 2026 with nothing in the log to say that the worker this
-     * library runs its engine in never started. The figure reader no longer
-     * uses this opener (`engine.ts`); a scan still does, so its refusal is
-     * named here the same way.
-     */
-    console.warn('[builderStock] ocr engine unavailable', {
-      phase: 'ocr_engine', engine: 'tesseract.js',
-      detail: String((error as { message?: string })?.message ?? error).slice(0, 160),
-    });
-    return null;
-  }
-}
-
 /**
  * Recognise the pages handed over, in order, within one budget.
  *
@@ -189,13 +161,20 @@ export async function recogniseScannedPages(
     return { text, refusals, deferred, ms: Date.now() - startedAt, available: false };
   }
 
-  const worker = await openRecogniser(langPath);
-  if (!worker) {
+  /*
+   * THE ENGINE, IN THIS ISOLATE, WITH THE PARAMETERS A PAGE HAS ALWAYS BEEN
+   * READ WITH: `engineDriver.ts` sets the library's own worker defaults and
+   * this pass sets nothing over them, exactly as it set nothing over the
+   * library's. A refusal is logged by the opener with the step that refused.
+   */
+  const opening = await openInProcessRecogniser(langPath);
+  if (!opening.ok) {
     for (const raster of wanted) {
       refusals.push({ page: raster.page, reason: 'engine_unavailable' });
     }
     return { text, refusals, deferred, ms: Date.now() - startedAt, available: false };
   }
+  const worker = opening.recogniser;
 
   try {
     for (const raster of wanted) {
@@ -248,7 +227,7 @@ export async function recogniseScannedPages(
       }
     }
   } finally {
-    try { await worker?.terminate(); } catch { /* nothing to report */ }
+    try { await worker.terminate(); } catch { /* nothing to report */ }
   }
 
   return { text, refusals, deferred, ms: Date.now() - startedAt, available: true };
@@ -277,9 +256,7 @@ export async function recogniseScannedPages(
  * the Deno CLI read as `124.50` answered `recognition_unavailable`. It is the
  * same engine build and the same model, driven by the same calls, so the text
  * is the text the figure reader's thresholds were measured on. The page pass
- * above keeps its opener until a page's cost is measured on the hosted
- * runtime: a scanned page was measured at about 3.1 s of recognition, a
- * figure at about 0.35 s.
+ * above runs on the same engine, for the same reason.
  *
  * NEVER THROWS, like the pass above: an engine that will not come up answers
  * `available: false`, logs why, and every figure goes unread.

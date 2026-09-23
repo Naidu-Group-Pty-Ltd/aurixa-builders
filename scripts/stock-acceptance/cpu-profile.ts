@@ -26,6 +26,8 @@
  *            --import-map scripts/stock-acceptance/import-map.json \
  *            scripts/stock-acceptance/cpu-profile.ts [corpus] [iterations]
  */
+// FIRST: no worker, as on the hosted runtime. See `hostedRuntime.ts`.
+import { workersRequested } from './hostedRuntime.ts';
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
 import { runStockImport } from '../../supabase/functions/_shared/builderStock/runImport.ts';
 import { isImportContinuation } from '../../supabase/functions/_shared/builderStock/importContinuation.pure.ts';
@@ -135,6 +137,8 @@ async function profile(entry: Entry, iteration: number) {
     expensiveMs: number; wallMs: number; ocrPages: number;
     /** How many times this invocation opened the PDF, and what it decoded. */
     parses: number; decodeMs: number;
+    /** Scanned pages this invocation made into pictures, and asked the engine to read. */
+    rasterised: number; attempted: number; ocrMs: number;
   }> = [];
   let seen: ImportStageLedger = {};
   const account = async (wallMs: number) => {
@@ -145,6 +149,9 @@ async function profile(entry: Entry, iteration: number) {
       ocrPages: Number(own.ocr_pages ?? 0),
       parses: Number(own.document_parses ?? 0),
       decodeMs: Number(own.image_decode_ms ?? 0) + Number(own.image_store_ms ?? 0),
+      rasterised: Number(own.rasterisations ?? 0),
+      attempted: Number(own.ocr_attempted ?? 0),
+      ocrMs: Number(own.ocr_ms ?? 0),
     });
     seen = now;
   };
@@ -205,6 +212,11 @@ const classTotals: Record<ImportWorkClass, number[]> = {
 let worstInvocation = 0;
 /** Invocations that opened the PDF AND decoded one of its pictures. Must be 0. */
 let mixedInvocations = 0;
+/** Invocations that opened the PDF AND made or recognised a scanned page. Must be 0. */
+let parsedAndRecognised = 0;
+/** The most recognition any one invocation did, in pages and in milliseconds. */
+let mostPagesInOneInvocation = 0;
+let worstRecognitionMs = 0;
 
 for (const entry of manifest) {
   const runs: Array<Awaited<ReturnType<typeof profile>>> = [];
@@ -232,7 +244,8 @@ for (const entry of manifest) {
   for (const [name, total] of Object.entries(byClass) as Array<[ImportWorkClass, number]>) {
     classTotals[name].push(total);
   }
-  const counters = ['document_parses', 'rasterisations', 'ocr_pages', 'images_extracted']
+  const counters = ['document_parses', 'ocr_located', 'rasterisations', 'ocr_attempted',
+    'ocr_pages', 'images_extracted']
     .map((key) => `${key}=${ledger[key] ?? 0}`).join('  ');
   console.log(`    ${counters}`);
   /*
@@ -243,7 +256,9 @@ for (const entry of manifest) {
   const perInvocation = median.invocations
     .map((inv) => `${inv.expensiveMs.toFixed(0)}${inv.ocrPages ? `(${inv.ocrPages}p)` : ''}`
       + `[${inv.parses ? `parse×${inv.parses}` : ''}${inv.parses && inv.decodeMs ? '+' : ''}`
-      + `${inv.decodeMs ? `decode ${inv.decodeMs.toFixed(0)}` : ''}]`)
+      + `${inv.decodeMs ? `decode ${inv.decodeMs.toFixed(0)}` : ''}`
+      + `${(inv.parses || inv.decodeMs) && inv.attempted ? '+' : ''}`
+      + `${inv.attempted ? `ocr ${inv.ocrMs.toFixed(0)}` : ''}]`)
     .join(' · ');
   const worst = Math.max(0, ...median.invocations.map((inv) => inv.expensiveMs));
   worstInvocation = Math.max(worstInvocation, worst);
@@ -253,9 +268,21 @@ for (const entry of manifest) {
    */
   const mixed = median.invocations.filter((inv) => inv.parses > 0 && inv.decodeMs > 0).length;
   mixedInvocations += mixed;
+  /*
+   * AND THE SAME RULE FOR RECOGNITION, now that the engine runs in the
+   * isolate that asks: none may both open the PDF and make or read a page.
+   */
+  const recognisedBesideParse = median.invocations.filter((inv) => inv.parses > 0
+    && (inv.rasterised > 0 || inv.attempted > 0 || inv.ocrPages > 0)).length;
+  parsedAndRecognised += recognisedBesideParse;
+  for (const inv of median.invocations) {
+    mostPagesInOneInvocation = Math.max(mostPagesInOneInvocation, inv.attempted);
+    if (inv.attempted) worstRecognitionMs = Math.max(worstRecognitionMs, inv.ocrMs);
+  }
   console.log(`    invocations ${median.invocations.length}   expensive ms each: ${perInvocation}`
     + `   worst ${worst.toFixed(0)} (ceiling ${EXPENSIVE_SPEND_CEILING_MS})`
-    + `   parse+decode in one invocation: ${mixed}\n`);
+    + `   parse+decode in one invocation: ${mixed}`
+    + `   parse+recognise in one invocation: ${recognisedBesideParse}\n`);
 }
 
 console.log('class totals across the corpus (ms, median run each):');
@@ -267,3 +294,7 @@ for (const [name, values] of Object.entries(classTotals) as Array<[ImportWorkCla
 console.log(`  worst single INVOCATION, document + raster: ${ms(worstInvocation)}`
   + `   (ceiling ${EXPENSIVE_SPEND_CEILING_MS} + at most one step)`);
 console.log(`  invocations that parsed the PDF AND decoded a picture: ${mixedInvocations}`);
+console.log(`  invocations that parsed the PDF AND made or recognised a page: ${parsedAndRecognised}`);
+console.log(`  most pages recognised in one invocation: ${mostPagesInOneInvocation}`
+  + `   slowest recognising invocation: ${worstRecognitionMs.toFixed(0)} ms of ocr`);
+console.log(`  workers requested (the hosted runtime refuses every one): ${workersRequested()}`);

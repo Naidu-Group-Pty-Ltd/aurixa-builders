@@ -16,8 +16,8 @@
  * `.continued === true` themselves.
  *
  * SECOND, `runImport.ts` PULLS IN THE WORLD. It imports the extractor, the
- * model chain, `unpdf`, `xlsx`, `tesseract.js` — all from `https://esm.sh/…`,
- * which a Node test runner cannot load. The reader sweep needs the predicate
+ * model chain, `unpdf` and `xlsx` — all from `https://esm.sh/…`, which a Node
+ * test runner cannot load. The reader sweep needs the predicate
  * and deliberately imports everything else from `runImport.ts` as a TYPE
  * only; importing the guard as a value from there turned a passing suite red
  * with `Only URLs with a scheme in: file and data are supported`.
@@ -34,7 +34,10 @@ export interface RunImportContinuation {
   /**
    * What is still owed. Named, so a new reason cannot be silent:
    *
-   *   `ocr_outstanding`       pages recognition still has to read;
+   *   `ocr_outstanding`       pages recognition still has to read — or, with
+   *                           `outstanding` 0, a document every page of which
+   *                           has been recognised in isolates that parse
+   *                           nothing, and which the successor now reads;
    *   `pictures_outstanding`  a paginated document's pictures, handed with the
    *                           read to an isolate that did not parse it — see
    *                           `importHandover.pure.ts`.

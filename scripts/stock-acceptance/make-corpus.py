@@ -1380,6 +1380,61 @@ def _m11(c):
     c.showPage()
 
 
+# ===========================================================================
+# A BROCHURE THAT IS NOTHING BUT SCANS (held out, 23 September 2026)
+#
+# Every page a photograph of paper and not one character of text layer, with
+# the property's facts spread across all three of them: who it is on the
+# cover, what it is on the specification sheet, and nothing on the third page
+# but inclusions. So no single page reads the property, recognition is owed on
+# every page, and a stored upload has to cross an isolate per page to be read
+# at all — which is the path the per-page continuation, its checkpoint and its
+# crossing bound exist for, and the one `scanned-no-text-layer` (one page) and
+# `stress-scanned-pages` (no property) do not exercise together.
+#
+# It was written before the scan pass's engine was touched, to answer one
+# question on the runtime that matters: does the recogniser a scan is read
+# with come up there at all. The same bytes are what the isolated production
+# proof imports (`scripts/ops/fixtures/`), so the gate and production judge
+# one document. Nothing here is a production document's text.
+# ===========================================================================
+
+@fixture('heldout-scanned-brochure', 'LOT 57 - ASTER 22 - SCANNED BROCHURE.pdf',
+         held_out=True, org='beta',
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='57', street_name='Heathland Avenue', suburb='Tarneit',
+                        state='VIC', postcode='3029', design='Aster 22',
+                        bedrooms=4, bathrooms=2, car_spaces=2,
+                        land_size_sqm=392, build_size_sqm=207, price=689000)],
+             # NO PHOTOGRAPH: every page is a photograph OF PAPER, so there is no
+             # facade in this document and nothing may designate one.
+             image=None,
+             # AND A LINK TO IT READS PAGE 1 ALONE, which is the product's
+             # rule rather than a gap in it: a linked source is not continued
+             # (`resumableFromStoredBytes`), so it is recognised where it was
+             # parsed, one page deep. The gate holds that read to "never a
+             # wrong value" and reports what it left unread on every run.
+             linked_limit='a linked source is not continued, so a scan is recognised '
+                          'one page deep and the pages after the first are not read',
+             refusal_must_not_be=['ai_budget_exhausted', 'assisted_reader_unavailable',
+                                  'assisted_reader_refused', 'assisted_reader_timeout',
+                                  'assisted_reader_invalid_response']))
+def _scanned_brochure(c):
+    for lines, seed in (
+        ([('LOT 57 - ASTER 22', 14), ('57 Heathland Avenue', 11),
+          ('Tarneit VIC 3029', 11), ('Package Price $689,000', 12)], 21),
+        ([('ASTER 22 - SPECIFICATIONS', 14), ('4 bed 2 bath 2 car', 12),
+          ('Land 392m2  Build 207m2', 12)], 22),
+        ([('STANDARD INCLUSIONS', 14), ('2590mm ceilings throughout', 11),
+          ('Stone benchtops to the kitchen', 11),
+          ('Prices and inclusions subject to change', 9)], 23),
+    ):
+        c.drawImage(ImageReader(render_page_as_scan(lines, seed=seed)), 0, 0,
+                    width=W, height=H, mask=None)
+        c.showPage()
+
+
 
 # ===========================================================================
 # THE ICON-ROW BROCHURE WITH NO SITING PAGE (held out, 23 September 2026)

@@ -238,6 +238,16 @@ dense page measured **4.7–5.0 s** here, not 3.1 — `OCR_PAGE_MS` is an averag
 that includes the cheap first page — so one page is the whole of an
 invocation's recognition, and a page is the unit nothing can divide.
 
+**Since 23 September 2026 the page is recognised in an isolate of its own.**
+The hosted runtime would not start the worker the old recogniser ran in, so
+the engine now runs in the isolate that asks, and that isolate is never the
+one that parsed the PDF: the parsing isolate locates each owed page's picture
+and recognises none, each page is recognised by an isolate that parses
+nothing, and the document is read by one that recognises nothing. A stored
+scan of N pages therefore crosses N + 1 times before its pictures are handed
+on. The checkpoint, the one-page allowance and the crossing bound are the ones
+described here. See `52-the-pdf-upload-path-end-to-end.md` §18.
+
 ### 6.3 The ceiling is derived, not chosen
 
 The platform exposes no CPU meter — `546` names no resource and no amount — so

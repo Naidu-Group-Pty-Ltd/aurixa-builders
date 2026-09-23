@@ -40,6 +40,8 @@
  *            --import-map scripts/stock-acceptance/import-map.json \
  *            scripts/stock-acceptance/latency.ts [corpus] [iterations]
  */
+// FIRST: no worker, as on the hosted runtime. See `hostedRuntime.ts`.
+import './hostedRuntime.ts';
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
 import { runStockImport } from '../../supabase/functions/_shared/builderStock/runImport.ts';
 import { isImportContinuation } from '../../supabase/functions/_shared/builderStock/importContinuation.pure.ts';

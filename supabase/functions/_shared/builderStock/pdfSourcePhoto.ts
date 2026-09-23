@@ -48,6 +48,7 @@ import {
 } from './pdfPrimaryImage.pure.ts';
 import { isolatePhotographBand } from './pdfFlattenedPhoto.pure.ts';
 import { figureCandidatesFrom, type PdfFigure } from './pdfFigures.pure.ts';
+import type { ScanRasterLocation } from './ocr/scanRaster.pure.ts';
 import { cropRows, encodePng, inflate, sha256Hex } from './rasterPng.ts';
 import { validateSourceImageBytes } from './sourceAssets.pure.ts';
 import {
@@ -225,12 +226,38 @@ export async function recoverCompressedObjects(
  * The photograph ONE page of a PDF presents, or null.
  *
  * `pageIndex` is zero-based; the provenance reports the page 1-based.
+ *
+ * TWO HALVES, AND THIS IS BOTH OF THEM. `locatePdfPagePhoto` reads the page and
+ * decides which raster it presents, decoding no pixel; `photoAtLocation` makes
+ * the picture from what was located, reading nothing but the stream. A scanned
+ * page is located in the isolate that parsed its document and made in the one
+ * that recognises it (`ocr/scanRaster.pure.ts`) — and because this is the two
+ * halves called back to back, the picture that isolate recognises is the
+ * picture this function returns, by construction.
  */
 export async function extractPdfPagePhoto(
   bytes: Uint8Array,
   pageIndex: number,
   recovered: ReadonlyMap<number, string> = new Map(),
 ): Promise<PdfPhoto | null> {
+  const location = await locatePdfPagePhoto(bytes, pageIndex, recovered);
+  return location ? await photoAtLocation(bytes, location) : null;
+}
+
+/**
+ * Which raster ONE page presents, and where its stream is — found by reading
+ * the page, with no pixel decoded. Null where the page presents neither a
+ * photograph nor a single flattened raster.
+ *
+ * Both candidates are kept because the picture is made by trying the first and
+ * falling back to the second, exactly as one pass always did: a lead raster
+ * whose samples cannot be wrapped (a CMYK stream) leaves the flattened page.
+ */
+export async function locatePdfPagePhoto(
+  bytes: Uint8Array,
+  pageIndex: number,
+  recovered: ReadonlyMap<number, string> = new Map(),
+): Promise<ScanRasterLocation | null> {
   const page = readPdfPage(bytes, pageIndex, recovered);
   if (!page) return null;
 
@@ -251,25 +278,89 @@ export async function extractPdfPagePhoto(
 
   // (1) The photograph the layout leads with.
   const chosen = selectPropertyPhotographFrom(drawn, page.width, page.height);
+  // (2) A flattened page, whose photograph is cut out of the builder's pixels.
+  const flattened = flattenedPageImageFrom(drawn, page.width, page.height);
+  if (!chosen && !flattened) return null;
+  return {
+    page: pageIndex + 1,
+    embedded: chosen
+      ? {
+        start: chosen.image.start,
+        end: chosen.image.end,
+        flate: chosen.image.filters[0] === 'FlateDecode',
+        width: chosen.image.width,
+        height: chosen.image.height,
+        objectNumber: chosen.image.objectNumber,
+        resourceName: chosen.image.name,
+        pageAreaShare: chosen.pageAreaShare,
+      }
+      : null,
+    flattened: flattened
+      ? {
+        start: flattened.image.start,
+        end: flattened.image.end,
+        width: flattened.image.width,
+        height: flattened.image.height,
+        components: flattened.image.components,
+        objectNumber: flattened.image.objectNumber,
+        resourceName: flattened.image.name,
+      }
+      : null,
+  };
+}
+
+/**
+ * Is this slice of the document the stream a location recorded? A location
+ * that carries no digest was made in this isolate and needs no proof.
+ */
+async function isRecordedStream(
+  bytes: Uint8Array,
+  stream: { start: number; end: number; sha256?: string },
+): Promise<boolean> {
+  if (!stream.sha256) return true;
+  if (stream.end > bytes.length || stream.end <= stream.start) return false;
+  return await sha256Hex(bytes.slice(stream.start, stream.end)) === stream.sha256;
+}
+
+/**
+ * The picture a located page presents, made from its stream alone — no page is
+ * read and no document parsed. Null where neither path yields a picture, or
+ * where a recorded stream is not the one in these bytes.
+ */
+export async function photoAtLocation(
+  bytes: Uint8Array,
+  location: ScanRasterLocation,
+): Promise<PdfPhoto | null> {
+  /*
+   * EVERY RECORDED STREAM IS PROVED BEFORE EITHER IS USED. Falling back to the
+   * flattened page because the lead raster was not the recorded one would make
+   * a picture the single pass never made; a stream that is not where it was
+   * recorded makes no picture at all.
+   */
+  if (location.embedded && !await isRecordedStream(bytes, location.embedded)) return null;
+  if (location.flattened && !await isRecordedStream(bytes, location.flattened)) return null;
+
+  // (1) The photograph the layout leads with.
+  const chosen = location.embedded;
   if (chosen) {
     const picture = await pictureFromStream(bytes, {
-      start: chosen.image.start,
-      end: chosen.image.end,
-      flate: chosen.image.filters[0] === 'FlateDecode',
-      width: chosen.image.width,
-      height: chosen.image.height,
+      start: chosen.start,
+      end: chosen.end,
+      flate: chosen.flate,
+      width: chosen.width,
+      height: chosen.height,
     });
     if (picture) {
       return {
         bytes: picture.bytes,
         contentType: picture.contentType,
         provenance: {
-          page: pageIndex + 1,
+          page: location.page,
           method: 'embedded_raster',
-          objectNumber: chosen.image.objectNumber,
-          resourceName: chosen.image.name,
-          sourceWidth: chosen.image.width,
-          sourceHeight: chosen.image.height,
+          objectNumber: chosen.objectNumber,
+          resourceName: chosen.resourceName,
+          sourceWidth: chosen.width,
+          sourceHeight: chosen.height,
           sourceSha256: picture.sourceSha256,
           storedSha256: picture.storedSha256,
           crop: null,
@@ -281,7 +372,7 @@ export async function extractPdfPagePhoto(
   }
 
   // (2) A flattened page: cut the photograph out of the builder's own pixels.
-  const flattened = flattenedPageImageFrom(drawn, page.width, page.height);
+  const flattened = location.flattened;
   if (!flattened) return null;
 
   /**
@@ -289,22 +380,22 @@ export async function extractPdfPagePhoto(
    * shears the picture into stripes, and a plausible-looking wrong image is
    * exactly what this whole path exists to prevent.
    */
-  const components = flattened.image.components;
+  const components = flattened.components;
   if (components !== 1 && components !== 3) return null;
 
-  const pixels = await inflate(bytes.slice(flattened.image.start, flattened.image.end))
+  const pixels = await inflate(bytes.slice(flattened.start, flattened.end))
     .catch(() => null);
   if (!pixels) return null;
 
   const band = isolatePhotographBand(pixels, {
-    width: flattened.image.width,
-    height: flattened.image.height,
+    width: flattened.width,
+    height: flattened.height,
     components,
   });
   if (!band) return null;
 
   const cropped = cropRows(pixels,
-    { width: flattened.image.width, height: flattened.image.height, components }, band);
+    { width: flattened.width, height: flattened.height, components }, band);
   const png = await encodePng(cropped.pixels, {
     width: cropped.width, height: cropped.height, components,
   });
@@ -317,12 +408,12 @@ export async function extractPdfPagePhoto(
     bytes: png,
     contentType: check.contentType,
     provenance: {
-      page: pageIndex + 1,
+      page: location.page,
       method: 'page_crop',
-      objectNumber: flattened.image.objectNumber,
-      resourceName: flattened.image.name,
-      sourceWidth: flattened.image.width,
-      sourceHeight: flattened.image.height,
+      objectNumber: flattened.objectNumber,
+      resourceName: flattened.resourceName,
+      sourceWidth: flattened.width,
+      sourceHeight: flattened.height,
       // The page as the builder stored it, and the rectangle taken out of it.
       sourceSha256: await sha256Hex(pixels),
       storedSha256: await sha256Hex(png),
@@ -330,9 +421,9 @@ export async function extractPdfPagePhoto(
         top: band.top,
         bottom: band.bottom,
         left: 0,
-        right: flattened.image.width,
-        pageWidth: flattened.image.width,
-        pageHeight: flattened.image.height,
+        right: flattened.width,
+        pageWidth: flattened.width,
+        pageHeight: flattened.height,
         distinctColours: band.distinctColours,
       },
       pageAreaShare: null,
@@ -341,6 +432,28 @@ export async function extractPdfPagePhoto(
       transformation: 'cropped to the isolated photograph and re-encoded '
         + 'losslessly as PNG; no pixel values changed',
     },
+  };
+}
+
+/**
+ * A location, with the digest of every stream it names — what another isolate
+ * needs to prove it slices the bytes this one found. Hashing only; nothing is
+ * decoded.
+ */
+export async function recordedScanRaster(
+  bytes: Uint8Array,
+  location: ScanRasterLocation,
+): Promise<ScanRasterLocation> {
+  const digestOf = (stream: { start: number; end: number }) =>
+    sha256Hex(bytes.slice(stream.start, stream.end));
+  return {
+    page: location.page,
+    embedded: location.embedded
+      ? { ...location.embedded, sha256: await digestOf(location.embedded) }
+      : null,
+    flattened: location.flattened
+      ? { ...location.flattened, sha256: await digestOf(location.flattened) }
+      : null,
   };
 }
 
@@ -395,15 +508,49 @@ export async function extractPdfPhotosByPage(
   } = {},
 ): Promise<Array<{ page: number; photo: PdfPhoto }>> {
   const { objects: recovered } = await recoverCompressedObjects(bytes);
+  const out: Array<{ page: number; photo: PdfPhoto }> = [];
+  for (const index of pageIndexesVisited(options)) {
+    const photo = await extractPdfPagePhoto(bytes, index, recovered);
+    if (photo) out.push({ page: index + 1, photo });
+  }
+  return out;
+}
+
+/**
+ * The zero-based pages a by-page walk visits: the first `maxPages`, narrowed to
+ * the ones asked for. ONE rule for the walk that makes pictures and the walk
+ * that only finds them, so the pages a scan is located on in one isolate are
+ * the pages it would have been rasterised on in one.
+ */
+function pageIndexesVisited(
+  options: { maxPages?: number; pages?: readonly number[] | null },
+): number[] {
   const limit = Math.max(1, Math.min(options.maxPages ?? MAX_PAGES_SEARCHED, MAX_PAGES_SEARCHED));
   const wanted = options.pages?.length
     ? new Set(options.pages.filter((page) => Number.isFinite(page) && page > 0))
     : null;
-  const out: Array<{ page: number; photo: PdfPhoto }> = [];
+  const indexes: number[] = [];
   for (let index = 0; index < limit; index++) {
     if (wanted && !wanted.has(index + 1)) continue;
-    const photo = await extractPdfPagePhoto(bytes, index, recovered);
-    if (photo) out.push({ page: index + 1, photo });
+    indexes.push(index);
+  }
+  return indexes;
+}
+
+/**
+ * Where the picture of EACH wanted page is, for a document whose pages are
+ * recognised in another isolate: the pages `extractPdfPhotosByPage` visits,
+ * located and never decoded. A page that presents no picture is absent.
+ */
+export async function locatePdfPhotosByPage(
+  bytes: Uint8Array,
+  options: { maxPages?: number; pages?: readonly number[] | null } = {},
+): Promise<ScanRasterLocation[]> {
+  const { objects: recovered } = await recoverCompressedObjects(bytes);
+  const out: ScanRasterLocation[] = [];
+  for (const index of pageIndexesVisited(options)) {
+    const location = await locatePdfPagePhoto(bytes, index, recovered);
+    if (location) out.push(location);
   }
   return out;
 }
