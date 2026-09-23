@@ -55,6 +55,14 @@ PGPASSWORD=acceptance node scripts/ops/probe-watchdog-backoff.mjs \
 PGPASSWORD=acceptance node scripts/ops/probe-stated-figures-payload.mjs \
   "postgres://postgres:acceptance@127.0.0.1:54999/stock_acceptance"
 
+# AND AN ADDRESS? A brochure that names only its lot and estate can be placed
+# on a marketplace only by its builder. This stores a stated address on real
+# rows, asks the real composer, and puts eleven malformed statements to the
+# real constraint — all rolled back. See
+# `scripts/ops/probe-stated-location-payload.mjs`.
+PGPASSWORD=acceptance node scripts/ops/probe-stated-location-payload.mjs \
+  "postgres://postgres:acceptance@127.0.0.1:54999/stock_acceptance"
+
 # AND CAN TWO WORKERS IMPORT THE SAME STOCK LIST? Same rule, same reason. An
 # import is resumable now, which makes a double dispatch, a successor racing
 # its predecessor and a killed worker's lease all reachable — and every one of

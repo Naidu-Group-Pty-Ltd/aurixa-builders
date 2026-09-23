@@ -11,8 +11,8 @@ import { useToast } from '@/hooks/use-toast';
 import { useSetBuilderStockManualStats } from '@/lib/builderStockQueries';
 import { AU_LOCALE } from '@/lib/aml/displayDate';
 import {
-  MANUAL_STAT_SPECS, describeManualStats, stockItemTitle,
-  type BuilderStockItem, type ManualStatField,
+  MANUAL_STAT_SPECS, STATED_LOCATION_SPECS, STATED_STATES, describeManualStats, stockItemTitle,
+  type BuilderStockItem, type ManualStatField, type StatedLocationField,
 } from '@/lib/builderStock';
 
 /**
@@ -44,6 +44,16 @@ import {
  * come from `MANUAL_STAT_SPECS`, the module the edge function validates
  * against, so what a builder is asked for and what is accepted cannot drift
  * into two standards.
+ *
+ * ## And where the property is
+ *
+ * `Lot 101 - PICO - BROCHURE v002.pdf` names its lot and its estate and no
+ * street, suburb, state or postcode — read on every page and in every picture
+ * — so its card could be placed on no marketplace. The same dialog takes the
+ * address, under the same three rules: the stock list's reading under each
+ * part, an empty box gives the document its reading back, and the parts and
+ * their rules come from `STATED_LOCATION_SPECS`, the module the server
+ * validates with. See `statedLocation.pure.ts`.
  */
 export function BuilderStockFiguresButton({
   item, className,
@@ -77,7 +87,7 @@ export function BuilderStockFiguresButton({
          * solid block on every card down a sheet of properties that are
          * already complete.
          */
-        data-figures={reading.missing.length ? 'outstanding' : 'stated'}
+        data-figures={reading.missing.length || reading.addressMissing ? 'outstanding' : 'stated'}
         onClick={() => setOpen(true)}
       >
         <PencilRuler className="h-3 w-3" aria-hidden />
@@ -91,6 +101,18 @@ export function BuilderStockFiguresButton({
       ) : null}
     </>
   );
+}
+
+/**
+ * The document's own reading of one part of the address. The same rule as the
+ * figures: the row carries the builder's part where they stated one, and what
+ * the document said underneath rides on `stated_*`.
+ */
+function placedByDocument(item: BuilderStockItem, field: StatedLocationField): string | null {
+  const row = item as unknown as Record<string, unknown>;
+  const raw = row[`stated_${field}`] !== undefined ? row[`stated_${field}`] : row[field];
+  const value = typeof raw === 'string' ? raw.trim() : '';
+  return value === '' ? null : value;
 }
 
 /** The document's own reading of one field, for the line under its box. */
@@ -133,8 +155,14 @@ function BuilderStockFiguresDialog({
       const value = stated[spec.field];
       seeded[spec.field] = value === undefined || value === null ? '' : String(value);
     }
+    // The address the same way: what the BUILDER stated, never the effective
+    // value, or opening this box would turn the document's address into theirs.
+    const placed = item.manual_location ?? {};
+    for (const spec of STATED_LOCATION_SPECS) {
+      seeded[spec.field] = placed[spec.field] ?? '';
+    }
     return seeded;
-  }, [item.manual_stats]);
+  }, [item.manual_stats, item.manual_location]);
 
   /*
    * Seeded once, because this dialog is MOUNTED fresh each time it opens —
@@ -146,7 +174,10 @@ function BuilderStockFiguresDialog({
   const [draft, setDraft] = useState<Record<string, string>>(initial);
   const [fieldError, setFieldError] = useState<string | null>(null);
 
-  const dirty = MANUAL_STAT_SPECS.some((spec) => draft[spec.field] !== initial[spec.field]);
+  const dirty = [...MANUAL_STAT_SPECS, ...STATED_LOCATION_SPECS]
+    .some((spec) => draft[spec.field] !== initial[spec.field]);
+  const edit = (field: string, value: string) =>
+    setDraft((current) => ({ ...current, [field]: value }));
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -157,11 +188,18 @@ function BuilderStockFiguresDialog({
       // An empty box withdraws the correction; `0` is a figure and survives.
       stats[spec.field] = text === '' ? null : Number(text);
     }
-    save.mutate({ stockItemId: item.id, stats }, {
+    // Every part sent, a cleared one as `null`: that is a withdrawal, where a
+    // part left out of the request would be read as "keep what is stored".
+    const location: Partial<Record<StatedLocationField, string | null>> = {};
+    for (const spec of STATED_LOCATION_SPECS) {
+      const text = (draft[spec.field] ?? '').trim();
+      location[spec.field] = text === '' ? null : text;
+    }
+    save.mutate({ stockItemId: item.id, stats, location }, {
       onSuccess: () => {
         toast({
           title: 'Schedule updated',
-          description: `${title} now shows the figures you supplied.`,
+          description: `${title} now shows the details you supplied.`,
         });
         onClose();
       },
@@ -180,7 +218,14 @@ function BuilderStockFiguresDialog({
 
   return (
     <Dialog open onOpenChange={(next) => { if (!next) onClose(); }}>
-      <DialogContent className="builder-stock-list-dialog sm:max-w-lg">
+      {/*
+        `overflow-y-auto`: with the address above the figures this form is nine
+        rows tall, and the default above 640px is `sm:overflow-visible` inside
+        an 85dvh ceiling — on a short laptop window the Save button would be
+        painted below the screen with no way to scroll to it. Declaring an
+        overflow withholds that default (`declaresOwnOverflow`).
+      */}
+      <DialogContent className="builder-stock-list-dialog sm:max-w-lg overflow-y-auto">
         {/*
           `noValidate`: THE SERVER IS THE ONE AUTHORITY ON A FIGURE.
           The min/max/step attributes stay — they drive the number spinner and
@@ -194,12 +239,72 @@ function BuilderStockFiguresDialog({
           <DialogHeader>
             <DialogTitle>Schedule — {title}</DialogTitle>
             <DialogDescription>
-              Figures entered here appear in the Command Centre and are retained when
+              Details entered here appear in the Command Centre and are retained when
               this stock list is uploaded again.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="mt-4 grid gap-3">
+          {/*
+            THE ADDRESS FIRST, because it is what names the property: a card
+            nobody can place is missing more than a bedroom count. Each part is
+            its own row with the stock list's reading under it, exactly as a
+            figure is, so a builder can see that the brochure named no suburb
+            rather than suspect the product lost one.
+          */}
+          <fieldset className="mt-4 grid gap-3">
+            <legend className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Address
+            </legend>
+            {STATED_LOCATION_SPECS.map((spec) => {
+              const document = placedByDocument(item, spec.field);
+              const inputId = `place-${spec.field}-${item.id}`;
+              const narrow = spec.field === 'state' || spec.field === 'postcode';
+              return (
+                <div
+                  key={spec.field}
+                  className={narrow
+                    ? 'grid grid-cols-[minmax(0,1fr)_8rem] items-center gap-3'
+                    : 'grid grid-cols-[minmax(0,1fr)_minmax(0,14rem)] items-center gap-3'}
+                >
+                  <div className="min-w-0">
+                    <Label htmlFor={inputId}>{spec.label}</Label>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      {document === null ? 'Not specified' : `Stock list: ${document}`}
+                    </p>
+                  </div>
+                  {spec.field === 'state' ? (
+                    <select
+                      id={inputId}
+                      value={draft[spec.field] ?? ''}
+                      onChange={(event) => edit(spec.field, event.target.value)}
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    >
+                      <option value="">{document === null ? '—' : document}</option>
+                      {STATED_STATES.map((state) => (
+                        <option key={state} value={state}>{state}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <Input
+                      id={inputId}
+                      type="text"
+                      inputMode={spec.field === 'postcode' ? 'numeric' : 'text'}
+                      autoComplete="off"
+                      maxLength={spec.maxLength}
+                      value={draft[spec.field] ?? ''}
+                      placeholder={document ?? '—'}
+                      onChange={(event) => edit(spec.field, event.target.value)}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </fieldset>
+
+          <fieldset className="mt-5 grid gap-3">
+            <legend className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Figures
+            </legend>
             {MANUAL_STAT_SPECS.map((spec) => {
               const document = statedByDocument(item, spec.field);
               const inputId = `figure-${spec.field}-${item.id}`;
@@ -231,17 +336,15 @@ function BuilderStockFiguresDialog({
                     step={spec.step}
                     value={draft[spec.field] ?? ''}
                     placeholder={document === null ? '—' : String(document)}
-                    onChange={(event) => setDraft((current) => ({
-                      ...current, [spec.field]: event.target.value,
-                    }))}
+                    onChange={(event) => edit(spec.field, event.target.value)}
                   />
                 </div>
               );
             })}
-          </div>
+          </fieldset>
 
           <p className="mt-3 text-xs text-muted-foreground">
-            Leave a field empty to retain your stock list’s figure. Enter 0 where
+            Leave a field empty to retain your stock list’s reading. Enter 0 where
             there are none.
           </p>
           {fieldError ? (
