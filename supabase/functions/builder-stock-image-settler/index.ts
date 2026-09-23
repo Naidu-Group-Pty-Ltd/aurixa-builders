@@ -1283,11 +1283,13 @@ Deno.serve(async (req: Request) => {
         ? 0
         : (await readerSweepPending(supabase) ?? 0);
 
-      if (readerSweep.reread || readerSweep.refused.length || readerSweep.failed.length) {
+      if (readerSweep.reread || readerSweep.refused.length || readerSweep.failed.length
+        || readerSweep.handedOn.length) {
         console.log('[builder-stock-image-settler] reader sweep', {
           phase: 'reader_version',
           considered: readerSweep.considered,
           reread: readerSweep.reread,
+          handed_on: readerSweep.handedOn.length,
           refused: readerSweep.refused.length,
           failed: readerSweep.failed.length,
           outstanding: readerOutstanding,

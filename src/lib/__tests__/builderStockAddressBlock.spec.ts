@@ -106,11 +106,44 @@ describe('what keeps it from reading a specification as a street', () => {
     expect(record?.address_line).not.toMatch(/mm/);
   });
 
-  it('refuses a locality line with no state and postcode', () => {
-    // `Diggers Rest` on the Lot 324 brochure is a suburb and nothing else,
-    // and a bare suburb is not the document labelling itself.
+  /*
+   * RENEGOTIATED 23 SEPTEMBER 2026, and this is the record the corpus
+   * contract asks for.
+   *
+   * WAS: a bare suburb under a street line claims nothing — `Diggers Rest` "is
+   * a suburb and nothing else, and a bare suburb is not the document labelling
+   * itself".
+   *
+   * WHY THAT WAS WRONG FOR THIS SHAPE: the street line above it ends in a
+   * COMMA. The document is saying, in its own punctuation, that the address
+   * goes on — the same address the one-line reader has read since
+   * `Lot 37, Sandpiper Estate, Tweed Heads NSW` was measured. Refusing it cost
+   * production real cards: `LOT 4327` (`Lot 4327 Jubilee Estate,` over
+   * `Wyndham Vale`) and `LOT 3312` (`Lot 3312 Smiths Lane,` over
+   * `Clyde North`) imported with no locality at all, read back out of their
+   * own `placement` records.
+   *
+   * NOW: with the comma, the suburb is read and NOTHING is invented — no state
+   * and no postcode the page does not print. Without it, the original refusal
+   * stands exactly as it was, which is the half of this test that still
+   * protects what it was written to protect.
+   */
+  it('reads a bare suburb only where the street line above it continues with a comma', () => {
     const bare = readFlyer(flyer().map((item) =>
       item.text === 'Mernda VIC 3754' ? at(6, 276, 'Diggers Rest') : item));
+    const row = bare.rows.length ? normaliseStockRow(bare.rows[0]) : null;
+    expect(row?.address_line).toBe('49 Cockrell Rd');
+    expect(row?.suburb).toBe('Diggers Rest');
+    expect(row?.state ?? null).toBeNull();
+    expect(row?.postcode ?? null).toBeNull();
+  });
+
+  it('refuses a locality line with no state and postcode under a street line that does not continue', () => {
+    const bare = readFlyer(flyer().map((item) => {
+      if (item.text === 'Mernda VIC 3754') return at(6, 276, 'Diggers Rest');
+      if (item.text === '49 Cockrell Rd,') return at(5, 276, '49 Cockrell Rd');
+      return item;
+    }));
     const row = bare.rows.length ? normaliseStockRow(bare.rows[0]) : null;
     expect(row?.suburb ?? null).toBeNull();
   });

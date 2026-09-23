@@ -23,8 +23,9 @@
  *
  *   - Archive a live property. The import supersedes by `upload_id` and this
  *     re-runs the SAME upload, so every row it touches is its own.
- *   - Start a first pass. `RE_READABLE_STATUSES` excludes `failed` and
- *     `uploaded`: a source nothing has ever read is the builder's to process.
+ *   - Import a first pass beside the builder's own. An `uploaded` row is adopted
+ *     only once it is abandoned (`ABANDONED_UPLOAD_MS`) and only through a
+ *     conditional claim, so a returning browser and a tick cannot both read it.
  *   - Ask an unanswerable question twice. Every refusal is STAMPED, so an
  *     upload this sweep cannot act on leaves the queue rather than being
  *     re-asked every tick for ever — the liveness fault
@@ -37,6 +38,41 @@
  * the image work and asks `publish_builder_stock_upload` itself, so a
  * correction to a PUBLISHED list lands through `pending_patch` exactly as a
  * builder's own "Read again" does.
+ *
+ * ===========================================================================
+ * AND IT READS THE WAY AN IMPORT READS: ACROSS ISOLATES, ONE CLAIM AT A TIME
+ * ===========================================================================
+ *
+ * It used to re-read INLINE — `runStockImport` without
+ * `resumableFromStoredBytes`, so a paginated brochure was parsed and its
+ * pictures decoded in the same isolate. That is the shape the import was
+ * rebuilt to avoid, and it is where `LOT 550 - ENZO 8.5 MODERN- BROCHURE
+ * V002.pdf` killed the settler fifteen times over 22 and 23 September 2026:
+ * a kill writes nothing, the row stayed outstanding with no bound on its
+ * attempts, and the oldest-first queue put it back at the front of every quiet
+ * tick. The reader version was fenced at 13 until this changed.
+ *
+ * Now a re-read is the same call "Read again" makes — the stored checkpoint,
+ * `resumableFromStoredBytes` — and where the import hands its pictures to a
+ * successor, so does the sweep:
+ *
+ *   • A row the sweep did not move to `parsing` (every settled list) is
+ *     continued by the SWEEP: the claim is released, the next settler is
+ *     dispatched now (`builder_stock_dispatch_reader_sweep`), and that tick
+ *     resumes the checkpoint this one wrote. The fifteen-minute heartbeat is
+ *     the recovery, never the transport. Its status is never touched, for the
+ *     reason the rest of this module gives.
+ *   • A row that IS `parsing` — a first pass the sweep adopted, or an import
+ *     that was abandoned — is an import, and is handed to the import's own
+ *     successor (`releaseThenContinue`), which finishes it with the columns
+ *     every import finishes with.
+ *
+ * `claimImport` is taken before anything is read, so the sweep can never be a
+ * second reader beside an import, a continuation or another settler. And
+ * every tick is written down BEFORE it works (`readerSweepAttempt.pure.ts`),
+ * so a tick the runtime kills is still counted, and a document that keeps
+ * killing it is asked `MAX_UNFINISHED_SWEEP_TICKS` times at a version rather
+ * than for ever.
  */
 import type { runStockImport } from './runImport.ts';
 import { isImportContinuation } from './importContinuation.pure.ts';
@@ -46,13 +82,29 @@ import {
   readerReReadRefusal, reReadSettlesAt,
   stampable, type ReaderSweepUpload,
 } from './readerVersion.pure.ts';
+import {
+  READER_SWEEP_ATTEMPT_COLUMN, planSweepTick, readSweepAttempt,
+  sweepHandedOn, sweepTickEnded, type ReaderSweepAttempt,
+} from './readerSweepAttempt.pure.ts';
+import { claimImport, releaseThenContinue } from './importClaim.ts';
+import { isAcceptableStockStoragePath } from './fileTypes.pure.ts';
 import { closeRefusedUpload } from './closeRefusedUpload.ts';
 import { TELEMETRY_PREFIX } from './importTelemetry.pure.ts';
 
 /** The columns the sweep reads. Named once so the two queries cannot drift. */
 const SWEEP_COLUMNS = 'id, organisation_id, uploaded_by_builder_user_id, original_filename, '
   + 'status, source_type, source_url, storage_bucket, storage_path, deleted_at, '
-  + 'processing_started_at, error_code, error_detail, created_at';
+  + `processing_started_at, error_code, error_detail, created_at, ${READER_SWEEP_ATTEMPT_COLUMN}`;
+
+/**
+ * What a re-read resumes from, read for the ONE upload being read and only
+ * once its claim is held. `import_checkpoint` can carry a scanned document's
+ * recognised text, so it is never part of the listing, which reads a page of
+ * uploads at a time.
+ */
+const STATE_COLUMNS = 'status, processing_started_at, '
+  + `${READER_SETTLED_VERSION_COLUMN}, ${READER_SWEEP_ATTEMPT_COLUMN}, `
+  + 'import_checkpoint, stage_timings';
 
 interface SweepUploadRow extends ReaderSweepUpload {
   id: string;
@@ -68,21 +120,33 @@ export interface ReaderSweepOutcome {
   considered: number;
   /** Uploads actually re-read. */
   reread: number;
-  /** Uploads stamped without being read, and why. */
+  /**
+   * Uploads not read this tick, and why. Stamped, except where somebody else
+   * is reading the document (`claimed_elsewhere`) or the row moved on under
+   * the claim (`moved_on`): those are statements about right now.
+   */
   refused: Array<{ uploadId: string; reason: string }>;
   /** Uploads left outstanding because the attempt failed. */
   failed: Array<{ uploadId: string; reason: string }>;
+  /**
+   * Uploads whose read was handed to a successor, and which one: the sweep's
+   * own next tick, or the import's continuation. Still outstanding — the
+   * successor stamps them.
+   */
+  handedOn: Array<{ uploadId: string; via: 'reader_sweep' | 'import_continuation' }>;
   /** True where the marker column is not deployed yet. */
   unavailable: boolean;
 }
 
 /**
- * ONE upload per tick, and that is not a tuning knob.
+ * ONE read STARTED per tick, and that is not a tuning knob.
  *
- * A re-read parses a document, decodes every raster on every page it keeps and
- * classifies each one — the same work that killed this worker at ~16s and
- * again at ~20s on the import and repair paths. The sweep converges over ticks
- * rather than over uploads, exactly as the three image markers do.
+ * A re-read parses a document — the work that, with its pictures decoded
+ * beside it, killed this worker at ~16s and again at ~20s on the import and
+ * repair paths. The sweep converges over ticks rather than over uploads,
+ * exactly as the three image markers do. A read that hands on or fails has
+ * spent the tick's parse as surely as one that finishes, so it is the START
+ * that is counted: a tick never parses a second document after a first.
  */
 const MAX_REREADS_PER_TICK = 1;
 
@@ -153,14 +217,76 @@ async function outstandingUploads(
   return { rows: rows.slice(0, limit), unavailable: false };
 }
 
-/** Write the marker. Never throws: a marker that cannot be written is a retry. */
-async function stamp(db: any, upload: SweepUploadRow): Promise<void> {
+/**
+ * Write the marker — and, where this sweep read the document, how the read
+ * ended, in the same write. Never throws: a marker that cannot be written is a
+ * retry.
+ */
+async function stamp(
+  db: any, upload: SweepUploadRow, attempt: ReaderSweepAttempt | null = null,
+): Promise<void> {
   try {
     await db.from('builder_stock_uploads')
-      .update({ [READER_SETTLED_VERSION_COLUMN]: DETERMINISTIC_READER_VERSION })
+      .update({
+        [READER_SETTLED_VERSION_COLUMN]: DETERMINISTIC_READER_VERSION,
+        ...(attempt ? { [READER_SWEEP_ATTEMPT_COLUMN]: attempt } : {}),
+      })
       .eq('id', upload.id)
       .eq('organisation_id', upload.organisation_id);
   } catch { /* outstanding is the safe side; the next tick asks again */ }
+}
+
+/**
+ * Record where this upload's re-read stands. Answers whether it landed,
+ * because the tick that records `started` is the one a kill would otherwise
+ * erase — and a tick whose start could not be recorded is not started.
+ */
+async function recordAttempt(
+  db: any, upload: SweepUploadRow, attempt: ReaderSweepAttempt,
+): Promise<boolean> {
+  try {
+    const { error } = await db.from('builder_stock_uploads')
+      .update({ [READER_SWEEP_ATTEMPT_COLUMN]: attempt })
+      .eq('id', upload.id)
+      .eq('organisation_id', upload.organisation_id);
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+/** What this one upload resumes from, read under its claim. Null where it cannot be read. */
+async function readSweepState(
+  db: any, upload: SweepUploadRow,
+): Promise<Record<string, unknown> | null> {
+  try {
+    const { data, error } = await db.from('builder_stock_uploads')
+      .select(STATE_COLUMNS)
+      .eq('id', upload.id)
+      .eq('organisation_id', upload.organisation_id)
+      .limit(1);
+    if (error) return null;
+    return ((data ?? []) as Array<Record<string, unknown>>)[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * START THE NEXT SETTLER NOW, so a handed-on re-read continues in seconds.
+ *
+ * The same signed dispatcher every other hand-off uses, and the same
+ * contract: an accelerator, never the guarantee. A dispatch that is lost
+ * leaves the upload outstanding, and the heartbeat that runs the sweep every
+ * fifteen minutes reaches it — later, never never.
+ */
+async function dispatchReaderSweep(db: any): Promise<boolean> {
+  try {
+    const { data, error } = await db.rpc('builder_stock_dispatch_reader_sweep');
+    return !error && data !== false;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -190,7 +316,7 @@ export async function settleReaderVersion(
     ?? (async (...args: Parameters<typeof runStockImport>) =>
       (await import('./runImport.ts')).runStockImport(...args));
   const outcome: ReaderSweepOutcome = {
-    considered: 0, reread: 0, refused: [], failed: [], unavailable: false,
+    considered: 0, reread: 0, refused: [], failed: [], handedOn: [], unavailable: false,
   };
 
   const { rows, unavailable } = await outstandingUploads(
@@ -198,8 +324,21 @@ export async function settleReaderVersion(
   if (unavailable) return { ...outcome, unavailable: true };
 
   const deadlineAt = input.deadlineAt ?? Number.MAX_SAFE_INTEGER;
+  /** Reads this tick STARTED — see `MAX_REREADS_PER_TICK`. */
+  let started = 0;
 
-  for (const upload of rows) {
+  /*
+   * A RE-READ ALREADY UNDER WAY IS FINISHED BEFORE ANOTHER IS BEGUN. Its
+   * pictures are sitting in storage waiting for the isolate that attaches
+   * them, and starting a second document first would leave them there for
+   * the length of that document's read as well as its own. Otherwise the
+   * order is the listing's: oldest first.
+   */
+  const underWay = (row: SweepUploadRow) =>
+    readSweepAttempt(row.reader_sweep_attempt, DETERMINISTIC_READER_VERSION)?.last === 'handed_on';
+  const ordered = [...rows.filter(underWay), ...rows.filter((row) => !underWay(row))];
+
+  for (const upload of ordered) {
     outcome.considered += 1;
 
     /*
@@ -224,30 +363,29 @@ export async function settleReaderVersion(
       continue;
     }
 
-    if (outcome.reread >= MAX_REREADS_PER_TICK) break;
+    if (started >= MAX_REREADS_PER_TICK) break;
     if (Date.now() + READER_SWEEP_RESERVE_MS > deadlineAt) break;
 
     /*
-     * A FIRST PASS IS CLAIMED; A RE-READ IS NOT.
+     * ONE READER PER DOCUMENT, AND THE CLAIM COMES FIRST.
      *
-     * An `uploaded` row is one nobody has ever imported — the bytes landed,
-     * the browser never came back, and `RE_READABLE_STATUSES` now admits it
-     * so the file is not stranded for ever. That is the ONE case where this
-     * sweep and a customer's own `process_upload` could both be about to
-     * write the same properties, because every other re-readable status is
-     * one the portal already refuses to start from.
-     *
-     * So the row is claimed: `uploaded` → `parsing`, conditional on it still
-     * being `uploaded`. Whichever of the two gets there first is the one that
-     * imports, and the other is refused by the status it now reads. The
-     * condition is the whole guard — an unconditional update would claim a
-     * row the browser had just claimed, and two imports of one file is the
-     * duplicate fork this subsystem must never produce.
-     *
-     * A claim that takes nothing is not a failure: somebody else is doing
-     * the work. The row is left alone and unstamped, and the next tick will
-     * find it in whatever state they left it.
+     * The same `builder_stock_claim_import` every import and continuation
+     * takes, taken before the row is looked at again, let alone read. `held`
+     * means somebody else is reading this document right now — a builder's
+     * import, a continuation, another settler resuming this very re-read —
+     * and the right answer is to do nothing at all and write nothing down.
+     * `unavailable` (a deployment the migration has not reached) proceeds
+     * unclaimed, exactly as every import did before the claim existed.
      */
+    const claimed = await claimImport(db, String(upload.id));
+    if (!claimed.ok && claimed.reason === 'held') {
+      outcome.refused.push({ uploadId: upload.id, reason: 'claimed_elsewhere' });
+      continue;
+    }
+    const claim = claimed.ok ? claimed.claim : null;
+    /** Set once the hand-off has released the claim itself. */
+    let released = false;
+
     /*
      * WHAT THE ROW WAS BEFORE THIS TICK TOUCHED IT.
      *
@@ -260,28 +398,136 @@ export async function settleReaderVersion(
      * state this whole change exists to end, reintroduced one line later.
      */
     const statusBefore = String(upload.status ?? '');
-    const firstPass = statusBefore === 'uploaded';
-    if (firstPass) {
-      const { data: claimed, error: claimError } = await db
-        .from('builder_stock_uploads')
-        .update({ status: 'parsing', processing_started_at: new Date().toISOString() })
-        .eq('id', upload.id)
-        .eq('organisation_id', upload.organisation_id)
-        .eq('status', 'uploaded')
-        .select('id');
-      if (claimError) {
-        // A fault, not a verdict: left outstanding, exactly as a failed read is.
-        outcome.failed.push({ uploadId: upload.id, reason: 'claim_failed' });
-        continue;
-      }
-      if (!(claimed ?? []).length) {
-        outcome.refused.push({ uploadId: upload.id, reason: 'claimed_elsewhere' });
-        continue;
-      }
-      upload.status = 'parsing';
-    }
+    /** This tick adopts an `uploaded` row: nobody has ever imported it. */
+    const adopts = statusBefore === 'uploaded';
+    let firstPass = adopts;
+    let tick: ReaderSweepAttempt | null = null;
+    const now = () => new Date().toISOString();
 
     try {
+      /*
+       * READ AGAIN, UNDER THE CLAIM, WHAT THE LISTING SAW A MOMENT AGO.
+       *
+       * Between the listing and the claim a builder can have pressed "Read
+       * again", or a successor can have finished this re-read and stamped
+       * it. Either way the row has moved on and is not this tick's.
+       */
+      const state = await readSweepState(db, upload);
+      if (!state) {
+        outcome.failed.push({ uploadId: upload.id, reason: 'state_unreadable' });
+        continue;
+      }
+      if (String(state.status ?? '') !== statusBefore
+        || Number(state[READER_SETTLED_VERSION_COLUMN] ?? -1) >= DETERMINISTIC_READER_VERSION) {
+        outcome.refused.push({ uploadId: upload.id, reason: 'moved_on' });
+        continue;
+      }
+
+      /*
+       * WHERE THIS TICK STANDS IN THE UPLOAD'S RE-READ, WRITTEN DOWN FIRST.
+       *
+       * A first pass is stamped with the moment this tick adopts it, and that
+       * stamp is the attempt's fingerprint — so it is decided here, before
+       * the record that carries it is written.
+       */
+      const claimedAt = now();
+      const plan = planSweepTick(
+        readSweepAttempt(state[READER_SWEEP_ATTEMPT_COLUMN], DETERMINISTIC_READER_VERSION),
+        {
+          version: DETERMINISTIC_READER_VERSION,
+          processingStartedAt: adopts
+            ? claimedAt
+            : (typeof state.processing_started_at === 'string' ? state.processing_started_at : null),
+          firstPass: adopts,
+          now: claimedAt,
+        },
+      );
+      tick = plan.next;
+      firstPass = plan.next.first_pass;
+
+      /*
+       * A DOCUMENT THAT KEEPS KILLING THE TICK STOPS BEING ASKED.
+       *
+       * The fault this module was rebuilt for: a kill writes nothing, and a
+       * row with no bound on its attempts stood at the head of the queue for
+       * ever. What stops here is the RE-READ at this version; the rows the
+       * document already produced are untouched, and "Read again" is the
+       * builder's as it always was. A first pass has no rows, so it is put
+       * down honestly rather than left to be adopted again.
+       */
+      if (plan.exhausted) {
+        console.warn(`${TELEMETRY_PREFIX} reader sweep gave up`, {
+          upload_id: upload.id,
+          organisation_id: upload.organisation_id,
+          reader_version: DETERMINISTIC_READER_VERSION,
+          ticks: plan.next.ticks - 1,
+          unfinished: plan.next.unfinished,
+          handed_on: plan.next.handed_on,
+        });
+        if (firstPass) {
+          await closeRefusedUpload(db, {
+            uploadId: String(upload.id),
+            organisationId: String(upload.organisation_id),
+            code: 'processing_failed',
+            message: 'That file could not be processed. Please check the format and try again.',
+            detail: { phase: 'reader_sweep_attempts_exhausted' },
+          });
+        }
+        await stamp(db, upload,
+          sweepTickEnded({ ...plan.next, ticks: plan.next.ticks - 1 }, 'gave_up', now()));
+        outcome.refused.push({ uploadId: upload.id, reason: 'attempts_exhausted' });
+        continue;
+      }
+
+      if (!await recordAttempt(db, upload, plan.next)) {
+        // Uncounted work is unbounded work: a tick that cannot say it started
+        // does not start. Nothing else has been touched.
+        outcome.failed.push({ uploadId: upload.id, reason: 'attempt_not_recorded' });
+        continue;
+      }
+      started += 1;
+
+      /*
+       * A FIRST PASS IS CLAIMED; A RE-READ IS NOT.
+       *
+       * An `uploaded` row is one nobody has ever imported — the bytes landed,
+       * the browser never came back, and `RE_READABLE_STATUSES` now admits it
+       * so the file is not stranded for ever. That is the ONE case where this
+       * sweep and a customer's own `process_upload` could both be about to
+       * write the same properties, because every other re-readable status is
+       * one the portal already refuses to start from.
+       *
+       * So the row is claimed: `uploaded` → `parsing`, conditional on it still
+       * being `uploaded`. Whichever of the two gets there first is the one that
+       * imports, and the other is refused by the status it now reads. The
+       * condition is the whole guard — an unconditional update would claim a
+       * row the browser had just claimed, and two imports of one file is the
+       * duplicate fork this subsystem must never produce.
+       *
+       * A claim that takes nothing is not a failure: somebody else is doing
+       * the work. The row is left alone and unstamped, and the next tick will
+       * find it in whatever state they left it.
+       */
+      if (adopts) {
+        const { data: claimedRows, error: claimError } = await db
+          .from('builder_stock_uploads')
+          .update({ status: 'parsing', processing_started_at: claimedAt })
+          .eq('id', upload.id)
+          .eq('organisation_id', upload.organisation_id)
+          .eq('status', 'uploaded')
+          .select('id');
+        if (claimError) {
+          // A fault, not a verdict: left outstanding, exactly as a failed read is.
+          outcome.failed.push({ uploadId: upload.id, reason: 'claim_failed' });
+          continue;
+        }
+        if (!(claimedRows ?? []).length) {
+          outcome.refused.push({ uploadId: upload.id, reason: 'claimed_elsewhere' });
+          continue;
+        }
+        upload.status = 'parsing';
+      }
+
       const { data: blob, error: downloadError } = await db.storage
         .from(String(upload.storage_bucket))
         .download(String(upload.storage_path));
@@ -304,7 +550,7 @@ export async function settleReaderVersion(
             message: 'The uploaded file could not be read. Please upload it again.',
           });
         }
-        await stamp(db, upload);
+        await stamp(db, upload, sweepTickEnded(plan.next, 'object_missing', now()));
         outcome.refused.push({ uploadId: upload.id, reason: 'object_missing' });
         continue;
       }
@@ -328,22 +574,64 @@ export async function settleReaderVersion(
         },
         bytes: new Uint8Array(await blob.arrayBuffer()),
         sourceKind: 'file',
+        /*
+         * THE SAME CALL "READ AGAIN" MAKES ON A FILE, and a successor's where
+         * this tick is one. The checkpoint is discarded unless its digest is
+         * these bytes', so it can only ever carry facts about this document;
+         * a FRESH attempt still takes its recognised pages and puts away
+         * anything an earlier attempt handed on (`freshAttempt`).
+         */
+        storedCheckpoint: state.import_checkpoint ?? null,
+        ledger: plan.resumes ? (state.stage_timings as Record<string, unknown> | null ?? null) : null,
+        resumed: plan.resumes,
+        resumableFromStoredBytes: true,
       });
 
       /*
-       * A CONTINUATION CANNOT REACH THIS SWEEP, AND THE GUARD SAYS SO RATHER
-       * THAN ASSUMING IT.
+       * HANDED ON: THE PICTURES GO TO AN ISOLATE THAT DID NOT PARSE THE
+       * DOCUMENT, AND THE RE-READ STAYS OUTSTANDING UNTIL THAT ONE FINISHES.
        *
-       * `runStockImport` hands an import to a successor only where the caller
-       * declares `resumableFromStoredBytes`, and this one does not: the sweep
-       * has its own budget, its own claim and its own cadence, and a
-       * continuation dispatched from inside it would be a second scheduler
-       * arguing with the first. If that ever changes, this line is where the
-       * change is noticed — rather than `result.summary` being undefined on a
-       * branch nobody thought about.
+       * Recorded before the claim is let go, so whoever takes it next reads a
+       * chain with a hand-off in it and resumes rather than starting again.
        */
       if (isImportContinuation(result)) {
-        outcome.failed.push({ uploadId: upload.id, reason: 'unexpected_continuation' });
+        tick = sweepHandedOn(plan.next, now());
+        await recordAttempt(db, upload, tick);
+        let via: 'reader_sweep' | 'import_continuation';
+        if (String(upload.status ?? '') === 'parsing'
+          && isAcceptableStockStoragePath(String(upload.storage_path ?? ''))) {
+          /*
+           * AN IMPORT, SO THE IMPORT'S OWN SUCCESSOR. A `parsing` row is a
+           * first pass this tick adopted or an import that was abandoned, and
+           * `continueStockImport` finishes it with the columns every import
+           * finishes with — its status, its counts, its reader version —
+           * under the import's own recovery. Release first, then dispatch.
+           */
+          released = true;
+          await releaseThenContinue(db, claim, String(upload.id));
+          via = 'import_continuation';
+        } else {
+          /*
+           * A SETTLED LIST, SO THE SWEEP'S OWN NEXT TICK, STARTED NOW. The
+           * import's successor refuses anything that is not `parsing`, and
+           * moving a settled list to `parsing` would make it look busy to its
+           * builder — so the sweep continues its own read.
+           */
+          await claim?.release();
+          released = true;
+          await dispatchReaderSweep(db);
+          via = 'reader_sweep';
+        }
+        outcome.handedOn.push({ uploadId: upload.id, via });
+        console.info(`${TELEMETRY_PREFIX} reader sweep handed on`, {
+          upload_id: upload.id,
+          organisation_id: upload.organisation_id,
+          reader_version: DETERMINISTIC_READER_VERSION,
+          reason: result.reason,
+          via,
+          crossings: result.continuations,
+          ticks: tick.ticks,
+        });
         continue;
       }
 
@@ -382,17 +670,27 @@ export async function settleReaderVersion(
          * A VERDICT IS FINISHED; A FAULT IS NOT. See `DOCUMENT_VERDICT_CODES`.
          * Re-asking the same bytes of the same reader cannot change a verdict,
          * so the source is stamped and stops being outstanding. A fault is
-         * left exactly as it was, which is the paragraph above.
+         * left exactly as it was, which is the paragraph above — save the
+         * sweep's own record, which counts it towards the bound.
          */
         if (reReadSettlesAt(result.code)) {
           await supersedeOurFailure(db, upload, result);
-          await stamp(db, upload);
+          await stamp(db, upload, sweepTickEnded(plan.next, 'verdict', now()));
+        } else {
+          await recordAttempt(db, upload, sweepTickEnded(plan.next, 'fault', now()));
         }
         continue;
       }
 
-      await writeImportOutcome(db, upload, result, statusBefore);
-      await stamp(db, upload);
+      /*
+       * THE STATUS IS WRITTEN ONLY WHERE A SUCCESSFUL READ CONTRADICTS IT: a
+       * failure that was ours, or a first pass this sweep adopted — by this
+       * tick or by an earlier tick of the same attempt, which is why it is
+       * read off the attempt rather than off the row.
+       */
+      const writesStatus = statusBefore === 'failed' || firstPass;
+      await writeImportOutcome(db, upload, result, writesStatus);
+      await stamp(db, upload, sweepTickEnded(plan.next, 'read', now()));
       outcome.reread += 1;
       console.info(`${TELEMETRY_PREFIX} reader sweep re-read`, {
         upload_id: upload.id,
@@ -403,6 +701,7 @@ export async function settleReaderVersion(
         imported: result.summary.imported,
         failed: result.summary.failed,
         with_source_image: result.summary.withSourceImage,
+        ticks: plan.next.ticks,
       });
     } catch (error) {
       const message = String((error as { message?: string })?.message ?? error).slice(0, 200);
@@ -427,10 +726,17 @@ export async function settleReaderVersion(
           });
         } catch { /* reported below either way */ }
       }
+      if (tick) {
+        try { await recordAttempt(db, upload, sweepTickEnded(tick, 'fault', now())); } catch { /* counted as unfinished anyway */ }
+      }
       outcome.failed.push({ uploadId: upload.id, reason: message });
       console.warn('[builderStock] reader sweep failed', {
         upload_id: upload.id, phase: 'reader_sweep', message,
       });
+    } finally {
+      // ALWAYS, and token-scoped, so a successor's claim can never be released
+      // by this tick. Skipped where the hand-off already released it.
+      if (!released) await claim?.release();
     }
   }
 
@@ -499,7 +805,7 @@ async function supersedeOurFailure(
 }
 
 async function writeImportOutcome(
-  db: any, upload: SweepUploadRow, result: any, statusBefore = '',
+  db: any, upload: SweepUploadRow, result: any, writesStatus = false,
 ): Promise<void> {
   try {
     const diagnosis = result.deterministicIgnored?.length
@@ -554,7 +860,7 @@ async function writeImportOutcome(
      * field the portal's `finishImport` writes, so a swept first pass and a
      * builder's own import cannot end in different states.
      */
-    const clearedFailure = (statusBefore === 'failed' || statusBefore === 'uploaded')
+    const clearedFailure = writesStatus
       ? { status: result.uploadStatus, error_code: null, error_message: null }
       : { error_code: null, error_message: null };
     await db.from('builder_stock_uploads').update({

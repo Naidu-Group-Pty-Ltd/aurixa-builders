@@ -310,6 +310,11 @@ describe('the sweep', () => {
       id: 'u-file', original_filename: 'LOT 48 - EMBER - FLYER.pdf',
     });
     expect(passed.builderUserId).toBe('builder-1');
+    // The call "Read again" makes on a file: the stored checkpoint, and a
+    // read that may hand its pictures to another isolate. A first tick is a
+    // FRESH attempt, never a successor of somebody else's checkpoint.
+    expect(passed.resumableFromStoredBytes).toBe(true);
+    expect(passed.resumed).toBe(false);
 
     // The counts and the unnamed lines are recorded; the STATUS is not, so a
     // settled list is never made to look busy by a sweep nobody asked for.
@@ -321,9 +326,21 @@ describe('the sweep', () => {
     });
     expect(Object.keys(outcomeWrite)).not.toContain('status');
 
-    // And the marker, so it leaves the queue.
-    expect(updates).toContainEqual(
-      { [READER_SETTLED_VERSION_COLUMN]: DETERMINISTIC_READER_VERSION });
+    /*
+     * And the marker, so it leaves the queue.
+     *
+     * RENEGOTIATED 23 SEPTEMBER 2026. WAS: the stamp is exactly
+     * `{ reader_settled_version }`. WHY: the sweep now keeps a record of each
+     * re-read (`readerSweepAttempt.pure.ts`) and closes it in the same write
+     * that stamps the version, so the two can never disagree. NOW: the stamp
+     * carries the version AND a record saying the document was read — the
+     * version half of the assertion is exactly what it was.
+     */
+    const stampWrite = updates.find((patch) => READER_SETTLED_VERSION_COLUMN in patch)!;
+    expect(stampWrite[READER_SETTLED_VERSION_COLUMN]).toBe(DETERMINISTIC_READER_VERSION);
+    expect(stampWrite.reader_sweep_attempt).toMatchObject({
+      version: DETERMINISTIC_READER_VERSION, ticks: 1, last: 'read',
+    });
   });
 
   /*
@@ -374,7 +391,20 @@ describe('the sweep', () => {
     expect(outcome.failed).toEqual([
       { uploadId: 'u-file', reason: 'pdf_text_extraction_failed' },
     ]);
-    expect(updates).toEqual([]);
+    /*
+     * RENEGOTIATED 23 SEPTEMBER 2026. WAS: `updates` is empty. WHY: a failed
+     * read must write nothing ABOUT THE UPLOAD, and still does — but the
+     * sweep now writes its own record of the attempt before it works and
+     * closes it after, because a tick that is never counted is how a
+     * document that keeps failing held the queue for ever. NOW: nothing about
+     * the upload is written — no status, no error, no counts, no version —
+     * and the only writes are that record, which counts this tick as
+     * unfinished.
+     */
+    const aboutTheUpload = updates.filter((patch) => Object.keys(patch)
+      .some((key) => key !== 'reader_sweep_attempt'));
+    expect(aboutTheUpload).toEqual([]);
+    expect(updates.at(-1)).toMatchObject({ reader_sweep_attempt: { last: 'fault', ticks: 1 } });
   });
 
   /*
@@ -428,6 +458,23 @@ describe('the sweep', () => {
     deleted_at: null, created_at: '2026-01-01',
   };
 
+  /*
+   * RENEGOTIATED 23 SEPTEMBER 2026, and only in HOW a write is found. WAS:
+   * the verdict is `updates[0]` and the stamp `updates[1]`. WHY: the sweep
+   * now writes its record of the attempt before any of them
+   * (`readerSweepAttempt.pure.ts`), which moves every index by one. NOW: each
+   * write is found by what it says, and the ORDER that mattered — the verdict
+   * recorded before the version is stamped — is asserted rather than implied
+   * by position.
+   */
+  const verdictThenStamp = (updates: Array<Record<string, unknown>>) => {
+    const verdict = updates.findIndex((patch) => 'error_code' in patch);
+    const stamped = updates.findIndex((patch) => READER_SETTLED_VERSION_COLUMN in patch);
+    expect(verdict).toBeGreaterThanOrEqual(0);
+    expect(stamped).toBeGreaterThan(verdict);
+    return { verdict: updates[verdict], stamp: updates[stamped] };
+  };
+
   it('stamps the version when the re-read reached a verdict about the document', async () => {
     const { outcome, updates } = await sweepOver(SWEPT, {
       ok: false, code: 'no_properties_found', message: 'nothing to list',
@@ -436,8 +483,10 @@ describe('the sweep', () => {
     expect(outcome.failed).toEqual([{ uploadId: 'u-file', reason: 'no_properties_found' }]);
     // The verdict is recorded and then the version is stamped: the row says
     // what this reader answered, and stops being outstanding.
-    expect(updates[0]).toMatchObject({ error_code: 'no_properties_found' });
-    expect(updates[1]).toEqual({ reader_settled_version: DETERMINISTIC_READER_VERSION });
+    const { verdict, stamp } = verdictThenStamp(updates);
+    expect(verdict).toMatchObject({ error_code: 'no_properties_found' });
+    expect(stamp[READER_SETTLED_VERSION_COLUMN]).toBe(DETERMINISTIC_READER_VERSION);
+    expect(stamp.reader_sweep_attempt).toMatchObject({ last: 'verdict' });
   });
 
   it('replaces an error that was ours with the answer the document now gets', async () => {
@@ -445,14 +494,15 @@ describe('the sweep', () => {
       { ...SWEPT, status: 'imported', error_code: 'assisted_reader_refused' },
       { ok: false, code: 'no_properties_found', message: 'nothing to list', detail: 'why' },
     );
-    expect(updates[0]).toMatchObject({
+    const { verdict, stamp } = verdictThenStamp(updates);
+    expect(verdict).toMatchObject({
       error_code: 'no_properties_found',
       error_message: 'nothing to list',
     });
     // And the status is NEVER touched: rows this source already produced are
     // live stock, which is the rule the failure branch is built on.
-    expect(Object.keys(updates[0])).not.toContain('status');
-    expect(updates[1]).toEqual({ reader_settled_version: DETERMINISTIC_READER_VERSION });
+    expect(updates.some((patch) => 'status' in patch)).toBe(false);
+    expect(stamp[READER_SETTLED_VERSION_COLUMN]).toBe(DETERMINISTIC_READER_VERSION);
   });
 
   /*
@@ -480,11 +530,12 @@ describe('the sweep', () => {
       { ok: true, uploadStatus: 'enriching',
         summary: { detected: 1, imported: 1, updated: 0, failed: 0, failures: [] } },
     );
-    expect(updates[0]).toMatchObject({
+    const outcomeWrite = updates.find((patch) => 'records_imported' in patch)!;
+    expect(outcomeWrite).toMatchObject({
       error_code: null, error_message: null, records_imported: 1,
     });
     // A `complete` row is not pushed back to `enriching`: its rows are live.
-    expect(Object.keys(updates[0])).not.toContain('status');
+    expect(updates.some((patch) => 'status' in patch)).toBe(false);
   });
 
   it('rewrites the recorded reason even where it already described the file', async () => {
@@ -492,12 +543,13 @@ describe('the sweep', () => {
       { ...SWEPT, status: 'imported', error_code: 'pdf_no_text_layer' },
       { ok: false, code: 'no_properties_found', message: 'nothing to list', detail: 'fresh' },
     );
-    expect(updates[0]).toMatchObject({
+    const { verdict, stamp } = verdictThenStamp(updates);
+    expect(verdict).toMatchObject({
       error_code: 'no_properties_found',
       error_detail: { detail: 'fresh' },
     });
-    expect(Object.keys(updates[0])).not.toContain('status');
-    expect(updates[1]).toEqual({ reader_settled_version: DETERMINISTIC_READER_VERSION });
+    expect(updates.some((patch) => 'status' in patch)).toBe(false);
+    expect(stamp[READER_SETTLED_VERSION_COLUMN]).toBe(DETERMINISTIC_READER_VERSION);
   });
 });
 
@@ -632,12 +684,21 @@ describe('the marker exists in the schema', () => {
  * when one attempt happened to fit (10:38:07 and 05:48:07). Recorded in
  * `docs/builder-portal/54-what-the-importer-spends.md` §11.4.
  *
- * So the version stays where every production row was stamped until the
- * sweep's re-read crosses isolates the way the import does. This test is the
- * fence, not the fix: it fails the change that would make the outage, with
+ * So the version stayed where every production row was stamped until the
+ * sweep's re-read crossed isolates the way the import does. This test was the
+ * fence, not the fix: it failed the change that would make the outage, with
  * the reason, rather than letting the next reader ship it.
+ *
+ * THE FIX, 23 SEPTEMBER 2026, and the fence became its specification. The
+ * sweep re-reads with `resumableFromStoredBytes`, hands a paginated
+ * document's pictures to a later isolate exactly as the import does, takes
+ * the import claim before it reads, and writes each tick down BEFORE the
+ * tick works — so a kill is counted and bounded rather than invisible. With
+ * that true, version 14 ships: the reader correction that `LOT 4327 Jubilee
+ * Estate - ENZO 10.5 MODERN - BROCHURE V002 - Copy.pdf` (7.76 MB, the only
+ * live source on the production project, and LOT 550's class) needed.
  */
-describe('a completed import is a read, and the inline re-read is fenced', () => {
+describe('a completed import is a read, and the re-read crosses isolates', () => {
   const summary = { detected: 1, imported: 1, updated: 0, failed: 0, failures: [] };
 
   it('the completion write stamps the reader version the import read at', async () => {
@@ -661,16 +722,26 @@ describe('a completed import is a read, and the inline re-read is fenced', () =>
       .toContain('importOutcomeColumns(result, null)');
   });
 
-  it('the reader version is not raised while the sweep still re-reads in one isolate', () => {
+  /*
+   * THE FENCE, KEPT AS THE RULE IT ENFORCED. It read "the version stays at 13
+   * while the sweep re-reads inline". The version has moved, so the half that
+   * must never regress is the other one: the sweep may not go back to reading
+   * inline, and each of the four things that made it safe to leave is pinned.
+   */
+  it('the sweep re-reads across isolates, so the reader version may move', () => {
     const sweep = read('supabase/functions/_shared/builderStock/settleReaderVersion.ts');
-    const reReadsInline = !/resumableFromStoredBytes\s*:\s*true/.test(sweep);
-    if (!reReadsInline) return;
-    expect(
-      DETERMINISTIC_READER_VERSION,
-      'Raising the reader version re-reads every stored PDF inside the image '
-      + 'settler, parse and decode in one isolate — LOT 550 is killed there and '
-      + 'blocks the sweep. Make the sweep re-read across isolates first; see '
-      + 'docs/builder-portal/54-what-the-importer-spends.md §11.4.',
-    ).toBe(13);
+    expect(sweep, 'Re-reading inline — parse and decode in one isolate — is where '
+      + 'LOT 550 killed the settler fifteen times. See readerSweepAttempt.pure.ts.')
+      .toMatch(/resumableFromStoredBytes:\s*true/);
+    // A successor resumes only its own checkpoint.
+    expect(sweep).toMatch(/resumed:\s*plan\.resumes/);
+    // One reader per document.
+    expect(sweep).toMatch(/await claimImport\(db, /);
+    // Counted before it works: the record is written before the import runs.
+    const recorded = sweep.indexOf('await recordAttempt(db, upload, plan.next)');
+    const reads = sweep.indexOf('await runImport(');
+    expect(recorded).toBeGreaterThan(0);
+    expect(reads).toBeGreaterThan(recorded);
+    expect(DETERMINISTIC_READER_VERSION).toBeGreaterThanOrEqual(14);
   });
 });

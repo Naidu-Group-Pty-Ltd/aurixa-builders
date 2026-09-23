@@ -89,6 +89,9 @@ import {
 import {
   ABANDONED_PARSE_MS, ABANDONED_UPLOAD_MS, DETERMINISTIC_READER_VERSION,
 } from '../../supabase/functions/_shared/builderStock/readerVersion.pure.ts';
+import {
+  MAX_SWEEP_ATTEMPT_TICKS,
+} from '../../supabase/functions/_shared/builderStock/readerSweepAttempt.pure.ts';
 
 // ---------------------------------------------------------------------------
 // 1 · A MODEL CALL IS AN ERROR, NOT A MISSING CREDENTIAL
@@ -1381,6 +1384,38 @@ for (const entry of manifest) {
  */
 const SWEEP_TICK_MS = READER_SWEEP_RESERVE_MS + 20_000;
 
+/**
+ * ONE SWEEP TICK, AND THE DISPATCHER BEHIND IT.
+ *
+ * A re-read now crosses isolates the way an import does
+ * (`readerSweepAttempt.pure.ts`), and production has two ways to start the
+ * next one. A settled list is continued by the SWEEP'S next tick, which the
+ * settler dispatches at once — here, the next turn of whichever loop called
+ * this. A `parsing` row is an import, handed to the import's own successor
+ * through `releaseThenContinue` — and this harness is the dispatcher for that
+ * one, exactly as route A is: every successor runs through
+ * `continueStockImport`, bounded by the same crossings.
+ */
+async function sweepTick(input: { limit?: number; deadlineAt?: number }) {
+  const tick = await settleReaderVersion(db, input);
+  for (const handed of tick.handedOn ?? []) {
+    if (handed.via !== 'import_continuation') continue;
+    let state = 'continued';
+    for (let n = 0; state === 'continued' && n <= MAX_IMPORT_CROSSINGS; n += 1) {
+      state = (await continueStockImport(db, handed.uploadId)).state;
+    }
+  }
+  return tick;
+}
+
+/**
+ * How many ticks a loop that waits for the sweep may take for ONE upload: the
+ * most a single re-read can take, fresh read to finish. Derived from the
+ * product's own bound, because a loop sized for a re-read that finished in
+ * the tick it began would read a hand-off as a failure.
+ */
+const SWEEP_TICKS_PER_UPLOAD = MAX_SWEEP_ATTEMPT_TICKS;
+
 const invariant = (name: string, ok: boolean, detail = '') => {
   if (!ok) fails.push(`invariant/${name}: ${detail}`);
   return ok;
@@ -1521,24 +1556,120 @@ const invariants: Record<string, unknown> = {};
    * reader does to every row in the table — so the contract below is judged
    * over the whole store rather than over whatever an import left unstamped.
    */
+  /*
+   * AND EVERY ROW'S STAGE LEDGER STARTS EMPTY, so what each sweep tick spent
+   * can be read off the row as the difference it made — the same measurement
+   * route A takes of each invocation. The ledger is a diagnostic; nothing
+   * the sweep decides reads it.
+   */
   await db.from('builder_stock_uploads')
-    .update({ reader_settled_version: DETERMINISTIC_READER_VERSION - 1 })
+    .update({ reader_settled_version: DETERMINISTIC_READER_VERSION - 1, stage_timings: null })
     .eq('reader_settled_version', DETERMINISTIC_READER_VERSION);
   const pendingBefore = await readerSweepPending(db);
-  let considered = 0; let reread = 0; let ticks = 0;
-  // The sweep is bounded per tick on purpose; the cron comes back. So does this.
-  for (; ticks < 40; ticks += 1) {
-    const tick = await settleReaderVersion(db, { deadlineAt: Date.now() + 60_000, limit: 25 });
-    considered += tick.considered; reread += tick.reread;
+  /** Every card that shows a photograph before the store is re-read. */
+  const photographed = async () => {
+    const { data } = await db.from('builder_stock_items')
+      .select('id, primary_image_id, lifecycle_status, upload_id')
+      .eq('lifecycle_status', 'active');
+    return (data ?? []).filter((row: any) => row.primary_image_id);
+  };
+  const photographedBefore = await photographed();
+  let considered = 0; let reread = 0; let ticks = 0; let handedOn = 0;
+  /*
+   * THE RULE THE RE-READ WAS REBUILT FOR, judged by effect: no sweep tick both
+   * parses a document and decodes or stores one of its pictures. That pairing
+   * is what killed the settler fifteen times on `LOT 550`. A tick's own spend
+   * is the change it made to the row's ledger; a fresh attempt starts the
+   * ledger again, which reads as a decrease and is taken whole.
+   */
+  const ledgers = async () => {
+    const { data } = await db.from('builder_stock_uploads')
+      .select('id, stage_timings').is('deleted_at', null);
+    return new Map<string, Record<string, unknown>>((data ?? [])
+      .map((row: any) => [String(row.id), (row.stage_timings ?? {}) as Record<string, unknown>]));
+  };
+  const spentBy = (was: Record<string, unknown>, now: Record<string, unknown>) => {
+    const number = (value: unknown) => (typeof value === 'number' ? value : 0);
+    const restarted = Object.keys(now).some((key) => number(now[key]) < number(was[key]));
+    const own = (key: string) => restarted ? number(now[key]) : number(now[key]) - number(was[key]);
+    return {
+      parses: own('document_parses'),
+      decodeMs: own('image_decode_ms') + own('image_store_ms'),
+    };
+  };
+  const mixedTicks: Array<{ tick: number; upload: string; parses: number; decodeMs: number }> = [];
+  let before = await ledgers();
+  // The sweep is bounded per tick on purpose; the cron comes back. So does
+  // this — and a re-read that hands its pictures on takes more than one tick,
+  // so the bound is per upload rather than per store.
+  const tickBound = Math.max(40, (pendingBefore ?? 0) * SWEEP_TICKS_PER_UPLOAD);
+  for (; ticks < tickBound; ticks += 1) {
+    const tick = await sweepTick({ deadlineAt: Date.now() + 60_000, limit: 25 });
+    considered += tick.considered; reread += tick.reread; handedOn += tick.handedOn.length;
+    const after = await ledgers();
+    for (const [upload, now] of after) {
+      const spent = spentBy(before.get(upload) ?? {}, now);
+      if (spent.parses > 0 && spent.decodeMs > 0) mixedTicks.push({ tick: ticks, upload, ...spent });
+    }
+    before = after;
     if (!tick.considered) break;
     if ((await readerSweepPending(db) ?? 0) === 0) { ticks += 1; break; }
   }
   const pendingAfter = await readerSweepPending(db);
-  invariants.readerSweep = { pendingBefore, considered, reread, ticks, pendingAfter };
+
+  /*
+   * AND WHAT THE RE-READS HANDED TO THE SETTLER IS SETTLED, AS THE MINUTE
+   * TICK SETTLES IT.
+   *
+   * A re-read attaches its pictures in an isolate that did not parse the
+   * document, and that isolate judges only as many heroes as the settler's
+   * own per-isolate allowance (`eligibilityDecodes`); the rest are stored
+   * with the item queued for the settler's eligibility stage — which is the
+   * import's own behaviour and "Read again"'s. In production the minute tick
+   * counts that queued work (`v_item_work`) and dispatches the settler; here
+   * this is the settler. Measured on the first run of this sweep:
+   * `MERIDIAN - STOCK LIST WITH IMAGES.pdf` carries four heroes, the
+   * successor judged three, and lot 175 waited at `source` for a settler this
+   * harness had never run.
+   */
+  const { data: owedImageWork } = await db.from('builder_stock_items')
+    .select('organisation_id, upload_id, image_work_stage')
+    .in('lifecycle_status', ['active', 'staged']);
+  const owedUploads = new Map<string, string>();
+  for (const row of (owedImageWork ?? []) as any[]) {
+    if (['settled', 'failed'].includes(String(row.image_work_stage))) continue;
+    owedUploads.set(String(row.upload_id), String(row.organisation_id));
+  }
+  for (const [uploadId, organisationId] of owedUploads) {
+    await settleImagery(organisationId, uploadId);
+  }
+
+  /*
+   * A RE-READ MAY CHANGE WHAT A CARD SAYS; IT MAY NOT COST IT ITS PHOTOGRAPH.
+   * Judged once the settler has done what the re-read handed it, which is
+   * the only moment a builder's card is judged by anyone.
+   */
+  const stillPhotographed = new Set((await photographed()).map((row: any) => row.id));
+  const lostPhotograph = photographedBefore
+    .filter((row: any) => !stillPhotographed.has(row.id))
+    .map((row: any) => row.id);
+  invariant('a-reread-keeps-every-photograph',
+    photographedBefore.length > 0 && lostPhotograph.length === 0,
+    `${photographedBefore.length} cards photographed before; lost: ${JSON.stringify(lostPhotograph)}`);
+
+  invariants.readerSweep = {
+    pendingBefore, considered, reread, handedOn, ticks, pendingAfter, mixedTicks,
+    settledAfter: owedUploads.size,
+    photographedBefore: photographedBefore.length, lostPhotograph,
+  };
   invariant('a-stale-source-is-reread-unasked',
     (pendingBefore ?? 0) > 0 && (pendingAfter ?? 0) === 0,
     `${pendingBefore} outstanding before; ${considered} considered over ${ticks} ticks, `
     + `${reread} re-read, ${pendingAfter} outstanding after`);
+  invariant('a-sweep-tick-never-parses-and-decodes',
+    handedOn > 0 && mixedTicks.length === 0,
+    `${handedOn} hand-offs; ${mixedTicks.length} ticks both parsed and decoded: `
+    + JSON.stringify(mixedTicks.slice(0, 5)));
 
   // --- 7e. AND AN IDLE HEARTBEAT IS CHEAP AND EXITS ------------------------
   /*
@@ -1936,7 +2067,7 @@ const invariants: Record<string, unknown> = {};
       reader_settled_version: null,
     }).eq('id', upload.id);
 
-    const sweep = await settleReaderVersion(db, { limit: 50, deadlineAt: Date.now() + SWEEP_TICK_MS });
+    const sweep = await sweepTick({ limit: 50, deadlineAt: Date.now() + SWEEP_TICK_MS });
     const { data: after } = await db.from('builder_stock_uploads')
       .select('status, reader_settled_version').eq('id', upload.id).maybeSingle();
     const touched = (sweep.refused ?? []).some((r: any) => r.uploadId === upload.id);
@@ -1972,8 +2103,8 @@ const invariants: Record<string, unknown> = {};
       .update({ reader_settled_version: 1 }).eq('id', done.uploadId);
     const before = (await itemsFor(done.uploadId)).map((i: any) => i.id).sort();
     let ticks = 0; let reread = 0;
-    for (let i = 0; i < 6; i += 1) {
-      const sweep = await settleReaderVersion(db, { limit: 50, deadlineAt: Date.now() + SWEEP_TICK_MS });
+    for (let i = 0; i < SWEEP_TICKS_PER_UPLOAD; i += 1) {
+      const sweep = await sweepTick({ limit: 50, deadlineAt: Date.now() + SWEEP_TICK_MS });
       ticks += 1; reread += sweep.reread;
       const { data } = await db.from('builder_stock_uploads')
         .select('reader_settled_version').eq('id', done.uploadId).maybeSingle();
@@ -2160,7 +2291,11 @@ const invariants: Record<string, unknown> = {};
       ?? docOf(6);
     const org = orgs[FAULT_ABANDONED];
     const bytes = await Deno.readFile(`${corpusDir}/${entry.org}/${entry.filename}`);
-    const path = `${org.id}/${crypto.randomUUID()}.pdf`;
+    // Where the portal's `add_upload` puts it, which is also the one place the
+    // import's own successor will read from — so a first pass the sweep adopts
+    // is handed on exactly as production hands it on.
+    const path = `${STOCK_LIST_STORAGE_PREFIX}${org.id}/${crypto.randomUUID()}/`
+      + safeObjectName(entry.filename);
     await db.storage.from(BUCKET).upload(path, bytes, { contentType: 'application/pdf', upsert: true });
     const upload = await newUpload(FAULT_ABANDONED, entry.filename, path);
     // Nothing else happens. The tab is gone.
@@ -2171,7 +2306,7 @@ const invariants: Record<string, unknown> = {};
     // that is about to call `process_upload`. Asserted first, then the clock
     // is wound back — the bytes and the row are untouched, only the moment
     // they landed moves, which is the one thing a test cannot wait for.
-    const fresh = await settleReaderVersion(db, { limit: 50, deadlineAt: Date.now() + SWEEP_TICK_MS });
+    const fresh = await sweepTick({ limit: 50, deadlineAt: Date.now() + SWEEP_TICK_MS });
     const notYet = (await itemsFor(upload.id)).length === 0
       && (await stateOf(upload.id)).status === 'uploaded'
       && !(fresh.refused ?? []).some((r: any) => r.uploadId === upload.id);
@@ -2181,8 +2316,8 @@ const invariants: Record<string, unknown> = {};
     }).eq('id', upload.id);
 
     let ticks = 0;
-    for (let i = 0; i < 8; i += 1) {
-      const sweep = await settleReaderVersion(db, { limit: 50, deadlineAt: Date.now() + SWEEP_TICK_MS });
+    for (let i = 0; i < SWEEP_TICKS_PER_UPLOAD; i += 1) {
+      const sweep = await sweepTick({ limit: 50, deadlineAt: Date.now() + SWEEP_TICK_MS });
       ticks += 1;
       if ((await itemsFor(upload.id)).length) break;
       if (!sweep.considered) break;
@@ -2300,8 +2435,8 @@ const invariants: Record<string, unknown> = {};
 
     const rowsBefore = (await itemsFor(upload.id)).map((i: any) => i.id).sort();
     let ticks = 0;
-    for (let i = 0; i < 4; i += 1) {
-      await settleReaderVersion(db, { limit: 50, deadlineAt: Date.now() + SWEEP_TICK_MS });
+    for (let i = 0; i < SWEEP_TICKS_PER_UPLOAD; i += 1) {
+      await sweepTick({ limit: 50, deadlineAt: Date.now() + SWEEP_TICK_MS });
       ticks += 1;
       const { data } = await db.from('builder_stock_uploads')
         .select('status, reader_settled_version').eq('id', upload.id).maybeSingle();
