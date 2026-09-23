@@ -37,13 +37,13 @@ ledger is committed at every stage boundary now rather than at the end.
 ## 2. The instrument
 
 `importStageLedger.pure.ts` names thirteen stages and files each under one of
-three resource classes:
+three resource classes (a fourteenth, `document_handover`, was added by §11):
 
 | class | stages |
 |---|---|
 | `document` | `document_open`, `native_text`, `positioned_layout`, `ocr`, `normalisation`, `segmentation`, `property_reader`, `image_discovery` |
 | `raster` | `image_decode`, `image_store` |
-| `metadata` | `db_write`, `initial_image_work`, `finalisation` |
+| `metadata` | `document_handover`, `db_write`, `initial_image_work`, `finalisation` |
 
 It is written forward — each stage `recordStage`s its cost and the row is
 UPDATEd before the next stage begins — so a worker killed anywhere leaves a
@@ -405,3 +405,89 @@ re-dispatching it for ever is a loop nobody is watching. `markParsing` resets
 the bound, because a person starting the import again is a new attempt — a
 file that failed three times last week must not be permanently unreadable.
 `recoverAbandonedFinalisations` sits behind all of it, unchanged.
+
+## 11. What production said after this shipped, and the rule it left
+
+§6.3 derived a ceiling from wall clock and said so. Production answered it on
+23 September 2026, after all of the above was deployed: `LOT 550` was
+imported again through the live portal and killed again, three times, on
+three paths.
+
+```
+05:35:36  process_upload   546  after the reader, inside the role decode
+05:40:08  recovery re-run  546  beforeunload "cpu": document stages 1,155 ms,
+                                 image_decode 485 ms, then the hard kill
+05:40:42  "Read again"     546  the same place
+```
+
+The ledger read 1,640 ms against a 3,000 ms ceiling. The platform charges CPU
+the ledger cannot see — the isolate's start-up, the download, the engine's
+cold passes — so a ceiling priced in the ledger's currency cannot promise
+anything about the runtime's. What the evidence does support is the rule the
+settler measured on 22 September (`workAllowance.pure.ts`): every invocation
+that survived spent its CPU on ONE kind of heavy work. So the rule is
+structural and needs no number: **an isolate that parses a PDF decodes none
+of its pictures.**
+
+### 11.1 The first answer was wrong, and the gate said so
+
+The first cut handed a paginated document's pictures to the image settler and
+attached none of them in the importer. The acceptance gate refused it on its
+first run: ten single-property brochures with no photograph on the card. The
+settler's source repair re-reads a stored brochure without the evidence the
+importer reads it with — the organisation's own name, the document's own name
+— so the property it reads is not the property the import wrote, and it
+matched none of them: `stored 0, matched 0` on all 151 of its attempts. For a
+brochure, the importer's own attach is the only one that attributes a
+picture. §6.1's "nothing is lost, the settler re-reads the same document"
+was true of a multi-property sheet and false of the document this is about.
+
+### 11.2 So the import itself crosses
+
+The isolate that reads the document decides it exactly as before — the rows,
+the strategy, the provisional and completed readings, the diagnosis — then
+writes the read (`builder_stock_document_reads`, purpose `import`: page texts,
+regions, the page-order verdict and every picture's ENCODED bytes, exactly as
+the document carries them) and the decision beside it, and hands on through
+`continue_import`, the continuation it already was. No new transport and no
+new queue.
+
+* **A token binds the decision to the attempt.** It is minted when the read is
+  written and recorded in the checkpoint; a successor takes only the read its
+  checkpoint names, and a fresh attempt (`process_upload`, "Read again")
+  drops it (`freshAttempt`) and puts away what an earlier attempt left.
+* **The kinds are learned a budgeted batch per isolate.** Deciding what each
+  picture IS is a decode per picture; a successor learns a batch
+  (`KIND_DECODE_BUDGET_MS`, at least one picture) and hands on, so the
+  isolate that attaches decides every role with every kind already known.
+* **The attach decodes what a settler decode isolate may, no more.** What is
+  left to decode there is each hero's display eligibility, and past the
+  settler's own measured three (`DECODES_PER_INVOCATION`) a hero is stored —
+  attributed, with its role — and judged by the settler's eligibility stage,
+  the state an oversized hero already takes. The gate's eight-property sheet
+  spent 3,737 ms judging eight heroes in one isolate before this bound.
+* **The crossings are bounded by a proof.** One hand-off, then at most one
+  crossing per picture the role decision can read (`MAX_KIND_CANDIDATES`,
+  24, named once and imported by the decoder): `MAX_PICTURE_CROSSINGS` is 25,
+  counted apart from recognition's ten, because a deployment with no
+  recogniser is no reason to decode where a document was parsed.
+* **A hand-off is made only once its checkpoint has landed**, and the read is
+  put away when the import it served is over.
+
+The settler's `source` stage keeps the same rule for its own read (purpose
+`settle`): reading a PDF is one claim of the document class, learning its
+kinds and attaching are claims of the decode class, so no settler isolate
+parses and decodes either. The two reads are never served as each other's —
+the purpose is in the table's key, every picture's path and the manifest.
+
+### 11.3 What the gate now runs
+
+Route A used to import the way a LINKED source does, which never hands off —
+so the path every uploaded brochure takes in production was not the path the
+gate ran. It now claims, marks the row, imports with `resumableFromStoredBytes`
+and drives the successors through `continueStockImport` as the dispatcher
+does, and "Read again" is run the way `reprocess_upload` runs it. Route B
+stays the linked transport, so the transport equivalence now compares an
+import finished by successors with one finished where it started. And every
+route-A invocation is judged by effect: none may both parse the document
+(`document_parses`) and decode or store one of its pictures.

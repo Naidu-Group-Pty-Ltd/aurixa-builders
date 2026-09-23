@@ -215,10 +215,30 @@ export async function settleClaimedItem(
           // The whole change. Identity is still resolved over every row of the
           // document; only the WORK belongs to this property.
           onlyItemId: item.id,
+          /*
+           * AND A CLAIM THAT PARSES A PDF DECODES NONE OF ITS PICTURES.
+           *
+           * Production killed this stage twelve times on one brochure on
+           * 22 September, each run parsing the document and then decoding its
+           * pictures. `split` makes the stage three claims where it was one —
+           * read, then the pictures' kinds, then the attach — and the settler
+           * gives each the isolate its class allows. See
+           * `documentRead.pure.ts` and `resolveClaimClass`.
+           */
+          documentRead: 'split',
         });
         settlement.progressed = repair.imagesStored > 0
-          || repair.matched > 0 || repair.demoted > 0 || repair.primaryUpdated > 0;
-        settlement.result = `source: stored ${repair.imagesStored}, matched ${repair.matched}`;
+          || repair.matched > 0 || repair.demoted > 0 || repair.primaryUpdated > 0
+          // Reading the document down, or learning a batch of its pictures'
+          // kinds, is real work: the claim ends so the next one runs in an
+          // isolate that may decode, and it must be claimable at once rather
+          // than backing off as if it had achieved nothing.
+          || repair.documentRead === 'written' || repair.documentRead === 'kinds';
+        settlement.result = repair.documentRead === 'written'
+          ? 'source: document read; its pictures are decoded next, in another isolate'
+          : repair.documentRead === 'kinds'
+            ? `source: learned ${repair.kindsLearned ?? 0} picture kinds; attach next`
+            : `source: stored ${repair.imagesStored}, matched ${repair.matched}`;
         /*
          * A SOURCE THAT COULD NOT BE READ IS A FAILURE, NOT A FINISHED READ.
          * `repair.error` used to be console.warn'd and forgotten while the

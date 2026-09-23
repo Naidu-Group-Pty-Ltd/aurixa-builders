@@ -53,6 +53,20 @@
  * measurements and one inequality, and it is stated here rather than tuned:
  * if the step costs change, the ceiling moves with them.
  *
+ * AND PRODUCTION HAS SINCE SHOWN IT TO BE AN UPPER BOUND, NOT A MEASUREMENT.
+ * 23 September 2026: the same brochure was killed three more times after this
+ * shipped, with the ledger reading 1,155 ms of document stages and 485 ms of
+ * decode — well under 3,000 — because the platform charges CPU this ledger
+ * cannot see: the isolate's start-up, the download, the engine's cold passes.
+ * So it is no longer what keeps a PDF alive. A paginated document's pictures
+ * are not decoded in the isolate that parsed it at all
+ * (`importHandover.pure.ts`), which needs no number; the isolates that decode
+ * them take one budgeted batch of kinds each, and the one that attaches them
+ * decodes at most the image settler's measured three
+ * (`DECODES_PER_INVOCATION`). This ceiling still governs recognition and a
+ * container's inline pictures, and it is stated here, beside its derivation,
+ * that production found the derivation loose.
+ *
  * WHAT IT COSTS TO BE CONSERVATIVE, AND WHY IT IS THE RIGHT SIDE. Overshoot
  * kills the invocation. Undershoot hands work to a component built for it —
  * the image settler, which is CPU-class-aware, claimed per item and fanned out

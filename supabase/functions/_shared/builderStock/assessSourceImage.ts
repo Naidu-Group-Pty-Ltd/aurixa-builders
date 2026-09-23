@@ -21,15 +21,14 @@ import {
 } from './marketplaceEligibility.pure.ts';
 import { isPrimaryRole } from './sourceImageRole.pure.ts';
 import { classifyThumbnail, type VisualKind } from './sourceImageVision.pure.ts';
+import { MAX_KIND_CANDIDATES } from './documentRead.pure.ts';
 
 /**
- * How many pictures of one document are worth looking at.
- *
- * A cover page carries a handful of unique rasters; twenty-four is generous
- * for a brochure and small enough that a pathological document cannot spend
- * an import's whole allowance on decoding.
+ * How many pictures of one document are worth looking at. Named once, in
+ * `documentRead.pure.ts`, because the import's crossing bound counts the same
+ * set — see `MAX_KIND_CANDIDATES`.
  */
-const MAX_VISION_DECODES = 24;
+const MAX_VISION_DECODES = MAX_KIND_CANDIDATES;
 
 /**
  * The largest picture this module will decode INSIDE the invocation that is
@@ -130,9 +129,28 @@ export async function eligibilityDetailFor(
     await assessMarketplaceEligibility(bytes, role), await sha256Hex(bytes));
 }
 
+/**
+ * Would `eligibilityDetailFor` DECODE these bytes to judge them?
+ *
+ * Exactly its own two tests, in its own order, so a caller that has to count
+ * the decodes an invocation spends counts the ones that happen and no others:
+ * a picture the source did not designate is never measured, and one too large
+ * to measure inline is left to the sweep.
+ */
+export function eligibilityDecodes(bytes: Uint8Array, role: unknown): boolean {
+  return isPrimaryRole(role) && !oversizedForInlineDecode(bytes);
+}
+
 type RoleDecodeCandidate = {
   bytes?: Uint8Array | null;
   placement?: { placementsOnPage?: number; pagesDrawnOn?: number } | null;
+  /**
+   * What an EARLIER isolate already found this picture to be, carried in with
+   * it — see `documentRead.pure.ts`. `undefined` means nobody has decoded it
+   * yet; `null` is a decoded answer of "nothing is known", which is a result
+   * and must never be decoded again.
+   */
+  visualKind?: VisualKind | null;
 };
 
 /**
@@ -169,15 +187,61 @@ export function documentVisualKindsPixels(
   media: ReadonlyArray<RoleDecodeCandidate>,
   limit = MAX_VISION_DECODES,
 ): number {
-  let pixels = 0;
-  let counted = 0;
-  for (const entry of media) {
-    if (counted >= limit) break;
+  return visualKindCandidates(media, limit)
+    // A picture that arrives with its kind is not decoded (see
+    // `documentVisualKinds`), so it costs nothing and is priced at nothing —
+    // otherwise the isolate that attaches a read whose kinds were learned
+    // elsewhere would be refused the very decode it no longer has to make.
+    .filter((index) => media[index].visualKind === undefined)
+    .reduce((pixels, index) => pixels + visualKindPixels(media[index]), 0);
+}
+
+/**
+ * WHICH pictures `documentVisualKinds` decodes, in the order it decodes them.
+ *
+ * The cap counts CANDIDATES, not successful decodes, so the set is fixed by
+ * the document alone — which is what lets the decoding be spread over several
+ * isolates and still describe exactly the pictures one pass would have: every
+ * isolate computes this same list from the same bytes.
+ */
+export function visualKindCandidates(
+  media: ReadonlyArray<RoleDecodeCandidate>,
+  limit = MAX_VISION_DECODES,
+): number[] {
+  const candidates: number[] = [];
+  for (const [index, entry] of media.entries()) {
+    if (candidates.length >= limit) break;
     if (!decodedForItsKind(entry)) continue;
-    counted += 1;
-    pixels += imageHeaderPixels(entry.bytes as Uint8Array) ?? MAX_INLINE_DECODE_PIXELS;
+    candidates.push(index);
   }
-  return pixels;
+  return candidates;
+}
+
+/**
+ * What deciding ONE picture's kind decodes, read from its header. An
+ * unreadable header is charged as the largest picture decoded inline, because
+ * an estimate that errs low is the one that kills the worker.
+ */
+export function visualKindPixels(entry: RoleDecodeCandidate): number {
+  return imageHeaderPixels(entry.bytes as Uint8Array) ?? MAX_INLINE_DECODE_PIXELS;
+}
+
+/**
+ * One picture's kind: the single decode `documentVisualKinds` is made of.
+ *
+ * Never throws. A picture that could not be read is null — "nothing is known"
+ * — and that null is an ANSWER: a caller that stores it must never decode the
+ * same bytes again to reach it a second time.
+ */
+export async function classifyVisualKind(bytes: Uint8Array): Promise<VisualKind | null> {
+  try {
+    const result = await decodeThumbnailResult(bytes);
+    if (result.ok === false) return null;
+    return classifyThumbnail(result.thumbnail)?.kind ?? null;
+  } catch {
+    // Nothing is known about this picture; that is not a finding about it.
+    return null;
+  }
 }
 
 /**
@@ -195,25 +259,24 @@ export function documentVisualKindsPixels(
  *
  * Never throws. A picture that could not be read comes back null, which every
  * reader treats as "nothing is known" — the state before this existed.
+ *
+ * AND A PICTURE THAT ARRIVES ALREADY CLASSIFIED IS NOT DECODED AGAIN. Its kind
+ * was reached by this same function's own step, `classifyVisualKind`, over the
+ * same bytes in an earlier isolate — see `documentRead.pure.ts` — so reusing
+ * it changes nothing about the answer and everything about where the CPU is
+ * spent. It still occupies its place among the candidates, so the cap cannot
+ * reach a picture one uninterrupted pass would not have reached.
  */
 export async function documentVisualKinds(
   media: ReadonlyArray<RoleDecodeCandidate>,
   limit = MAX_VISION_DECODES,
 ): Promise<Array<VisualKind | null>> {
   const kinds: Array<VisualKind | null> = media.map(() => null);
-  let spent = 0;
-  for (const [index, entry] of media.entries()) {
-    if (spent >= limit) break;
-    if (!decodedForItsKind(entry)) continue;
-    const bytes = entry.bytes as Uint8Array;
-    spent += 1;
-    try {
-      const result = await decodeThumbnailResult(bytes);
-      if (result.ok === false) continue;
-      kinds[index] = classifyThumbnail(result.thumbnail)?.kind ?? null;
-    } catch {
-      // Nothing is known about this picture; that is not a finding about it.
-    }
+  for (const index of visualKindCandidates(media, limit)) {
+    const entry = media[index];
+    kinds[index] = entry.visualKind !== undefined
+      ? entry.visualKind
+      : await classifyVisualKind(entry.bytes as Uint8Array);
   }
   return kinds;
 }

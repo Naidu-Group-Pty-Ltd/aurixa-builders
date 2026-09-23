@@ -50,6 +50,7 @@ import {
   claimImport, releaseThenContinue, type ImportClaim,
 } from '../_shared/builderStock/importClaim.ts';
 import { continueStockImport } from '../_shared/builderStock/continueImport.ts';
+import { discardDocumentRead } from '../_shared/builderStock/documentRead.ts';
 import { verifyInternal } from '../_shared/auth_v2.ts';
 import {
   SOURCE_LINKS_UNAVAILABLE, sourceAccessNoticeFor,
@@ -218,7 +219,29 @@ Deno.serve(async (req) => {
         });
         return json({ error: 'Forbidden' }, 403);
       }
-      const outcome = await continueStockImport(supabase, cleanText(body.upload_id, 64));
+      const outcome = await continueStockImport(supabase, cleanText(body.upload_id, 64), {
+        /*
+         * THE SAME AUDIT RECORD THE BROWSER'S FINISH WRITES, for an import a
+         * successor finished. There is no person on this request, so it is
+         * written as the system on behalf of the builder who uploaded it —
+         * and it says it was continued, because it was.
+         */
+        onFinished: async ({ upload: finished, result }) => {
+          if (!result.ok) return;
+          await logBuilderProjectActivity(supabase, req, {
+            actorType: 'system',
+            builderUserId: finished.uploaded_by_builder_user_id ?? null,
+            organisationId: finished.organisation_id,
+            action: 'builder_stock_upload_processed',
+            entityType: 'stock_upload', entityId: finished.id,
+            metadata: {
+              detected: result.summary.detected, imported: result.summary.imported,
+              updated: result.summary.updated, failed: result.summary.failed,
+              strategy: result.strategy, continued: true,
+            },
+          });
+        },
+      });
       return json(outcome, outcome.success === false ? 409 : 200);
     }
 
@@ -476,8 +499,10 @@ Deno.serve(async (req) => {
           success: true,
           still_importing: true,
           code: 'import_continuing',
-          message: 'This document is large enough to be read in stages. '
-            + 'It is still being read — you can close this page.',
+          // Not "large": a brochure's pictures are always attached by a
+          // second invocation now (`importHandover.pure.ts`), whatever its size.
+          message: 'This document is read in stages, and it is still being read '
+            + '— you can close this page.',
           outstanding: result.outstanding,
           continuations: result.continuations,
         });
@@ -2246,6 +2271,15 @@ Deno.serve(async (req) => {
           // a stranded object is an operational matter, not a failed delete.
           console.warn('[builder-portal-stock] snapshot removal failed', objectError.message);
         }
+      }
+      // And the reads of it this pipeline kept so that no isolate parses a
+      // PDF and decodes its pictures too (`documentRead.pure.ts`): they are
+      // copies of the document's own pictures, and the document is gone.
+      // Best-effort, like the object above.
+      for (const purpose of ['import', 'settle'] as const) {
+        await discardDocumentRead(supabase, {
+          organisationId: activeOrganisationId, uploadId: upload.id, purpose,
+        });
       }
 
       await logBuilderProjectActivity(supabase, req, {

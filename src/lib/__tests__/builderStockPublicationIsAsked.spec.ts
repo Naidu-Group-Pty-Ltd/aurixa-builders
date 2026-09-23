@@ -35,7 +35,9 @@ describe('every import asks whether its upload can be published', () => {
     // best-effort footing.
     const kickAt = runImport.indexOf('builder_stock_kick_image_work');
     const askAt = runImport.indexOf("rpc('publish_builder_stock_upload'");
-    const returnAt = runImport.indexOf('  return {\n    ok: true,');
+    // The SUCCESS return, wherever the tail is indented: the one that carries
+    // the summary. A hand-off's `ok: true` carries none and is not an outcome.
+    const returnAt = runImport.search(/return \{\s*\n\s*ok: true,\s*\n\s*summary: \{/);
     expect(kickAt).toBeGreaterThan(-1);
     expect(askAt).toBeGreaterThan(kickAt);
     expect(askAt).toBeLessThan(returnAt);

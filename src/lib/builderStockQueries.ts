@@ -269,7 +269,8 @@ export interface StockUploadResult {
  *
  * A document large enough to run a server invocation out of CPU is read in
  * stages now — the invocation that ran out dispatches the next one before it
- * answers. So a `process_upload` can come back with no upload row, no summary
+ * answers — and so is every brochure with pictures, whose pictures are
+ * attached by a server step of their own. So a `process_upload` can come back with no upload row, no summary
  * and no counts, because none of them exists yet: the document has not
  * finished being read.
  *
@@ -284,7 +285,10 @@ export interface StockUploadResult {
  */
 export interface StockUploadStillReading {
   stillImporting: true;
-  /** Pages of the document the reader has still to reach. Diagnostic only. */
+  /**
+   * Pages the reader has still to reach, or pictures still to be attached by
+   * the next server step. Diagnostic only.
+   */
   outstanding: number;
 }
 

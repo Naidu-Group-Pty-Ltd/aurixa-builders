@@ -301,7 +301,10 @@ describe('the import records why, and tells the builder something true', () => {
   });
 
   it('the zero-row branch answers to the same column rule', () => {
-    expect(runImport).toContain('SOURCE_HAS_COLUMNS.has(classification.kind)');
+    // Read through the decision the tail runs from, which carries the
+    // classification the document was read by — unchanged, only gathered.
+    expect(runImport).toContain('SOURCE_HAS_COLUMNS.has(decided.classificationKind)');
+    expect(runImport).toContain('classificationKind: classification.kind,');
   });
 
   /*

@@ -29,6 +29,22 @@
  *     the "giant useless blob stored to avoid computation" this design is
  *     told not to write.
  *
+ *     WHAT PRODUCTION CORRECTED, 23 SEPTEMBER 2026: the settler does NOT
+ *     attach what the importer declines, for the document that matters most.
+ *     Its source repair re-reads an uploaded brochure without the evidence the
+ *     importer reads it with, matches none of the brochure's properties, and
+ *     stores the pictures against nobody — measured on every single-property
+ *     brochure in the acceptance corpus, `stored 0, matched 0`. The importer's
+ *     own attach is the only one that attributes a brochure's pictures, and
+ *     it cannot run where the brochure was parsed (`documentRead.pure.ts`).
+ *     So the import itself crosses once more: the isolate that read the
+ *     document writes the read down — the ENCODED pictures exactly as the
+ *     document carries them, never a decoded raster — and its successor
+ *     attaches them. What this checkpoint holds of that is a TOKEN naming the
+ *     read and a count of the crossings it has cost; the read is
+ *     `builder_stock_document_reads`, and it is discarded when the import is
+ *     over.
+ *
  * ===========================================================================
  * THE RULE THAT MAKES IT SAFE: A CHECKPOINT BELONGS TO ONE DOCUMENT.
  * ===========================================================================
@@ -57,6 +73,8 @@
  * Pure: no IO and no clock.
  */
 
+import { MAX_KIND_CANDIDATES } from './documentRead.pure.ts';
+
 /** The shape's own version, so a reader can refuse one it does not know. */
 export const IMPORT_CHECKPOINT_VERSION = 1;
 
@@ -73,6 +91,24 @@ export const MAX_CHECKPOINT_TOTAL_CHARS = 256_000;
  */
 export const MAX_IMPORT_CONTINUATIONS = 10;
 
+/**
+ * How many crossings the PICTURES of one import may cost.
+ *
+ * DERIVED, NOT CHOSEN: one crossing hands the read to a successor, and every
+ * crossing after it learns at least one picture's kind (`planKindDecodes`
+ * always takes one) out of at most `MAX_KIND_CANDIDATES` — so an import whose
+ * kinds are all recorded cannot need more than this, and one that reaches it
+ * has failed to RECORD its kinds rather than failed to learn them. Past it the
+ * import finishes where it stands, which is the rule `mayContinue` states for
+ * recognition.
+ *
+ * Counted apart from `continuations` because the two answer different
+ * questions: a deployment with no recogniser (`ocr.unavailable`) must never
+ * be asked to recognise again, and that is no reason to decode a picture in
+ * the isolate that parsed the document.
+ */
+export const MAX_PICTURE_CROSSINGS = 1 + MAX_KIND_CANDIDATES;
+
 export interface ImportCheckpoint {
   v: number;
   /** The digest of the document this checkpoint describes. */
@@ -86,6 +122,16 @@ export interface ImportCheckpoint {
     refused?: number[];
     /** The recogniser reported itself unavailable in this deployment. */
     unavailable?: boolean;
+  };
+  /**
+   * The read this import handed to a successor to attach its pictures, and
+   * the crossings that has cost. Present only between the hand-off and the
+   * end of the import. See `MAX_PICTURE_CROSSINGS`.
+   */
+  pictures?: {
+    /** Names the `import` read in `builder_stock_document_reads`. */
+    handover: string;
+    crossings: number;
   };
 }
 
@@ -110,10 +156,19 @@ export function readCheckpoint(
   const pages = row.ocr && typeof row.ocr === 'object' && row.ocr.pages
     && typeof row.ocr.pages === 'object' && !Array.isArray(row.ocr.pages)
     ? row.ocr.pages as Record<string, string> : null;
+  const pictures = row.pictures && typeof row.pictures === 'object'
+    && !Array.isArray(row.pictures)
+    && typeof row.pictures.handover === 'string' && row.pictures.handover.length > 0
+    ? {
+      handover: row.pictures.handover,
+      crossings: Number.isFinite(row.pictures.crossings) ? Number(row.pictures.crossings) : 0,
+    }
+    : null;
   return {
     v: IMPORT_CHECKPOINT_VERSION,
     sha256,
     continuations: Number.isFinite(row.continuations) ? Number(row.continuations) : 0,
+    ...(pictures ? { pictures } : {}),
     ...(pages || row.ocr ? {
       ocr: {
         pages: pages ?? {},
@@ -218,4 +273,71 @@ export function mayContinue(
   if (!checkpoint) return true;
   if (checkpoint.ocr?.unavailable) return false;
   return checkpoint.continuations < MAX_IMPORT_CONTINUATIONS;
+}
+
+/**
+ * A FRESH ATTEMPT at an upload, from the checkpoint a previous one left.
+ *
+ * The recognised pages are kept, because they are facts about the bytes. The
+ * crossing count starts again, because it bounds an ATTEMPT. And the picture
+ * hand-off is dropped, because it names a read a previous attempt DECIDED —
+ * its rows, its strategy — and a fresh attempt decides for itself: a stale
+ * hand-off adopted here would write yesterday's decision on today's request.
+ */
+export function freshAttempt(checkpoint: ImportCheckpoint): ImportCheckpoint {
+  const { pictures: _dropped, ...rest } = checkpoint;
+  return { ...rest, continuations: 0 };
+}
+
+/** The read a previous invocation of this attempt handed on, or null. */
+export function pictureHandover(
+  checkpoint: ImportCheckpoint | null | undefined,
+): string | null {
+  return checkpoint?.pictures?.handover ?? null;
+}
+
+/**
+ * The token of a hand-off a stored checkpoint names, WHATEVER its document.
+ *
+ * Read from the raw stored value rather than through `readCheckpoint`,
+ * because the one caller is discarding what a previous attempt left — and a
+ * previous attempt at a document since replaced is exactly the read that
+ * `readCheckpoint` would refuse to describe.
+ */
+export function storedPictureHandover(stored: unknown): string | null {
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return null;
+  const pictures = (stored as { pictures?: { handover?: unknown } }).pictures;
+  return pictures && typeof pictures.handover === 'string' && pictures.handover
+    ? pictures.handover : null;
+}
+
+/** Record a hand-off of the pictures to a successor, and the crossing it costs. */
+export function withPictureHandover(
+  checkpoint: ImportCheckpoint, handover: string,
+): ImportCheckpoint {
+  return {
+    ...checkpoint,
+    pictures: { handover, crossings: (checkpoint.pictures?.crossings ?? 0) + 1 },
+  };
+}
+
+/** One more crossing spent on the same hand-off: a batch of kinds learned. */
+export function withPictureCrossing(checkpoint: ImportCheckpoint): ImportCheckpoint {
+  if (!checkpoint.pictures) return checkpoint;
+  return {
+    ...checkpoint,
+    pictures: { ...checkpoint.pictures, crossings: checkpoint.pictures.crossings + 1 },
+  };
+}
+
+/** Is there room for the pictures to cross once more? See `MAX_PICTURE_CROSSINGS`. */
+export function mayCrossForPictures(
+  checkpoint: ImportCheckpoint | null | undefined,
+): boolean {
+  return (checkpoint?.pictures?.crossings ?? 0) < MAX_PICTURE_CROSSINGS;
+}
+
+/** How many crossings this import has cost, recognition and pictures together. */
+export function crossingsSpent(checkpoint: ImportCheckpoint | null | undefined): number {
+  return (checkpoint?.continuations ?? 0) + (checkpoint?.pictures?.crossings ?? 0);
 }

@@ -18,7 +18,14 @@ import { runStockImport } from '../../supabase/functions/_shared/builderStock/ru
 import { isImportContinuation } from '../../supabase/functions/_shared/builderStock/importContinuation.pure.ts';
 import { continueStockImport } from '../../supabase/functions/_shared/builderStock/continueImport.ts';
 import { claimImport, releaseThenContinue } from '../../supabase/functions/_shared/builderStock/importClaim.ts';
-import { MAX_IMPORT_CONTINUATIONS } from '../../supabase/functions/_shared/builderStock/importCheckpoint.pure.ts';
+import {
+  MAX_IMPORT_CONTINUATIONS, MAX_PICTURE_CROSSINGS, crossingsSpent,
+} from '../../supabase/functions/_shared/builderStock/importCheckpoint.pure.ts';
+/**
+ * The most invocations one import can cross, recognition and pictures
+ * together — the bound every loop below that drives successors answers to.
+ */
+const MAX_IMPORT_CROSSINGS = MAX_IMPORT_CONTINUATIONS + MAX_PICTURE_CROSSINGS;
 import {
   EXPENSIVE_SPEND_CEILING_MS, expensiveSpendMs,
 } from '../../supabase/functions/_shared/builderStock/importResumeBudget.pure.ts';
@@ -315,8 +322,16 @@ const fileServer = Deno.serve({ port: 54996, onListen: () => {} }, (req) => {
  */
 const IMAGERY_MAX_CLAIMS = 200;
 const IMAGERY_MAX_ROUNDS = 12;
-/** How many times one property may be worked before the gate gives up on it. */
-const IMAGERY_MAX_PER_ITEM = 10;
+/**
+ * How many times one property may be worked before the gate gives up on it.
+ *
+ * A PDF's `source` stage is several claims now — the read, a batch of picture
+ * kinds per claim, then the attach — because production killed every
+ * invocation that parsed a brochure and decoded it too (`documentRead.pure.ts`).
+ * A many-picture document legitimately takes a claim per batch, so the bound
+ * covers the longest ladder the corpus can produce and is still a bound.
+ */
+const IMAGERY_MAX_PER_ITEM = 24;
 
 /**
  * ===========================================================================
@@ -451,52 +466,181 @@ async function newUpload(org: string, filename: string, storagePath: string) {
   return data;
 }
 
-/** Route A — exactly what `process_upload` does, in its order. */
+/**
+ * Route A — exactly what `process_upload` does, in its order: the claim, the
+ * row marked as being read, the STORED bytes imported with the checkpoint the
+ * row carries and `resumableFromStoredBytes`, and — where the import hands
+ * itself on — `releaseThenContinue` and then the successors, run through
+ * `continueStockImport` exactly as the dispatcher runs them.
+ *
+ * IT DID NONE OF THE LAST THREE UNTIL 23 SEPTEMBER 2026, and that is how the
+ * gate stayed green while production died. Route A imported the way a LINKED
+ * source imports, which never hands off, so the path every uploaded brochure
+ * takes in production — the one `LOT 550` was killed on, three times, after
+ * the reader had finished — was not the path this gate ran. It is now, and
+ * route B stays the linked transport it always was: the equivalence below
+ * therefore compares an import finished by successors with one finished where
+ * it started, which is the claim the hand-off has to earn.
+ */
 async function routeA(entry: Entry, bytes: Uint8Array, tag = 'A') {
-  const storagePath = `${orgs[entry.org].id}/${tag}-${crypto.randomUUID()}.pdf`;
+  const org = orgs[entry.org];
+  // Where the portal puts it: a successor refuses any path outside the
+  // stock-list prefix (`continueStockImport`).
+  const storagePath = `${STOCK_LIST_STORAGE_PREFIX}${org.id}/${tag}-${crypto.randomUUID()}/`
+    + safeObjectName(entry.filename);
   const up = await db.storage.from(BUCKET).upload(storagePath, bytes, {
     contentType: 'application/pdf', upsert: true,
   });
   if (up.error) throw new Error(`storage upload: ${up.error.message}`);
   const upload = await newUpload(entry.org, entry.filename, storagePath);
-  await db.from('builder_stock_uploads').update({ status: 'parsing' }).eq('id', upload.id);
+
+  // `process_upload`: the claim, then the row marked as being read.
+  const portal = await claimImport(db, upload.id);
+  await db.from('builder_stock_uploads').update({
+    status: 'parsing', processing_started_at: new Date().toISOString(),
+  }).eq('id', upload.id);
 
   const dl = await db.storage.from(BUCKET).download(storagePath);
   if (dl.error || !dl.data) throw new Error(`storage download: ${dl.error?.message}`);
   const downloaded = new Uint8Array(await dl.data.arrayBuffer());
 
+  /*
+   * WHAT EACH INVOCATION SPENT, read back off the row after it — the row
+   * carries the import's running total, so the difference is exactly one
+   * invocation's own account. It is what the isolation rule is judged on.
+   */
+  const invocations: Array<Record<string, number>> = [];
+  let seen: Record<string, unknown> = {};
+  const account = async () => {
+    const { data } = await db.from('builder_stock_uploads')
+      .select('stage_timings').eq('id', upload.id).maybeSingle();
+    const now = (data?.stage_timings ?? {}) as Record<string, unknown>;
+    const own: Record<string, number> = {};
+    for (const [key, value] of Object.entries(now)) {
+      if (typeof value !== 'number') continue;
+      const was = typeof seen[key] === 'number' ? seen[key] as number : 0;
+      if (value - was > 0) own[key] = value - was;
+    }
+    invocations.push(own);
+    seen = now;
+  };
+
   const t0 = performance.now(); const m0 = rss();
-  const result = await runStockImport({
+  const first = await runStockImport({
     supabase: db,
-    organisationId: orgs[entry.org].id,
-    organisationName: orgs[entry.org].name,
-    builderUserId: orgs[entry.org].userId,
+    organisationId: org.id,
+    organisationName: org.name,
+    builderUserId: org.userId,
     upload: { id: upload.id, original_filename: upload.original_filename },
     bytes: downloaded,
     sourceKind: 'file',
+    storedCheckpoint: null,
+    resumableFromStoredBytes: true,
   });
-  /*
-   * A REFUSAL CLOSES THE ROW, through the portal's own function. Without this
-   * the gate leaves a row reading `status: parsing, error_code:
-   * duplicate_file` — an error on a status meaning "still working" — and
-   * because `parsing` is re-readable the reader sweep then considers it on
-   * every tick, for ever. Measured: sixteen such rows, and a backlog that can
-   * never drain looks exactly like one draining slowly.
-   */
-  if (!result.ok) {
-    await closeRefusedUpload(db, {
-      uploadId: upload.id, organisationId: orgs[entry.org].id,
-      code: String((result as { code?: string }).code ?? 'import_failed'),
-      message: String((result as { message?: string }).message ?? ''),
-    });
+  await account();
+  let result: any = first;
+  const successors: string[] = [];
+  const claim = portal.ok ? portal.claim : null;
+  if (isImportContinuation(first)) {
+    // `finishImport`'s hand-off branch: release, THEN dispatch — and this
+    // harness is the dispatcher.
+    await releaseThenContinue(db, claim, upload.id);
+    let state = 'continued';
+    while (state === 'continued' && successors.length <= MAX_IMPORT_CROSSINGS) {
+      const next = await continueStockImport(db, upload.id, {
+        onFinished: async ({ result: finished }) => { result = finished; },
+      });
+      state = next.state;
+      successors.push(next.state);
+      await account();
+    }
   } else {
-    await recordImportCounts(db, {
-      uploadId: upload.id, organisationId: orgs[entry.org].id,
-      summary: result.summary,
-    });
+    await claim?.release();
+    /*
+     * A REFUSAL CLOSES THE ROW, through the portal's own function. Without
+     * this the gate leaves a row reading `status: parsing, error_code:
+     * duplicate_file` — an error on a status meaning "still working" — and
+     * because `parsing` is re-readable the reader sweep then considers it on
+     * every tick, for ever. Measured: sixteen such rows, and a backlog that
+     * can never drain looks exactly like one draining slowly.
+     */
+    if (!first.ok) {
+      await closeRefusedUpload(db, {
+        uploadId: upload.id, organisationId: org.id,
+        code: String((first as { code?: string }).code ?? 'import_failed'),
+        message: String((first as { message?: string }).message ?? ''),
+      });
+    } else {
+      await recordImportCounts(db, {
+        uploadId: upload.id, organisationId: org.id,
+        summary: first.summary,
+      });
+    }
   }
+  /*
+   * THE RULE THIS WHOLE HAND-OFF EXISTS FOR, judged by effect: no invocation
+   * both parsed the document and decoded or stored one of its pictures.
+   */
+  const isolation = invocations.map((own, index) => ({
+    invocation: index,
+    parses: own.document_parses ?? 0,
+    decodeMs: (own.image_decode_ms ?? 0) + (own.image_store_ms ?? 0),
+  }));
   return { result, uploadId: upload.id, ms: performance.now() - t0,
-           rssDelta: rss() - m0, transferred: downloaded.length };
+           rssDelta: rss() - m0, transferred: downloaded.length,
+           successors, isolation };
+}
+
+/**
+ * "Read again" on a FILE, exactly as `reprocess_upload` runs it: the row
+ * marked as being read (a new attempt, so its recovery count starts again),
+ * the stored bytes imported with the checkpoint the row carries and
+ * `resumableFromStoredBytes`, and — where it hands itself on — the dispatch
+ * with no claim held (that path takes none) and the successors after it.
+ *
+ * Answers the import's FINAL result, whichever invocation finished it, so the
+ * assertions below judge what a builder who pressed the button got.
+ */
+async function readAgainAsThePortalDoes(entry: Entry, uploadId: string, bytes: Uint8Array) {
+  const org = orgs[entry.org];
+  const { data: before } = await db.from('builder_stock_uploads')
+    .select('import_checkpoint').eq('id', uploadId).maybeSingle();
+  await db.from('builder_stock_uploads').update({
+    status: 'parsing',
+    processing_started_at: new Date().toISOString(),
+    error_code: null, error_message: null, error_detail: null,
+    import_recovery_attempts: 0,
+  }).eq('id', uploadId).eq('organisation_id', org.id);
+  const first = await runStockImport({
+    supabase: db,
+    organisationId: org.id,
+    organisationName: org.name,
+    builderUserId: org.userId,
+    upload: { id: uploadId, original_filename: entry.filename },
+    bytes,
+    sourceKind: 'file',
+    storedCheckpoint: before?.import_checkpoint ?? null,
+    resumableFromStoredBytes: true,
+  });
+  if (!isImportContinuation(first)) {
+    // `finishImport`'s own write, for a re-read that finished where it began.
+    if (first.ok) {
+      await db.from('builder_stock_uploads')
+        .update(importOutcomeColumns(first, null)).eq('id', uploadId);
+    }
+    return first;
+  }
+  await releaseThenContinue(db, null, uploadId);
+  let result: any = first;
+  let state = 'continued';
+  let successors = 0;
+  while (state === 'continued' && successors <= MAX_IMPORT_CROSSINGS) {
+    state = (await continueStockImport(db, uploadId, {
+      onFinished: async ({ result: finished }) => { result = finished; },
+    })).state;
+    successors += 1;
+  }
+  return result;
 }
 
 /**
@@ -660,6 +804,20 @@ for (const entry of manifest) {
 
   row.uploadIdA = a.uploadId;
   row.uploadIdB = b.uploadId;
+  /*
+   * AN ISOLATE THAT PARSED THE DOCUMENT DECODED NONE OF ITS PICTURES — on the
+   * path production runs, asserted from what each invocation recorded. A
+   * successor chain that never finished is its own failure: the import is
+   * still `parsing`, which a builder sees as a stock list that never loads.
+   */
+  row.handOff = { successors: a.successors, isolation: a.isolation };
+  const mixed = a.isolation.filter((i) => i.parses > 0 && i.decodeMs > 0);
+  if (mixed.length) {
+    fail(entry, `an invocation parsed the document and decoded its pictures: ${JSON.stringify(mixed)}`);
+  }
+  if (a.successors.length && a.successors.at(-1) === 'continued') {
+    fail(entry, `the import was still handing itself on after ${a.successors.length} successors`);
+  }
   row.a = { ok: a.result.ok, code: (a.result as any).code, ms: Math.round(a.ms),
             strategy: (a.result as any).strategy };
   row.b = { ok: b.result.ok, code: (b.result as any).code, ms: Math.round(b.ms),
@@ -1147,15 +1305,7 @@ for (const entry of manifest) {
         + `${before} -> ${afterRepeat.length}`);
     }
 
-    const reread = await runStockImport({
-      supabase: db,
-      organisationId: orgs[entry.org].id,
-      organisationName: orgs[entry.org].name,
-      builderUserId: orgs[entry.org].userId,
-      upload: { id: a.uploadId, original_filename: entry.filename },
-      bytes,
-      sourceKind: 'file',
-    });
+    const reread = await readAgainAsThePortalDoes(entry, a.uploadId, bytes);
     const afterReread = await itemsFor(a.uploadId);
     row.reread = { ok: reread.ok, code: (reread as any).code,
                    properties: afterReread.length };
@@ -2279,7 +2429,7 @@ const invariants: Record<string, unknown> = {};
     const successors: string[] = [];
     let leakedMidImport = 0;
     let state = handedOff ? 'continued' : 'not_run';
-    while (state === 'continued' && successors.length <= MAX_IMPORT_CONTINUATIONS) {
+    while (state === 'continued' && successors.length <= MAX_IMPORT_CROSSINGS) {
       const next = await continueStockImport(db, upload.id);
       state = next.state;
       successors.push(next.state);
@@ -2294,7 +2444,9 @@ const invariants: Record<string, unknown> = {};
     const distinctLots = new Set(items.map((i: any) => String(i.lot_number ?? ''))).size;
     const recognisedDistinct = pagesIn(final);
     const recognisedTotal = Number(final.stage_timings?.ocr_pages ?? 0);
-    const handOffs = Number(final.import_checkpoint?.continuations ?? 0);
+    // Every crossing, recognition's and the pictures' together: a scan whose
+    // pages carry pictures hands those on too, once it has finished reading.
+    const handOffs = crossingsSpent(final.import_checkpoint);
     const fieldMismatches: string[] = [];
     for (const [field, want] of Object.entries(expected)) {
       if (NOT_A_COLUMN.has(field) || field === 'design') continue;
@@ -2422,7 +2574,7 @@ const invariants: Record<string, unknown> = {};
       if (isImportContinuation(first)) {
         await releaseThenContinue(db, claim, upload.id);
         state = 'continued';
-        while (state === 'continued' && spends.length <= MAX_IMPORT_CONTINUATIONS + 1) {
+        while (state === 'continued' && spends.length <= MAX_IMPORT_CROSSINGS + 1) {
           state = (await continueStockImport(db, upload.id)).state;
           await account();
         }
@@ -2443,9 +2595,16 @@ const invariants: Record<string, unknown> = {};
         .select('stock_item_id, source_reference').eq('upload_id', upload.id);
       const rows = (images ?? []) as Array<{ stock_item_id: string | null; source_reference: string | null }>;
       const references = rows.map((row) => `${row.stock_item_id}|${row.source_reference}`);
+      const { data: finalRow } = await db.from('builder_stock_uploads')
+        .select('import_checkpoint').eq('id', upload.id).maybeSingle();
       return {
         name,
         invocations: spends.length,
+        // Recognition's crossings and the pictures', counted apart: the first
+        // is what this case is about, the second is the hand-off every
+        // brochure with pictures now makes on purpose.
+        ocrCrossings: Number(finalRow?.import_checkpoint?.continuations ?? 0),
+        pictureCrossings: Number(finalRow?.import_checkpoint?.pictures?.crossings ?? 0),
         state,
         spends,
         worst: Math.max(0, ...spends),
@@ -2461,8 +2620,15 @@ const invariants: Record<string, unknown> = {};
     const sheet = await drive('stress-multi-property');
     faults.expensiveSteps = { brochure, sheet };
     invariant('a-page-with-nothing-to-recognise-is-settled-not-owed',
-      // It reads in the isolate it started in, as it did before any of this.
-      brochure.invocations === 1
+      /*
+       * It is READ in the isolate it started in, as it was before any of
+       * this: no recognition crossing at all. Its pictures then cross on
+       * purpose — an isolate that parsed it decodes none of them — and that
+       * crossing is bounded by the pictures there are, not by anything owed.
+       */
+      brochure.ocrCrossings === 0
+      && brochure.pictureCrossings >= 1
+      && brochure.invocations === brochure.pictureCrossings + 1
       && brochure.state === 'completed'
       && brochure.properties === brochure.expected,
       JSON.stringify(brochure));

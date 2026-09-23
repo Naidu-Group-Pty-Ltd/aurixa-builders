@@ -287,7 +287,10 @@ describe('the diagnostics say what was spent and what was waited for', () => {
   it('records both numbers on every stage', () => {
     const source = read(SETTLER);
     expect(source).toContain('scheduler_wait_ms: claimWaitMs(claimed)');
-    expect(source).toContain('work_class: workClassOf(settlement.stage)');
+    // The class the claim was TAKEN as — for a PDF's `source` stage that is
+    // where its document's read stands, not the stage's name. See
+    // `resolveClaimClass`.
+    expect(source).toContain('work_class: claimedClass.workClass,');
     expect(source).toContain(
       'image_work_timings: [...priorTimings, timing].slice(-12)');
     // APPENDED, not overwritten: a ladder that crosses isolates would

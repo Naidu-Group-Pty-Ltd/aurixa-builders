@@ -81,6 +81,8 @@ import {
 import { anchorPdfRowsToPages, pdfAnchorPage } from './pdfRowAnchors.pure.ts';
 import { chooseAndStorePrimaryImage } from './primaryImage.ts';
 import { readAllRows } from './pagedRead.ts';
+import { loadDocumentRead, learnOutstandingKinds, writeDocumentRead } from './documentRead.ts';
+import { sha256Hex } from './rasterPng.ts';
 
 /**
  * The house design a row states, or null — WHICHEVER SHAPE THE CALLER HOLDS.
@@ -147,6 +149,18 @@ export interface RepairOutcome {
   error?: string;
   /** Server-side only. */
   problems: Array<{ reference: string; reason: string }>;
+  /**
+   * What this run did with the document's READ, where it was asked to carry
+   * one (`documentRead` on the input). Absent on every other run.
+   *
+   *   `written`  it opened the document, wrote the read down and stopped —
+   *              the pictures are decoded by the next claim, in another isolate
+   *   `kinds`    it decoded a batch of the read's pictures' kinds and stopped
+   *   `reused`   it worked from the read instead of opening the document
+   */
+  documentRead?: 'written' | 'kinds' | 'reused';
+  /** Kinds this run learned, when it learned any. */
+  kindsLearned?: number;
 }
 
 interface ExistingItem {
@@ -455,6 +469,21 @@ export async function repairSourceImagesForUpload(
      * skipped, never the identity.
      */
     onlyItemId?: string | null;
+    /**
+     * CARRY THE DOCUMENT'S READ INSTEAD OF DECODING BESIDE IT.
+     *
+     * `split` is the settler's `source` claim: where the upload's document has
+     * a current read, work from it; where it has none and is a paginated
+     * document with pictures, open it, write the read down, and STOP — so the
+     * isolate that parsed it decodes nothing, and the next claim, in an
+     * isolate of the decode class, carries on from the read. The picture kinds
+     * the role decision needs are then learned a budgeted batch per claim.
+     *
+     * Absent: exactly the behaviour every caller had before this existed —
+     * which is what the portal's own "Source images" repair still asks for.
+     * See `documentRead.pure.ts` for the measurement that made it necessary.
+     */
+    documentRead?: 'split' | null;
   },
   deps: {
     fetchPackage?: PackageFetcher;
@@ -487,7 +516,7 @@ export async function repairSourceImagesForUpload(
   const { data: upload } = await db
     .from('builder_stock_uploads')
     .select('id, organisation_id, source_type, source_url, final_url, original_filename, '
-      + 'storage_bucket, storage_path, deleted_at, image_stage_summary')
+      + 'storage_bucket, storage_path, deleted_at, image_stage_summary, file_sha256')
     .eq('id', input.uploadId)
     .eq('organisation_id', input.organisationId)
     .maybeSingle();
@@ -596,86 +625,193 @@ export async function repairSourceImagesForUpload(
       notionAssetsRead = true;
     } else {
       /*
-       * A GOOGLE SHEET IS RE-FETCHED LIVE, FOR THE SAME REASON NOTION IS.
+       * FIRST, A READ OF THIS DOCUMENT ANOTHER ISOLATE ALREADY TOOK.
        *
-       * The stored bytes are what the ORIGINAL fetch could see, and for a
-       * sheet whose exports were refused that is labels with no addresses —
-       * the live VG list's stored `tq.csv` carries the word `Brochure`
-       * fifty-six times and not one URL, so a repair that re-reads storage
-       * can never discover what the import could not. The live fetch runs
-       * today's reader (the workbook export, or the htmlview grid a
-       * locked-export sheet surrenders — see `fetchGoogleSheet`), and what it
-       * resolves is PERSISTED onto the rows below, so the next reading needs
-       * no fetch at all.
-       *
-       * A fetch that fails falls back to the stored copy rather than failing
-       * the run: yesterday's bytes are a worse reading than today's and a far
-       * better one than none.
+       * `documentRead` is asked for by a caller that must not parse a PDF and
+       * decode its pictures in one isolate (see `documentRead.pure.ts`). Where
+       * the upload's document has a current read — same bytes, same reader,
+       * same extractor — every variable below is restored from it exactly as
+       * the parse would have set it, and nothing downstream can tell the
+       * difference except that no document was opened.
        */
-      let bytes: Uint8Array | null = null;
-      if (upload.source_type === 'url' && sourceUrl) {
-        const { googleSheetsRef } = await import('./googleSheetsSource.pure.ts');
-        if (googleSheetsRef(sourceUrl)) {
-          try {
-            const { fetchStockSource } = await import('./fetchSource.ts');
-            const fetched = await fetchStockSource(sourceUrl);
-            bytes = fetched.bytes;
-            sheetLinkAvailability = fetched.hyperlinks ?? null;
-            sheetLinkMethod = fetched.hyperlinkMethod ?? null;
-          } catch (error) {
-            console.warn('[builderStock] live sheet re-fetch failed; using stored copy', {
-              phase: 'source_refetch', upload_id: upload.id,
-              detail: String((error as { message?: string })?.message ?? error).slice(0, 160),
-            });
+      const carried = input.documentRead
+        ? await loadDocumentRead(db, {
+          organisationId: input.organisationId,
+          uploadId: upload.id,
+          // The SETTLER's own read — never the importer's, which reads the
+          // same bytes with evidence this repair has never been handed and
+          // so describes a different reading. See `DocumentReadPurpose`.
+          purpose: 'settle',
+          documentSha256: upload.file_sha256 ?? null,
+        })
+        : null;
+      if (carried) {
+        /*
+         * THE KINDS BEFORE THE PICTURES, A BUDGETED BATCH PER CLAIM.
+         *
+         * The role decision reads what every candidate picture IS, and that
+         * is a decode per picture. A claim that still owes some decodes a
+         * batch, writes the answers back and stops — the next claim takes the
+         * next batch or, once none is owed, attaches the pictures with every
+         * kind already known and decodes nothing for their roles.
+         */
+        if (input.documentRead === 'split') {
+          const learning = await learnOutstandingKinds(db, {
+            uploadId: upload.id, purpose: 'settle', loaded: carried,
+          });
+          if (learning.learned > 0) {
+            return {
+              ...outcome,
+              incomplete: true,
+              documentRead: 'kinds',
+              kindsLearned: learning.learned,
+              // An answer that could not be written would be decoded again on
+              // every claim for ever; counted as a failure, it backs off and
+              // reaches the watchdog instead.
+              ...(learning.recorded ? {} : {
+                error: 'What the document\'s pictures show could not be recorded.',
+              }),
+            };
           }
         }
-      }
-      if (!bytes) {
-        const { data: blob, error: downloadError } = await db.storage
-          .from(upload.storage_bucket).download(upload.storage_path);
-        if (downloadError || !blob) {
-          return { ...outcome, incomplete: true, error: 'The stored copy of that source could not be read.' };
+        rows = carried.restored.rows;
+        rowAssets = carried.restored.rowAssets;
+        media = carried.restored.media as unknown as ExtractedMedia[];
+        pageTexts = carried.restored.pageTexts;
+        pdfRegions = carried.restored.pdfRegions as typeof pdfRegions;
+        pageOrderAuthoritative = carried.restored.pageOrderAuthoritative;
+        outcome.documentRead = 'reused';
+      } else {
+        /*
+         * A GOOGLE SHEET IS RE-FETCHED LIVE, FOR THE SAME REASON NOTION IS.
+         *
+         * The stored bytes are what the ORIGINAL fetch could see, and for a
+         * sheet whose exports were refused that is labels with no addresses —
+         * the live VG list's stored `tq.csv` carries the word `Brochure`
+         * fifty-six times and not one URL, so a repair that re-reads storage
+         * can never discover what the import could not. The live fetch runs
+         * today's reader (the workbook export, or the htmlview grid a
+         * locked-export sheet surrenders — see `fetchGoogleSheet`), and what it
+         * resolves is PERSISTED onto the rows below, so the next reading needs
+         * no fetch at all.
+         *
+         * A fetch that fails falls back to the stored copy rather than failing
+         * the run: yesterday's bytes are a worse reading than today's and a far
+         * better one than none.
+         */
+        let bytes: Uint8Array | null = null;
+        /** True only where the bytes came from the live source, not storage. */
+        let liveFetched = false;
+        if (upload.source_type === 'url' && sourceUrl) {
+          const { googleSheetsRef } = await import('./googleSheetsSource.pure.ts');
+          if (googleSheetsRef(sourceUrl)) {
+            try {
+              const { fetchStockSource } = await import('./fetchSource.ts');
+              const fetched = await fetchStockSource(sourceUrl);
+              bytes = fetched.bytes;
+              liveFetched = true;
+              sheetLinkAvailability = fetched.hyperlinks ?? null;
+              sheetLinkMethod = fetched.hyperlinkMethod ?? null;
+            } catch (error) {
+              console.warn('[builderStock] live sheet re-fetch failed; using stored copy', {
+                phase: 'source_refetch', upload_id: upload.id,
+                detail: String((error as { message?: string })?.message ?? error).slice(0, 160),
+              });
+            }
+          }
         }
-        bytes = new Uint8Array(await blob.arrayBuffer());
+        if (!bytes) {
+          const { data: blob, error: downloadError } = await db.storage
+            .from(upload.storage_bucket).download(upload.storage_path);
+          if (downloadError || !blob) {
+            return { ...outcome, incomplete: true, error: 'The stored copy of that source could not be read.' };
+          }
+          bytes = new Uint8Array(await blob.arrayBuffer());
+        }
+        const detection = detectDocumentMime(bytes);
+        const classification = upload.source_type === 'url'
+          ? classifyFetchedSource({
+            detectedMime: detection.mime,
+            detectionReason: detection.reason,
+            declaredContentType: '',
+            finalUrl: sourceUrl ?? '',
+            looksLikeHtml: /^\s*<(?:!doctype html|html)/i.test(
+              new TextDecoder('utf-8', { fatal: false }).decode(bytes.subarray(0, 256))),
+          })
+          : classifyStockFile(upload.original_filename, detection.mime, detection.reason);
+        if (classification.kind === 'unsupported') {
+          return { ...outcome, error: 'That source cannot be read for imagery.' };
+        }
+        const extraction = await extractStockFile(
+          bytes, upload.original_filename, classification, {
+            baseUrl: sourceUrl ?? undefined,
+            /*
+             * THE SAME RULE THE IMPORT ANSWERS TO. A linked source's stored
+             * `original_filename` is its display label — host, ellipsis,
+             * segment — and handing that to the reader as a name lets a
+             * hostname corroborate a property field. This path re-reads a
+             * document rather than re-fetching it, so there is no
+             * `Content-Disposition` to consult and the URL's own path is all
+             * there is; where that names nothing, nothing is claimed. An
+             * uploaded file's label IS its name and is passed unchanged.
+             * See `documentName.pure.ts`.
+             */
+            documentName: upload.source_type === 'url'
+              ? sourceDocumentName({ finalUrl: sourceUrl ?? '' })
+              : undefined,
+          });
+        /*
+         * AND WHERE THIS CLAIM MAY NOT ALSO DECODE, IT STOPS HERE.
+         *
+         * The document has just been parsed, which for a large brochure is most
+         * of what one isolate can spend; decoding its pictures on top of that
+         * is the combination production killed thirteen times on 22 September
+         * and three more on the 23rd. So the read is written down and the claim
+         * ends, and the pictures are decoded by the next claim, which the
+         * settler hands to an isolate of the decode class.
+         *
+         * Only the STORED copy is carried, and only when it is still the bytes
+         * the upload records: a read keyed on a digest the upload does not
+         * carry would never be found again, and the claim would read the
+         * document again on every attempt. A read that cannot be written —
+         * past its bounds, or storage refusing it — leaves this claim doing
+         * exactly what it did before this existed, which is the conservative
+         * side: a slower path that has always worked for the documents it fits.
+         */
+        if (input.documentRead === 'split' && !liveFetched && upload.file_sha256) {
+          const digest = await sha256Hex(bytes);
+          if (digest === upload.file_sha256) {
+            const written = await writeDocumentRead(db, {
+              organisationId: input.organisationId,
+              uploadId: upload.id,
+              purpose: 'settle',
+              documentSha256: digest,
+              source: {
+                rows: extraction.rows,
+                rowAssets: extraction.rowAssets,
+                pageTexts: extraction.pageTexts ?? [],
+                pdfRegions: extraction.pdfRegions,
+                pageOrderAuthoritative: extraction.pageOrderAuthoritative,
+                media: extraction.media,
+              },
+            });
+            if (written.written) {
+              return { ...outcome, incomplete: true, documentRead: 'written' };
+            }
+            if (written.reason !== 'not a paginated document with pictures') {
+              console.warn('[builderStock] document read not carried; decoding beside it', {
+                phase: 'document_read', upload_id: upload.id, reason: written.reason,
+              });
+            }
+          }
+        }
+        rows = extraction.rows;
+        rowAssets = extraction.rowAssets;
+        media = extraction.media;
+        pageTexts = extraction.pageTexts ?? [];
+        pdfRegions = extraction.pdfRegions;
+        pageOrderAuthoritative = extraction.pageOrderAuthoritative !== false;
       }
-      const detection = detectDocumentMime(bytes);
-      const classification = upload.source_type === 'url'
-        ? classifyFetchedSource({
-          detectedMime: detection.mime,
-          detectionReason: detection.reason,
-          declaredContentType: '',
-          finalUrl: sourceUrl ?? '',
-          looksLikeHtml: /^\s*<(?:!doctype html|html)/i.test(
-            new TextDecoder('utf-8', { fatal: false }).decode(bytes.subarray(0, 256))),
-        })
-        : classifyStockFile(upload.original_filename, detection.mime, detection.reason);
-      if (classification.kind === 'unsupported') {
-        return { ...outcome, error: 'That source cannot be read for imagery.' };
-      }
-      const extraction = await extractStockFile(
-        bytes, upload.original_filename, classification, {
-          baseUrl: sourceUrl ?? undefined,
-          /*
-           * THE SAME RULE THE IMPORT ANSWERS TO. A linked source's stored
-           * `original_filename` is its display label — host, ellipsis,
-           * segment — and handing that to the reader as a name lets a
-           * hostname corroborate a property field. This path re-reads a
-           * document rather than re-fetching it, so there is no
-           * `Content-Disposition` to consult and the URL's own path is all
-           * there is; where that names nothing, nothing is claimed. An
-           * uploaded file's label IS its name and is passed unchanged.
-           * See `documentName.pure.ts`.
-           */
-          documentName: upload.source_type === 'url'
-            ? sourceDocumentName({ finalUrl: sourceUrl ?? '' })
-            : undefined,
-        });
-      rows = extraction.rows;
-      rowAssets = extraction.rowAssets;
-      media = extraction.media;
-      pageTexts = extraction.pageTexts ?? [];
-      pdfRegions = extraction.pdfRegions;
-      pageOrderAuthoritative = extraction.pageOrderAuthoritative !== false;
     }
   } catch (error) {
     return {

@@ -31,11 +31,18 @@
 export interface RunImportContinuation {
   ok: true;
   continued: true;
-  /** What is still owed. One reason today; named so a second cannot be silent. */
-  reason: 'ocr_outstanding';
-  /** How many pages recognition still has to read. */
+  /**
+   * What is still owed. Named, so a new reason cannot be silent:
+   *
+   *   `ocr_outstanding`       pages recognition still has to read;
+   *   `pictures_outstanding`  a paginated document's pictures, handed with the
+   *                           read to an isolate that did not parse it — see
+   *                           `importHandover.pure.ts`.
+   */
+  reason: 'ocr_outstanding' | 'pictures_outstanding';
+  /** How many pages, or pictures, are still owed. */
   outstanding: number;
-  /** How many crossings this import has spent. */
+  /** How many crossings this import has spent, for either reason. */
   continuations: number;
 }
 

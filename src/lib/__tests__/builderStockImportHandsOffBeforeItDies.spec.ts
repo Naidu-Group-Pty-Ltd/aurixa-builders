@@ -417,11 +417,22 @@ describe('the decode that settles picture roles is priced before it begins', () 
     const asked = importStock.indexOf('mayDecideRoles(input.ledger, rolePixels)');
     expect(asked).toBeGreaterThan(-1);
     expect(importStock.indexOf('} else await attachDocumentMedia(')).toBeGreaterThan(asked);
+    /*
+     * The same pictures because it is the same LIST: both walk
+     * `visualKindCandidates`, which is where the predicate and the cap live —
+     * one list, so the pictures can also be decoded across several isolates
+     * and still be the ones one uninterrupted pass would have reached.
+     */
     const assess = read('supabase/functions/_shared/builderStock/assessSourceImage.ts');
-    const estimate = assess.slice(assess.indexOf('export function documentVisualKindsPixels'));
+    const estimate = assess.slice(assess.indexOf('export function documentVisualKindsPixels'),
+      assess.indexOf('export function visualKindCandidates'));
+    const candidates = assess.slice(assess.indexOf('export function visualKindCandidates'),
+      assess.indexOf('export function visualKindPixels'));
     const decode = assess.slice(assess.indexOf('export async function documentVisualKinds('));
-    expect(estimate).toContain('if (!decodedForItsKind(entry)) continue;');
-    expect(decode).toContain('if (!decodedForItsKind(entry)) continue;');
+    expect(estimate).toContain('return visualKindCandidates(media, limit)');
+    expect(decode).toContain('for (const index of visualKindCandidates(media, limit)) {');
+    expect(candidates).toContain('if (!decodedForItsKind(entry)) continue;');
+    expect(candidates).toContain('if (candidates.length >= limit) break;');
   });
 
   it('db_write takes out the whole raster class, not one stage of it', () => {

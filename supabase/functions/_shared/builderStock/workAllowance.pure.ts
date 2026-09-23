@@ -167,24 +167,99 @@ export interface AllowanceSpent {
 
 export const newAllowance = (): AllowanceSpent => ({ documents: 0, decodes: 0, metadata: 0 });
 
-/** May this isolate take on a claim at this stage? */
-export function mayTakeStage(stage: string, spent: AllowanceSpent): boolean {
-  switch (workClassOf(stage)) {
+/**
+ * ===========================================================================
+ * AND WHAT A `source` CLAIM IS DEPENDS ON WHERE ITS DOCUMENT'S READ STANDS.
+ * ===========================================================================
+ *
+ * MEASURED 22 AND 23 SEPTEMBER 2026: the `source` stage was classed as one
+ * document and was not one. For an uploaded PDF it parsed the document AND
+ * decided its pictures' roles by decoding them AND measured the elected one —
+ * the very combination this module forbids between stages, committed inside
+ * a single stage. `LOT 550 - ENZO 8.5 MODERN- BROCHURE V002.pdf` was killed
+ * twelve times in a row that way on the 22nd.
+ *
+ * So a PDF's `source` work is now three claims (`documentRead.pure.ts`), and
+ * each is classed by what it actually does:
+ *
+ *   `read`    opens the document and writes the read down — DOCUMENT. For a
+ *             PDF it takes the whole document allowance: a large brochure's
+ *             parse is most of what one isolate can spend on CPU, which the
+ *             7 September memory figure was never measuring.
+ *   `kinds`   decodes a budgeted batch of its pictures' kinds — DECODE, and
+ *   `attach`  attaches them with every kind known — DECODE; both take the
+ *             whole decode allowance, because each is several decodes in one
+ *             claim however the ladder counts it.
+ *
+ * WEIGHT IS REQUIRED TO FIT, NOT MERELY TO START. A claim of weight three may
+ * only begin in an isolate with its whole allowance free — which is what puts
+ * each of these into a fresh isolate, and costs one immediate hand-off each.
+ */
+export type SourcePhase = 'read' | 'kinds' | 'attach';
+
+export interface SourceClaimState {
+  phase: SourcePhase;
+  /** How many of the read's picture kinds are already known. */
+  kindsKnown: number;
+  /** The source is a PDF, whose parse is an isolate's worth of CPU. */
+  pdf: boolean;
+}
+
+export interface ClaimClass {
+  workClass: WorkClass;
+  /** How much of its class's allowance the claim takes. */
+  weight: number;
+  /**
+   * What distinguishes one claim of a property at a stage from the next. Two
+   * claims of the same `source` stage that each made progress — the read,
+   * then a batch of kinds, then the attach — are different work, and the
+   * invocation's stalled-claim guard must not mistake the second for the
+   * first repeating itself.
+   */
+  key: string;
+}
+
+/** Class a claim, from its stage and — for `source` — where its read stands. */
+export function classifyClaim(
+  stage: string, source?: SourceClaimState | null,
+): ClaimClass {
+  if (stage === 'source' && source) {
+    if (source.phase === 'read') {
+      return {
+        workClass: 'document',
+        weight: source.pdf ? DOCUMENTS_PER_INVOCATION : 1,
+        key: 'source:read',
+      };
+    }
+    return {
+      workClass: 'decode',
+      weight: DECODES_PER_INVOCATION,
+      key: source.phase === 'kinds' ? `source:kinds:${source.kindsKnown}` : 'source:attach',
+    };
+  }
+  return { workClass: workClassOf(stage), weight: 1, key: stage };
+}
+
+/** May this isolate take on this claim? */
+export function mayTakeClaim(claim: ClaimClass, spent: AllowanceSpent): boolean {
+  switch (claim.workClass) {
     case 'document':
-      return spent.decodes === 0 && spent.documents < DOCUMENTS_PER_INVOCATION;
+      return spent.decodes === 0
+        && spent.documents + claim.weight <= DOCUMENTS_PER_INVOCATION;
     case 'decode':
-      return spent.documents === 0 && spent.decodes < DECODES_PER_INVOCATION;
+      return spent.documents === 0
+        && spent.decodes + claim.weight <= DECODES_PER_INVOCATION;
     default:
-      return spent.metadata < METADATA_ITEMS_PER_INVOCATION;
+      return spent.metadata + claim.weight <= METADATA_ITEMS_PER_INVOCATION;
   }
 }
 
-/** Record that this isolate has run a stage. Mutates, and returns the same object. */
-export function spendStage(stage: string, spent: AllowanceSpent): AllowanceSpent {
-  switch (workClassOf(stage)) {
-    case 'document': spent.documents += 1; break;
-    case 'decode': spent.decodes += 1; break;
-    default: spent.metadata += 1; break;
+/** Record that this isolate has run a claim. Mutates, and returns the same object. */
+export function spendClaim(claim: ClaimClass, spent: AllowanceSpent): AllowanceSpent {
+  switch (claim.workClass) {
+    case 'document': spent.documents += claim.weight; break;
+    case 'decode': spent.decodes += claim.weight; break;
+    default: spent.metadata += claim.weight; break;
   }
   return spent;
 }
@@ -194,8 +269,8 @@ export function spendStage(stage: string, spent: AllowanceSpent): AllowanceSpent
  * completion's `result`, because a handback with no reason is the state this
  * subsystem has already spent a week reading as a stall.
  */
-export function refusalFor(stage: string, spent: AllowanceSpent): string {
-  const workClass = workClassOf(stage);
+export function refusalForClaim(claim: ClaimClass, spent: AllowanceSpent): string {
+  const workClass = claim.workClass;
   if (workClass === 'document' && spent.decodes > 0) {
     return 'deferred: this isolate has decoded and may not also open a document';
   }
@@ -203,6 +278,21 @@ export function refusalFor(stage: string, spent: AllowanceSpent): string {
     return 'deferred: this isolate has opened a document and may not also decode';
   }
   return `deferred: this isolate has spent its ${workClass} allowance`;
+}
+
+/** May this isolate take on a claim at this stage? (A stage with no read.) */
+export function mayTakeStage(stage: string, spent: AllowanceSpent): boolean {
+  return mayTakeClaim(classifyClaim(stage), spent);
+}
+
+/** Record that this isolate has run a stage. Mutates, and returns the same object. */
+export function spendStage(stage: string, spent: AllowanceSpent): AllowanceSpent {
+  return spendClaim(classifyClaim(stage), spent);
+}
+
+/** Why this invocation refused a claim at this stage. */
+export function refusalFor(stage: string, spent: AllowanceSpent): string {
+  return refusalForClaim(classifyClaim(stage), spent);
 }
 
 export interface RearmInput {

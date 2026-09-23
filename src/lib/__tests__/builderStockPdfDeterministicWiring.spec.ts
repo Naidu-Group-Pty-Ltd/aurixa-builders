@@ -301,7 +301,7 @@ describe('where a model is decided on', () => {
 
     const completion = runImport.slice(
       runImport.indexOf('WHAT THE READER COULD NOT PROVE IS ASKED FOR BY NAME'),
-      runImport.indexOf("status: 'imported',"));
+      runImport.indexOf('const decided: DecidedImport = {'));
 
     // It runs only where a reading already exists and is short of something.
     expect(completion).toMatch(/rows\.length === 1 && completionWorthAsking\(rows\[0\]\)/);

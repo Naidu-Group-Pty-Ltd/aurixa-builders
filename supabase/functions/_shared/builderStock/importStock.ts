@@ -59,7 +59,7 @@ import {
   anchorPdfRowsToPages, pdfAnchorPage, pdfAnchorPageOrRegion,
 } from './pdfRowAnchors.pure.ts';
 import {
-  documentVisualKinds, documentVisualKindsPixels, eligibilityDetailFor,
+  documentVisualKinds, documentVisualKindsPixels, eligibilityDecodes, eligibilityDetailFor,
 } from './assessSourceImage.ts';
 
 /** What `attachDocumentMedia` did with one picture, for a caller that counts. */
@@ -584,6 +584,11 @@ export async function importStockRecords(
      * stored rows, long after this run and its upload metadata are gone.
      */
     linkDiscovery?: RowLinkDiscovery | null;
+    /**
+     * How many pictures this invocation may DECODE to judge their display
+     * eligibility. See `attachDocumentMedia`. Absent: every one, as before.
+     */
+    eligibilityDecodes?: number | null;
   },
   /**
    * Injected for the same reason the repair injects it: the production fetcher
@@ -1634,6 +1639,23 @@ export async function attachDocumentMedia(
      * indistinguishable from a document that carried no photograph.
      */
     onImageryDeferred?: ((count: number) => void) | null;
+    /**
+     * HOW MANY PICTURES THIS INVOCATION MAY DECODE TO JUDGE THEIR DISPLAY
+     * ELIGIBILITY. Absent: every one, exactly as before.
+     *
+     * Set by the isolate an import hands its pictures to
+     * (`importHandover.pure.ts`), to the image settler's own measured
+     * allowance: three photographs decoded per isolate
+     * (`DECODES_PER_INVOCATION`). The acceptance gate's eight-property stress
+     * sheet spent 3,737 ms judging eight heroes in the one isolate that
+     * attached them, past the ceiling that has already proved loose in
+     * production. A picture past the allowance is still STORED — attributed,
+     * with its role and its provenance, exactly as the import decided — and
+     * goes out with no eligibility verdict: the state an oversized primary
+     * already takes here (`eligibilityDetailFor`), which the settler's
+     * eligibility stage exists to find and judges in an isolate of its own.
+     */
+    eligibilityDecodes?: number | null;
   },
   itemIdsInOrder: string[],
   itemIdByAnchor: Map<string, string | null>,
@@ -1743,6 +1765,7 @@ export async function attachDocumentMedia(
     });
 
   let deferred = 0;
+  let eligibilityDecodesLeft = input.eligibilityDecodes ?? null;
   for (const [index, media] of input.media.entries()) {
     /*
      * ASKED BEFORE THE PICTURE, NEVER AFTER IT.
@@ -1820,8 +1843,19 @@ export async function attachDocumentMedia(
           ...(media.enumeration ? { enumeration: media.enumeration } : {}),
           ...roleDetail(roles[index]),
           // Whether the marketplace may DRAW it. Every format lands here or
-          // in `sourceImages.ts`, and both ask the same question of the bytes.
-          ...await eligibilityDetailFor(media.bytes, roles[index].role),
+          // in `sourceImages.ts`, and both ask the same question of the bytes
+          // — here, while this invocation's decode allowance lasts, and past
+          // it in the settler's eligibility stage. See `eligibilityDecodes`.
+          ...await (async () => {
+            if (!eligibilityDecodes(media.bytes, roles[index].role)) {
+              return await eligibilityDetailFor(media.bytes, roles[index].role);
+            }
+            if (eligibilityDecodesLeft !== null) {
+              if (eligibilityDecodesLeft <= 0) return {};
+              eligibilityDecodesLeft -= 1;
+            }
+            return await eligibilityDetailFor(media.bytes, roles[index].role);
+          })(),
           upload_id: input.uploadId,
           stock_item_id: stockItemId,
           filename: input.filename ?? null,
