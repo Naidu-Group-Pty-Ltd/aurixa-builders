@@ -19,6 +19,9 @@ import { isImportContinuation } from '../../supabase/functions/_shared/builderSt
 import { continueStockImport } from '../../supabase/functions/_shared/builderStock/continueImport.ts';
 import { claimImport, releaseThenContinue } from '../../supabase/functions/_shared/builderStock/importClaim.ts';
 import { MAX_IMPORT_CONTINUATIONS } from '../../supabase/functions/_shared/builderStock/importCheckpoint.pure.ts';
+import {
+  EXPENSIVE_SPEND_CEILING_MS, expensiveSpendMs,
+} from '../../supabase/functions/_shared/builderStock/importResumeBudget.pure.ts';
 import { STOCK_LIST_STORAGE_PREFIX, safeObjectName } from '../../supabase/functions/_shared/builderStock/fileTypes.pure.ts';
 /*
  * THE PORTAL'S OWN SERVING STEP, imported rather than imitated. This is what
@@ -40,7 +43,9 @@ import { sourceDocumentName } from '../../supabase/functions/_shared/builderStoc
  * `records_detected: 0` on a row holding a correctly imported property — the
  * incident's own symptom, produced by the gate that exists to detect it.
  */
-import { recordImportCounts } from '../../supabase/functions/_shared/builderStock/recordImportOutcome.ts';
+import {
+  importOutcomeColumns, recordImportCounts,
+} from '../../supabase/functions/_shared/builderStock/recordImportOutcome.ts';
 /*
  * AND THE IDENTITY THE IMPORTER ITSELF MATCHES ON, so the gate's fork count
  * asks the product's question rather than a plausible-looking one of its own.
@@ -2350,6 +2355,129 @@ const invariants: Record<string, unknown> = {};
       JSON.stringify(faults.cpuHandOff));
   }
 
+  // --- 8m. THE TWO WAYS AN IMPORT STILL SPENT PAST ITS ALLOWANCE ----------
+  /*
+   * Both found by `cpu-profile.ts` driving the product's own FILE path over the
+   * stress corpus after every case above had passed — because this gate drove
+   * the importer the way a linked source is driven, and a linked source never
+   * hands off:
+   *
+   *   • a page the OCR plan wants and the rasteriser yields nothing for was
+   *     never settled — `stress-heavy-brochure` crossed ELEVEN isolates
+   *     re-asking it, for a brochure that reads in one;
+   *   • the decode that settles picture roles ran with no gate in front of it
+   *     — `stress-multi-property` spent 4,854 ms in it, in one invocation,
+   *     after the document had already been read.
+   *
+   * Each is asserted here by EFFECT, through the path 8l drives. And the
+   * pictures the second fix leaves to the settler must still reach their
+   * properties, whole and once — which is what leaving them promises.
+   */
+  {
+    const stressDir = Deno.env.get('STRESS_CORPUS') ?? '/var/tmp/stress-corpus';
+    const stress = JSON.parse(await Deno.readTextFile(`${stressDir}/manifest.json`));
+    const org = orgs[FAULT_HANDOFF];
+    const drive = async (name: string) => {
+      const entry = stress.find((e: any) => e.name === name);
+      if (!entry) throw new Error(`no ${name} in ${stressDir}: run make-stress-corpus.py`);
+      const bytes = await Deno.readFile(`${stressDir}/${entry.path}`);
+      const path = `${STOCK_LIST_STORAGE_PREFIX}${org.id}/${crypto.randomUUID()}/${safeObjectName(entry.filename)}`;
+      await db.storage.from(BUCKET).upload(path, bytes, { contentType: 'application/pdf', upsert: true });
+      const upload = await newUpload(FAULT_HANDOFF, entry.filename, path);
+      /*
+       * EACH INVOCATION'S OWN SPEND, read back off the row: the row carries the
+       * import's running total across isolates, so the difference across one
+       * invocation is exactly the account its budget read.
+       */
+      const spends: number[] = [];
+      let seen: Record<string, unknown> = {};
+      const account = async () => {
+        const { data } = await db.from('builder_stock_uploads')
+          .select('stage_timings').eq('id', upload.id).maybeSingle();
+        const now = (data?.stage_timings ?? {}) as Record<string, unknown>;
+        const own: Record<string, number> = {};
+        for (const [key, value] of Object.entries(now)) {
+          if (typeof value !== 'number' || key === 'total_ms') continue;
+          const was = typeof seen[key] === 'number' ? seen[key] as number : 0;
+          if (value - was > 0) own[key] = value - was;
+        }
+        spends.push(Math.round(expensiveSpendMs(own)));
+        seen = now;
+      };
+
+      const portal = await claimImport(db, upload.id);
+      await db.from('builder_stock_uploads').update({
+        status: 'parsing', processing_started_at: new Date().toISOString(),
+      }).eq('id', upload.id);
+      const first = await runStockImport({
+        supabase: db, organisationId: org.id, organisationName: org.name,
+        builderUserId: org.userId,
+        upload: { id: upload.id, original_filename: upload.original_filename },
+        bytes, sourceKind: 'file',
+        resumableFromStoredBytes: true,
+      });
+      await account();
+      const claim = portal.ok ? portal.claim : null;
+      let state: string;
+      if (isImportContinuation(first)) {
+        await releaseThenContinue(db, claim, upload.id);
+        state = 'continued';
+        while (state === 'continued' && spends.length <= MAX_IMPORT_CONTINUATIONS + 1) {
+          state = (await continueStockImport(db, upload.id)).state;
+          await account();
+        }
+      } else {
+        // `finishImport`'s own write, for an import that finished where it started.
+        if (first.ok) {
+          await db.from('builder_stock_uploads')
+            .update(importOutcomeColumns(first, null)).eq('id', upload.id);
+        }
+        await claim?.release();
+        state = first.ok ? 'completed' : `failed:${(first as any).code}`;
+      }
+
+      // THE SETTLER'S PART, which is where a deferred picture goes.
+      await settleImagery(org.id, upload.id);
+      const items = await itemsFor(upload.id);
+      const { data: images } = await db.from('builder_stock_item_images')
+        .select('stock_item_id, source_reference').eq('upload_id', upload.id);
+      const rows = (images ?? []) as Array<{ stock_item_id: string | null; source_reference: string | null }>;
+      const references = rows.map((row) => `${row.stock_item_id}|${row.source_reference}`);
+      return {
+        name,
+        invocations: spends.length,
+        state,
+        spends,
+        worst: Math.max(0, ...spends),
+        properties: items.length,
+        expected: entry.expect?.properties ?? null,
+        withPictures: items.filter((item: any) => rows.some((row) => row.stock_item_id === item.id)).length,
+        imageRows: rows.length,
+        duplicateImageRows: references.length - new Set(references).size,
+      };
+    };
+
+    const brochure = await drive('stress-heavy-brochure');
+    const sheet = await drive('stress-multi-property');
+    faults.expensiveSteps = { brochure, sheet };
+    invariant('a-page-with-nothing-to-recognise-is-settled-not-owed',
+      // It reads in the isolate it started in, as it did before any of this.
+      brochure.invocations === 1
+      && brochure.state === 'completed'
+      && brochure.properties === brochure.expected,
+      JSON.stringify(brochure));
+    invariant('the-decode-that-settles-picture-roles-is-priced-before-it-begins',
+      sheet.state === 'completed'
+      && sheet.properties === sheet.expected
+      // No invocation spends past the ceiling: the decode fits inside it or
+      // does not begin.
+      && sheet.worst <= EXPENSIVE_SPEND_CEILING_MS
+      // And what was left to the settler reached every property, once.
+      && sheet.withPictures === sheet.properties
+      && sheet.duplicateImageRows === 0,
+      JSON.stringify(sheet));
+  }
+
   // --- 8j. NOTHING IN THE MATRIX LEFT A ROW MID-FLIGHT --------------------
   /*
    * The cross-cutting one, and the reason it is last: it judges every row
@@ -2545,6 +2673,19 @@ await fileServer.shutdown();
   const expectedLots = new Set<string>();
   for (const e of manifest as any[]) {
     for (const r of (e.expect.rows ?? [])) {
+      if (r.lot_number) expectedLots.add(String(r.lot_number));
+    }
+  }
+  /*
+   * AND THE STRESS DOCUMENTS THE FAULT MATRIX IMPORTS (8l, 8m), by the lots
+   * their own generator states — never by exempting their organisation, so a
+   * stress import that produced a lot its fixture never named is still counted.
+   */
+  const stressManifest = await Deno.readTextFile(
+    `${Deno.env.get('STRESS_CORPUS') ?? '/var/tmp/stress-corpus'}/manifest.json`,
+  ).then((text) => JSON.parse(text) as any[]).catch(() => [] as any[]);
+  for (const e of stressManifest) {
+    for (const r of (e.expect?.rows ?? [])) {
       if (r.lot_number) expectedLots.add(String(r.lot_number));
     }
   }

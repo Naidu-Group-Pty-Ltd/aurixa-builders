@@ -119,11 +119,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof]
       items:
         description: 'item-state / item-reopen: comma-separated stock item ids (blank = the default set)'
         required: false
@@ -135,7 +135,7 @@ on:
         default: ''
         type: string
       upload_id:
-        description: 'stock-source-restore: the deleted stock list to put back (uuid)'
+        description: 'stock-source-restore: the deleted stock list to put back (uuid). stock-import-proof: the stored source to import again, read-only (uuid)'
         required: false
         default: ''
         type: string
@@ -189,6 +189,7 @@ jobs:
           STOCK_ITEM_IDS: ${{ inputs.items }}
           TARGET_ORGANISATION_ID: ${{ inputs.organisation_id }}
           RESTORE_UPLOAD_ID: ${{ inputs.upload_id }}
+          PROOF_UPLOAD_ID: ${{ inputs.upload_id }}
           APPLY: ${{ inputs.apply }}
           ONLY: ${{ inputs.only }}
         run: |
@@ -207,4 +208,5 @@ jobs:
                                   deno run -A --config supabase/functions/deno.json scripts/ops/network-connection-remap.ts ;;
             portal-scope-state)   deno run -A --config supabase/functions/deno.json scripts/ops/builder-portal-scope-state.ts ;;
             stock-source-restore) deno run -A --config supabase/functions/deno.json scripts/ops/stock-source-restore.ts ;;
+            stock-import-proof)   node scripts/ops/stock-import-proof.mjs ;;
           esac

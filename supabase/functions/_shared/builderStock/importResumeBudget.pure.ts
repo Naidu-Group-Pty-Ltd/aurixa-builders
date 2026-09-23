@@ -142,6 +142,47 @@ export const mayRecognisePage = (ledger: ImportStageLedger | null | undefined): 
   mayBegin(ledger, OCR_PAGE_MS);
 
 /**
+ * What decoding a picture to decide its role costs, per megapixel. MEASURED
+ * in production, where it matters: about 1 s for a 2,000×1,250 hero (2.5 MP)
+ * and 3.1 s for a 3,556×2,000 one (7.1 MP), both recorded in
+ * `assessSourceImage.ts` — so 440 ms a megapixel, the slower of the two. The
+ * acceptance machine decodes at about half that (4,854 ms for 22.1 MP), and
+ * the production rate is the one used, because an estimate that errs low is
+ * the one that kills the worker.
+ */
+export const ROLE_DECODE_MS_PER_MEGAPIXEL = 440;
+
+/** What deciding the roles of pictures totalling `pixels` should cost. */
+export const roleDecodeMs = (pixels: number): number =>
+  (Math.max(0, pixels) / 1_000_000) * ROLE_DECODE_MS_PER_MEGAPIXEL;
+
+/**
+ * May this invocation decide the roles of a document's pictures here?
+ *
+ * WHOLE OR NOT AT ALL, AND PRICED BEFORE IT BEGINS. A stored picture and a
+ * recognised page are steps of a known size; this one's size is the
+ * document's choice — up to `MAX_VISION_DECODES` pictures in one pass that
+ * cannot be divided, because roles decided on part of the set are decided on
+ * partial evidence. It ran with no gate at all until 23 September 2026, when
+ * `stress-multi-property` spent 4,854 ms in it after the document had already
+ * been read: the unguarded loop `mayStoreImage` was written to close, one
+ * call earlier.
+ *
+ * So it must fit INSIDE the ceiling rather than be allowed one step past it,
+ * as `mayBegin` allows a known step: an estimate is exactly where the error
+ * is, and the margin between the ceiling and the shortest measured kill is
+ * what absorbs it. Declining costs nothing but a dispatch — the settler
+ * decides the same roles, whole, in an isolate of its own.
+ */
+export function mayDecideRoles(
+  ledger: ImportStageLedger | null | undefined,
+  pixels: number,
+): boolean {
+  if (!ledger) return true;
+  return expensiveSpendMs(ledger) + roleDecodeMs(pixels) <= EXPENSIVE_SPEND_CEILING_MS;
+}
+
+/**
  * How many milliseconds of expensive work are left before the ceiling.
  *
  * For the one caller that needs a DEADLINE rather than a yes/no — the image

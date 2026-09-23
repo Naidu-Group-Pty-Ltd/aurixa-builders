@@ -23,7 +23,7 @@ import {
 import type { StockFileClassification } from './fileTypes.pure.ts';
 import { extractStockFile, StockExtractionError } from './extract.ts';
 import {
-  countIn, ledgerTotalMs, mergeLedgers, recordStage,
+  classSpendMs, countIn, ledgerTotalMs, mergeLedgers, recordStage,
   type ImportStageLedger,
 } from './importStageLedger.pure.ts';
 import { watchImportTermination } from './importTermination.ts';
@@ -1057,6 +1057,7 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     ?? { state: 'complete', method: `native:${strategy}` };
 
   const recordsStartedAt = Date.now();
+  const rasterBeforeRecords = classSpendMs(ledger, 'raster');
   const outcome = await importStockRecords(supabase, {
     organisationId,
     uploadId: upload.id,
@@ -1092,9 +1093,17 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
    * already recorded is the same rule the reader and the segmenter answer to
    * one level up.
    */
-  const imageStoreMs = typeof ledger.image_store_ms === 'number' ? ledger.image_store_ms : 0;
+  /*
+   * THE WHOLE RASTER CLASS, NOT ONE STAGE OF IT. This subtracted
+   * `image_store_ms` alone, and the decode that settles each picture's role is
+   * charged as `image_decode` inside the same call — so on
+   * `stress-multi-property` it was counted twice and `db_write` read 5,009 ms
+   * for row writes that cost tens. Taken as the difference across the call,
+   * so raster work charged before it is not subtracted from it.
+   */
+  const rasterDuringRecords = classSpendMs(ledger, 'raster') - rasterBeforeRecords;
   recordStage(ledger, 'db_write',
-    Math.max(0, (Date.now() - recordsStartedAt) - imageStoreMs));
+    Math.max(0, (Date.now() - recordsStartedAt) - rasterDuringRecords));
   await commitLedger(ledger);
 
   /*

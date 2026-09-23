@@ -912,7 +912,17 @@ export async function extractStockFile(
          * re-asking is the entire point of resuming.
          */
         const settled = options.ocrSettled ?? new Set<number>();
-        const stillOwed = plan.pages.filter((page) => !settled.has(page));
+        /*
+         * AND WHAT THE RASTERISER CAN NEVER REACH IS NOT OWED EITHER.
+         * `extractPdfPhotosByPage` visits the first `OCR_MAX_PAGES` pages and
+         * no others — the reach the single pass always had — so a plan page
+         * beyond it can never yield a raster. It is settled here, in the pass
+         * that knows it, rather than costing an isolate apiece to find out.
+         */
+        const beyondReach = plan.pages
+          .filter((page) => page > OCR_MAX_PAGES && !settled.has(page));
+        const stillOwed = plan.pages
+          .filter((page) => page <= OCR_MAX_PAGES && !settled.has(page));
         /*
          * RASTERISE ONLY WHAT THIS INVOCATION CAN AFFORD TO RECOGNISE.
          *
@@ -925,10 +935,15 @@ export async function extractStockFile(
          * available here and it is produced by the mechanism meant to prevent
          * it.
          *
-         * AT LEAST ONE, ALWAYS. A fresh invocation arrives having spent almost
-         * nothing, so the floor never binds in practice; it is there so that
-         * "how many can I afford" can never answer none, because an invocation
-         * that makes no progress is a crossing wasted.
+         * AT LEAST ONE, ALWAYS — and by the measured numbers, exactly one. The
+         * allowance is 3,000 ms and a page is charged 3,100, so a fresh
+         * invocation can afford one page and never two; the floor is what
+         * makes that one rather than none, because an invocation that makes no
+         * progress is a crossing wasted. A scan of N pages therefore crosses N
+         * isolates, which is the price of never being killed. (This said the
+         * floor "never binds in practice". It binds on every invocation, and
+         * believing otherwise is how a page that could never be settled went
+         * unnoticed — see below.)
          */
         const affordable = Math.max(1, Math.floor(
           remainingExpensiveMs(options.ledger) / OCR_PAGE_MS));
@@ -970,12 +985,36 @@ export async function extractStockFile(
           onPage: options.onRecognisedPage ?? null,
         }));
         /*
+         * A PAGE THE RASTERISER COULD NOT REACH IS SETTLED, NEVER OWED.
+         *
+         * The recogniser settles every page it is HANDED — too large, no
+         * raster, unreadable. A page the plan asked for and the rasteriser
+         * found no image on was never handed to it, so it was neither read nor
+         * refused, and stayed owed. Measured 23 September 2026:
+         * `stress-heavy-brochure` logged `outstanding: 1, recognised: 0` on
+         * every crossing up to the bound — eleven isolates and forty-four
+         * document parses for a brochure that reads in one — and because each
+         * crossing takes the FIRST owed page, such a page also stood in front
+         * of every readable page behind it: `stress-many-images` sat at six
+         * owed pages for five crossings without attempting one of them.
+         * Before the continuation existed the page was simply passed over in
+         * the one pass there was. `no_raster` is the final refusal that says
+         * so, and it is final because the same bytes carry the same images
+         * every time they are read.
+         */
+        const rasterised = new Set(rasters.map((raster) => raster.page));
+        const refusals = [
+          ...[...beyondReach, ...outstanding.filter((page) => !rasterised.has(page))]
+            .map((page) => ({ page, reason: 'no_raster' as const })),
+          ...reading.refusals,
+        ];
+        /*
          * A REFUSAL THAT IS ABOUT THE PAGE IS REPORTED SO IT IS NEVER ASKED
          * AGAIN. One that is about the attempt is not — it stays outstanding
          * and a successor retries it with a fresh allowance.
          */
         if (options.onRefusedPage) {
-          for (const refusal of reading.refusals) {
+          for (const refusal of refusals) {
             if (isFinalOcrRefusal(refusal)) await options.onRefusedPage(refusal.page);
           }
         }
@@ -995,7 +1034,7 @@ export async function extractStockFile(
           attempted: plan.pages.length,
           read: everyPage.size,
           recognisedPages: [...everyPage.keys()].sort((a, b) => a - b),
-          refusals: reading.refusals,
+          refusals,
           available: reading.available,
           ms: reading.ms,
           imageOnly: plan.imageOnly,
@@ -1009,7 +1048,7 @@ export async function extractStockFile(
         result.ocrOutstanding = plan.pages
           .filter((page) => !everyPage.has(page)
             && !settled.has(page)
-            && !reading.refusals.some((r) => r.page === page && isFinalOcrRefusal(r)));
+            && !refusals.some((r) => r.page === page && isFinalOcrRefusal(r)));
         if (everyPage.size) {
           result.pageTexts = mergeRecognisedPages(result.pageTexts ?? [], everyPage);
           const recognised = (result.pageTexts ?? []).join('\n');

@@ -30,7 +30,7 @@ import {
   recordStage, type ImportStageLedger,
 } from './importStageLedger.pure.ts';
 import { IMAGE_BUDGET_MS } from './importBudget.pure.ts';
-import { mayStoreImage } from './importResumeBudget.pure.ts';
+import { mayDecideRoles, mayStoreImage, roleDecodeMs, expensiveSpendMs } from './importResumeBudget.pure.ts';
 import {
   describeIdentityChange, identityDifferences, reReadHoldsSameProperty,
   stockPropertyIdentity,
@@ -58,7 +58,9 @@ import {
 import {
   anchorPdfRowsToPages, pdfAnchorPage, pdfAnchorPageOrRegion,
 } from './pdfRowAnchors.pure.ts';
-import { documentVisualKinds, eligibilityDetailFor } from './assessSourceImage.ts';
+import {
+  documentVisualKinds, documentVisualKindsPixels, eligibilityDetailFor,
+} from './assessSourceImage.ts';
 
 /** What `attachDocumentMedia` did with one picture, for a caller that counts. */
 export interface AttachedMedia {
@@ -1304,12 +1306,35 @@ export async function importStockRecords(
    * cannot say which is near the CPU ceiling, and that is the question the
    * 22 September kill asked.
    */
-  if (input.media.length && !room()) {
+  /*
+   * AND WHAT DECIDING THOSE PICTURES' ROLES WILL COST, PRICED BEFORE IT
+   * BEGINS. A paginated document's pictures are decoded to settle what each
+   * one is — every picture, in one pass, before a single one is stored — and
+   * `room()` only ever asked about the storing. Read from the pictures'
+   * headers, so pricing the decode costs nothing. See `mayDecideRoles`.
+   */
+  const rolePixels = input.media.length && input.pageTexts?.length
+    ? documentVisualKindsPixels(input.media) : 0;
+  // `room()` records its own refusal, so it is asked only where there are
+  // pictures to refuse — exactly as before.
+  const roomForPictures = input.media.length ? room() : true;
+  const rolesAffordable = mayDecideRoles(input.ledger, rolePixels);
+  if (input.media.length && (!roomForPictures || !rolesAffordable)) {
     // The document's own media is the same expensive work by another route.
     // Left whole for the enrichment pass rather than half-attributed here:
     // `attachDocumentMedia` decides roles across the WHOLE set, so running it
     // against a truncated one would be attribution on partial evidence.
     outcome.imageryOutstanding = true;
+    if (roomForPictures) {
+      console.log('[builderStock] pictures left whole for the repair sweep', {
+        phase: 'image_roles_deferred',
+        upload_id: input.uploadId,
+        pictures: input.media.length,
+        role_megapixels: Math.round(rolePixels / 100_000) / 10,
+        role_estimate_ms: Math.round(roleDecodeMs(rolePixels)),
+        spent_ms: Math.round(expensiveSpendMs(input.ledger)),
+      });
+    }
   } else await attachDocumentMedia(
     db, {
       ...input,

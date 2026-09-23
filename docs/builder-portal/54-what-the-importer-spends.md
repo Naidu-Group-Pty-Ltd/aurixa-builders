@@ -171,6 +171,27 @@ by `builder_stock_kick_image_work` the moment the import ends.
 `repairSourceImages` passes no ledger and therefore declines nothing — it is
 the component that exists to attach what this declines.
 
+**And the first version of this left the larger half of the loop open.**
+Before a single picture is stored, a paginated document's pictures are
+decoded to settle what each one IS (`documentVisualKinds`, up to 24 of them,
+one pass that cannot be divided — roles decided on part of the set are decided
+on partial evidence). It was "charged rather than bounded", which meant it
+always ran: re-profiled through the product's own file path,
+`stress-multi-property` spent **4,854 ms** in it in one invocation, after the
+document had been read — the unguarded loop the per-picture gate was written
+to close, one call earlier, and the part of the old `image_store` figure that
+was never storage at all. It is now priced before it begins, from the
+pictures' HEADERS (`documentVisualKindsPixels`, sharing one predicate with the
+decode so the two cannot mean different pictures), at the production-measured
+~440 ms a megapixel, and `mayDecideRoles` lets it begin only if it fits INSIDE
+the ceiling — an estimate is where the error is, and the margin to the
+shortest measured kill absorbs it. Declined, the whole set is left to the
+settler, which decides the same roles whole in an isolate of its own; the
+acceptance gate's case 8m proves every property still receives its pictures,
+once. The same profile found `db_write` counting that decode a second time
+(5,009 ms for row writes that cost tens), because it subtracted `image_store`
+alone; it now subtracts the whole raster class spent inside the call.
+
 ### 6.2 The document class gets a continuation, and only for recognition
 
 Recognition is the one document-class stage that can exceed any sane budget on
@@ -197,6 +218,25 @@ had read.
 Pictures are deliberately **not** checkpointed: they already have somewhere
 better to go, and persisting decoded rasters to resume them would be the
 "giant blob stored to avoid computation" this design is told not to write.
+
+**A page with nothing to recognise must be settled, and was not.** The
+recogniser settles every page it is HANDED; a plan page the rasteriser yields
+no image for was handed to nobody, so it was neither read nor refused and
+stayed owed. `stress-heavy-brochure` — a native brochure that reads in 0.35 s
+— crossed **eleven** isolates re-asking one such page until the crossing bound
+stopped it, and because each crossing takes the first owed page, a page like
+that also stands in front of every readable page behind it
+(`stress-many-images` sat at six owed pages for five crossings without
+attempting one). Such a page is now refused `no_raster` — final, because the
+same bytes carry the same images every time — and a plan page beyond the
+rasteriser's reach (`OCR_MAX_PAGES`, the reach the single pass always had) is
+settled in the pass that knows it rather than costing an isolate apiece. The
+floor of one page an invocation, which the code's own comment said "never
+binds in practice", binds on every invocation: 3,000 ms of allowance against
+3,100 ms a page is one page, so a scan of N pages crosses N isolates. And a
+dense page measured **4.7–5.0 s** here, not 3.1 — `OCR_PAGE_MS` is an average
+that includes the cheap first page — so one page is the whole of an
+invocation's recognition, and a page is the unit nothing can divide.
 
 ### 6.3 The ceiling is derived, not chosen
 

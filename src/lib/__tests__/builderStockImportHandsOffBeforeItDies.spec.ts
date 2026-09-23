@@ -14,8 +14,9 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import {
-  EXPENSIVE_SPEND_CEILING_MS, OCR_PAGE_MS, RASTER_STEP_MS,
-  expensiveSpendMs, mayRecognisePage, mayStoreImage, remainingExpensiveMs,
+  EXPENSIVE_SPEND_CEILING_MS, OCR_PAGE_MS, RASTER_STEP_MS, ROLE_DECODE_MS_PER_MEGAPIXEL,
+  expensiveSpendMs, mayDecideRoles, mayRecognisePage, mayStoreImage, remainingExpensiveMs,
+  roleDecodeMs,
 } from '../../../supabase/functions/_shared/builderStock/importResumeBudget.pure.ts';
 import {
   MAX_CHECKPOINT_PAGE_CHARS, MAX_CHECKPOINT_TOTAL_CHARS, MAX_IMPORT_CONTINUATIONS,
@@ -369,5 +370,94 @@ describe('an import left with nobody reading it is recovered — this attempt on
       .toContain('v_imports_in_flight := public.builder_stock_imports_in_flight()::integer;');
     expect(migration).toMatch(/\+ v_blocked \+ v_imports_in_flight = 0 THEN/);
     expect(migration).not.toContain('builder_stock_stalled_imports');
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('the decode that settles picture roles is priced before it begins', () => {
+  /**
+   * `documentVisualKinds` decodes every picture of a paginated document in one
+   * pass that cannot be divided. It ran with no gate until the profile caught
+   * it spending 4,854 ms on `stress-multi-property` after the document was
+   * already read — the loop `mayStoreImage` closed, one call earlier.
+   */
+  const MP = 1_000_000;
+
+  it('never prices a production measurement below what production measured', () => {
+    // `assessSourceImage.ts`: ~1 s for a 2.5 MP hero, 3.1 s for a 7.1 MP one.
+    expect(roleDecodeMs(2.5 * MP)).toBeGreaterThanOrEqual(1_000);
+    expect(roleDecodeMs(7.1 * MP)).toBeGreaterThanOrEqual(3_100);
+    expect(ROLE_DECODE_MS_PER_MEGAPIXEL).toBeGreaterThan(0);
+  });
+
+  it('a document of many large pictures leaves them whole for the settler', () => {
+    // `stress-multi-property`: four 2,200×1,375 and four 2,000×1,250 pictures.
+    const pixels = 4 * 2_200 * 1_375 + 4 * 2_000 * 1_250;
+    expect(mayDecideRoles({}, pixels)).toBe(false);
+  });
+
+  it('one hero is decided inline, as it always was', () => {
+    expect(mayDecideRoles({}, 2_000 * 1_250)).toBe(true);
+    expect(mayDecideRoles({ native_text_ms: 60, positioned_layout_ms: 55 }, 2_000 * 1_250)).toBe(true);
+  });
+
+  it('the whole decode must fit INSIDE the ceiling, not one step past it', () => {
+    const spent = { ocr_ms: EXPENSIVE_SPEND_CEILING_MS - 1_000 };
+    // A known step may start here (`mayBegin`); an estimated one this size may not.
+    expect(mayStoreImage(spent)).toBe(true);
+    expect(mayDecideRoles(spent, 2_000 * 1_250)).toBe(false);
+  });
+
+  it('a caller with no ledger decides exactly as it always did', () => {
+    expect(mayDecideRoles(null, 24 * 4 * MP)).toBe(true);
+  });
+
+  it('the importer asks before the decode, and the price and the decode mean the same pictures', () => {
+    const importStock = read('supabase/functions/_shared/builderStock/importStock.ts');
+    const asked = importStock.indexOf('mayDecideRoles(input.ledger, rolePixels)');
+    expect(asked).toBeGreaterThan(-1);
+    expect(importStock.indexOf('} else await attachDocumentMedia(')).toBeGreaterThan(asked);
+    const assess = read('supabase/functions/_shared/builderStock/assessSourceImage.ts');
+    const estimate = assess.slice(assess.indexOf('export function documentVisualKindsPixels'));
+    const decode = assess.slice(assess.indexOf('export async function documentVisualKinds('));
+    expect(estimate).toContain('if (!decodedForItsKind(entry)) continue;');
+    expect(decode).toContain('if (!decodedForItsKind(entry)) continue;');
+  });
+
+  it('db_write takes out the whole raster class, not one stage of it', () => {
+    const runImport = read('supabase/functions/_shared/builderStock/runImport.ts');
+    expect(runImport).toContain("classSpendMs(ledger, 'raster') - rasterBeforeRecords");
+    expect(runImport).not.toContain('- imageStoreMs');
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('a page with nothing to recognise is settled, never owed', () => {
+  /**
+   * A plan page the rasteriser yields nothing for was handed to no one, so it
+   * was neither read nor refused. Measured: `stress-heavy-brochure` crossed
+   * eleven isolates re-asking one such page, and because each crossing takes
+   * the FIRST owed page, it stood in front of every readable page behind it.
+   */
+  const extract = read('supabase/functions/_shared/builderStock/extract.ts');
+
+  it('a page asked for and not rasterised is refused as final', () => {
+    expect(extract).toContain('outstanding.filter((page) => !rasterised.has(page))');
+    expect(extract).toContain("reason: 'no_raster' as const");
+    // Final because the same bytes carry the same images every time: named in
+    // the recogniser's own list, read as text as the checks above read it.
+    expect(read('supabase/functions/_shared/builderStock/ocr/recogniseScan.ts'))
+      .toContain("['no_raster', 'too_large', 'unreadable']");
+  });
+
+  it('a page past the rasteriser\'s reach is settled in the pass that knows it', () => {
+    expect(extract).toContain('page > OCR_MAX_PAGES && !settled.has(page)');
+    expect(extract).toContain('page <= OCR_MAX_PAGES && !settled.has(page)');
+  });
+
+  it('what is owed is judged against every refusal, not only the recogniser\'s', () => {
+    const owed = extract.slice(extract.indexOf('result.ocrOutstanding = plan.pages'));
+    expect(owed).toContain('!refusals.some((r) => r.page === page && isFinalOcrRefusal(r))');
+    expect(owed.slice(0, 300)).not.toContain('reading.refusals');
   });
 });

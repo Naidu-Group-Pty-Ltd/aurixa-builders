@@ -216,7 +216,7 @@ def _s4(c):
 # and the combination is not, this is the fixture that says so.
 @fixture('stress-heavy-brochure', 'PACKAGE BROCHURE - FULL.pdf',
          'document AND raster together, at production scale',
-         dict(properties=1, image='facade_page_1'))
+         dict(properties=1, image='facade_page_1', rows=[dict(lot_number='550')]))
 def _s5(c):
     text(c, L, 22, 'ASHFORD RISE', 20, True)
     text(c, L, 32, 'Lot 550 Hawke Parade', 15, True)
@@ -246,7 +246,7 @@ def _s5(c):
 # thing in the pipeline per page and the acceptance corpus recognises one.
 @fixture('stress-scanned-pages', 'SCANNED PACKAGE - MULTI.pdf',
          'document: recognition over several pages',
-         dict(properties=1, image=None))
+         dict(properties=1, image=None, rows=[dict(lot_number='88')]))
 def _s6(c):
     pages = [
         [('LOT 88 - HARLOW 21', 14), ('22 Wattlebird Way', 11),
@@ -265,18 +265,24 @@ def _s6(c):
 #
 # Segmentation and the reader multiplied by the number of cards, with a
 # photograph on each so the raster class scales with it.
+# The lots the release sheet states — read by the drawing AND its expectation,
+# so the acceptance gate can tell a lot this document names from one it does not.
+S7_LOTS = [('160', 'Onyx 18', '301m2', '174m2', '$619,000'),
+           ('164', 'Pearl 21', '357m2', '206m2', '$704,000'),
+           ('171', 'Quarry 23', '406m2', '233m2', '$771,000'),
+           ('175', 'Rowan 26', '462m2', '264m2', '$848,000'),
+           ('182', 'Sable 19', '330m2', '188m2', '$664,000'),
+           ('186', 'Thistle 22', '392m2', '221m2', '$742,000'),
+           ('193', 'Umber 24', '455m2', '248m2', '$806,000'),
+           ('197', 'Verity 27', '498m2', '271m2', '$869,000')]
+
+
 @fixture('stress-multi-property', 'STOCK LIST - FULL RELEASE.pdf',
          'document AND raster, multiplied by property count',
-         dict(properties=8, image='facade_page_1'))
+         dict(properties=8, image='facade_page_1',
+              rows=[dict(lot_number=lot[0]) for lot in S7_LOTS]))
 def _s7(c):
-    lots = [('160', 'Onyx 18', '301m2', '174m2', '$619,000'),
-            ('164', 'Pearl 21', '357m2', '206m2', '$704,000'),
-            ('171', 'Quarry 23', '406m2', '233m2', '$771,000'),
-            ('175', 'Rowan 26', '462m2', '264m2', '$848,000'),
-            ('182', 'Sable 19', '330m2', '188m2', '$664,000'),
-            ('186', 'Thistle 22', '392m2', '221m2', '$742,000'),
-            ('193', 'Umber 24', '455m2', '248m2', '$806,000'),
-            ('197', 'Verity 27', '498m2', '271m2', '$869,000')]
+    lots = S7_LOTS
     for page in range(4):
         text(c, L, 22, f'MERIDIAN PARK - STOCK LIST PAGE {page + 1} OF 4', 17, True)
         left, right = lots[page * 2], lots[page * 2 + 1]
