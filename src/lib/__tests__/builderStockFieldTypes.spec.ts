@@ -188,3 +188,27 @@ describe('the gate judges kinds, not content', () => {
     ]);
   });
 });
+
+describe('a design or an estate is never the name of a section of the document', () => {
+  /*
+   * MEASURED 23 SEPTEMBER 2026: `LOT 4327` heads its area schedule `House` over
+   * `Specifications`, `House` is this vocabulary's word for the design, and the
+   * card was titled `Lot 4327, · Specifications`.
+   */
+  it('refuses a heading offered as a design or a place', () => {
+    expect(reason('house_design', 'Specifications')).toBe('a_section_heading_is_not_a_name');
+    expect(reason('house_design', 'Single Storey Specifications'))
+      .toBe('a_section_heading_is_not_a_name');
+    expect(reason('development_name', 'Standard Inclusions'))
+      .toBe('a_section_heading_is_not_a_name');
+    expect(reason('house_design', 'Floor Plan')).toBe('a_section_heading_is_not_a_name');
+  });
+
+  it('never refuses a name for the company it keeps', () => {
+    for (const name of ['Enzo 10.5', 'Cura 20B', 'Nex 20', 'Miami 190', 'Plan 21',
+      'The Grove', 'Jubilee Estate', 'Society 1056', 'Palomino Estate', 'Aspire 24 Grande']) {
+      const field = /estate|grove|society/i.test(name) ? 'development_name' : 'house_design';
+      expect(accepts(field, name)).toBe(true);
+    }
+  });
+});

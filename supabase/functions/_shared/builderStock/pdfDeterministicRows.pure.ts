@@ -127,8 +127,9 @@ import {
 } from './normalise.pure.ts';
 import { headerScore, keyRowsByHeader } from './table.pure.ts';
 import {
-  bedroomsFromPlan, bindCountRow, countRoomsNamed,
+  bedroomsFromPlan, bindCountRow, countRoomsNamed, type PlanRoomCounts,
 } from './floorPlanCounts.pure.ts';
+import { readAreaScheduleTotal } from './areaSchedule.pure.ts';
 import {
   pdfRegionAnchor, segmentPropertyRegions,
   type PageSegmentation, type RegionBox,
@@ -777,7 +778,8 @@ type ClaimSource =
   | 'below'
   | 'caption'
   | 'filename'
-  | 'icon_row';
+  | 'icon_row'
+  | 'area_schedule';
 
 /** Stamp a reader's name on what it produced, without rewriting the reader. */
 function via(source: ClaimSource, claims: readonly Claim[]): Claim[] {
@@ -1816,6 +1818,14 @@ function readStreetName(segment: string): string | null {
 /** `Lot 9` / `Lot 214` at the head of a segment, returned with what is left. */
 const LEADING_LOT = /^lot\s*[:.]?\s*(\d{1,5}[A-Za-z]?)\b[\s,.-]*/i;
 
+/**
+ * `Sandpiper Estate` — a segment that says outright it is a development.
+ * Named once because the one-line and the two-line address readers both ask
+ * it, and two copies of it is how one of them comes to learn a word the other
+ * does not.
+ */
+const NAMED_DEVELOPMENT = /^(.*\S)\s+(estate|rise|park|grove|gardens|village|waters|heights)$/i;
+
 interface ComposedAddress extends LocalityLine {
   street: string;
   lot: string | null;
@@ -1895,7 +1905,7 @@ export function readComposedAddressLine(line: string): ComposedAddress | null {
    * it says so — a segment that merely looks like a name stays unread, and
    * the alternative on that document was `PROPLAUNCH`, read off a caption.
    */
-  const named = head.match(/^(.*\S)\s+(estate|rise|park|grove|gardens|village|waters|heights)$/i);
+  const named = head.match(NAMED_DEVELOPMENT);
   const development = named ? `${named[1]} ${named[2]}` : null;
   if (development) return { street: '', lot, development, ...locality };
 
@@ -1906,6 +1916,111 @@ export function readComposedAddressLine(line: string): ComposedAddress | null {
   if (!street) return null;
 
   return { street, lot, development: null, ...locality };
+}
+
+/**
+ * ===========================================================================
+ * `Lot 4327 Jubilee Estate,` OVER `Wyndham Vale` — ONE ADDRESS ON TWO LINES.
+ * ===========================================================================
+ *
+ * MEASURED 23 SEPTEMBER 2026 on the production brochure for `LOT 4327`, and
+ * on its sibling `LOT 3312` from the same builder's template:
+ *
+ *     r5  x27  Lot 4327 Jubilee Estate,          r5  x29  Lot 3312 Smiths Lane,
+ *     r6  x27  Wyndham Vale                      r6  x29  Clyde North
+ *
+ * The lot was read and nothing else was. `readStreetLine` found `Smiths Lane`
+ * and then asked the line under it for a state and a postcode, which is right
+ * for a line standing on its own and is not what this is: the first line ENDS
+ * IN A COMMA. The document is saying, in its own punctuation, that the address
+ * goes on — and the one-line form of the same address (`Lot 37, Sandpiper
+ * Estate, Tweed Heads NSW`) has been read since it was first measured. The
+ * estate, the street and the suburb were all on the page and the card showed
+ * `Lot 4327,` with nothing after it.
+ *
+ * FIVE CONDITIONS, AND EACH IS THE PAGE'S OWN EVIDENCE.
+ *
+ *   • The first line ends in a comma — the continuation is stated, not
+ *     inferred.
+ *   • It OPENS with the property's identity: a lot designation or a street
+ *     number. A line that merely names an estate and a comma is the shape
+ *     `readNamedPlace` reads for the estate alone, and it deliberately does
+ *     not read its tail as a suburb; nothing here overrules that.
+ *   • What follows the identity says what it is: a development in so many
+ *     words (`NAMED_DEVELOPMENT`) or a street from the closed `STREET_TYPE`
+ *     set, which is the vocabulary the one-line reader answers to.
+ *   • The line under it, in the same column, is a place name and nothing else:
+ *     one to four capitalised words, no figure, no field word, not the
+ *     builder's own name, not a promotion — or a full locality with its state.
+ *   • After an ESTATE, a place ending in a street word is a street as easily
+ *     as a suburb, and the line is refused rather than guessed.
+ *
+ * NOTHING IS INVENTED. Where the page names a suburb and no state, the state
+ * and the postcode stay empty: `Wyndham Vale` is in Victoria, and this reader
+ * knows that only because a person does. And it answers to the same
+ * whole-document guard as every other address block — a document drawing two
+ * addresses claims neither.
+ */
+function readContinuedAddress(
+  line: string,
+  under: string,
+  organisation: readonly string[],
+): (LocalityLine & { street: string; lot: string | null; development: string | null }) | null {
+  const trimmed = String(line ?? '').trim();
+  if (!/,\s*$/.test(trimmed)) return null;
+  const head = trimmed.replace(/[\s,]+$/, '');
+  if (!head || PUBLISHER_PREMISES.test(head)) return null;
+
+  const lotMatch = head.match(LEADING_LOT);
+  const lot = lotMatch ? lotMatch[1] : null;
+  const rest = lotMatch ? head.slice(lotMatch[0].length).trim() : head;
+  let street = '';
+  let development: string | null = null;
+  if (lot) {
+    const named = rest.match(NAMED_DEVELOPMENT);
+    if (named) development = `${named[1]} ${named[2]}`;
+    else street = readStreetLine(head) ?? '';
+  } else {
+    // No lot: only a NUMBERED street says which property this is.
+    street = readStreetLine(head) ?? '';
+  }
+  if (!development && !street) return null;
+
+  const full = readComposedLocality(under);
+  if (full) return { street, lot, development, ...full };
+
+  const place = readBarePlaceName(under, organisation);
+  if (!place) return null;
+  if (development) {
+    const last = place.split(/\s+/).pop()?.toLowerCase() ?? '';
+    if (STREET_TYPE.has(last)) return null;
+  }
+  return { street, lot, development, suburb: place, state: '', postcode: '' };
+}
+
+/**
+ * A line that is a place's name and nothing else: `Wyndham Vale`,
+ * `Clyde North`, `Mickleham`.
+ *
+ * Asked ONLY of the line a comma-ended address continues onto — on its own a
+ * capitalised pair of words is a heading, a design or a builder as easily as a
+ * suburb, and nothing here is ever asked about one.
+ */
+const PLACE_WORD = /^[A-Z][A-Za-z'’.-]*$/;
+const MAX_PLACE_WORDS = 4;
+
+function readBarePlaceName(line: string, organisation: readonly string[]): string | null {
+  const trimmed = String(line ?? '').trim().replace(/[.,;]+$/, '');
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (!words.length || words.length > MAX_PLACE_WORDS) return null;
+  if (!words.every((word) => PLACE_WORD.test(word))) return null;
+  if (fieldForHeader(trimmed)) return null;
+  // `Titled Land`, `Stage Release`: a word this vocabulary reads as a field is
+  // the document labelling something, and a suburb is never labelled by itself.
+  if (words.some((word) => fieldForHeader(word))) return null;
+  if (readsAsPromotion(trimmed)) return null;
+  if (organisation.length && corroboratedBy(trimmed, [organisation])) return null;
+  return trimmed;
 }
 
 function splitLocality(claim: Claim): Claim[] {
@@ -2828,9 +2943,147 @@ function countsContradictedByRow(
   return contradicted;
 }
 
+/**
+ * ===========================================================================
+ * THE ICON ROW, IN THE ORDER A BROCHURE OF THIS SHAPE PRINTS IT.
+ * ===========================================================================
+ *
+ * The plan is the stronger key and it is always asked first: `bindCountRow`
+ * and the named-bedroom rule above are unchanged, and nothing below runs
+ * where either of them read the row. This is what happens where NEITHER
+ * could — where the floor plan is a picture, or its labels were broken up by
+ * the exporter, and the brochure carries no siting page.
+ *
+ * MEASURED 23 SEPTEMBER 2026 across one builder's template in production:
+ *
+ *     LOT 717   Enzo 10.5   3 2 2   plan text on the siting page → read 3/2/2
+ *     LOT 266   Cura 20B    4 2 2   plan text on page 1          → read 4/2/2
+ *     LOT 4327  Enzo 10.5   3 2 2   plan is a picture, no siting page → nothing
+ *     LOT 3312  Cura 20B    4 2 2   plan labels split (`Bed`/`3`)     → nothing
+ *
+ * The same design, the same row, the same position on the page — and two of
+ * four cards showed three dashes because the key was missing, not because the
+ * document said less. Every plan this reader has keyed agreed with the
+ * printed order, bed · bath · car, which is also how the builder's own stock
+ * list heads the same figures (`BED // BATH // CAR`), and it is the order
+ * every Australian listing sets them in.
+ *
+ * SO THE ORDER IS READ — AND ONLY WHERE THE PAGE PROVES IT IS LOOKING AT
+ * THAT ROW. Every condition refuses rather than guesses:
+ *
+ *   • It is the ONE row of three counts in the whole document
+ *     (`soleCountRow`), so a comparison table or a second property reads
+ *     nothing.
+ *   • It is DRAWN as an icon row: three separate figures, each gap between
+ *     them at least `ICON_GAP_ADVANCES` of the figures' own advance with
+ *     nothing of the text layer in it — that empty space is where the
+ *     pictograms are. `4  2  2` typed as one run is not one, and neither is a
+ *     row of figures set a word space apart.
+ *   • It is on a page that names the property's lot, which is what places it
+ *     in the property's own headline rather than in a spread of numbers.
+ *   • No figure is zero-padded: `01 02 03` numbers something, it counts
+ *     nothing.
+ *   • The figures are plausible IN THAT ORDER: at least one bedroom, no more
+ *     bathrooms than bedrooms and a powder room, no more car spaces than
+ *     bedrooms and one, and a half — which only a bathroom can be — only in
+ *     the bathroom's place.
+ *   • Where the plan names ANY bedroom, the named bedrooms are a floor under
+ *     the first figure and never above it. A plan naming four bedrooms beside
+ *     a row reading `3 2 2` is the document disagreeing with itself, and all
+ *     three stay unread. Fewer named than printed is not a disagreement: a
+ *     plan drawn with a room uncaptioned, or a label the exporter split in
+ *     two, names fewer rooms than it has.
+ *
+ * It is recorded as what it is. `countEvidence` names
+ * `icon_row_in_conventional_order`, never a plan's evidence, so a figure read
+ * by the order is never indistinguishable in the log from one a plan proved.
+ */
+const ICON_GAP_ADVANCES = 3;
+const MAX_ORDERED_BEDROOMS = 9;
+const MAX_ORDERED_CAR_SPACES = 6;
+
+/** Every drawing of a three-count row: its page, its figures and its band. */
+function countRowDrawings(
+  pages: ReadonlyArray<readonly BrochureUnit[]>,
+): Array<{ page: number; counts: BrochureUnit[]; band: BrochureUnit[] }> {
+  const drawings: Array<{ page: number; counts: BrochureUnit[]; band: BrochureUnit[] }> = [];
+  pages.forEach((units, page) => {
+    const byRow = new Map<number, BrochureUnit[]>();
+    for (const unit of units) {
+      const row = byRow.get(unit.row);
+      if (row) row.push(unit);
+      else byRow.set(unit.row, [unit]);
+    }
+    for (const band of byRow.values()) {
+      const counts = band.filter((unit) => readsAsACount(unit.text));
+      if (counts.length !== COUNT_ROW_SIZE) continue;
+      drawings.push({ page, counts: counts.slice().sort((a, b) => a.x - b.x), band });
+    }
+  });
+  return drawings;
+}
+
+/** Three figures set apart by the space their pictograms occupy. */
+function drawnAsIconRow(counts: readonly BrochureUnit[], band: readonly BrochureUnit[]): boolean {
+  if (counts.some((unit) => /^0\d/.test(unit.text.trim()))) return false;
+  for (let index = 1; index < counts.length; index++) {
+    const left = counts[index - 1];
+    const right = counts[index];
+    const leftWidth = Number(left.width ?? 0);
+    const rightWidth = Number(right.width ?? 0);
+    // No width is no measurement — a flattened line — and never an icon row.
+    if (!(leftWidth > 0) || !(rightWidth > 0)) return false;
+    const advance = Math.max(
+      leftWidth / Math.max(1, left.text.trim().length),
+      rightWidth / Math.max(1, right.text.trim().length),
+    );
+    const leftEnd = left.x + leftWidth;
+    if (right.x - leftEnd < ICON_GAP_ADVANCES * advance) return false;
+    // The gap holds the pictogram and nothing the text layer drew.
+    if (band.some((unit) => unit !== left && unit !== right
+      && unit.x > left.x && unit.x < right.x)) return false;
+  }
+  return true;
+}
+
+function readOrderedIconRow(
+  pages: ReadonlyArray<readonly BrochureUnit[]>,
+  row: readonly number[],
+  rooms: PlanRoomCounts,
+  lotPages: ReadonlySet<number>,
+): { claims: Claim[]; evidence: string[] } | null {
+  const [bedrooms, bathrooms, carSpaces] = row;
+  if (!Number.isInteger(bedrooms) || bedrooms < 1 || bedrooms > MAX_ORDERED_BEDROOMS) return null;
+  if (!(bathrooms >= 1) || bathrooms > bedrooms + 0.5) return null;
+  if (!Number.isInteger(carSpaces) || carSpaces < 0 || carSpaces > MAX_ORDERED_CAR_SPACES) {
+    return null;
+  }
+  if (carSpaces > bedrooms + 1) return null;
+  if (rooms.bedrooms !== null && rooms.bedrooms > bedrooms) return null;
+
+  const key = row.join('/');
+  const drawn = countRowDrawings(pages).some(({ page, counts, band }) =>
+    counts.map((unit) => Number(unit.text.trim())).join('/') === key
+    && lotPages.has(page)
+    && drawnAsIconRow(counts, band));
+  if (!drawn) return null;
+
+  const evidence = ['icon_row_in_conventional_order'];
+  if (rooms.bedrooms !== null) evidence.push('plan_bedrooms_within_count');
+  return {
+    claims: [
+      { field: 'bedrooms', value: String(bedrooms) },
+      { field: 'bathrooms', value: String(bathrooms) },
+      { field: 'car_spaces', value: String(carSpaces) },
+    ],
+    evidence,
+  };
+}
+
 function readIconCountRow(
   pages: ReadonlyArray<readonly BrochureUnit[]>,
   claimed: ReadonlyMap<string, string>,
+  lotPages: ReadonlySet<number> = new Set(),
 ): { claims: Claim[]; evidence: string[] } | null {
   for (const field of COUNT_FIELDS) if (claimed.has(field)) return null;
   if (claimed.has('bed_bath_car')) return null;
@@ -2889,7 +3142,12 @@ function readIconCountRow(
         evidence: ['plan_named_bedrooms_at_first_position'],
       };
     }
-    return null;
+    /*
+     * AND WHERE THE PLAN COULD NOT KEY IT, THE ORDER THE ROW WAS PRINTED IN —
+     * only under the guards `readOrderedIconRow` states, and recorded as the
+     * weaker evidence it is.
+     */
+    return readOrderedIconRow(pages, row, rooms, lotPages);
   }
 
   /*
@@ -3052,7 +3310,13 @@ export function readPdfBrochure(
   /** Every street-over-locality pair the document draws. See `readLocalityLine`. */
   const addressBlocks: Array<LocalityLine
     & { street: string; lines: string[]; lot?: string | null;
-        development?: string | null }> = [];
+        development?: string | null; page?: number }> = [];
+  /**
+   * THE PAGES THAT SAY WHICH PROPERTY THIS IS — where a lot designation was
+   * read. Numbers only; asked by the icon-row reading, which may read a row
+   * in its printed order only on the page that names the lot.
+   */
+  const lotPages = new Set<number>();
   /*
    * INDEXED, NOT `forEach`. This loop `return`s a refusal from inside itself
    * on a conflict and on the line ceiling; inside a callback those returns
@@ -3243,6 +3507,7 @@ export function readPdfBrochure(
        * claim nothing.
        */
       {
+        let collected = false;
         const street = readStreetLine(line);
         if (street) {
           const beneath = unitBelow(units, index);
@@ -3272,6 +3537,7 @@ export function readPdfBrochure(
               development: composedUnder?.development ?? null,
               lines: [line, under],
             });
+            collected = true;
           }
         }
         /*
@@ -3304,6 +3570,24 @@ export function readPdfBrochure(
             development: composed.development,
             lines: [line],
           });
+          collected = true;
+        }
+        /*
+         * AND THE SAME ADDRESS BROKEN ACROSS TWO LINES AT A COMMA, asked only
+         * where neither reading above collected a block for this line — so a
+         * line both readers can read is never counted twice, and the
+         * whole-document guard sees one address where the page drew one. See
+         * `readContinuedAddress`.
+         */
+        if (!collected) {
+          const beneath = unitBelow(units, index);
+          const under = beneath !== null && !consumed.has(beneath)
+            ? units[beneath].text : null;
+          const continued = under !== null
+            ? readContinuedAddress(line, under, organisation) : null;
+          if (continued && under !== null) {
+            addressBlocks.push({ ...continued, lines: [line, under], page: pageIndex });
+          }
         }
       }
 
@@ -3544,6 +3828,7 @@ export function readPdfBrochure(
         if (headings.has(claim.value.replace(/\s+/g, ' ').trim().toUpperCase())) {
           continue;
         }
+        if (claim.field === 'lot_number') lotPages.add(pageIndex);
         const existing = claimed.get(claim.field);
         if (existing === undefined) {
           claimed.set(claim.field, claim.value);
@@ -3712,6 +3997,9 @@ export function readPdfBrochure(
     claimed.set('state', addressBlock.state);
     claimed.set('postcode', addressBlock.postcode);
     if (!addressBlock.postcode) claimed.delete('postcode');
+    // A block that named its suburb and no state leaves the state unread —
+    // `readContinuedAddress` is the one reader that can produce one.
+    if (!addressBlock.state) claimed.delete('state');
     for (const field of ['address_line', 'suburb', 'state', 'postcode']) {
       if (claimed.has(field)) readBy.set(field, 'address_block');
     }
@@ -3734,6 +4022,7 @@ export function readPdfBrochure(
       claimed.set('lot_number', addressBlock.lot);
       readBy.set('lot_number', 'address_block');
     }
+    if (addressBlock.lot && addressBlock.page !== undefined) lotPages.add(addressBlock.page);
   }
   const afterAddress = addressBlock && addressBlockRead
     ? repeats.filter((line) => !addressBlock.lines.includes(line))
@@ -3772,6 +4061,24 @@ export function readPdfBrochure(
     ? afterFilename.filter((line) =>
       flattenIdentity(line.split(',')[0] ?? '') !== flattenIdentity(place.value))
     : afterFilename;
+
+  /*
+   * THE HOUSE'S SIZE, WHERE THE DOCUMENT STATES IT ONLY AS A SCHEDULE.
+   *
+   * Asked last among the corroborations and only where the whole document
+   * stated no building size and did not state two: a size LABELLED as the
+   * build always wins, and a document that disagrees with itself about one is
+   * left disagreeing rather than handed a third figure. See
+   * `areaSchedule.pure.ts` for why this was removed once and is back only as
+   * the one opinion a document without a build label offers.
+   */
+  if (!claimed.has('building_size_sqm') && !disputed.has('building_size_sqm')) {
+    const schedule = readAreaScheduleTotal(pages);
+    if (schedule && acceptFieldValue('building_size_sqm', schedule.value, 'label').accepted) {
+      claimed.set('building_size_sqm', schedule.value);
+      readBy.set('building_size_sqm', 'area_schedule');
+    }
+  }
 
   const placed = placedByName;
 
@@ -3842,7 +4149,7 @@ export function readPdfBrochure(
     claimed.delete(field);
     readBy.delete(field);
   }
-  const counts = readIconCountRow(pages, claimed);
+  const counts = readIconCountRow(pages, claimed, lotPages);
   if (counts) {
     for (const claim of counts.claims) {
       claimed.set(claim.field, claim.value);
@@ -4164,6 +4471,129 @@ function foldSuperscriptRows(
 const SUPERSCRIPT_MAX_RISE = 8;
 
 /**
+ * ===========================================================================
+ * A SUPERSCRIPT BELONGS TO THE RUN IT ABUTS, WHATEVER ELSE SHARES ITS BAND.
+ * ===========================================================================
+ *
+ * `foldSuperscriptRows` folds a row made of nothing BUT raised runs, and that
+ * is the case it was measured on. It cannot see a raised run that happens to
+ * land on somebody else's baseline. MEASURED 23 SEPTEMBER 2026 on the
+ * production brochure for `LOT 4327`, whose area schedule sits under a heading
+ * set on two lines:
+ *
+ *     "Specifications"  y=111.9  h=14.0   x=27.3
+ *     "2"               y=113.0  h= 5.8   x=130.1   ← the `²` of 91.91m²
+ *     "91.91m"          y=109.7  h=10.0   x=101.5, ending at 130.2
+ *
+ * The `2` is 1.1 points from the heading's baseline and 3.3 above its own
+ * figure, so grouping by baseline put it on the HEADING's line. Its figure
+ * lost its unit, and the same thing happened to `Total:`'s: the schedule's
+ * last `²` joined the `Total:` label, which sits 2.9 points above its own
+ * value. A page-wide band is the wrong question for a run that is touching the
+ * figure it modifies.
+ *
+ * So a run is its figure's superscript where the TYPE says so and nothing
+ * else: smaller than the run it abuts (under `SUPERSCRIPT_MAX_SIZE` of it),
+ * raised above that run's baseline by less than the run's own type height,
+ * and starting where that run ends. Such a run is grouped at its figure's
+ * baseline. Every test is about the type, exactly as the fold's are, so an
+ * exponent, a footnote marker and an ordinal all behave the same way.
+ *
+ * WITHOUT HEIGHTS NOTHING CHANGES: a run whose height the reader did not
+ * supply is never lifted, so every fixture written before heights existed
+ * reads exactly as it did.
+ */
+const SUPERSCRIPT_MAX_SIZE = 0.8;
+
+function liftedSuperscripts(drawn: readonly PdfTextItem[]): Map<PdfTextItem, number> {
+  const lifted = new Map<PdfTextItem, number>();
+  // `drawn` is sorted top of page first, so every candidate figure for a run
+  // sits AFTER it, within `SUPERSCRIPT_MAX_RISE` of its baseline.
+  for (let index = 0; index < drawn.length; index++) {
+    const raised = drawn[index];
+    const height = raised.height ?? 0;
+    if (!(height > 0)) continue;
+    let best: { figure: PdfTextItem; gap: number } | null = null;
+    for (let next = index + 1; next < drawn.length; next++) {
+      const figure = drawn[next];
+      const rise = raised.y - figure.y;
+      if (rise >= SUPERSCRIPT_MAX_RISE) break;
+      if (!(rise > 0)) continue;
+      const figureHeight = figure.height ?? 0;
+      if (!(figureHeight > 0) || rise >= figureHeight) continue;
+      if (height >= figureHeight * SUPERSCRIPT_MAX_SIZE) continue;
+      const gap = raised.x - (figure.x + (figure.width || 0));
+      if (!(gap > -1 && gap < MIN_COLUMN_GAP)) continue;
+      if (!best || Math.abs(gap) < Math.abs(best.gap)) best = { figure, gap };
+    }
+    if (best) lifted.set(raised, best.figure.y);
+  }
+  return lifted;
+}
+
+/**
+ * ===========================================================================
+ * A LABEL'S VALUE MAY SIT A FEW POINTS OFF THE LABEL'S OWN BASELINE.
+ * ===========================================================================
+ *
+ * MEASURED ON THE SAME DOCUMENT: `Total:` is drawn at y=70.7 and its value
+ * `129.5m²` at y=67.8, the same size, 50 points to its right. On the page it
+ * is one line; by baseline it is two, 2.9 apart against a 1.8 tolerance, so
+ * `Total:` had nothing beside it and its figure had no label. The sibling
+ * brochure `LOT 3312` does the same to `Ground Floor:`, `Porch:` and `Total:`.
+ *
+ * Widening the tolerance for everything would merge the lines of every
+ * two-column page whose columns happen to sit a couple of points apart. So
+ * this is asked of ONE shape only, and every condition is the page's own:
+ *
+ *   • the upper-or-lower line ENDS in a label — its rightmost run finishes
+ *     with a colon, a statement waiting for its value;
+ *   • the other line is ENTIRELY to that label's right, starting after it ends
+ *     and within `LABEL_VALUE_MAX_REACH` of its own type height;
+ *   • the two are set at a similar size, and their baselines are closer than
+ *     `LABEL_VALUE_DRIFT` of it — a fraction of one line, never a line apart.
+ *
+ * A label over its value in the same column fails the second test and is left
+ * to the reader that pairs a label with the value below it. Without heights it
+ * declines, so a fixture of coordinates written before heights existed reads
+ * exactly as it did.
+ */
+const LABEL_VALUE_DRIFT = 0.35;
+const LABEL_VALUE_MAX_REACH = 8;
+const LABEL_VALUE_MAX_SIZE_RATIO = 1.5;
+
+function typeHeightOf(items: readonly PdfTextItem[]): number {
+  return Math.max(0, ...items.map((item) => item.height ?? 0));
+}
+
+function joinDriftedLabelValues(groups: Array<{ y: number; items: PdfTextItem[] }>): void {
+  for (let index = 0; index < groups.length; index++) {
+    const label = groups[index];
+    const rightmost = label.items.reduce((a, b) => (b.x > a.x ? b : a));
+    if (!/:\s*$/.test(String(rightmost.text ?? ''))) continue;
+    const labelHeight = rightmost.height ?? 0;
+    if (!(labelHeight > 0)) continue;
+    const labelEnd = rightmost.x + (rightmost.width || 0);
+    for (const step of [1, -1]) {
+      const other = groups[index + step];
+      if (!other) continue;
+      const otherHeight = typeHeightOf(other.items);
+      if (!(otherHeight > 0)) continue;
+      const small = Math.min(labelHeight, otherHeight);
+      if (Math.max(labelHeight, otherHeight) / small > LABEL_VALUE_MAX_SIZE_RATIO) continue;
+      if (Math.abs(label.y - other.y) > LABEL_VALUE_DRIFT * small) continue;
+      const left = Math.min(...other.items.map((item) => item.x));
+      if (left < labelEnd - COLUMN_SLACK) continue;
+      if (left - labelEnd > LABEL_VALUE_MAX_REACH * small) continue;
+      label.items.push(...other.items);
+      groups.splice(index + step, 1);
+      if (step < 0) index -= 1;
+      break;
+    }
+  }
+}
+
+/**
  * The narrowest gap that is a SPACE rather than the join inside a word.
  *
  * Measured: runs that continue a word abut at |gap| ≤ 0.28, and a page that
@@ -4199,15 +4629,26 @@ export function layoutLines(items: readonly PdfTextItem[]): LayoutLine[] {
     .slice()
     .sort((a, b) => (b.y - a.y) || (a.x - b.x));
 
+  const lifted = liftedSuperscripts(drawn);
+  const baselineOf = (item: PdfTextItem) => lifted.get(item) ?? item.y;
   const groups: Array<{ y: number; items: PdfTextItem[] }> = [];
   for (const item of drawn) {
+    const baseline = baselineOf(item);
     const group = groups.find((candidate) =>
-      Math.abs(candidate.y - item.y) <= SAME_LINE_TOLERANCE);
+      Math.abs(candidate.y - baseline) <= SAME_LINE_TOLERANCE);
     if (group) group.items.push(item);
-    else groups.push({ y: item.y, items: [item] });
+    else groups.push({ y: baseline, items: [item] });
   }
+  /*
+   * A LIFTED RUN CAN OPEN ITS FIGURE'S GROUP BEFORE A LINE THAT SITS BETWEEN
+   * THEM IN THE PAGE ORDER, so the rows are put back into reading order. With
+   * nothing lifted every group was opened in that order already, and the sort
+   * is not run at all.
+   */
+  if (lifted.size) groups.sort((a, b) => b.y - a.y);
 
   foldSuperscriptRows(groups);
+  joinDriftedLabelValues(groups);
 
   /*
    * One pass left to right. A run that begins within `MIN_COLUMN_GAP` of where

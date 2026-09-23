@@ -1380,6 +1380,236 @@ def _m11(c):
     c.showPage()
 
 
+
+# ===========================================================================
+# THE ICON-ROW BROCHURE WITH NO SITING PAGE (held out, 23 September 2026)
+#
+# A builder's one-page package brochure, set the way the production brochure
+# for `LOT 4327` sets it and measured from that document's own geometry: the
+# design name over a row of three bare numbers, each beside a pictogram; the
+# three prices; the lot and its estate or street on one line ending in a
+# comma, the suburb alone on the next; a `House` / `Specifications` heading
+# over an area schedule whose superscripts and value baselines drift by a few
+# points. The sibling that reads completely carries a SITING PAGE stating all
+# of this again under labels; this one does not, so every fact has to come
+# off the page that states it.
+#
+# THE GEOMETRY IS THE SUBJECT, so it is drawn in points rather than
+# millimetres: a raised `2` 3.3 points up at 58% of the type, a heading whose
+# baseline sits 1.1 points under that `2`, and a `Total:` label 2.9 points
+# above its own value. Nothing here is a production document's text.
+# ===========================================================================
+
+from reportlab.pdfbase.pdfmetrics import stringWidth
+
+
+def pt(c, x, y, s, size=10, bold=False):
+    """A run at a baseline in POINTS. Answers where the run ends."""
+    font = 'Helvetica-Bold' if bold else 'Helvetica'
+    c.setFont(font, size)
+    c.drawString(x, y, s)
+    return x + stringWidth(s, font, size)
+
+
+def area_pt(c, x, y, figure, size=10, rise=3.3):
+    """`118.40m²` as a brochure sets it: the figure, then a raised `2` drawn as
+    a run of its own that abuts it."""
+    end = pt(c, x, y, figure, size)
+    pt(c, end, y + rise, '2', round(size * 0.58, 1))
+
+
+def pictogram(c, kind, x, y):
+    """Line art beside a number. It carries no text, which is the point: the
+    text layer sees the number and nothing that says what it counts."""
+    c.setLineWidth(1.3)
+    if kind == 'bed':
+        c.rect(x, y - 1, 34, 9); c.rect(x, y + 8, 9, 6)
+    elif kind == 'bath':
+        c.roundRect(x, y - 1, 34, 9, 3); c.line(x + 4, y + 8, x + 4, y + 16)
+    else:
+        c.roundRect(x, y + 1, 34, 9, 3)
+        c.circle(x + 8, y, 3.5); c.circle(x + 26, y, 3.5)
+
+
+ICON_XS = (81.5, 165.0, 257.0)
+
+
+def icon_row(c, values, y=743.6):
+    for kind, value, x in zip(('bed', 'bath', 'car'), values, ICON_XS):
+        pictogram(c, kind, x - 44, y)
+        pt(c, x, y, value, 12)
+
+
+def package_top(c, design, counts, land, build, package, lot_line, suburb, titles):
+    pt(c, 27.5, 777.3, design, 30, True)
+    icon_row(c, counts)
+    pt(c, 28.8, 689.8, f'Land - {land}', 22, True)
+    # `Build -` and its figure are two cells on the production page, a
+    # column gap apart; the other two prices are one cell each.
+    pt(c, 27.5, 664.5, 'Build -', 22)
+    pt(c, 97.5, 664.5, build, 22)
+    pt(c, 28.8, 639.2, f'Package Price - {package}', 22, True)
+    pt(c, 27.5, 605.2, lot_line, 23)
+    pt(c, 27.5, 577.6, suburb, 23)
+    pt(c, 27.5, 550.0, titles, 23)
+    pt(c, 27.5, 507.5, 'ALTO Inclusions & Turnkey Pack', 18, True)
+    pt(c, 27.8, 484.9, 'ALTO Quality Inclusions:', 10)
+    for i, item in enumerate(['Architecturally Designed Facade',
+                              'Low Profile Concrete Rooftiles',
+                              '2590mm high ceiling throughout',
+                              'Stone benchtops throughout']):
+        pt(c, 37.8, 472.4 - i * 12.5, '•', 10)
+        pt(c, 51.2, 472.4 - i * 12.5, item, 10)
+
+
+def package_foot(c):
+    pt(c, 28.3, 47.0, '*Price based on standard inclusions and facade. '
+       'Image depicts upgrade items not included in the price.', 6)
+    pt(c, 28.3, 35.2, 'This plan is intended to give an indication of the proposed layout '
+       'only and may vary without notice. It is not the actual lot for sale.', 6)
+    pt(c, 28.3, 27.7, 'Images are artists’ impression for illustrative purposes only. '
+       'Facade finishes, materials and colours may vary.', 6)
+
+
+def specification_page(c):
+    pt(c, 57, 790, 'Single Storey Specifications', 16, True)
+    left = [('Kitchen Appliances', None), ('Dishwasher:', 'European style freestanding'),
+            ('Oven:', 'European style 600mm stainless'), ('Hot Plate:', '600mm gas cook top.'),
+            ('Cabinetry', None), ('Cupboards:', 'Laminate flush panel doors.')]
+    right = [('Paint', None), ('Timberwork:', 'Satin finish enamel to internal'),
+             ('Internal Walls:', 'Two coat acrylic, low sheen.'),
+             ('Plumbing', None), ('Taps:', '2 external taps, 1 to the front meter.'),
+             ('Hot Water System:', 'Instantaneous gas hot water.')]
+    for i, (label, value) in enumerate(left):
+        y = 750 - i * 22
+        pt(c, 57, y, label, 10, value is None)
+        if value: pt(c, 131, y, value, 10)
+    for i, (label, value) in enumerate(right):
+        y = 750 - i * 22
+        pt(c, 312, y, label, 10, value is None)
+        if value: pt(c, 386, y, value, 10)
+    pt(c, 57, 40, 'The builder reserves the right to substitute products of equal or '
+       'better quality.', 7)
+    c.showPage()
+
+
+@fixture('heldout-icon-row-estate-locality',
+         'LOT 1809 Maple Estate - ORION 11.5 MODERN - BROCHURE V002.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='1809', estate='Maple Estate', suburb='Tarneit',
+                        # NOTHING IS INVENTED. The page names a suburb and no
+                        # state, no postcode and no street, and a suburb this
+                        # product does not already hold is not a state.
+                        state=None, postcode=None, street_name=None,
+                        design='Orion 11.5',
+                        # The icon row, with no floor plan text and no siting
+                        # page to key it: read in the order every brochure of
+                        # this shape prints it, under the guards named in
+                        # `iconRowConvention`.
+                        bedrooms=4, bathrooms=2, car_spaces=2,
+                        land_size_sqm=312,
+                        # The house's own total, stated under the house's own
+                        # heading, where no other figure states the build.
+                        build_size_sqm=160.5,
+                        price=801500)],
+             image='facade_page_1'))
+def _i1(c):
+    package_top(c, 'Orion 11.5', ('4', '2', '2'), '$412,000', '$389,500', '$801,500',
+                'Lot 1809 Maple Estate,', 'Tarneit', 'Titles - Titled Land')
+    c.drawImage(ImageReader(facade(31)), 300, 470, width=270, height=170,
+                preserveAspectRatio=True, mask=None)
+    # The floor plan is a PICTURE: no room is named in the text layer.
+    c.drawImage(ImageReader(floorplan()), 300, 150, width=270, height=190,
+                preserveAspectRatio=True, mask=None)
+    pt(c, 27.3, 181.2, 'Lot Size', 14)
+    area_pt(c, 27.3, 157.2, '312m')
+    # One heading on two lines, and the first area's raised `2` lands 1.1
+    # points above the second line's baseline.
+    pt(c, 27.5, 128.7, 'House', 14)
+    pt(c, 27.3, 111.9, 'Specifications', 14)
+    pt(c, 29.5, 109.7, 'Enclosed:'); area_pt(c, 101.5, 109.7, '118.40m')
+    pt(c, 29.5, 96.7, 'Garage:'); area_pt(c, 101.5, 96.7, '38.10m')
+    pt(c, 29.5, 83.7, 'Porch:'); area_pt(c, 101.5, 83.7, '4m')
+    # The total's label sits 2.9 points above its own figure.
+    pt(c, 29.5, 70.7, 'Total:'); area_pt(c, 101.5, 67.8, '160.5m', rise=3.4)
+    package_foot(c)
+    c.showPage()
+    specification_page(c)
+
+
+@fixture('heldout-icon-row-street-locality',
+         'LOT 2207 Harlow Lane - VELA 20B TEMPIO - BROCHURE - Copy.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='2207', street_name='Harlow Lane', suburb='Mickleham',
+                        state=None, postcode=None, design='Vela 20B',
+                        # The plan's room names are set in fragments — `Bed`
+                        # over `3`, `Bat` over `h` — so it names one bedroom
+                        # outright. One named bedroom is a floor under the
+                        # count, never a contradiction of a row reading four.
+                        bedrooms=4, bathrooms=2, car_spaces=2,
+                        land_size_sqm=350, build_size_sqm=177.0, price=767650)],
+             image='facade_page_1'))
+def _i2(c):
+    package_top(c, 'Vela 20B', ('4', '2', '2'), '$365,000', '$402,650', '$767,650',
+                'Lot 2207 Harlow Lane,', 'Mickleham', 'Titles - Q2 2027')
+    c.drawImage(ImageReader(facade(37)), 300, 560, width=270, height=170,
+                preserveAspectRatio=True, mask=None)
+    # A plan whose labels the exporter broke across lines.
+    for label, x, y in [('Master', 492, 330), ('Bed', 498, 470), ('3', 498, 458),
+                        ('Bed', 405, 420), ('2', 405, 408), ('Bat', 509, 396),
+                        ('h', 509, 384), ('Kitch', 394, 360), ('en', 394, 348),
+                        ('Garag', 386, 300), ('e', 386, 288), ('Porc', 448, 262),
+                        ('h', 448, 250)]:
+        pt(c, x, y, label, 8)
+    pt(c, 27.3, 181.2, 'Lot Size', 14)
+    area_pt(c, 27.3, 157.2, '350m')
+    pt(c, 29.0, 128.7, 'House Specifications', 14)
+    # Two values set 2.9 points under their labels, and their raised `2`s
+    # landing on the labels' own baselines.
+    pt(c, 29.5, 109.7, 'Ground Floor:'); area_pt(c, 101.5, 106.8, '139.5m', rise=3.4)
+    pt(c, 29.5, 96.7, 'Garage:'); area_pt(c, 101.5, 96.7, '36.0m')
+    pt(c, 29.5, 83.7, 'Porch:'); area_pt(c, 101.5, 80.8, '1.5m', rise=3.4)
+    pt(c, 29.5, 70.7, 'Total:'); area_pt(c, 101.5, 67.8, '177.0m', rise=3.4)
+    package_foot(c)
+    c.showPage()
+    specification_page(c)
+
+
+@fixture('heldout-icon-row-plan-disagrees',
+         'LOT 612 Ashgrove Estate - NOVA 21 - BROCHURE.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='612', estate='Ashgrove Estate', suburb='Wollert',
+                        state=None, design='Nova 21',
+                        # THE DOCUMENT DISAGREES WITH ITSELF: the row reads
+                        # `3 2 2` and the plan names four bedrooms. Neither is
+                        # chosen, so none of the three is read.
+                        bedrooms=None, bathrooms=None, car_spaces=None,
+                        land_size_sqm=392, build_size_sqm=214.0, price=829900)],
+             image='facade_page_1'))
+def _i3(c):
+    package_top(c, 'Nova 21', ('3', '2', '2'), '$418,000', '$411,900', '$829,900',
+                'Lot 612 Ashgrove Estate,', 'Wollert', 'Titles - Titled Land')
+    c.drawImage(ImageReader(facade(41)), 300, 560, width=270, height=170,
+                preserveAspectRatio=True, mask=None)
+    for label, x, y in [('Master', 410, 470), ('Bed 2', 500, 440), ('Bed 3', 410, 400),
+                        ('Bed 4', 500, 360), ('Ens', 440, 330), ('Bath', 500, 300),
+                        ('Garage', 410, 260)]:
+        pt(c, x, y, label, 8)
+    pt(c, 27.3, 181.2, 'Lot Size', 14)
+    area_pt(c, 27.3, 157.2, '392m')
+    pt(c, 27.5, 128.7, 'House', 14)
+    pt(c, 27.3, 111.9, 'Specifications', 14)
+    pt(c, 29.5, 109.7, 'Enclosed:'); area_pt(c, 101.5, 109.7, '172.5m')
+    pt(c, 29.5, 96.7, 'Garage:'); area_pt(c, 101.5, 96.7, '37.5m')
+    pt(c, 29.5, 83.7, 'Porch:'); area_pt(c, 101.5, 83.7, '4m')
+    pt(c, 29.5, 70.7, 'Total:'); area_pt(c, 101.5, 67.8, '214.0m', rise=3.4)
+    package_foot(c)
+    c.showPage()
+    specification_page(c)
+
 def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     manifest = []

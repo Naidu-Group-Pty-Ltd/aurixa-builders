@@ -84,7 +84,8 @@ export type DeclineReason =
   | 'not_a_state'
   | 'not_a_postcode'
   | 'no_alphanumeric_content'
-  | 'not_a_designation';
+  | 'not_a_designation'
+  | 'a_section_heading_is_not_a_name';
 
 /**
  * WHAT THE DOCUMENT'S STRUCTURE PROVES ABOUT WHERE THIS VALUE CAME FROM.
@@ -258,11 +259,58 @@ export function acceptFieldValue(
       if (kind !== 'identifier' && kind !== 'date_text' && !/\p{L}/u.test(value)) {
         return { accepted: false, reason: 'no_alphanumeric_content' };
       }
+      /*
+       * AND A DESIGN OR AN ESTATE IS NEVER THE NAME OF A SECTION OF THE
+       * DOCUMENT. MEASURED 23 SEPTEMBER 2026 on the production brochure for
+       * `LOT 4327`: its area schedule is headed `House` over `Specifications`,
+       * two lines, and `House` is this vocabulary's word for the design — so
+       * the pair reader read `house_design: "Specifications"`, the card was
+       * titled `Lot 4327, · Specifications`, and the design the page prints
+       * in its largest type could no longer be corroborated because the field
+       * was already held.
+       *
+       * The words are the document's own furniture — what a brochure calls
+       * its specification, inclusion and feature pages — and a name made of
+       * nothing else names no design and no place. A name CONTAINING one is
+       * untouched: `Specifications Estate` is not a thing anybody builds, but
+       * `The Grove` and `Enzo 10.5` must never be refused for the company
+       * they keep, so every word of the value has to be furniture.
+       */
+      if ((kind === 'design_name' || kind === 'place_name') && namesOnlyASection(value)) {
+        return { accepted: false, reason: 'a_section_heading_is_not_a_name' };
+      }
       if (kind === 'area' as FieldKind && !HAS_DIGIT.test(value)) {
         return { accepted: false, reason: 'not_a_number' };
       }
       return { accepted: true, value };
   }
+}
+
+/**
+ * The words a brochure calls its own SECTIONS by, and the words that qualify
+ * them. A value made of these and nothing else is a heading. See the
+ * `design_name` / `place_name` branch of `acceptFieldValue`.
+ */
+const SECTION_NOUNS = new Set([
+  'specification', 'specifications', 'inclusion', 'inclusions', 'feature', 'features',
+  'detail', 'details', 'overview', 'summary', 'schedule', 'selection', 'selections',
+  'finish', 'finishes', 'option', 'options', 'particulars', 'information',
+  'floorplan', 'floorplans', 'plan', 'plans', 'elevation', 'elevations', 'gallery',
+]);
+const SECTION_QUALIFIERS = new Set([
+  'single', 'double', 'storey', 'story', 'standard', 'quality', 'turnkey',
+  'house', 'home', 'property', 'package', 'key', 'general', 'additional',
+  'floor', 'the', 'our', 'your', 'and',
+]);
+
+function namesOnlyASection(value: string): boolean {
+  // A figure is what a design is numbered by (`Plan 21`, `Nex 20`); a heading
+  // carries none, so a value with a digit in it is never refused here.
+  if (HAS_DIGIT.test(value)) return false;
+  const words = value.toLowerCase().replace(/&/g, ' and ').split(/[^a-z]+/).filter(Boolean);
+  if (!words.length) return false;
+  if (!words.some((word) => SECTION_NOUNS.has(word))) return false;
+  return words.every((word) => SECTION_NOUNS.has(word) || SECTION_QUALIFIERS.has(word));
 }
 
 /**
