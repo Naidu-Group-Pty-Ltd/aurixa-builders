@@ -97,6 +97,14 @@ name: Production rollout
 #            touched the catalogue since), refuses if a newer undeleted upload
 #            is already supplying active stock, and asserts by re-reading.
 #            Takes `upload_id`. DRY RUN unless `apply` is true; idempotent.
+#   stock-reading-trace
+#            read-only: what the deterministic PDF reader SAW in named stored
+#            documents and what it made of them — the flattened page text, every
+#            positioned run with its size, the reader's own lines and cells, and
+#            the reading with the lines it set aside. Runs the pipeline's own
+#            readers over the stored bytes with the inputs the import hands
+#            them. Takes `upload_id` (one or more, comma-separated). SELECT and
+#            a storage GET only; writes nothing.
 #   network-connection-remap
 #            points the live connection at the builder organisation named in
 #            `organisation_id` and backfills its active stock. It refuses
@@ -119,11 +127,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace]
       items:
         description: 'item-state / item-reopen: comma-separated stock item ids (blank = the default set)'
         required: false
@@ -135,7 +143,7 @@ on:
         default: ''
         type: string
       upload_id:
-        description: 'stock-source-restore: the deleted stock list to put back (uuid). stock-import-proof: the stored source to import again, read-only (uuid)'
+        description: 'stock-source-restore: the deleted stock list to put back (uuid). stock-import-proof: the stored source to import again, read-only (uuid). stock-reading-trace: stored sources to trace, read-only (uuids, comma-separated)'
         required: false
         default: ''
         type: string
@@ -164,7 +172,7 @@ jobs:
         with:
           node-version: 22
       - uses: denoland/setup-deno@v2
-        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' || inputs.phase == 'stock-collateral-reprocess' || inputs.phase == 'network-sync-state' || inputs.phase == 'network-connection-remap' || inputs.phase == 'portal-scope-state' || inputs.phase == 'stock-source-restore' }}
+        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' || inputs.phase == 'stock-collateral-reprocess' || inputs.phase == 'network-sync-state' || inputs.phase == 'network-connection-remap' || inputs.phase == 'portal-scope-state' || inputs.phase == 'stock-source-restore' || inputs.phase == 'stock-reading-trace' }}
         with:
           deno-version: v2.x
 
@@ -190,6 +198,7 @@ jobs:
           TARGET_ORGANISATION_ID: ${{ inputs.organisation_id }}
           RESTORE_UPLOAD_ID: ${{ inputs.upload_id }}
           PROOF_UPLOAD_ID: ${{ inputs.upload_id }}
+          TRACE_UPLOAD_IDS: ${{ inputs.upload_id }}
           APPLY: ${{ inputs.apply }}
           ONLY: ${{ inputs.only }}
         run: |
@@ -209,4 +218,5 @@ jobs:
             portal-scope-state)   deno run -A --config supabase/functions/deno.json scripts/ops/builder-portal-scope-state.ts ;;
             stock-source-restore) deno run -A --config supabase/functions/deno.json scripts/ops/stock-source-restore.ts ;;
             stock-import-proof)   node scripts/ops/stock-import-proof.mjs ;;
+            stock-reading-trace)  deno run -A --config supabase/functions/deno.json scripts/ops/stock-reading-trace.ts ;;
           esac
