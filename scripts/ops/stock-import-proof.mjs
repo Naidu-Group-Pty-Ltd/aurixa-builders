@@ -180,19 +180,67 @@ async function cleanup(stage, storage) {
       }
     }
   }
-  // Organisation-rooted rows cascade: uploads, items, images, memberships.
+  // A connection's audit events hold it with NO ACTION, so they go first; the
+  // rest cascade from the organisation: uploads, items, images, memberships.
   await q(`${stage}: rows`, `
+    ${detachFromNetwork(`SELECT id FROM public.builder_organisations WHERE legal_name LIKE ${sqlLit(`Smoke Rollout ${TAG} %`)}`)}
     DELETE FROM public.builder_organisations WHERE legal_name LIKE ${sqlLit(`Smoke Rollout ${TAG} %`)};
     DELETE FROM public.builder_portal_users WHERE email LIKE ${sqlLit(`${MARK}-${TAG}-%@example.com`)};`);
+}
+
+/**
+ * NEVER CONNECTED TO A REAL WORKSPACE.
+ *
+ * MEASURED 23 September 2026, on this script's first production run: an
+ * ACTIVE builder organisation is provisioned onto every `whole_network`
+ * workspace by `builder_organisation_activated` the moment it is inserted, so
+ * the proof's organisation was connected to the NPC prime's Command Centre
+ * and eight stock events — the proof's own test property among them — were
+ * delivered into a real workspace's mirror. They were retracted by hand from
+ * both sides the same morning. This removes, in the SAME transaction as the
+ * insert that provisioned them, every connection the organisation was given
+ * and everything queued on it, so nothing is ever committed that the outbox
+ * worker could send.
+ */
+function detachFromNetwork(orgIdsSql) {
+  const connections = `SELECT c.id FROM public.workspace_connections c WHERE c.builder_organisation_id IN (${orgIdsSql})`;
+  /*
+   * AND THE ANNOUNCEMENT, WHICH IS NOT ON THE ORGANISATION'S OWN CONNECTION.
+   * `builder_network_provision_connections` queues `connection.authorised` on
+   * the WORKSPACE's existing transport — another builder's live connection —
+   * keyed `connection.authorised:<new connection id>`. On the first run it was
+   * delivered nine seconds after the insert and the workspace installed a
+   * connection for the proof organisation from it. It is deleted by that key,
+   * before the connections whose ids the key is made of.
+   */
+  return `
+    DELETE FROM public.builder_network_outbox
+     WHERE dedupe_key IN (SELECT 'connection.authorised:' || c.id::text
+                            FROM public.workspace_connections c
+                           WHERE c.builder_organisation_id IN (${orgIdsSql}));
+    DELETE FROM public.workspace_connection_events WHERE connection_id IN (${connections});
+    DELETE FROM public.builder_stock_selection_announcements WHERE connection_id IN (${connections});
+    DELETE FROM public.builder_network_outbox WHERE connection_id IN (${connections});
+    DELETE FROM public.builder_network_inbound_events WHERE connection_id IN (${connections});
+    DELETE FROM public.builder_network_stamps WHERE connection_id IN (${connections});
+    DELETE FROM public.workspace_connections WHERE builder_organisation_id IN (${orgIdsSql});`;
 }
 
 async function seedUser() {
   const email = `${MARK}-${TAG}-${RUN}@example.com`;
   const password = `Pr00f!${RUN}!import`;
+  const orgName = `Smoke Rollout ${TAG} ${RUN}`;
+  /*
+   * ONE SIMPLE QUERY IS ONE TRANSACTION, and that is what makes the detach
+   * safe: the connections the insert's trigger provisions, and the catalogue
+   * reconciliation it queues on them, are deleted before anything commits —
+   * so the outbox worker can never see them. The last statement's rows are
+   * the answer.
+   */
   const rows = await q('seed user', `
     WITH org AS (
       INSERT INTO public.builder_organisations(legal_name, org_type, status, is_active, activated_at)
-      VALUES (${sqlLit(`Smoke Rollout ${TAG} ${RUN}`)}, 'builder', 'active', true, now())
+      VALUES (${sqlLit(orgName)}, 'builder', 'active', true, now())
       RETURNING id
     ), person AS (
       INSERT INTO public.builder_portal_users(
@@ -200,13 +248,19 @@ async function seedUser() {
       VALUES (${sqlLit(email)}, 'Import Proof', 'active', true, now(), false,
               extensions.crypt(${sqlLit(password)}, extensions.gen_salt('bf', 10)))
       RETURNING id
-    ), membership AS (
-      INSERT INTO public.builder_organisation_memberships(builder_user_id, organisation_id, membership_role, is_primary, status)
-      SELECT person.id, org.id, 'owner', true, 'active' FROM person, org
-      RETURNING id
     )
-    SELECT person.id AS user_id, org.id AS org_id FROM person, org, membership`);
-  const { user_id, org_id } = rows[0];
+    INSERT INTO public.builder_organisation_memberships(builder_user_id, organisation_id, membership_role, is_primary, status)
+    SELECT person.id, org.id, 'owner', true, 'active' FROM person, org;
+    ${detachFromNetwork(`SELECT id FROM public.builder_organisations WHERE legal_name = ${sqlLit(orgName)}`)}
+    SELECT p.id AS user_id, o.id AS org_id,
+           (SELECT count(*) FROM public.workspace_connections c WHERE c.builder_organisation_id = o.id) AS connections
+      FROM public.builder_portal_users p, public.builder_organisations o
+     WHERE p.email = ${sqlLit(email)} AND o.legal_name = ${sqlLit(orgName)}`);
+  const { user_id, org_id, connections } = rows[0] ?? {};
+  if (!user_id || !org_id) throw new Error('the proof organisation could not be seeded');
+  if (Number(connections) !== 0) {
+    throw new Error(`the proof organisation is still connected to ${connections} workspace(s); refusing to import`);
+  }
   await q('seed onboarding', `SELECT public.builder_ensure_onboarding_steps(${sqlLit(user_id)}::uuid)`);
   return { email, password, userId: user_id, orgId: org_id };
 }
@@ -234,8 +288,9 @@ const itemsOf = (uploadId) => q('items', `
     FROM public.builder_stock_items WHERE upload_id = ${sqlLit(uploadId)}
    ORDER BY lot_number, id`);
 const imagesOf = (uploadId) => q('images', `
-  SELECT id, stock_item_id, source_reference, byte_size, processing_status,
-         source_detail->>'role' AS role
+  SELECT id, stock_item_id, source_reference, byte_size, processing_status, source_stage,
+         source_detail->>'role' AS role,
+         source_detail->>'marketplace_eligibility_state' AS eligibility
     FROM public.builder_stock_item_images WHERE upload_id = ${sqlLit(uploadId)}
    ORDER BY source_reference, id`);
 const uploadOf = (uploadId) => q('upload', `
@@ -243,6 +298,7 @@ const uploadOf = (uploadId) => q('upload', `
          processing_completed_at, published_at, error_code,
          import_claim_token IS NOT NULL AS claimed, import_recovery_attempts,
          (import_checkpoint->>'continuations')::int AS continuations,
+         (import_checkpoint->'pictures'->>'crossings')::int AS picture_crossings,
          stage_timings
     FROM public.builder_stock_uploads WHERE id = ${sqlLit(uploadId)}`).then((rows) => rows[0] ?? null);
 const pictureKey = (row) => `${row.source_reference}|${row.byte_size}|${row.role ?? ''}`;
@@ -332,7 +388,7 @@ try {
   const transitions = [];
   while (Date.now() - acceptedAt < IMPORT_DEADLINE_MS) {
     upload = await uploadOf(proofId);
-    const shape = `${upload?.status}/${upload?.continuations ?? 0}/${upload?.claimed}`;
+    const shape = `${upload?.status}/${upload?.continuations ?? 0}/${upload?.picture_crossings ?? 0}/${upload?.claimed}`;
     if (transitions.at(-1)?.shape !== shape) transitions.push({ shape, at: Date.now() - acceptedAt });
     if (upload?.processing_completed_at && !['parsing', 'uploaded', 'imported'].includes(upload.status)) break;
     await sleep(2_000);
@@ -348,7 +404,8 @@ try {
     `records_detected ${upload?.records_detected} (source ${source.records_detected})`);
   record('3: no worker died and none was recovered, and the claim was handed back',
     Number(upload?.import_recovery_attempts ?? -1) === 0 && upload?.claimed === false,
-    `recovery attempts ${upload?.import_recovery_attempts}, continuations ${upload?.continuations ?? 0}`);
+    `recovery attempts ${upload?.import_recovery_attempts}, continuations ${upload?.continuations ?? 0}, `
+    + `picture crossings ${upload?.picture_crossings ?? 0}`);
 
   // --- 4. THE LOT THE DOCUMENT STATES ---------------------------------
   let items = await itemsOf(proofId);
@@ -374,12 +431,35 @@ try {
   record('5: the settler finished every property\'s pictures',
     items.length > 0 && items.every((i) => i.image_work_stage === 'settled'),
     items.map((i) => `${i.lot_number}:${i.image_work_stage}`).join(', '));
-  record('5: the same pictures as the source, by reference, size and role, none twice',
-    JSON.stringify(want) === JSON.stringify(have) && new Set(have).size === have.length,
-    `${images.length} image rows (source ${sourceImages.length})`);
+  /*
+   * WHAT THE PICTURES MUST BE, stated as structure rather than as equality
+   * with the source upload. The source was read by the code of its own day —
+   * LOT 550's was imported on 22 September — so its rows describe that
+   * reading, and holding this run to them would fail a correct import for
+   * being newer. What must hold of ANY correct reading of this document:
+   * nothing twice, nothing attached to a property of any other upload, and on
+   * every card that should carry one a photograph taken from the builder's
+   * own document, ready to draw.
+   */
+  const itemIds = new Set(items.map((i) => i.id));
+  const attributed = images.filter((i) => i.stock_item_id);
+  const primaries = items.map((i) => images.find((image) => image.id === i.primary_image_id))
+    .filter(Boolean);
+  record('5: no picture twice, and none on a property of another upload',
+    new Set(have).size === have.length && attributed.every((i) => itemIds.has(i.stock_item_id)),
+    `${images.length} image rows, ${attributed.length} attributed`);
   record('5: a photograph on every card the source has one on',
     withPhotograph === sourceItems.filter((i) => i.primary_image_id).length,
     `${withPhotograph} of ${items.length}`);
+  record('5: each card\'s photograph came out of the builder\'s own document, ready to draw',
+    primaries.length === withPhotograph
+    && primaries.every((image) => image.source_stage === 'uploaded_document'
+      && image.processing_status === 'ready' && image.role === 'primary_property'),
+    primaries.map((image) => `${image.source_reference} ${image.role} ${image.eligibility ?? '—'}`).join('; ')
+      || 'none');
+  record('5: the same pictures as the source upload, by reference, size and role',
+    JSON.stringify(want) === JSON.stringify(have),
+    `${images.length} image rows (source ${sourceImages.length})`, { required: false });
 
   // --- 6. A RE-READ CORRECTS ITS OWN ROWS --------------------------------
   const firstReading = items.map((i) => ({ ...i }));

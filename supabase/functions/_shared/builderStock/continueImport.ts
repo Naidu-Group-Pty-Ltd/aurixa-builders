@@ -44,6 +44,7 @@
  * for.
  */
 import { runStockImport, isImportContinuation } from './runImport.ts';
+import type { RunImportFailure, RunImportSuccess } from './runImport.ts';
 import {
   claimImport, releaseThenContinue, type ImportClaim,
 } from './importClaim.ts';
@@ -75,6 +76,25 @@ export interface ContinueImportOutcome {
 export async function continueStockImport(
   supabase: any,
   uploadId: string,
+  hooks: {
+    /**
+     * Told once, when THIS invocation is the one that finished the import,
+     * with what it answered — after the row has been written.
+     *
+     * For the caller's audit trail: the browser's own finish writes
+     * `builder_stock_upload_processed`, an import finished by a successor is
+     * the same import, and a paginated brochure is now always finished by
+     * one — so without this a builder's audit trail would lose the
+     * processing record of nearly every PDF it holds. And for the acceptance
+     * gate, which compares the reading a successor finished with the reading
+     * an uninterrupted import produced. Never able to change the outcome: a
+     * hook that throws is swallowed.
+     */
+    onFinished?: (finished: {
+      upload: { id: string; organisation_id: string; uploaded_by_builder_user_id?: string | null };
+      result: RunImportSuccess | RunImportFailure;
+    }) => Promise<void>;
+  } = {},
 ): Promise<ContinueImportOutcome> {
   if (!uploadId) return { success: false, state: 'not_found' };
 
@@ -166,10 +186,23 @@ export async function continueStockImport(
       await releaseThenContinue(supabase, claim, uploadId);
       return { success: true, state: 'continued', upload_id: uploadId };
     }
+    const told = async (finished: RunImportSuccess | RunImportFailure) => {
+      try {
+        await hooks.onFinished?.({
+          upload: {
+            id: upload.id,
+            organisation_id: upload.organisation_id,
+            uploaded_by_builder_user_id: upload.uploaded_by_builder_user_id ?? null,
+          },
+          result: finished,
+        });
+      } catch { /* an audit line that cannot be written is not an import failure */ }
+    };
     if (!result.ok) {
       await supabase.from('builder_stock_uploads')
         .update(importFailureColumns(result.code, result.message, result.detail))
         .eq('id', uploadId).eq('organisation_id', upload.organisation_id);
+      await told(result);
       return { success: false, state: 'failed', upload_id: uploadId, detail: result.code };
     }
 
@@ -184,6 +217,7 @@ export async function continueStockImport(
     await supabase.from('builder_stock_uploads')
       .update(importOutcomeColumns(result, null))
       .eq('id', uploadId).eq('organisation_id', upload.organisation_id);
+    await told(result);
     return { success: true, state: 'completed', upload_id: uploadId };
   } finally {
     // ALWAYS, and token-scoped, so a successor's claim can never be released

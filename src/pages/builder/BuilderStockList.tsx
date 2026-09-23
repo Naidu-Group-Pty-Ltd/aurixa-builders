@@ -333,9 +333,11 @@ export default function BuilderStockList() {
       setLastImageWorkPending(0);
       toast({
         title: 'Still reading this document',
-        description: 'It is large enough to be read in stages. '
-          + 'It will appear in your sources below when it finishes — '
-          + 'you can close this page.',
+        // A brochure with pictures is always read in stages now — its
+        // pictures are attached by a second server step — so this must not
+        // tell a builder their file was too big.
+        description: 'It is read in stages and will appear in your sources below '
+          + 'when it finishes — you can close this page.',
       });
       refreshAll();
       return;

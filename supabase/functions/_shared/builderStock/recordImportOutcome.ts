@@ -28,6 +28,9 @@
  * and each has a paragraph explaining itself. The COUNTS are the same fact
  * however the import was reached, which is exactly why they can be shared.
  */
+import {
+  DETERMINISTIC_READER_VERSION, READER_SETTLED_VERSION_COLUMN,
+} from './readerVersion.pure.ts';
 
 /** The part of a successful import every caller records identically. */
 export interface ImportCounts {
@@ -99,6 +102,30 @@ export async function recordImportCounts(
  *
  * Pure: it returns columns. Nothing here reads a clock but the completion
  * stamp, and nothing here writes.
+ *
+ * ===========================================================================
+ * AND THE READER VERSION IT WAS READ AT, BECAUSE A COMPLETED IMPORT IS A READ.
+ * ===========================================================================
+ *
+ * `reader_settled_version` is "the reader version this source was last read
+ * at", and an import that just finished is exactly such a read — by this
+ * build's reader, over these bytes. It used to be written by the reader sweep
+ * alone, so every new upload was outstanding the moment it completed and the
+ * sweep read it a second time to learn what the import had just said.
+ *
+ * That second read is the one thing in this pipeline that still parses a PDF
+ * and decodes its pictures in ONE isolate: the sweep runs `runStockImport`
+ * inline, without `resumableFromStoredBytes`, inside the image settler.
+ * MEASURED in `function_logs`: the settler was killed twelve times between
+ * 10:09:06 and 10:35:07 on 22 September 2026, and three more times on
+ * 23 September, every time re-reading `LOT 550 - ENZO 8.5 MODERN- BROCHURE
+ * V002.pdf`, or a copy of it, after its import, with last completed stage
+ * `image_decode`. An import made to survive would still have been killed by
+ * its own echo.
+ *
+ * A failed import stamps nothing (`importFailureColumns`): what the reader
+ * would say about the document has not been learned, and the sweep's own
+ * rules decide whether a failure is worth asking again.
  */
 export interface ImportOutcomeSummary extends ImportCounts {
   failures: Array<{ label: string; reason: string }>;
@@ -141,6 +168,7 @@ export function importOutcomeColumns(
       ? `${result.summary.failed} row(s) could not be saved.`
       : (sourceNotice?.message ?? null),
     processing_completed_at: new Date().toISOString(),
+    [READER_SETTLED_VERSION_COLUMN]: DETERMINISTIC_READER_VERSION,
   };
 }
 

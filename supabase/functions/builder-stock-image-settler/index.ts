@@ -92,8 +92,9 @@ import {
 } from '../_shared/builderStock/itemWorkClaim.ts';
 import { settleClaimedItem } from '../_shared/builderStock/settleItemImages.ts';
 import {
-  mayTakeStage, newAllowance, refusalFor, shouldRearm, spendStage, workClassOf,
+  mayTakeClaim, newAllowance, refusalForClaim, shouldRearm, spendClaim,
 } from '../_shared/builderStock/workAllowance.pure.ts';
+import { resolveClaimClass } from '../_shared/builderStock/documentRead.ts';
 import { releaseClaimOnTermination } from '../_shared/builderStock/releaseOnTermination.ts';
 import {
   readerSweepPending, settleReaderVersion,
@@ -654,6 +655,14 @@ Deno.serve(async (req: Request) => {
     const termination = releaseClaimOnTermination(supabase, 'builder-stock-image-settler');
 
     let claimed = itemClaim.item;
+    /*
+     * WHAT THE CLAIM IN HAND IS, decided before it runs. For every stage but
+     * `source` this is the stage's name and nothing more; a `source` claim is
+     * classed by where its document's read stands — reading it is a document,
+     * working from it is a decode — so the two never share an isolate. See
+     * `classifyClaim`.
+     */
+    let claimedClass = await resolveClaimClass(supabase, claimed);
     let settledCount = 0;
     let lastSettlement: Awaited<ReturnType<typeof settleClaimedItem>> | null = null;
     let publication: Awaited<ReturnType<typeof publishUploadIfReady>> | null = null;
@@ -667,7 +676,7 @@ Deno.serve(async (req: Request) => {
      * unless ten seconds remain — could be starved indefinitely while the
      * counter that would have retired it never advanced.
      */
-    spendStage(claimed.image_work_stage, allowance);
+    spendClaim(claimedClass, allowance);
     termination.hold(claimed.id, claimed.image_work_stage);
     const stageStartedAt = Date.now();
     const settlement = await settleClaimedItem(supabase, claimed, {
@@ -713,7 +722,9 @@ Deno.serve(async (req: Request) => {
     termination.clear();
     settledCount += 1;
     lastSettlement = settlement;
-    workedThisInvocation.add(`${claimed.id}:${settlement.stage}`);
+    // Keyed on the claim's own class key: successive `source` claims that each
+    // made progress (the read, a batch of kinds, the attach) are different work.
+    workedThisInvocation.add(`${claimed.id}:${claimedClass.key}`);
     /*
      * WHAT EACH STAGE COST, DURABLY, AND WHAT IT WAITED FOR TO GET HERE.
      *
@@ -726,7 +737,7 @@ Deno.serve(async (req: Request) => {
      */
     const timing = {
       stage: settlement.stage,
-      work_class: workClassOf(settlement.stage),
+      work_class: claimedClass.workClass,
       ms: Date.now() - stageStartedAt,
       scheduler_wait_ms: claimWaitMs(claimed),
       at: new Date().toISOString(),
@@ -833,6 +844,7 @@ Deno.serve(async (req: Request) => {
      * else — which is the exact moment to stop.
      */
     let nextItem: (typeof claimed) | null = null;
+    let nextClass: Awaited<ReturnType<typeof resolveClaimClass>> | null = null;
     for (;;) {
       if (Date.now() > startedAt + BUDGET_MS - LIGHT_STAGE_RESERVE_MS) break;
       /*
@@ -864,7 +876,10 @@ Deno.serve(async (req: Request) => {
        * This is a symptom worth seeing in the logs: it means a stage is
        * reporting progress it did not make.
        */
-      if (workedThisInvocation.has(`${candidate.id}:${stage}`)) {
+      const candidateClass = await resolveClaimClass(supabase, {
+        ...candidate, image_work_stage: stage,
+      });
+      if (workedThisInvocation.has(`${candidate.id}:${candidateClass.key}`)) {
         console.warn('[builder-stock-image-settler] stage reported progress and did not move', {
           phase: 'item_work_stalled',
           stock_item_id: candidate.id,
@@ -892,13 +907,13 @@ Deno.serve(async (req: Request) => {
        * it were an answer about the link.
        */
       const remaining = startedAt + BUDGET_MS - Date.now();
-      const allowanceSpent = !mayTakeStage(stage, allowance);
+      const allowanceSpent = !mayTakeClaim(candidateClass, allowance);
       if (allowanceSpent || remaining < reserveFor(stage)) {
         const seenBefore = handedBack.has(candidate.id);
         await completeItemWork(supabase, candidate.id, {
           nextStage: stage,
           result: allowanceSpent
-            ? refusalFor(stage, allowance)
+            ? refusalForClaim(candidateClass, allowance)
             : 'deferred: not enough of this invocation left to finish it',
           error: null,
           retryAfterSeconds: 0,
@@ -921,10 +936,12 @@ Deno.serve(async (req: Request) => {
         continue;
       }
       nextItem = candidate;
+      nextClass = candidateClass;
       break;
     }
     if (!nextItem) break;
     claimed = nextItem;
+    claimedClass = nextClass ?? await resolveClaimClass(supabase, claimed);
     }
     termination.clear();
 

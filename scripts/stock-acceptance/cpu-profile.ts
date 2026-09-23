@@ -31,7 +31,9 @@ import { runStockImport } from '../../supabase/functions/_shared/builderStock/ru
 import { isImportContinuation } from '../../supabase/functions/_shared/builderStock/importContinuation.pure.ts';
 import { continueStockImport } from '../../supabase/functions/_shared/builderStock/continueImport.ts';
 import { claimImport, releaseThenContinue } from '../../supabase/functions/_shared/builderStock/importClaim.ts';
-import { MAX_IMPORT_CONTINUATIONS } from '../../supabase/functions/_shared/builderStock/importCheckpoint.pure.ts';
+import {
+  MAX_IMPORT_CONTINUATIONS, MAX_PICTURE_CROSSINGS,
+} from '../../supabase/functions/_shared/builderStock/importCheckpoint.pure.ts';
 import {
   EXPENSIVE_SPEND_CEILING_MS, expensiveSpendMs,
 } from '../../supabase/functions/_shared/builderStock/importResumeBudget.pure.ts';
@@ -129,7 +131,11 @@ async function profile(entry: Entry, iteration: number) {
       .select('stage_timings').eq('id', upload.id).maybeSingle();
     return (row?.stage_timings ?? {}) as ImportStageLedger;
   };
-  const invocations: Array<{ expensiveMs: number; wallMs: number; ocrPages: number }> = [];
+  const invocations: Array<{
+    expensiveMs: number; wallMs: number; ocrPages: number;
+    /** How many times this invocation opened the PDF, and what it decoded. */
+    parses: number; decodeMs: number;
+  }> = [];
   let seen: ImportStageLedger = {};
   const account = async (wallMs: number) => {
     const now = await ledgerNow();
@@ -137,6 +143,8 @@ async function profile(entry: Entry, iteration: number) {
     invocations.push({
       expensiveMs: expensiveSpendMs(own), wallMs,
       ocrPages: Number(own.ocr_pages ?? 0),
+      parses: Number(own.document_parses ?? 0),
+      decodeMs: Number(own.image_decode_ms ?? 0) + Number(own.image_store_ms ?? 0),
     });
     seen = now;
   };
@@ -162,7 +170,7 @@ async function profile(entry: Entry, iteration: number) {
   if (isImportContinuation(result)) {
     await releaseThenContinue(db, claim, upload.id);
     // THE DISPATCHER'S PART: every successor, in turn, as production runs them.
-    for (let n = 0; n <= MAX_IMPORT_CONTINUATIONS; n += 1) {
+    for (let n = 0; n <= MAX_IMPORT_CONTINUATIONS + MAX_PICTURE_CROSSINGS; n += 1) {
       t = performance.now();
       const next = await continueStockImport(db, upload.id);
       await account(performance.now() - t);
@@ -195,6 +203,8 @@ const classTotals: Record<ImportWorkClass, number[]> = {
   document: [], raster: [], metadata: [],
 };
 let worstInvocation = 0;
+/** Invocations that opened the PDF AND decoded one of its pictures. Must be 0. */
+let mixedInvocations = 0;
 
 for (const entry of manifest) {
   const runs: Array<Awaited<ReturnType<typeof profile>>> = [];
@@ -231,12 +241,21 @@ for (const entry of manifest) {
    * the ceiling plus one step — and a number past that is a finding.
    */
   const perInvocation = median.invocations
-    .map((inv) => `${inv.expensiveMs.toFixed(0)}${inv.ocrPages ? `(${inv.ocrPages}p)` : ''}`)
+    .map((inv) => `${inv.expensiveMs.toFixed(0)}${inv.ocrPages ? `(${inv.ocrPages}p)` : ''}`
+      + `[${inv.parses ? `parse×${inv.parses}` : ''}${inv.parses && inv.decodeMs ? '+' : ''}`
+      + `${inv.decodeMs ? `decode ${inv.decodeMs.toFixed(0)}` : ''}]`)
     .join(' · ');
   const worst = Math.max(0, ...median.invocations.map((inv) => inv.expensiveMs));
   worstInvocation = Math.max(worstInvocation, worst);
+  /*
+   * AND THE RULE THE HAND-OFF EXISTS FOR, per invocation: none may both open
+   * the PDF and decode or store one of its pictures.
+   */
+  const mixed = median.invocations.filter((inv) => inv.parses > 0 && inv.decodeMs > 0).length;
+  mixedInvocations += mixed;
   console.log(`    invocations ${median.invocations.length}   expensive ms each: ${perInvocation}`
-    + `   worst ${worst.toFixed(0)} (ceiling ${EXPENSIVE_SPEND_CEILING_MS})\n`);
+    + `   worst ${worst.toFixed(0)} (ceiling ${EXPENSIVE_SPEND_CEILING_MS})`
+    + `   parse+decode in one invocation: ${mixed}\n`);
 }
 
 console.log('class totals across the corpus (ms, median run each):');
@@ -247,3 +266,4 @@ for (const [name, values] of Object.entries(classTotals) as Array<[ImportWorkCla
 }
 console.log(`  worst single INVOCATION, document + raster: ${ms(worstInvocation)}`
   + `   (ceiling ${EXPENSIVE_SPEND_CEILING_MS} + at most one step)`);
+console.log(`  invocations that parsed the PDF AND decoded a picture: ${mixedInvocations}`);

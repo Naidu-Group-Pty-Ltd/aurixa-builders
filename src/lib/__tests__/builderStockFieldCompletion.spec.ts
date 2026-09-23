@@ -171,9 +171,11 @@ describe('one property on both sides, or no merge', () => {
 describe('the import wires it as the last resort, and it cannot fail an import', () => {
   const run = readFileSync(
     join(process.cwd(), 'supabase/functions/_shared/builderStock/runImport.ts'), 'utf8');
+  // The completion is the last thing decided before the reading is gathered
+  // into the decision the tail runs from — see `DecidedImport`.
   const block = run.slice(
     run.indexOf('WHAT THE READER COULD NOT PROVE IS ASKED FOR BY NAME'),
-    run.indexOf("status: 'imported',"));
+    run.indexOf('const decided: DecidedImport = {'));
 
   it('runs only after a deterministic reading exists', () => {
     // Not a second attempt at the document: a reading with no rows takes the

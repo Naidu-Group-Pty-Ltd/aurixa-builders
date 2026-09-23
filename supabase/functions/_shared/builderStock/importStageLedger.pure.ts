@@ -59,6 +59,7 @@ export const IMPORT_STAGES = [
   'segmentation',        // property regions, where a page carries several
   'property_reader',     // the deterministic reading
   'image_discovery',     // finding the rasters in the document
+  'document_handover',   // the read written down for, or restored by, a successor
   'image_decode',        // decoding and classifying them
   'image_store',         // persisting them
   'db_write',            // the property rows

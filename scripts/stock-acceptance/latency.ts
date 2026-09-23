@@ -45,7 +45,9 @@ import { runStockImport } from '../../supabase/functions/_shared/builderStock/ru
 import { isImportContinuation } from '../../supabase/functions/_shared/builderStock/importContinuation.pure.ts';
 import { continueStockImport } from '../../supabase/functions/_shared/builderStock/continueImport.ts';
 import { claimImport, releaseThenContinue } from '../../supabase/functions/_shared/builderStock/importClaim.ts';
-import { MAX_IMPORT_CONTINUATIONS } from '../../supabase/functions/_shared/builderStock/importCheckpoint.pure.ts';
+import {
+  MAX_IMPORT_CONTINUATIONS, MAX_PICTURE_CROSSINGS,
+} from '../../supabase/functions/_shared/builderStock/importCheckpoint.pure.ts';
 import { STOCK_LIST_STORAGE_PREFIX, safeObjectName } from '../../supabase/functions/_shared/builderStock/fileTypes.pure.ts';
 import { serveStockImage } from '../../supabase/functions/_shared/builderStock/serveStockImage.ts';
 import { recordImportCounts } from '../../supabase/functions/_shared/builderStock/recordImportOutcome.ts';
@@ -292,7 +294,8 @@ async function once(entry: Entry, iteration: number, dir: string) {
     // Release, then dispatch — and then this benchmark IS the dispatcher.
     await releaseThenContinue(db, claim, upload.id);
     let state = 'continued';
-    while (state === 'continued' && importIsolates <= MAX_IMPORT_CONTINUATIONS + 1) {
+    while (state === 'continued'
+      && importIsolates <= MAX_IMPORT_CONTINUATIONS + MAX_PICTURE_CROSSINGS + 1) {
       state = (await continueStockImport(db, upload.id)).state;
       importIsolates += 1;
     }

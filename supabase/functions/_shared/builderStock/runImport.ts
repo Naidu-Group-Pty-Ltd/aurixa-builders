@@ -31,12 +31,24 @@ import {
   isImportContinuation, type RunImportContinuation,
 } from './importContinuation.pure.ts';
 import {
-  checkpointPages, checkpointSettledPages, mayContinue, openCheckpoint,
-  readCheckpoint, withContinuation, withRecogniserUnavailable,
-  withRecognisedPage, withRefusedPage, type ImportCheckpoint,
+  checkpointPages, checkpointSettledPages, crossingsSpent, freshAttempt,
+  mayContinue, mayCrossForPictures, openCheckpoint, pictureHandover,
+  readCheckpoint, storedPictureHandover, withContinuation, withPictureCrossing,
+  withPictureHandover, withRecogniserUnavailable, withRecognisedPage,
+  withRefusedPage, type ImportCheckpoint,
 } from './importCheckpoint.pure.ts';
+import { kindsOutstanding } from './documentRead.pure.ts';
+import { DECODES_PER_INVOCATION } from './workAllowance.pure.ts';
+import { learnOutstandingKinds } from './documentRead.ts';
+import {
+  discardHandedOverPictures, handPicturesOver, picturesWorthHandingOver,
+  takeHandedOverPictures, type TakenHandover,
+} from './importHandover.ts';
+import type { ImportDecision } from './importHandover.pure.ts';
 import { mayRecognisePage } from './importResumeBudget.pure.ts';
-import type { PdfDeterministicDiagnostics } from './extract.ts';
+import type {
+  ExtractedMedia, PdfDeterministicDiagnostics, StockExtraction,
+} from './extract.ts';
 import { extractStockRowsFromImages, extractStockRowsFromText } from './modelExtract.ts';
 import { StockModelExtractionError, modelFailureFromRouterError } from './modelExtractionFailure.pure.ts';
 import { assistedReaderFailure, SOURCE_HAS_COLUMNS } from './assistedReaderFailure.pure.ts';
@@ -264,6 +276,78 @@ export type RunImportResult =
   RunImportSuccess | RunImportContinuation | RunImportFailure;
 
 /**
+ * Everything the tail of an import reads, decided by the isolate that read the
+ * document — or restored, whole, by the successor that isolate handed its
+ * pictures to. See `finishDecided` in `importOnce`.
+ */
+interface DecidedImport {
+  strategy: string;
+  rows: Array<Record<string, unknown>>;
+  completedFields: string[];
+  detectedMime: string | null;
+  classificationKind: StockFileClassification['kind'];
+  linkDiscovery: RowLinkDiscovery;
+  media: ExtractedMedia[];
+  rowAssets: AnchoredAssets[];
+  pageTexts?: string[];
+  pdfRegions?: StockExtraction['pdfRegions'];
+  pageOrderAuthoritative?: boolean;
+  warnings: string[];
+  imageryDeferred: StockExtraction['imageryDeferred'] | null;
+  deterministicReading: PdfDeterministicDiagnostics | null;
+  deterministicProvisionalCount: number;
+  deterministicUnaccounted: string[] | null;
+  deterministicIgnored: string[] | null;
+  deterministicPlacement: string[] | null;
+}
+
+/** The part of a decision that is not the read itself: what the manifest carries. */
+function importDecisionOf(decided: DecidedImport): ImportDecision {
+  return {
+    strategy: decided.strategy,
+    rows: decided.rows,
+    completedFields: decided.completedFields,
+    detectedMime: decided.detectedMime,
+    classificationKind: decided.classificationKind,
+    linkDiscovery: decided.linkDiscovery,
+    warnings: decided.warnings,
+    imageryDeferred: decided.imageryDeferred ?? null,
+    deterministicReading: decided.deterministicReading,
+    deterministicProvisionalCount: decided.deterministicProvisionalCount,
+    deterministicUnaccounted: decided.deterministicUnaccounted,
+    deterministicIgnored: decided.deterministicIgnored,
+    deterministicPlacement: decided.deterministicPlacement,
+  };
+}
+
+/** The decision a successor took, put back together with the read it rode in. */
+function decidedFromHandover(taken: TakenHandover): DecidedImport {
+  const { decision, loaded } = taken;
+  return {
+    strategy: decision.strategy,
+    rows: decision.rows,
+    completedFields: decision.completedFields,
+    detectedMime: decision.detectedMime,
+    classificationKind: decision.classificationKind as StockFileClassification['kind'],
+    linkDiscovery: decision.linkDiscovery,
+    // Each picture carries the kind an earlier isolate learned for it, so the
+    // attach decides every role without decoding one. See `documentVisualKinds`.
+    media: loaded.restored.media as ExtractedMedia[],
+    rowAssets: loaded.restored.rowAssets,
+    pageTexts: loaded.restored.pageTexts,
+    pdfRegions: loaded.restored.pdfRegions as StockExtraction['pdfRegions'],
+    pageOrderAuthoritative: loaded.restored.pageOrderAuthoritative,
+    warnings: decision.warnings,
+    imageryDeferred: decision.imageryDeferred as StockExtraction['imageryDeferred'] | null,
+    deterministicReading: decision.deterministicReading as PdfDeterministicDiagnostics | null,
+    deterministicProvisionalCount: decision.deterministicProvisionalCount,
+    deterministicUnaccounted: decision.deterministicUnaccounted,
+    deterministicIgnored: decision.deterministicIgnored,
+    deterministicPlacement: decision.deterministicPlacement,
+  };
+}
+
+/**
  * Run the pipeline for one upload row whose bytes are already in hand.
  *
  * The caller owns the row's lifecycle either side of this: it sets `parsing`
@@ -451,16 +535,37 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     readCheckpoint(input.storedCheckpoint, sha) ?? openCheckpoint(sha);
   // A fresh attempt starts the crossing count again; the recognised pages it
   // inherited are kept, because they are facts about the bytes.
-  if (!input.resumed) checkpoint = { ...checkpoint, continuations: 0 };
-  const commitCheckpoint = async (): Promise<void> => {
+  if (!input.resumed) checkpoint = freshAttempt(checkpoint);
+  /*
+   * Answers whether the checkpoint was written. Recognition ignores the
+   * answer — durability is an optimisation there, and the page is the
+   * deliverable. A picture hand-off does not: its successor finds the read by
+   * the token this writes, and its crossings are bounded by the count this
+   * writes, so a hand-off whose checkpoint did not land is not made.
+   */
+  const commitCheckpoint = async (): Promise<boolean> => {
     try {
-      await supabase.from('builder_stock_uploads')
+      const { error } = await supabase.from('builder_stock_uploads')
         .update({ import_checkpoint: checkpoint })
         .eq('id', upload.id)
         .eq('organisation_id', organisationId);
-    } catch { /* durability is an optimisation; recognition is the deliverable */ }
+      return !error;
+    } catch {
+      /* durability is an optimisation; recognition is the deliverable */
+      return false;
+    }
   };
   const carriedPages = checkpointPages(checkpoint);
+  /*
+   * AND WHAT A PREVIOUS ATTEMPT HANDED ON IS PUT AWAY. A fresh attempt decides
+   * for itself (`freshAttempt`), so a read an earlier attempt handed to a
+   * successor that never finished can serve nobody now. Asked only where the
+   * stored checkpoint names one, so an ordinary import pays nothing for it.
+   */
+  if (!input.resumed && input.resumableFromStoredBytes
+    && storedPictureHandover(input.storedCheckpoint)) {
+    await discardHandedOverPictures(supabase, { organisationId, uploadId: upload.id });
+  }
 
   // Duplicate guard. The same BYTES from the same organisation have already
   // produced whatever they were going to — which is why a URL is not the key:
@@ -504,6 +609,397 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     : (sourceKind === 'url' ? '' : upload.original_filename);
   if (classification.kind === 'unsupported') {
     return fail('unsupported_file_type', classification.reason ?? 'That file type cannot be read.');
+  }
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════
+   * THE TAIL OF EVERY IMPORT, READ FROM A DECISION RATHER THAN AN EXTRACTION
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * Everything from here on used to read the extraction directly. It reads
+   * the DECISION now — the same values, gathered once — because the isolate
+   * that runs it is not always the one that read the document: a paginated
+   * document with pictures hands its read and its decision to a successor,
+   * which must not parse it again (`importHandover.pure.ts`). One tail, fed
+   * by either, so the import a builder gets is the same whichever isolate
+   * finished it.
+   */
+  const finishDecided = async (
+    decided: DecidedImport,
+    /**
+     * How many pictures the attach may decode to judge their eligibility.
+     * Absent — the inline path — every one, as before. The successor a
+     * paginated document's pictures were handed to passes the settler's own
+     * per-isolate allowance; see `eligibilityDecodes` in `attachDocumentMedia`.
+     */
+    attach: { eligibilityDecodes?: number | null } = {},
+  ): Promise<RunImportResult> => {
+    const { error: stampError } = await supabase.from('builder_stock_uploads').update({
+      status: 'imported',
+      detected_content_type: decided.detectedMime,
+      file_sha256: sha,
+      byte_size: bytes.length,
+      parse_strategy: decided.strategy,
+    }).eq('id', upload.id);
+    // The unique index on (organisation_id, file_sha256) is the duplicate
+    // guard's second half: if two imports of the same bytes raced past the
+    // lookup above, this is where the loser finds out.
+    if (stampError && /duplicate key/i.test(stampError.message || '')) {
+      return {
+        ok: false,
+        code: 'duplicate_file',
+        message: 'This content has already been imported.',
+        status: 409,
+      };
+    }
+
+    /*
+     * EVERY ROW SAYS WHETHER ITS LINK LAYER WAS READ. The caller's stamp wins —
+     * it is the only party that knows how a Google Sheet's separately-travelling
+     * targets fared — and a source whose links are native to the bytes just read
+     * (a workbook's relationships, a CSV's own text, a PDF's annotations, a
+     * Notion record map) is stamped `complete` from the strategy that read it.
+     * The stamp is what lets `readSuppliedEvidence` tell "this row supplied
+     * nothing" from "we could not see what this row supplied" — see
+     * `suppliedEvidence.pure.ts`, which is the one reader of it.
+     */
+    const linkDiscovery: RowLinkDiscovery = decided.linkDiscovery;
+
+    const recordsStartedAt = Date.now();
+    const rasterBeforeRecords = classSpendMs(ledger, 'raster');
+    const outcome = await importStockRecords(supabase, {
+      organisationId,
+      uploadId: upload.id,
+      builderUserId: input.builderUserId,
+      rows: decided.rows,
+      media: decided.media,
+      linkDiscovery,
+      // The caller's assets and the document's, merged where the reading was
+      // decided — the caller's first. See `decided` below.
+      rowAssets: decided.rowAssets,
+      // A PDF's properties come out of prose and carry no anchor of their own;
+      // these are what lets one be tied back to the page it was described on.
+      pageTexts: decided.pageTexts,
+      // And where on a page each property was drawn, for the documents whose
+      // pages carry more than one. Absent everywhere else.
+      pdfRegions: decided.pdfRegions,
+      pageOrderAuthoritative: decided.pageOrderAuthoritative,
+      filename: upload.original_filename,
+      // Derived from the run's own clock rather than restarted here, which is
+      // the half of this defect that had a budget and spent it from zero.
+      imageDeadlineAt: storageDeadlineFrom(runBudget, Date.now()),
+      // ONE ACCOUNT OF ONE RUN. The raster half of that call records itself.
+      ledger,
+      onStage: commitLedger,
+      eligibilityDecodes: attach.eligibilityDecodes ?? null,
+    });
+    /*
+     * THE ROW WRITES ARE WHAT IS LEFT ONCE THE RASTER WORK IS TAKEN OUT.
+     *
+     * `importStockRecords` does two different kinds of work in one call and
+     * only one of them is expensive per byte. Timing the whole call as
+     * `db_write` would put the photographs' cost under a metadata heading and
+     * hide the thing the measurement is for; subtracting what the raster stage
+     * already recorded is the same rule the reader and the segmenter answer to
+     * one level up.
+     */
+    /*
+     * THE WHOLE RASTER CLASS, NOT ONE STAGE OF IT. This subtracted
+     * `image_store_ms` alone, and the decode that settles each picture's role is
+     * charged as `image_decode` inside the same call — so on
+     * `stress-multi-property` it was counted twice and `db_write` read 5,009 ms
+     * for row writes that cost tens. Taken as the difference across the call,
+     * so raster work charged before it is not subtracted from it.
+     */
+    const rasterDuringRecords = classSpendMs(ledger, 'raster') - rasterBeforeRecords;
+    recordStage(ledger, 'db_write',
+      Math.max(0, (Date.now() - recordsStartedAt) - rasterDuringRecords));
+    await commitLedger(ledger);
+
+    /*
+     * WHAT THIS RUN SPENT IS ALREADY WRITTEN DOWN — this block used to do it
+     * here, at the end, and that is exactly why the 22 September CPU kill left
+     * `stage_timings: null` on an import that had spent eight seconds. The
+     * ledger is committed at every stage boundary now; what is added here is
+     * only what this point of the run knows and the stages did not.
+     */
+    countIn(ledger, 'rows_detected', outcome.detected);
+    ledger.strategy = decided.strategy;
+
+    if (!outcome.detected) {
+      /**
+       * ZERO ROWS IS NOT A PERMISSION FINDING.
+       *
+       * This branch used to answer `notion_not_public` for any Notion source
+       * that produced no rows, which meant the pipeline was reporting on a
+       * page's SHARING STATE from evidence that says nothing about it. A public
+       * page whose columns we did not recognise, a public page that is genuinely
+       * empty, and a private page all reach here identically.
+       *
+       * Accessibility is settled BEFORE the pipeline runs, by the fetch status
+       * and by `assessNotionReadability` looking for an explicit gate; nothing
+       * in here may contradict that. What this branch knows is only that the
+       * content produced no properties, so that is all it says.
+       */
+      if (input.isNotionSource) {
+        return fail('no_properties_found', NOTION_NO_PROPERTIES_MESSAGE);
+      }
+      /*
+       * THE SAME COLUMN-HEADING RULE AS THE FAILURE ABOVE. This sentence used to
+       * end "Check that it lists one property per row with column headings" for
+       * every source, so a brochure the reader had genuinely found no property
+       * in was also told to become a spreadsheet. `SOURCE_HAS_COLUMNS` is the
+       * one place that decides which sources that advice is true of.
+       */
+      const what = sourceKind === 'url' ? 'page' : 'file';
+      /*
+       * WHAT THE READER ACTUALLY SAW, RECORDED WITH THE REFUSAL.
+       *
+       * This path carried no `detail` at all, and while a model stood behind it
+       * that was survivable: a document reaching here had already been offered
+       * to a second reader, and the record that mattered was the model's. With
+       * the model gone this IS the outcome, and an outcome nobody can diagnose
+       * is one that can only be investigated by asking the builder to send the
+       * file again — which is the loop this work exists to end.
+       *
+       * MEASURED 21 SEPTEMBER 2026 on `Lot 37 - Miami 190 - Property
+       * Package.pdf`: the row said `conflicting_values:development_name` and
+       * nothing else, over a document whose text had extracted cleanly at
+       * 3,962 characters. Which two estates it named was unknowable from the
+       * record.
+       *
+       * `detail` is the internal diagnosis — `RunImportFailure` says so, and
+       * `get_upload` and `projectUploadListRow` both project it away — which is
+       * what makes it the right home for document text.
+       */
+      const reading = decided.deterministicReading;
+      const detail = reading
+        ? JSON.stringify({
+          deterministic_status: reading.status,
+          deterministic_reason: reading.reason,
+          fields_read: reading.diagnostics.fieldsRead ?? null,
+          conflict_field: reading.diagnostics.conflictField ?? null,
+          disputed_fields: reading.diagnostics.disputedFields ?? null,
+          // These live BESIDE the projection, never inside it: the projection
+          // is the safe-to-log one and a value the document stated may not
+          // enter it. See their notes on `StockExtraction`.
+          provisional_rows: decided.deterministicProvisionalCount,
+          unaccounted: decided.deterministicUnaccounted,
+          ignored: decided.deterministicIgnored,
+          placement: decided.deterministicPlacement,
+        })
+        : undefined;
+      if (SOURCE_HAS_COLUMNS.has(decided.classificationKind)) {
+        return fail('no_properties_found', sourceKind === 'url'
+          ? 'No properties could be read from that page. Check that it lists one property per row, or upload the stock list instead.'
+          : 'No properties could be read from that file. Check that it lists one property per row with column headings.',
+          detail);
+      }
+      return fail('no_properties_found',
+        `We read that ${what}, but it did not describe a property we could list.`
+        + ' If it should, check that it names the lot or address and its price.',
+        detail);
+    }
+
+    /**
+     * SAY WHETHER THE BUILDER'S OWN IMAGERY LANDED.
+     *
+     * An import that read the properties and produced no picture used to look
+     * exactly like one that produced every picture — the difference only showed
+     * up later as an empty frame on a card, with nothing anywhere to explain it.
+     */
+    const warnings = [...decided.warnings];
+    /**
+     * Only where the source ACTUALLY CARRIED imagery this import could see. A
+     * stock list whose pictures live behind a package link each row carries has
+     * none at this point and every one of them a few seconds later, when the
+     * settlement stage follows those links — warning here would be false on
+     * exactly the source type that takes longest to resolve.
+     */
+    const sawImagery = decided.media.length > 0
+      || decided.rowAssets.some((row) => row.assets.length > 0);
+    if (outcome.itemIds.length && sawImagery && !outcome.withSourceImage
+      && !outcome.imageryOutstanding) {
+      warnings.push(
+        'No supplied image could be identified for these properties, so their cards '
+        + 'will show no photograph.');
+    }
+
+    /*
+     * START THE IMAGE WORK NOW — the import is the moment work exists, and a
+     * six-property list must begin six-wide immediately instead of trickling
+     * through the cron at two workers a minute (measured 2026-09-15: ~25
+     * minutes for six properties). The kick re-arms the watchdog schedule and
+     * fans out signed settler invocations sized to the claimable backlog.
+     * BEST-EFFORT BY DESIGN: the every-minute tick reaches the same queue, so
+     * a deployment mid-migration or a pg_net hiccup costs latency, never work.
+     */
+    const kickStartedAt = Date.now();
+    try {
+      const { error: kickError } = await input.supabase
+        .rpc('builder_stock_kick_image_work', { p_upload_id: input.upload.id });
+      if (kickError) {
+        console.warn('[builderStock] image work kick unavailable; cron will drive', {
+          phase: 'image_work_dispatch', upload_id: input.upload.id,
+          detail: String(kickError.message ?? kickError).slice(0, 160),
+        });
+      }
+    } catch { /* the cron tick is the guarantee */ }
+    recordStage(ledger, 'initial_image_work', Date.now() - kickStartedAt);
+    await commitLedger(ledger);
+    const finalisationStartedAt = Date.now();
+
+    /*
+     * AND ASK WHETHER THIS UPLOAD CAN BE PUBLISHED, BECAUSE NOTHING ELSE WILL
+     * ASK ON A RE-READ.
+     *
+     * `publish_builder_stock_upload` had exactly ONE caller: the image settler,
+     * after an item's work completes — under its own comment, "there is nothing
+     * else watching". That is true, and it is the whole defect. Publication is
+     * also what APPLIES a held-back patch, so on a list whose photographs are
+     * already settled a re-read produces no image work, nothing claims an item,
+     * nobody asks, and a corrected reading sits in `pending_patch` for ever.
+     *
+     * MEASURED 21 SEPTEMBER 2026. `LOT 266 Crowlea Estate` was re-read at
+     * 10:49 with the right answer — `development_name:leading_field_name`,
+     * `land_size_sqm:below` — and the settler's next three ticks reported
+     * `claimed: 0, claimable: 0, outstanding: 0`. Fixing the publication
+     * function so it applies a patch on a second publication was necessary and
+     * was not sufficient: a function nobody calls cannot apply anything.
+     *
+     * SAFE ON EVERY OTHER PATH, because the function decides and this only
+     * asks. A first upload is not ready this early — its photographs have not
+     * settled — so it answers `not_ready` and changes nothing but the reason it
+     * already writes. A deleted or superseded upload refuses before anything
+     * else. The readiness rule is evaluated inside the same statement that
+     * flips the rows, so asking twice can never publish half a cutover.
+     *
+     * BEST-EFFORT, LIKE THE KICK ABOVE: the settler still asks after every
+     * completed item, so a failure here costs latency and never work.
+     */
+    try {
+      await input.supabase.rpc('publish_builder_stock_upload', {
+        p_upload_id: input.upload.id,
+      });
+    } catch { /* the settler and the cron tick both ask again */ }
+    recordStage(ledger, 'finalisation', Date.now() - finalisationStartedAt);
+    await commitLedger(ledger);
+    /*
+     * THE RUN IS OVER, so a termination from here on is the ordinary end-of-
+     * request drop and must not be reported as an import dying mid-stage.
+     */
+    termination.done();
+
+    return {
+      ok: true,
+      summary: {
+        detected: outcome.detected,
+        imported: outcome.imported,
+        updated: outcome.updated,
+        failed: outcome.failed,
+        withSourceImage: outcome.withSourceImage,
+        /*
+         * IMAGERY DECLINED AT DISCOVERY IS IMAGERY OUTSTANDING. The storage
+         * phase raises this flag for what IT declined; a document whose
+         * pictures were never decompressed has the same thing owed to it, and
+         * reporting `false` there would tell a builder their brochure holds no
+         * photograph.
+         */
+        imageryOutstanding: outcome.imageryOutstanding || Boolean(decided.imageryDeferred),
+        imageryDeferred: decided.imageryDeferred ?? null,
+        completedFields: decided.completedFields,
+        warnings,
+        failures: outcome.failures,
+      },
+      strategy: decided.strategy,
+      detectedMime: decided.detectedMime,
+      byteSize: bytes.length,
+      enrichmentPending: outcome.itemIds.length,
+      uploadStatus: outcome.failed > 0 ? 'partially_complete' : 'enriching',
+      deterministicReading: decided.deterministicReading,
+      deterministicIgnored: decided.deterministicIgnored,
+      deterministicPlacement: decided.deterministicPlacement,
+    };
+  };
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════
+   * THE SUCCESSOR OF A PICTURE HAND-OFF READS NOTHING
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * A previous invocation of THIS attempt read the document, decided it and
+   * handed its pictures on (below, "AN ISOLATE THAT PARSED A PDF DECODES NONE
+   * OF ITS PICTURES"). Its checkpoint names the read by a token, and only
+   * that read is taken: same document, same reader and extractor, every
+   * picture present and hashing to what was recorded. Anything less and this
+   * invocation reads the document itself, exactly as a successor always has.
+   *
+   * THE KINDS FIRST, A BUDGETED BATCH PER ISOLATE. Deciding what each picture
+   * IS is a decode per picture; an isolate that learns a batch records it and
+   * hands on, so the isolate that attaches decides every role with every kind
+   * already known and decodes only what the attach itself measures. The
+   * crossings are bounded by the pictures there are to learn
+   * (`MAX_PICTURE_CROSSINGS`), and past the bound the import finishes where it
+   * stands.
+   */
+  const handoverToken = input.resumed && input.resumableFromStoredBytes
+    ? pictureHandover(checkpoint) : null;
+  if (handoverToken) {
+    const taken = await stage('document_handover', () => takeHandedOverPictures(supabase, {
+      organisationId, uploadId: upload.id, documentSha256: sha, token: handoverToken,
+    }));
+    if (taken) {
+      const owed = kindsOutstanding(taken.loaded.manifest, taken.loaded.known);
+      if (owed.length && mayCrossForPictures(checkpoint)) {
+        const kindsStartedAt = Date.now();
+        const learning = await learnOutstandingKinds(supabase, {
+          uploadId: upload.id, purpose: 'import', loaded: taken.loaded,
+        });
+        recordStage(ledger, 'image_decode', Date.now() - kindsStartedAt);
+        await commitLedger(ledger);
+        checkpoint = withPictureCrossing(checkpoint);
+        // A crossing that could not be counted is not taken: the count is
+        // what bounds this chain. The batch learned here then simply rides
+        // into this isolate's own attach, below.
+        if (await commitCheckpoint()) {
+          console.log('[builderStock] import handed to a successor', {
+            phase: 'import_handoff',
+            upload_id: upload.id,
+            reason: 'pictures_outstanding',
+            kinds_learned: learning.learned,
+            kinds_outstanding: learning.outstanding,
+            kinds_recorded: learning.recorded,
+            crossings: crossingsSpent(checkpoint),
+          });
+          termination.done();
+          return {
+            ok: true,
+            continued: true,
+            reason: 'pictures_outstanding',
+            outstanding: learning.outstanding,
+            continuations: crossingsSpent(checkpoint),
+          };
+        }
+      }
+      /*
+       * AND THIS ISOLATE DECODES WHAT THE SETTLER'S DECODE ISOLATES MAY, NO
+       * MORE. Every role is decided with the kinds it was handed; what is
+       * left to decode is each hero's display eligibility, and past the
+       * settler's own measured allowance a hero is stored and judged by the
+       * settler's eligibility stage instead. See `eligibilityDecodes`.
+       */
+      const finished = await finishDecided(decidedFromHandover(taken), {
+        eligibilityDecodes: DECODES_PER_INVOCATION,
+      });
+      // The import is over, whatever it answered: what was handed on for it
+      // has served. A THROW keeps it, so the recovery that retries this
+      // invocation takes the same read rather than parsing again.
+      await discardHandedOverPictures(supabase, { organisationId, uploadId: upload.id });
+      return finished;
+    }
+    console.warn('[builderStock] a handed-over read could not be taken; reading the document', {
+      phase: 'import_handoff', upload_id: upload.id, reason: 'handover_unavailable',
+    });
   }
 
   let extraction;
@@ -1024,293 +1520,128 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     }
   }
 
-  const { error: stampError } = await supabase.from('builder_stock_uploads').update({
-    status: 'imported',
-    detected_content_type: detection.mime,
-    file_sha256: sha,
-    byte_size: bytes.length,
-    parse_strategy: strategy,
-  }).eq('id', upload.id);
-  // The unique index on (organisation_id, file_sha256) is the duplicate
-  // guard's second half: if two imports of the same bytes raced past the
-  // lookup above, this is where the loser finds out.
-  if (stampError && /duplicate key/i.test(stampError.message || '')) {
-    return {
-      ok: false,
-      code: 'duplicate_file',
-      message: 'This content has already been imported.',
-      status: 409,
-    };
-  }
-
   /*
-   * EVERY ROW SAYS WHETHER ITS LINK LAYER WAS READ. The caller's stamp wins —
-   * it is the only party that knows how a Google Sheet's separately-travelling
-   * targets fared — and a source whose links are native to the bytes just read
-   * (a workbook's relationships, a CSV's own text, a PDF's annotations, a
-   * Notion record map) is stamped `complete` from the strategy that read it.
-   * The stamp is what lets `readSuppliedEvidence` tell "this row supplied
-   * nothing" from "we could not see what this row supplied" — see
-   * `suppliedEvidence.pure.ts`, which is the one reader of it.
+   * ═══════════════════════════════════════════════════════════════════════
+   * THE READING IS DECIDED. WHERE THE TAIL RUNS IS THE LAST QUESTION.
+   * ═══════════════════════════════════════════════════════════════════════
    */
-  const linkDiscovery: RowLinkDiscovery = input.linkDiscovery
-    ?? { state: 'complete', method: `native:${strategy}` };
-
-  const recordsStartedAt = Date.now();
-  const rasterBeforeRecords = classSpendMs(ledger, 'raster');
-  const outcome = await importStockRecords(supabase, {
-    organisationId,
-    uploadId: upload.id,
-    builderUserId: input.builderUserId,
+  const decided: DecidedImport = {
+    strategy,
     rows,
+    completedFields,
+    detectedMime: detection.mime,
+    classificationKind: classification.kind,
+    /*
+     * EVERY ROW SAYS WHETHER ITS LINK LAYER WAS READ — decided here, with the
+     * rest, from the strategy that is now final. See the tail.
+     */
+    linkDiscovery: input.linkDiscovery
+      ?? { state: 'complete', method: `native:${strategy}` },
     media: extraction.media,
-    linkDiscovery,
     // The caller's assets first: a Notion collection knows which row owns
     // which cover, and the CSV it became cannot.
     rowAssets: [...(input.rowAssets ?? []), ...extraction.rowAssets],
-    // A PDF's properties come out of prose and carry no anchor of their own;
-    // these are what lets one be tied back to the page it was described on.
     pageTexts: extraction.pageTexts,
-    // And where on a page each property was drawn, for the documents whose
-    // pages carry more than one. Absent everywhere else.
     pdfRegions: extraction.pdfRegions,
     pageOrderAuthoritative: extraction.pageOrderAuthoritative,
-    filename: upload.original_filename,
-    // Derived from the run's own clock rather than restarted here, which is
-    // the half of this defect that had a budget and spent it from zero.
-    imageDeadlineAt: storageDeadlineFrom(runBudget, Date.now()),
-    // ONE ACCOUNT OF ONE RUN. The raster half of that call records itself.
-    ledger,
-    onStage: commitLedger,
-  });
-  /*
-   * THE ROW WRITES ARE WHAT IS LEFT ONCE THE RASTER WORK IS TAKEN OUT.
-   *
-   * `importStockRecords` does two different kinds of work in one call and
-   * only one of them is expensive per byte. Timing the whole call as
-   * `db_write` would put the photographs' cost under a metadata heading and
-   * hide the thing the measurement is for; subtracting what the raster stage
-   * already recorded is the same rule the reader and the segmenter answer to
-   * one level up.
-   */
-  /*
-   * THE WHOLE RASTER CLASS, NOT ONE STAGE OF IT. This subtracted
-   * `image_store_ms` alone, and the decode that settles each picture's role is
-   * charged as `image_decode` inside the same call — so on
-   * `stress-multi-property` it was counted twice and `db_write` read 5,009 ms
-   * for row writes that cost tens. Taken as the difference across the call,
-   * so raster work charged before it is not subtracted from it.
-   */
-  const rasterDuringRecords = classSpendMs(ledger, 'raster') - rasterBeforeRecords;
-  recordStage(ledger, 'db_write',
-    Math.max(0, (Date.now() - recordsStartedAt) - rasterDuringRecords));
-  await commitLedger(ledger);
-
-  /*
-   * WHAT THIS RUN SPENT IS ALREADY WRITTEN DOWN — this block used to do it
-   * here, at the end, and that is exactly why the 22 September CPU kill left
-   * `stage_timings: null` on an import that had spent eight seconds. The
-   * ledger is committed at every stage boundary now; what is added here is
-   * only what this point of the run knows and the stages did not.
-   */
-  countIn(ledger, 'rows_detected', outcome.detected);
-  ledger.strategy = strategy;
-
-  if (!outcome.detected) {
-    /**
-     * ZERO ROWS IS NOT A PERMISSION FINDING.
-     *
-     * This branch used to answer `notion_not_public` for any Notion source
-     * that produced no rows, which meant the pipeline was reporting on a
-     * page's SHARING STATE from evidence that says nothing about it. A public
-     * page whose columns we did not recognise, a public page that is genuinely
-     * empty, and a private page all reach here identically.
-     *
-     * Accessibility is settled BEFORE the pipeline runs, by the fetch status
-     * and by `assessNotionReadability` looking for an explicit gate; nothing
-     * in here may contradict that. What this branch knows is only that the
-     * content produced no properties, so that is all it says.
-     */
-    if (input.isNotionSource) {
-      return fail('no_properties_found', NOTION_NO_PROPERTIES_MESSAGE);
-    }
-    /*
-     * THE SAME COLUMN-HEADING RULE AS THE FAILURE ABOVE. This sentence used to
-     * end "Check that it lists one property per row with column headings" for
-     * every source, so a brochure the reader had genuinely found no property
-     * in was also told to become a spreadsheet. `SOURCE_HAS_COLUMNS` is the
-     * one place that decides which sources that advice is true of.
-     */
-    const what = sourceKind === 'url' ? 'page' : 'file';
-    /*
-     * WHAT THE READER ACTUALLY SAW, RECORDED WITH THE REFUSAL.
-     *
-     * This path carried no `detail` at all, and while a model stood behind it
-     * that was survivable: a document reaching here had already been offered
-     * to a second reader, and the record that mattered was the model's. With
-     * the model gone this IS the outcome, and an outcome nobody can diagnose
-     * is one that can only be investigated by asking the builder to send the
-     * file again — which is the loop this work exists to end.
-     *
-     * MEASURED 21 SEPTEMBER 2026 on `Lot 37 - Miami 190 - Property
-     * Package.pdf`: the row said `conflicting_values:development_name` and
-     * nothing else, over a document whose text had extracted cleanly at
-     * 3,962 characters. Which two estates it named was unknowable from the
-     * record.
-     *
-     * `detail` is the internal diagnosis — `RunImportFailure` says so, and
-     * `get_upload` and `projectUploadListRow` both project it away — which is
-     * what makes it the right home for document text.
-     */
-    const reading = extraction.deterministicReading;
-    const detail = reading
-      ? JSON.stringify({
-        deterministic_status: reading.status,
-        deterministic_reason: reading.reason,
-        fields_read: reading.diagnostics.fieldsRead ?? null,
-        conflict_field: reading.diagnostics.conflictField ?? null,
-        disputed_fields: reading.diagnostics.disputedFields ?? null,
-        // These live BESIDE the projection, never inside it: the projection
-        // is the safe-to-log one and a value the document stated may not
-        // enter it. See their notes on `StockExtraction`.
-        provisional_rows: (extraction.deterministicProvisional ?? []).length,
-        unaccounted: extraction.deterministicUnaccounted ?? null,
-        ignored: extraction.deterministicIgnored ?? null,
-        placement: extraction.deterministicPlacement ?? null,
-      })
-      : undefined;
-    if (SOURCE_HAS_COLUMNS.has(classification.kind)) {
-      return fail('no_properties_found', sourceKind === 'url'
-        ? 'No properties could be read from that page. Check that it lists one property per row, or upload the stock list instead.'
-        : 'No properties could be read from that file. Check that it lists one property per row with column headings.',
-        detail);
-    }
-    return fail('no_properties_found',
-      `We read that ${what}, but it did not describe a property we could list.`
-      + ' If it should, check that it names the lot or address and its price.',
-      detail);
-  }
-
-  /**
-   * SAY WHETHER THE BUILDER'S OWN IMAGERY LANDED.
-   *
-   * An import that read the properties and produced no picture used to look
-   * exactly like one that produced every picture — the difference only showed
-   * up later as an empty frame on a card, with nothing anywhere to explain it.
-   */
-  const warnings = [...extraction.warnings];
-  /**
-   * Only where the source ACTUALLY CARRIED imagery this import could see. A
-   * stock list whose pictures live behind a package link each row carries has
-   * none at this point and every one of them a few seconds later, when the
-   * settlement stage follows those links — warning here would be false on
-   * exactly the source type that takes longest to resolve.
-   */
-  const sawImagery = extraction.media.length > 0
-    || (extraction.rowAssets ?? []).some((row) => row.assets.length > 0)
-    || (input.rowAssets ?? []).some((row) => row.assets.length > 0);
-  if (outcome.itemIds.length && sawImagery && !outcome.withSourceImage
-    && !outcome.imageryOutstanding) {
-    warnings.push(
-      'No supplied image could be identified for these properties, so their cards '
-      + 'will show no photograph.');
-  }
-
-  /*
-   * START THE IMAGE WORK NOW — the import is the moment work exists, and a
-   * six-property list must begin six-wide immediately instead of trickling
-   * through the cron at two workers a minute (measured 2026-09-15: ~25
-   * minutes for six properties). The kick re-arms the watchdog schedule and
-   * fans out signed settler invocations sized to the claimable backlog.
-   * BEST-EFFORT BY DESIGN: the every-minute tick reaches the same queue, so
-   * a deployment mid-migration or a pg_net hiccup costs latency, never work.
-   */
-  const kickStartedAt = Date.now();
-  try {
-    const { error: kickError } = await input.supabase
-      .rpc('builder_stock_kick_image_work', { p_upload_id: input.upload.id });
-    if (kickError) {
-      console.warn('[builderStock] image work kick unavailable; cron will drive', {
-        phase: 'image_work_dispatch', upload_id: input.upload.id,
-        detail: String(kickError.message ?? kickError).slice(0, 160),
-      });
-    }
-  } catch { /* the cron tick is the guarantee */ }
-  recordStage(ledger, 'initial_image_work', Date.now() - kickStartedAt);
-  await commitLedger(ledger);
-  const finalisationStartedAt = Date.now();
-
-  /*
-   * AND ASK WHETHER THIS UPLOAD CAN BE PUBLISHED, BECAUSE NOTHING ELSE WILL
-   * ASK ON A RE-READ.
-   *
-   * `publish_builder_stock_upload` had exactly ONE caller: the image settler,
-   * after an item's work completes — under its own comment, "there is nothing
-   * else watching". That is true, and it is the whole defect. Publication is
-   * also what APPLIES a held-back patch, so on a list whose photographs are
-   * already settled a re-read produces no image work, nothing claims an item,
-   * nobody asks, and a corrected reading sits in `pending_patch` for ever.
-   *
-   * MEASURED 21 SEPTEMBER 2026. `LOT 266 Crowlea Estate` was re-read at
-   * 10:49 with the right answer — `development_name:leading_field_name`,
-   * `land_size_sqm:below` — and the settler's next three ticks reported
-   * `claimed: 0, claimable: 0, outstanding: 0`. Fixing the publication
-   * function so it applies a patch on a second publication was necessary and
-   * was not sufficient: a function nobody calls cannot apply anything.
-   *
-   * SAFE ON EVERY OTHER PATH, because the function decides and this only
-   * asks. A first upload is not ready this early — its photographs have not
-   * settled — so it answers `not_ready` and changes nothing but the reason it
-   * already writes. A deleted or superseded upload refuses before anything
-   * else. The readiness rule is evaluated inside the same statement that
-   * flips the rows, so asking twice can never publish half a cutover.
-   *
-   * BEST-EFFORT, LIKE THE KICK ABOVE: the settler still asks after every
-   * completed item, so a failure here costs latency and never work.
-   */
-  try {
-    await input.supabase.rpc('publish_builder_stock_upload', {
-      p_upload_id: input.upload.id,
-    });
-  } catch { /* the settler and the cron tick both ask again */ }
-  recordStage(ledger, 'finalisation', Date.now() - finalisationStartedAt);
-  await commitLedger(ledger);
-  /*
-   * THE RUN IS OVER, so a termination from here on is the ordinary end-of-
-   * request drop and must not be reported as an import dying mid-stage.
-   */
-  termination.done();
-
-  return {
-    ok: true,
-    summary: {
-      detected: outcome.detected,
-      imported: outcome.imported,
-      updated: outcome.updated,
-      failed: outcome.failed,
-      withSourceImage: outcome.withSourceImage,
-      /*
-       * IMAGERY DECLINED AT DISCOVERY IS IMAGERY OUTSTANDING. The storage
-       * phase raises this flag for what IT declined; a document whose
-       * pictures were never decompressed has the same thing owed to it, and
-       * reporting `false` there would tell a builder their brochure holds no
-       * photograph.
-       */
-      imageryOutstanding: outcome.imageryOutstanding || Boolean(extraction.imageryDeferred),
-      imageryDeferred: extraction.imageryDeferred ?? null,
-      completedFields,
-      warnings,
-      failures: outcome.failures,
-    },
-    strategy,
-    detectedMime: detection.mime,
-    byteSize: bytes.length,
-    enrichmentPending: outcome.itemIds.length,
-    uploadStatus: outcome.failed > 0 ? 'partially_complete' : 'enriching',
+    warnings: extraction.warnings,
+    imageryDeferred: extraction.imageryDeferred ?? null,
     deterministicReading: extraction.deterministicReading ?? null,
+    deterministicProvisionalCount: (extraction.deterministicProvisional ?? []).length,
+    deterministicUnaccounted: extraction.deterministicUnaccounted ?? null,
     deterministicIgnored: extraction.deterministicIgnored ?? null,
     deterministicPlacement: extraction.deterministicPlacement ?? null,
   };
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════
+   * AN ISOLATE THAT PARSED A PDF DECODES NONE OF ITS PICTURES.
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * MEASURED 23 SEPTEMBER 2026, production: `LOT 550 - ENZO 8.5 MODERN-
+   * BROCHURE V002.pdf` was killed on `process_upload`, on "Read again" and in
+   * the settler's re-read of the same bytes — each time AFTER the reader had
+   * finished, inside the decode that settles its pictures' roles. The one
+   * ledger the runtime left (the settler's, the same `runStockImport`) read
+   * 1,155 ms of document work and 485 ms of decode, under the 3,000 ms
+   * ceiling `mayDecideRoles` prices against: the platform charges CPU this
+   * ledger cannot see.
+   *
+   * So the pictures are not decoded here. The read and the decision are
+   * written down and THIS IMPORT crosses once more, through the continuation
+   * it already is; the successor restores both and runs the tail below with
+   * the same inputs — including the one attach that attributes a brochure's
+   * pictures, which the image settler cannot (see `importHandover.pure.ts`).
+   *
+   * ONLY WHERE A SUCCESSOR CAN REPRODUCE THIS RUN (`resumableFromStoredBytes`)
+   * and only for the document it is about: paginated, with pictures. A
+   * hand-off that cannot be written — past a bound, storage refusing it —
+   * leaves this run finishing here, exactly as every run did before this.
+   */
+  if (input.resumableFromStoredBytes
+    && picturesWorthHandingOver({ pageTexts: decided.pageTexts ?? [], media: decided.media })
+    && mayCrossForPictures(checkpoint)) {
+    const handoverStartedAt = Date.now();
+    const handed = await handPicturesOver(supabase, {
+      organisationId,
+      uploadId: upload.id,
+      documentSha256: sha,
+      source: {
+        // The rows travel in the decision: they are the DECIDED rows, after
+        // the provisional and completed readings, not the extractor's.
+        rows: [],
+        rowAssets: decided.rowAssets,
+        pageTexts: decided.pageTexts ?? [],
+        pdfRegions: decided.pdfRegions,
+        pageOrderAuthoritative: decided.pageOrderAuthoritative,
+        media: decided.media,
+      },
+      decision: importDecisionOf(decided),
+    });
+    recordStage(ledger, 'document_handover', Date.now() - handoverStartedAt);
+    await commitLedger(ledger);
+    /*
+     * The successor finds the read by the token the checkpoint carries, and
+     * the crossings are bounded by the count it carries — so the hand-off is
+     * made only once BOTH are written, and a read whose checkpoint did not
+     * land is put away again rather than left for nobody.
+     */
+    let handedOn = false;
+    if (handed.handedOver) {
+      const before = checkpoint;
+      checkpoint = withPictureHandover(checkpoint, handed.token);
+      handedOn = await commitCheckpoint();
+      if (!handedOn) {
+        checkpoint = before;
+        await discardHandedOverPictures(supabase, { organisationId, uploadId: upload.id });
+      }
+    }
+    if (handedOn) {
+      console.log('[builderStock] import handed to a successor', {
+        phase: 'import_handoff',
+        upload_id: upload.id,
+        reason: 'pictures_outstanding',
+        pictures: decided.media.length,
+        crossings: crossingsSpent(checkpoint),
+        spent_ms: ledgerTotalMs(ledger),
+      });
+      termination.done();
+      return {
+        ok: true,
+        continued: true,
+        reason: 'pictures_outstanding',
+        outstanding: decided.media.length,
+        continuations: crossingsSpent(checkpoint),
+      };
+    }
+    console.warn('[builderStock] pictures kept in the reading isolate', {
+      phase: 'import_handoff',
+      upload_id: upload.id,
+      reason: handed.handedOver ? 'checkpoint_not_written' : handed.reason,
+    });
+  }
+
+  return await finishDecided(decided);
 }
 
 function fail(code: string, message: string, detail?: string): RunImportFailure {
