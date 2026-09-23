@@ -47,6 +47,14 @@ sleep 2
 PGPASSWORD=acceptance node scripts/ops/probe-watchdog-backoff.mjs \
   "postgres://postgres:acceptance@127.0.0.1:54999/stock_acceptance"
 
+# AND DOES A FIGURE A BUILDER STATES REACH THE MARKETPLACE? Same rule. The
+# sync composer read `manual_stats` keys the column never holds, so a land size
+# typed into "Complete the schedule" travelled to every clone as nothing. This
+# stores one on a real row, asks the real composer, and rolls everything back.
+# See `scripts/ops/probe-stated-figures-payload.mjs`.
+PGPASSWORD=acceptance node scripts/ops/probe-stated-figures-payload.mjs \
+  "postgres://postgres:acceptance@127.0.0.1:54999/stock_acceptance"
+
 # AND CAN TWO WORKERS IMPORT THE SAME STOCK LIST? Same rule, same reason. An
 # import is resumable now, which makes a double dispatch, a successor racing
 # its predecessor and a killed worker's lease all reachable — and every one of
