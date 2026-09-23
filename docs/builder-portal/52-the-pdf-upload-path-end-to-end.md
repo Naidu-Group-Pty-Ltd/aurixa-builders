@@ -1227,7 +1227,30 @@ identical route-A readings (398 fields, the same verdicts and strategies).
   - `stress-scanned-pages`: 5 document parses, against 20;
   - `stress-many-images`: 5, against 28.
 
+**In production, 23 September 2026.** The merge deployed `builder-portal-stock`
+v646 and `builder-stock-image-settler` v648, and all 27 functions were
+refreshed. The deploy read both OCR assets back at their pinned SHA-256.
+`stock-scan-proof` in `read` mode then imported the fixture through the
+portal's own path, into an organisation of its own that it deleted afterwards
+(production-rollout run 35889548999, 18 of 18):
+- The isolate that parsed the document recognised nothing. Each of the next
+  three recognised one page, in 1,780, 776 and 1,246 ms of recognition.
+- All three pages were recognised exactly once. The property was read field
+  for field, with one image row.
+- All ten invocations answered 200, and none was recovered. The longest took
+  12.6 s of wall clock.
+- The product completed the upload by itself 59.8 s after accepting it, and
+  nothing moved in the 150 s after that.
+- No model-budget reservation was made.
+
+The first `read` run (35888580827) passed 16 of 17. Its step 7 took its
+snapshot at `enriching`, and the settler then completed the upload 1.2 s
+later, as designed. The proof now waits for the product's last word, a rule
+`stock-import-proof.mjs` already carried.
+
 **What remains.** A dense page costs 4.1–4.7 s of recognition on this machine,
-and a page is the unit nothing can divide. A page whose recognition alone
+and a page is the unit nothing can divide. On the hosted runtime the fixture's
+sparse pages took 776–2,297 ms each, engine opening included, across both
+runs. A dense page has not been measured there. A page whose recognition alone
 exceeds what one hosted invocation may spend will be killed once. It is then
 settled as lost, and the import finishes with every page read before it.

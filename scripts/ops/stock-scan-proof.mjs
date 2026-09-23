@@ -33,8 +33,9 @@
  *                      itself could not run or could not clean up.
  *   read               the same, and REQUIRE: every page recognised exactly
  *                      once, the document's property read field for field,
- *                      no 546, no recovered worker, nothing duplicated,
- *                      nothing stranded, and nothing moving afterwards.
+ *                      no 546, no recovered worker, nothing duplicated, the
+ *                      product completing the upload by itself, nothing
+ *                      stranded, and nothing moving once it has.
  *
  * Runs from the production-rollout workflow (phase `stock-scan-proof`), which
  * holds SUPABASE_ACCESS_TOKEN and NETWORK_SESSION_PEPPER. No secret is printed.
@@ -579,16 +580,48 @@ try {
 
   // --- 7. NOTHING STRANDED, AND NOTHING MOVES AFTERWARDS ------------------
   if (EXPECT === 'read') {
+    /*
+     * FINISHED MEANS THE PRODUCT'S LAST WORD, NOT THE IMPORT'S — the rule
+     * `stock-import-proof.mjs` already records, and this proof did not carry.
+     *
+     * A successful import leaves the upload `enriching`, and the image settler
+     * completes it by itself. The first `read` run of this proof
+     * (production-rollout run 35888580827, 23 September 2026) took step 7's
+     * snapshot from step 3's read, at `enriching`. The settler completed the
+     * upload 1.2 s later, as designed, and step 7 reported the product
+     * finishing as a row that moved. Items, images, the claim and the recovery
+     * count had not changed. So the snapshot now waits for the upload's own
+     * terminal status and for every property's picture work to settle, and
+     * says when that arrived. Only then does "nothing moves" mean anything.
+     */
+    const SETTLING = ['parsing', 'uploaded', 'imported', 'enriching'];
+    const PICTURE_WORK_DONE = ['settled', 'failed'];
+    let settled = upload;
+    let settledItems = items;
+    while (Date.now() - acceptedAt < IMPORT_DEADLINE_MS) {
+      settled = await uploadOf(proofId);
+      settledItems = await itemsOf(proofId);
+      if (settled?.processing_completed_at && !SETTLING.includes(settled.status)
+        && settledItems.every((i) => PICTURE_WORK_DONE.includes(i.image_work_stage))) break;
+      await sleep(3_000);
+    }
+    const settledImages = await imagesOf(proofId);
+    summary.completedMs = Date.now() - acceptedAt;
+    record('7: the product completed the upload by itself',
+      settled?.status === 'complete'
+      && settledItems.every((i) => PICTURE_WORK_DONE.includes(i.image_work_stage)),
+      `status ${settled?.status}, picture work ${settledItems.map((i) => i.image_work_stage).join(', ') || 'none'}, `
+      + `seen ${summary.completedMs} ms after it was accepted`);
     const before = JSON.stringify({
-      items: items.map((i) => [i.id, i.lifecycle_status, i.primary_image_id]),
-      images: images.map((i) => i.id), status: upload?.status,
+      items: settledItems.map((i) => [i.id, i.lifecycle_status, i.primary_image_id, i.image_work_stage]),
+      images: settledImages.map((i) => i.id), status: settled?.status,
     });
     await sleep(SETTLEMENT_WINDOW_MS);
     const later = await uploadOf(proofId);
     const laterItems = await itemsOf(proofId);
     const laterImages = await imagesOf(proofId);
     const after = JSON.stringify({
-      items: laterItems.map((i) => [i.id, i.lifecycle_status, i.primary_image_id]),
+      items: laterItems.map((i) => [i.id, i.lifecycle_status, i.primary_image_id, i.image_work_stage]),
       images: laterImages.map((i) => i.id), status: later?.status,
     });
     record('7: after a recovery window nothing moved', before === after,
