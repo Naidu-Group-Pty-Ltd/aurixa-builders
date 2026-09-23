@@ -186,7 +186,7 @@ import { sweepHandedOnThisParse } from './readerSweepAttempt.pure.ts';
  * Every document already imported is read again, because a document whose
  * headings were unreadable was read without them.
  */
-export const DETERMINISTIC_READER_VERSION = 14;
+export const DETERMINISTIC_READER_VERSION = 15;
 
 /*
  * VERSION 11 — A PHRASE'S OWN WORDS ARE HEADINGS TOO.
@@ -295,6 +295,33 @@ export const DETERMINISTIC_READER_VERSION = 14;
  * document's pictures to a later isolate and continuing across its own
  * ticks, and a document that kills a tick is asked a bounded number of times
  * rather than for ever. See `readerSweepAttempt.pure.ts`.
+ */
+
+/*
+ * VERSION 15 — THE PAGE THAT PRICES THE PROPERTY IS THE PAGE THAT MEASURES IT.
+ *
+ * MEASURED 23 SEPTEMBER 2026 on `LOT 927 - ENZO 10.5 - BROCHURE V002.pdf`,
+ * uploaded to the production project that morning: the card read `LAND —`
+ * and `HOME 132 m²` over a property page printing `Lot Size 294m²` and a
+ * house schedule totalling `129.5m²`. Page 2 is a siting consultant's
+ * drawing whose `Site Area: 309.45 m2` and `Build Area: 131.6 m2` are the
+ * operands of the site coverage it prints, and the reader gave them the same
+ * standing as the property's own page — so the lot size was disputed and
+ * dropped and the siting's labelled build area outranked the house's own
+ * total. The estate went the same way: `(Banyan Place Estate)` on one page,
+ * `Estate: Banyan Place` on the other.
+ *
+ * A lot size or build size is now settled once every page has been read: the
+ * pages that state the price state the property's measurements, and any
+ * other page may refine one of those figures to more decimals or fill one the
+ * property's page never states — never overrule it. See
+ * `measurementAuthority.pure.ts`. A document that states no price reads as it
+ * always did, and a document whose pages already agreed reads byte-identically.
+ *
+ * Every stored document is read again, because the brochure class this
+ * changes is the one builders on this platform upload — `LOT 214`, `LOT 315`,
+ * `LOT 717`, `LOT 4327` and `LOT 927` are one template — and a row carrying
+ * no land size or the siting's building area is corrected only by a re-read.
  */
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */

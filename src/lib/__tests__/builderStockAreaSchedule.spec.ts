@@ -8,6 +8,12 @@
  * it never speaks over a figure the document LABELLED, because that is the
  * reason the first version of this rule was deleted (Lot 315: `Total: 117.50m²`
  * on the cover, `Build Area: 119.16 m2` on the siting page).
+ *
+ * WITH ONE EXCEPTION, which is about pages rather than schedules: a schedule
+ * on the page that PRICES the property is that page's own statement of the
+ * build, and outranks a label on a siting plan (`LOT 927`, 23 September 2026;
+ * see `measurementAuthority.pure.ts`). A schedule anywhere else is still only
+ * the last opinion.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -142,5 +148,39 @@ describe('the reader asks it only where nothing else states the build', () => {
       at(22, 28, 'Build Size: 250 m2'),
     ]));
     expect(row?.building_size_sqm ?? null).toBeNull();
+  });
+});
+
+describe('a schedule on the page that prices the property', () => {
+  const yOf = (band: number) => 780 - band * 14;
+  const at = (band: number, x: number, text: string): PdfTextItem =>
+    ({ text, x, y: yOf(band), width: text.length * 5 });
+  const SCHEDULE = [
+    at(10, 29, 'Enclosed:'), at(10, 101, '201.40m2'),
+    at(11, 29, 'Garage:'), at(11, 101, '36.10m2'),
+    at(12, 29, 'Total:'), at(12, 101, '237.50m2'),
+  ];
+  const IDENTITY = [at(0, 28, 'Lot 214'), at(1, 28, 'Home Design: Aspire 24')];
+  const PRICE = [at(2, 28, 'Price: $662,900')];
+  const SITING = [at(0, 28, 'Site Address: Lot 214'), at(4, 28, 'Build Area: 241.16 m2')];
+  const read = (pages: PdfTextItem[][]) => {
+    const reading = readPdfBrochure(
+      pages.map((items) => items.map((item) => item.text).join('\n')),
+      { positionedPages: pages.map((items, index) => ({ page: index + 1, items })) },
+    );
+    return { reading, row: reading.rows.length ? normaliseStockRow(reading.rows[0]) : null };
+  };
+
+  it('outranks a build area the siting plan labels', () => {
+    const { row, reading } = read([[...IDENTITY, ...PRICE, ...SCHEDULE], SITING]);
+    expect(row?.building_size_sqm).toBe(237.5);
+    expect(reading.diagnostics.readBy ?? []).toContain('building_size_sqm:area_schedule');
+    expect(reading.diagnostics.outrankedFields).toEqual(['building_size_sqm']);
+  });
+
+  it('is still only the last opinion on a page that does not price the property', () => {
+    const { row, reading } = read([[...IDENTITY, ...PRICE], SCHEDULE, SITING]);
+    expect(row?.building_size_sqm).toBe(241.16);
+    expect(reading.diagnostics.readBy ?? []).not.toContain('building_size_sqm:area_schedule');
   });
 });

@@ -17,7 +17,7 @@ expectation was wrong rather than the code.
 
 **The PDF ingestion architecture is the supported baseline as of 22 September
 2026** (reader 13, `builder-portal-stock` v562, `builder-stock-image-settler`
-v564), and reader 14 on 23 September (§13). It is not frozen because it is finished — §12 lists what is still open —
+v564), reader 14 on 23 September (§13), and reader 15 the same day (§14). It is not frozen because it is finished — §12 lists what is still open —
 but because it has been measured, and the measurement is what a change has to
 beat.
 
@@ -736,7 +736,7 @@ code (case 2): `heldout-icon-row-estate-locality`,
 | `House` over `Specifications` was taken for the house design, which blocked the corroboration of the page's own `Enzo 10.5`. | **A section heading is never a name** (`a_section_heading_is_not_a_name` in `fieldTypes.pure.ts`). A value made only of section nouns and their qualifiers, with no digit, is declined as a design or an estate. |
 | `Lot 4327 Jubilee Estate,` over `Wyndham Vale`. | **A trailing comma is the document saying the address continues** (`readContinuedAddress`). The suburb is read, and no state or postcode the page does not print is invented. Without the comma the old refusal stands (`builderStockAddressBlock.spec.ts` records the renegotiation). |
 | The icon row `3 2 2` had nothing to key it: the floor plan is a picture and there is no siting page. | **An icon row is read in its printed order, bed · bath · car, only where nothing else keys it** (`readOrderedIconRow`). Each guard refuses rather than guesses, and each is the only thing standing between some row and a reading in `builderStockIconRowOrder.spec.ts`: implausible counts, gaps too narrow for a pictogram, anything drawn between the figures, zero-padding, widths nobody measured, a second different row, a row on a page that does not name the lot, and a plan that names more bedrooms than the row (the negative fixture). |
-| No label says "build size"; the house schedule ends `Total: 129.5m²`. | **The total of the house's one area schedule is its building size where nothing labelled competes** (`areaSchedule.pure.ts`). The schedule needs two or more dwelling parts, a total that is at least its largest part and within 25% of their sum, and exactly one such schedule on the document. It never speaks over a labelled figure, which is why its first version was deleted (Lot 315). |
+| No label says "build size"; the house schedule ends `Total: 129.5m²`. | **The total of the house's one area schedule is its building size where nothing labelled competes** (`areaSchedule.pure.ts`). The schedule needs two or more dwelling parts, a total that is at least its largest part and within 25% of their sum, and exactly one such schedule on the document. It never speaks over a figure its own page labels, which is why its first version was deleted (Lot 315); since reader 15 it does speak over a label on a siting plan (§14). |
 
 `builderStockLot4327Geometry.spec.ts` asserts all five against the production
 page's own runs, printed by the trace. The acceptance gate read 33 documents
@@ -748,3 +748,87 @@ Reader 14 is what reaches the stored document. The reader sweep that re-reads
 it had to change first, because this document is `LOT 550`'s class. See
 `54-what-the-importer-spends.md` §11.5.
 
+
+## 14 · A siting plan's figures stood beside the property's own
+
+**The defect (case 1 of §0), 23 September 2026.** `LOT 927 - ENZO 10.5 -
+BROCHURE V002.pdf` is the same builder template as Lot 4327, with one more
+page. It imported with `LAND —` and `HOME 132 m²`. Its property page prints
+`Lot Size 294m²` and a house schedule totalling `129.5m²`. The trace
+(`stock-reading-trace`, read-only) showed that page 2 was the cause. Page 2 is
+a siting consultant's *Proposed Siting*. It prints `Site Area: 309.45 m2` and
+`Build Area: 131.6 m2`, the two operands of the `Site Coverage: 42.5%` it
+states (131.6 ÷ 309.45 = 42.53%). They are real measurements, taken for a
+different purpose: the surveyed boundary and the outside of the walls.
+
+The reader gave them the same standing as the property's own page:
+
+| field | what happened | why |
+|---|---|---|
+| land size | 294 and 309.45 were read as one statement made twice that disagreed, so the field was **disputed and dropped**. | Every page's figure competed on equal terms. `Site Area` became a land-size alias in doc 50 item 6, which is what put this page in the contest. |
+| build size | The siting's labelled `Build Area` was **taken** and the house's own `Total:` never asked. | The area schedule was a fallback for a document stating no build size at all (§13). |
+| estate | `(Banyan Place Estate)` on page 1 and `Estate: Banyan Place` on page 2 were **disputed and dropped**. | The same place, spelled with and without the word. |
+
+Two held-out fixtures of the class went into the corpus before any code (case
+2). `heldout-siting-plan-own-areas` has a property page stating both sizes and
+a siting that disagrees with both. `heldout-siting-plan-fills-land` has a
+property page with no lot size, so the siting's site area is the only
+statement and must still be read. Run through the unfixed reader, both
+reproduced production exactly.
+
+**The rule: the page that prices the property is the page that measures it**
+(`measurementAuthority.pure.ts`). A lot size or a build size is settled once
+every page has been read, in two tiers:
+
+1. **The property's own page** is every page that stated the price. Its
+   figure stands. If it states two figures that disagree, the field is still
+   disputed. No other page can settle a page that disagrees with itself.
+2. **Every other page** may *refine* that figure, when it states the same
+   measurement to more decimals (`402` → `401.86`, `321` → `320.72`, the
+   rule `sameMeasurement` has always applied). It may also *fill* a figure the
+   property page never states. It may never overrule one.
+
+For the house, the property page's own area schedule sits between the two
+tiers. It ranks below a build size the property page *labels*, as it always
+has, and above a label on any other page. A document that states no price has
+no property page and reads as it always did, with one correction: a third
+statement no longer revives a size that two others disputed. The loop's commit
+used to re-claim a field it had just dropped, which chose by page order. That
+defect is still present for other non-material fields, where it is out of this
+change's reach and has not been measured on any document. What was outranked
+is named in `outrankedFields` (field names only) and reaches the import log as
+`deterministic_outranked`.
+
+The estate rule is narrower: **a trailing `Estate` is not part of the
+comparison** (`placeWords`), and the spelling that carries the word is kept
+whichever page comes first. `Banyan Place` and `Banyan Rise` still disagree.
+The importer already corrects its own row when a re-read gives a development a
+name (`byOwnAnchor`, `builderStockRereadCorrectsItsOwnRow.spec.ts`), so the
+property keeps its id and its photographs.
+
+What this does not change, measured rather than assumed. Every PDF the corpus
+generator writes (the 35 fixtures, plus the second file of the replacement
+fixture) was read by the reader at `HEAD` and by this one, and the rows were
+compared with key order ignored. 34 of 36 read identically; the two that differ
+are the new fixtures. `builderStockLot927Geometry.spec.ts` asserts the reading against
+the production pages' own runs: 294, 129.5, `Banyan Place Estate`, and
+everything else as it was. It also asserts the same row with the siting plan
+first, and the siting plan's own figures where it is the only page. The
+consultant's contact details are replaced by same-shape placeholders, which
+leave the reading byte-identical.
+
+The acceptance gate read 35 documents with 0 failures, the same seven named
+limits as before, and 0 generative-model calls. Both new fixtures import every
+expected field on both routes, through the multi-isolate hand-off, and their
+pictures settle. The CPU profile is flat within noise: the document class
+totals 29,080 ms against 28,508, and no invocation both parsed and decoded.
+
+**What it does not claim.** A brochure that prints its sizes on a page that
+does not state the price, beside a siting plan, reads as it did before: two
+pages on equal terms, where a disagreement disputes the field. No document of
+that shape has been seen. If one arrives, the rule to reach for is the siting
+plan's own arithmetic, since its two areas reproduce the coverage it prints.
+Under §0 case 2, it comes to the corpus as a held-out fixture first.
+
+Reader 15 is what reaches the stored document. The reader sweep re-reads it,
+and `LOT 4327`, on its fifteen-minute heartbeat.

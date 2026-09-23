@@ -910,6 +910,7 @@ for (const entry of manifest) {
       declinedFields: [...(d.diagnostics?.declinedFields ?? [])].sort(),
       declinedBecause: [...(d.diagnostics?.declinedBecause ?? [])].sort(),
       disputedFields: [...(d.diagnostics?.disputedFields ?? [])].sort(),
+      outrankedFields: [...(d.diagnostics?.outrankedFields ?? [])].sort(),
       visualOnlyFields: [...(d.diagnostics?.visualOnlyFields ?? [])].sort(),
       readBy: Object.fromEntries(Object.entries(d.diagnostics?.readBy ?? {}).sort()),
       candidates: d.diagnostics?.candidates ?? null,

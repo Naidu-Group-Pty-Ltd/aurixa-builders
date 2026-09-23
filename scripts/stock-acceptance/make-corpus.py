@@ -1610,6 +1610,200 @@ def _i3(c):
     c.showPage()
     specification_page(c)
 
+
+# ===========================================================================
+# THE PACKAGE BROCHURE WHOSE SITING PLAN STATES DIFFERENT AREAS
+# (held out, 23 September 2026)
+#
+# The same builder template as `LOT 4327`, one page longer, measured from the
+# production document `LOT 927 - ENZO 10.5 - BROCHURE V002.pdf`. Page 1 is the
+# property's own page: its price, its address on one row with the estate in
+# brackets under it, `Lot Size` over its figure and the house's area schedule.
+# Page 2 is a PRELIMINARY SITING drawn by a siting consultant: the same lot
+# under labels, and a site-coverage block whose `Site Area` and `Build Area`
+# are the two figures its coverage is computed from.
+#
+# They do not agree with page 1, and in the production document they did not:
+# the siting measured 309.45 m2 of site where the property's page states a
+# 294m2 lot, and 131.6 m2 of building where the house's own schedule totals
+# 129.5m2. The builder's card must carry what the property's page states. The
+# siting's figures are a different measurement made for a different purpose,
+# and the reader treated them as the same statement made twice — so it dropped
+# the lot size as disputed and let the siting's building area outrank the
+# house.
+#
+# The estate is printed `(Aurora Park Estate)` on page 1 and `Estate: Aurora
+# Park` on page 2: one place, spelled with and without the word that says what
+# kind of place it is.
+# ===========================================================================
+
+def siting_page(c, address, locality, state, design, estate, coverage,
+                site_area, build_area, rooms):
+    """A preliminary siting as a siting consultant draws one, in points."""
+    pt(c, 38.7, 785.3, 'Proposed Siting of your ALTO Home', 13.4, True)
+    pt(c, 38.7, 763.1, 'ALTO Group Pty Ltd | 12 Sample Road, RICHMOND VIC 3121 | '
+       'Phone: 03 9000 0000 | altogroup.example', 7.4)
+    pt(c, 38.7, 751.9, 'Customer:', 8.9)
+    pt(c, 291.0, 751.9, 'Date:', 8.9)
+    pt(c, 356.2, 751.9, '19/12/2025', 8.9)
+    pt(c, 38.7, 738.6, 'Site Address:', 8.9)
+    pt(c, 109.2, 738.6, address, 8.9)
+    pt(c, 291.0, 738.6, 'Estate:', 8.9)
+    pt(c, 356.2, 738.6, estate, 8.9)
+    pt(c, 38.7, 725.2, 'Locality:', 8.9)
+    pt(c, 109.2, 725.2, locality, 8.9)
+    pt(c, 291.0, 725.2, 'State:', 8.9)
+    pt(c, 356.2, 725.2, state, 8.9)
+    pt(c, 38.7, 711.9, 'Home Design:', 8.9)
+    pt(c, 109.2, 711.9, design, 8.9)
+    pt(c, 291.0, 711.9, 'Email/Phone:', 8.9)
+    pt(c, 42.4, 688.1, 'Incomplete Sub:', 9.6)
+    pt(c, 124.0, 688.1, 'Yes', 9.6)
+    pt(c, 42.4, 673.3, 'Current Fencing:', 9.6)
+    pt(c, 42.4, 658.5, 'Ceiling Height:', 9.6)
+    pt(c, 124.0, 658.5, '2.4m', 9.6)
+    pt(c, 42.4, 643.6, 'Site Coverage:', 9.6)
+    pt(c, 124.0, 643.6, coverage, 9.6)
+    pt(c, 42.4, 628.8, 'Site Area:', 9.6)
+    pt(c, 124.0, 628.8, site_area, 9.6)
+    pt(c, 42.4, 613.9, 'Build Area:', 9.6)
+    pt(c, 124.0, 613.9, build_area, 9.6)
+    # The drawing: the lot's own dimensions and the plan's rooms, in small type
+    # scattered across the right of the sheet.
+    for label, x, y in [('14.285 m', 276.4, 556.1), ('11.038 m', 221.6, 487.3),
+                        ('25 m', 402.1, 404.7), ('14.215 m', 248.4, 310.3),
+                        ('10.505 m', 335.8, 212.3)]:
+        pt(c, x, y, label, 6.5)
+    for label, x, y in rooms:
+        pt(c, x, y, label, 5.5)
+    pt(c, 38.0, 276.4, 'Zoning', 7.4)
+    pt(c, 72.8, 271.9, 'UGZ2', 8.9)
+    pt(c, 38.0, 257.8, 'Overlays', 7.4)
+    pt(c, 72.8, 253.4, 'DCPO3', 8.9)
+    pt(c, 38.0, 214.8, 'Requirement', 7.4)
+    pt(c, 112.1, 214.8, 'Actual', 7.4)
+    pt(c, 38.0, 202.2, 'Site', 7.4)
+    pt(c, 112.2, 197.7, coverage, 8.9)
+    pt(c, 38.7, 80.5, 'Note: This is a preliminary siting and is subject to a clear copy '
+       'of title and approval of the builder.', 7.4)
+    pt(c, 38.7, 69.4, 'This siting is subject to developer approval, state building '
+       'regulations and council requirements (where applicable).', 7.4)
+    pt(c, 481.6, 70.1, 'Scale:1:200 @ A4', 8.9)
+    pt(c, 38.7, 55.3, 'Consultant: Siting Desk', 8.2)
+    pt(c, 34.3, 35.3, '_________________________ ____________ '
+       '_________________________ ____________', 10.4)
+    pt(c, 34.3, 24.9, 'Customer Signature (1)', 6.7)
+    pt(c, 178.9, 24.9, 'Date (1)', 6.7)
+    c.showPage()
+
+
+SITING_ROOMS = [('MASTER', 287.1, 353.7), ('ROBE', 288.9, 362.4), ('ENS', 277.1, 390.8),
+                ('BED 2', 358.9, 460.7), ('BED 3', 338.8, 513.8), ('BED 4', 300.0, 520.0),
+                ('BATH', 292.6, 417.0), ('GARAGE', 367.1, 405.5), ('PORCH', 323.1, 342.1),
+                ('KITCHEN', 277.9, 439.3), ('FAMILY/MEALS', 289.3, 505.4),
+                ('L-DRY', 306.7, 390.5), ('ENTRY', 319.8, 379.1)]
+
+
+def property_page(c, design, prices, lot_line, suburb, estate, lot_size, schedule, seed):
+    """The property's own page, laid out as the production template lays it."""
+    land, build, package = prices
+    pt(c, 28.4, 777.3, design, 30, True)
+    icon_row(c, ('4', '2', '2'))
+    pt(c, 29.8, 689.8, f'Land - {land}', 22, True)
+    pt(c, 28.5, 664.5, 'Build -', 22)
+    pt(c, 98.6, 664.5, build, 22)
+    pt(c, 29.8, 639.2, f'Package Price - {package}', 22, True)
+    end = pt(c, 26.2, 601.9, lot_line, 23)
+    pt(c, end + 3.0, 601.9, suburb, 23)
+    pt(c, 26.2, 574.3, estate, 23)
+    pt(c, 26.2, 546.7, '***TITLED LAND***', 23)
+    pt(c, 27.5, 507.5, 'ALTO Inclusions & Turnkey Pack', 18, True)
+    for i, item in enumerate(['Architecturally Designed Facade',
+                              'Low Profile Concrete Rooftiles',
+                              'Stone benchtops throughout']):
+        pt(c, 37.8, 472.4 - i * 12.5, '•', 10)
+        pt(c, 51.2, 472.4 - i * 12.5, item, 10)
+    c.drawImage(ImageReader(facade(seed)), 300, 470, width=270, height=170,
+                preserveAspectRatio=True, mask=None)
+    c.drawImage(ImageReader(floorplan()), 300, 150, width=270, height=190,
+                preserveAspectRatio=True, mask=None)
+    if lot_size:
+        pt(c, 28.6, 182.1, 'Lot Size', 14)
+        area_pt(c, 28.6, 158.1, lot_size)
+    pt(c, 28.8, 129.7, 'House Specifications', 14)
+    for (label, figure), y in zip(schedule, (110.6, 97.6, 84.6)):
+        pt(c, 30.8, y, label)
+        area_pt(c, 102.8, y, figure)
+    pt(c, 30.8, 71.6, 'Total:', 10, True)
+    area_pt(c, 102.8, 68.8, schedule_total(schedule), rise=3.3)
+    package_foot(c)
+    c.showPage()
+
+
+def schedule_total(schedule):
+    return SCHEDULE_TOTALS[tuple(schedule)]
+
+
+SCHEDULE_ONE = (('Enclosed:', '118.40m'), ('Garage:', '38.10m'), ('Porch:', '3m'))
+SCHEDULE_TWO = (('Ground Floor:', '139.5m'), ('Garage:', '36.0m'), ('Porch:', '1.5m'))
+# The builder's own totals, written as the builder wrote them: the production
+# document's total is not the sum of its lines either (129.5 against 133.01).
+SCHEDULE_TOTALS = {SCHEDULE_ONE: '157.5m', SCHEDULE_TWO: '177.0m'}
+
+
+@fixture('heldout-siting-plan-own-areas',
+         'LOT 3104 - ORION 11.5 - BROCHURE V002.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='3104', street_name='Kestrel Street', suburb='Donnybrook',
+                        state='VIC', postcode='3064',
+                        # ONE PLACE, TWO SPELLINGS: `(Aurora Park Estate)` on the
+                        # property's page and `Estate: Aurora Park` on the siting.
+                        estate='Aurora Park Estate',
+                        design='Orion 11.5',
+                        bedrooms=4, bathrooms=2, car_spaces=2,
+                        # THE PROPERTY'S PAGE, not the siting's coverage figures:
+                        # `Lot Size 336m2` over `Site Area: 356.20 m2`, and the
+                        # house's own `Total: 157.5m2` over `Build Area: 158.9 m2`.
+                        land_size_sqm=336, build_size_sqm=157.5,
+                        price=797050)],
+             image='facade_page_1'))
+def _s1(c):
+    property_page(c, 'Orion 11.5', ('$405,000', '$392,050', '$797,050'),
+                  'Lot 3104 Kestrel Street,', 'Donnybrook', '(Aurora Park Estate)',
+                  '336m', SCHEDULE_ONE, 29)
+    # 158.9 / 356.20 = 44.61%: the siting's figures are its coverage operands.
+    siting_page(c, 'Lot 3104 KESTREL STREET', 'DONNYBROOK (3064)', 'VIC',
+                'ORION 11.5 - MODERN', 'Aurora Park', '44.6%', '356.20 m2', '158.9 m2',
+                SITING_ROOMS)
+    specification_page(c)
+
+
+@fixture('heldout-siting-plan-fills-land',
+         'LOT 2215 - VELA 20B - BROCHURE V002.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='2215', street_name='Harlow Lane', suburb='Mickleham',
+                        state='VIC', postcode='3064', estate='Merrifield Estate',
+                        design='Vela 20B', bedrooms=4, bathrooms=2, car_spaces=2,
+                        # THE PROPERTY'S PAGE STATES NO LOT SIZE, so the siting's
+                        # is the only statement of the land and it is read — while
+                        # the house's own total still outranks the siting's
+                        # building area.
+                        land_size_sqm=401.2, build_size_sqm=177.0,
+                        price=781900)],
+             image='facade_page_1'))
+def _s2(c):
+    property_page(c, 'Vela 20B', ('$379,000', '$402,900', '$781,900'),
+                  'Lot 2215 Harlow Lane,', 'Mickleham', '(Merrifield Estate)',
+                  None, SCHEDULE_TWO, 33)
+    # 176.4 / 401.20 = 43.97%.
+    siting_page(c, 'Lot 2215 HARLOW LANE', 'MICKLEHAM (3064)', 'VIC',
+                'VELA 20B - TEMPIO', 'Merrifield', '44.0%', '401.20 m2', '176.4 m2',
+                SITING_ROOMS)
+    specification_page(c)
+
+
 def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     manifest = []
