@@ -186,11 +186,14 @@ describe('how the model reaches a deployment', () => {
     // The rule the retention purge and the verification self-test answer to:
     // asserted by effect, never by configuration. A 200 from a write is not
     // a statement about what is stored.
+    // Every asset goes through the one `ship`, the model and the engine alike,
+    // so the read-back is asserted once, against each entry's own pinned size.
     const uploader = read(UPLOADER);
     const put = uploader.indexOf("method: 'POST'");
     const confirm = uploader.indexOf("method: 'HEAD'", put);
     expect(confirm).toBeGreaterThan(put);
-    expect(uploader.slice(confirm)).toContain('stored !== EXPECT_BYTES');
+    expect(uploader.slice(confirm)).toContain('stored !== entry.bytes');
+    expect(uploader).toMatch(/for \(const entry of payloads\) shipped = \(await ship\(entry, credentials\)\) && shipped;/);
   });
 
   it('cannot serve an older reader an incompatible model', () => {
