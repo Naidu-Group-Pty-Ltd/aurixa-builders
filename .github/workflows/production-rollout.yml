@@ -105,6 +105,19 @@ name: Production rollout
 #            readers over the stored bytes with the inputs the import hands
 #            them. Takes `upload_id` (one or more, comma-separated). SELECT and
 #            a storage GET only; writes nothing.
+#   stock-scan-proof
+#            imports a SAFE fully scanned fixture (`scripts/ops/fixtures/
+#            scanned-brochure-lot-57.pdf`, digest pinned in the script) through
+#            the deployed product, the way a builder's browser does, into an
+#            organisation of the run's own that is detached from the network in
+#            the transaction that creates it — and then does nothing, so what
+#            finishes the import is the product's own dispatch and continuation.
+#            Reports whether the hosted runtime's recogniser came up, every page
+#            recognised or refused, the engine's own refusal from the function
+#            log, the property read and every invocation's HTTP status. Deletes
+#            every row and object it made. `scan_expect: observe` reports;
+#            `read` also requires every page recognised once and the document's
+#            property read field for field.
 #   network-connection-remap
 #            points the live connection at the builder organisation named in
 #            `organisation_id` and backfills its active stock. It refuses
@@ -127,11 +140,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof]
       items:
         description: 'item-state / item-reopen: comma-separated stock item ids (blank = the default set). stock-reading-trace: pages to print in full (blank = 1)'
         required: false
@@ -158,6 +171,12 @@ on:
         default: 'both'
         type: choice
         options: [both, shared-link, brochure]
+      scan_expect:
+        description: 'stock-scan-proof only: observe reports what the runtime did; read also requires every page recognised once and the property read'
+        required: false
+        default: 'observe'
+        type: choice
+        options: [observe, read]
 
 concurrency:
   group: production-rollout
@@ -209,6 +228,7 @@ jobs:
           TRACE_PAGES: ${{ inputs.items }}
           APPLY: ${{ inputs.apply }}
           ONLY: ${{ inputs.only }}
+          SCAN_PROOF_EXPECT: ${{ inputs.scan_expect }}
         run: |
           set -euo pipefail
           case "${{ inputs.phase }}" in
@@ -227,4 +247,5 @@ jobs:
             stock-source-restore) deno run -A --config supabase/functions/deno.json scripts/ops/stock-source-restore.ts ;;
             stock-import-proof)   node scripts/ops/stock-import-proof.mjs ;;
             stock-reading-trace)  deno run -A --config supabase/functions/deno.json scripts/ops/stock-reading-trace.ts ;;
+            stock-scan-proof)     node scripts/ops/stock-scan-proof.mjs ;;
           esac
