@@ -148,11 +148,46 @@ export async function traceWhatTheTextLayerCannotSee(
         console.log(`    picture ${pictureIndex}: ${fn === OPS.paintInlineImageXObject ? 'inline' : String(args?.[0])}`
           + ` · ${size} · drawn ${box} (points from the bottom-left)`);
         const pnm = image?.data && image.width && image.height ? toPnm(image) : null;
-        if (!pnm) continue;
-        const said = await pipeThrough('tesseract', ['stdin', 'stdout', '--psm', '6'], pnm);
-        const text = said ? new TextDecoder().decode(said).split('\n').map((l) => l.trim())
-          .filter(Boolean) : [];
-        console.log(`      says: ${text.length ? text.map(quote).join(' / ') : '(nothing recognised)'}`);
+        if (pnm) {
+          const said = await pipeThrough('tesseract', ['stdin', 'stdout', '--psm', '6'], pnm);
+          const text = said ? new TextDecoder().decode(said).split('\n').map((l) => l.trim())
+            .filter(Boolean) : [];
+          console.log(`      says, at its own pixels: ${text.length ? text.map(quote).join(' / ') : '(nothing recognised)'}`);
+        }
+        /*
+         * AND AT PRINT RESOLUTION. A picture of text is usually far smaller
+         * than the words in it need — a schedule of 231x166 pixels drawn 151
+         * points wide is 110 dpi — so its own box is rendered again at 400 dpi
+         * and read with the same engine, which is the most a page can say.
+         */
+        if (viewport) {
+          const scale = 400 / 72;
+          const x0 = Math.max(0, Math.floor(Math.min(...xs) * scale));
+          const y0 = Math.max(0, Math.floor((viewport.height - Math.max(...ys)) * scale));
+          const w = Math.ceil((Math.max(...xs) - Math.min(...xs)) * scale);
+          const h = Math.ceil((Math.max(...ys) - Math.min(...ys)) * scale);
+          const crop = w > 8 && h > 8
+            ? await pipeThrough('pdftoppm', ['-r', '400', '-f', String(pageNumber), '-l', String(pageNumber),
+              '-x', String(x0), '-y', String(y0), '-W', String(w), '-H', String(h), '-png', '-'], bytes)
+            : null;
+          const read = crop
+            ? await pipeThrough('tesseract', ['stdin', 'stdout', '--psm', '6', 'tsv'], crop) : null;
+          if (read) {
+            const byLine = new Map<string, { words: string[]; conf: number[] }>();
+            for (const row of new TextDecoder().decode(read).split('\n').slice(1)) {
+              const cells = row.split('\t');
+              if (cells.length < 12 || cells[0] !== '5' || !cells[11].trim()) continue;
+              const key = `${cells[2]}.${cells[3]}.${cells[4]}`;
+              const line = byLine.get(key) ?? { words: [], conf: [] };
+              line.words.push(cells[11].trim());
+              line.conf.push(Number(cells[10]));
+              byLine.set(key, line);
+            }
+            const lines = [...byLine.values()].map((line) =>
+              `${quote(line.words.join(' '))} (${Math.round(Math.min(...line.conf))}-${Math.round(Math.max(...line.conf))})`);
+            console.log(`      says, rendered at 400 dpi: ${lines.length ? lines.join(' / ') : '(nothing recognised)'}`);
+          }
+        }
       }
       const interesting = ['showText', 'showSpacedText', 'nextLineShowText',
         'nextLineSetSpacingShowText', 'setFont', 'constructPath', 'fill', 'eoFill',
@@ -169,7 +204,7 @@ export async function traceWhatTheTextLayerCannotSee(
     // Rendered, and read the way a person reads it. No output root: a root of
     // `-` is a FILE named `-` to poppler, and only an absent one means stdout.
     const png = await pipeThrough('pdftoppm',
-      ['-r', '150', '-f', String(pageNumber), '-l', String(pageNumber), '-png', '-'], bytes);
+      ['-r', '300', '-f', String(pageNumber), '-l', String(pageNumber), '-png', '-'], bytes);
     if (!png) {
       console.log('    rendered + OCR: pdftoppm unavailable or failed on this page');
       continue;
@@ -195,10 +230,10 @@ export async function traceWhatTheTextLayerCannotSee(
       line.conf.push(conf);
       lines.set(key, line);
     }
-    // 150 dpi: a point is 150/72 pixels. Printed in points from the TOP, so a
+    // 300 dpi: a point is 300/72 pixels. Printed in points from the TOP, so a
     // line reads against the positioned runs above by subtracting from the height.
-    const toPt = (px: number) => px * 72 / 150;
-    console.log(`    rendered + OCR (150 dpi, positions in points from the top-left):`);
+    const toPt = (px: number) => px * 72 / 300;
+    console.log(`    rendered + OCR (300 dpi, positions in points from the top-left):`);
     [...lines.values()].sort((a, b) => a.top - b.top || a.left - b.left).forEach((line) => {
       const mean = line.conf.reduce((sum, value) => sum + value, 0) / line.conf.length;
       console.log(`      top${n1(toPt(line.top))} left${n1(toPt(line.left))} conf${n1(mean)}  ${quote(line.words.join(' '))}`);
