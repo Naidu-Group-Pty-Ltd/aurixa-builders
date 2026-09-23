@@ -22,8 +22,8 @@
  * asserts they are the same four. The review that produced this file found no
  * other gap in the design and deliberately changed nothing else: the asset
  * ships on the deploy lane, idempotently, needs no new secret, is validated
- * by byte count and digest before it is sent and by byte count after, and its
- * absence is a named refusal rather than a crash.
+ * by byte count and digest before it is sent and read back and judged by both
+ * after, and its absence is a named refusal rather than a crash.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync, statSync } from 'node:fs';
@@ -187,13 +187,23 @@ describe('how the model reaches a deployment', () => {
     // asserted by effect, never by configuration. A 200 from a write is not
     // a statement about what is stored.
     // Every asset goes through the one `ship`, the model and the engine alike,
-    // so the read-back is asserted once, against each entry's own pinned size.
+    // so the read-back is asserted once, against each entry's own pins.
     const uploader = read(UPLOADER);
     const put = uploader.indexOf("method: 'POST'");
-    const confirm = uploader.indexOf("method: 'HEAD'", put);
+    const confirm = uploader.indexOf('const stored = await storedObject(object, auth);', put);
+    expect(put).toBeGreaterThan(-1);
     expect(confirm).toBeGreaterThan(put);
-    expect(uploader.slice(confirm)).toContain('stored !== entry.bytes');
+    expect(uploader.slice(confirm)).toContain('if (!isTheAsset(stored, entry))');
     expect(uploader).toMatch(/for \(const entry of payloads\) shipped = \(await ship\(entry, credentials\)\) && shipped;/);
+    /*
+     * AND BY WHAT ARRIVES, NEVER BY A HEADER. The deploy that first shipped the
+     * engine read a HEAD's `content-length` back as 0 bytes for an object the
+     * functions fetched, digest-checked and ran minutes later. What is judged
+     * is the object's own size and SHA-256, and the code names no header.
+     */
+    expect(uploader).toMatch(/read\.ok && read\.bytes === entry\.bytes && read\.sha256 === entry\.sha256/);
+    const code = uploader.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    expect(code).not.toMatch(/content-length|method: 'HEAD'/i);
   });
 
   it('cannot serve an older reader an incompatible model', () => {

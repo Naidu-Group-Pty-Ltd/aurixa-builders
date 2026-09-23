@@ -29,12 +29,13 @@
  * lane that cannot run until somebody adds a credential is a lane that stays
  * unrun.
  *
- * IDEMPOTENT BY EFFECT, NOT BY ASSUMPTION. Each object is HEADed first and
- * skipped when its length already matches; otherwise it is uploaded with
- * upsert. The check is the LENGTH rather than a local flag, because the
- * question is what production holds and not what this run believes — and the
- * key is versioned, so a different asset is a different key, never the same
- * key with different bytes of the same length.
+ * IDEMPOTENT BY EFFECT, NOT BY ASSUMPTION. Each object is read back first
+ * and skipped when its size and digest already match; otherwise it is
+ * uploaded with upsert and read back again. The check is what the object
+ * HOLDS rather than a local flag or a header, because the question is what
+ * production holds and not what this run believes — and the key is versioned,
+ * so a different asset is a different key, never the same key with different
+ * bytes.
  *
  * Needs: SUPABASE_ACCESS_TOKEN, PROJECT_REF
  */
@@ -120,15 +121,40 @@ async function projectCredentials() {
   return { url: `https://${projectRef}.supabase.co`, key: service.api_key };
 }
 
+/**
+ * What the project's storage holds under one key, read back IN FULL: its size
+ * and its digest, or the status that refused.
+ *
+ * WHY NOT A HEAD. This script used to ask a HEAD for `content-length`, and on
+ * the deploy that first shipped the engine it read the freshly uploaded
+ * object as 0 bytes — while the functions, which check the engine's SHA-256
+ * before a byte of it runs, fetched and ran it minutes later. A HEAD answered
+ * through a compressing proxy need not carry a length at all, and a missing
+ * header read as `0` is the configuration standing in for the effect. So the
+ * object is fetched the way the functions fetch it and judged the way they
+ * judge it: by what arrives.
+ */
+async function storedObject(object, auth) {
+  const response = await fetch(object, { headers: auth });
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    return { ok: false, status: response.status };
+  }
+  const bytes = Buffer.from(await response.arrayBuffer());
+  return { ok: true, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+}
+
+const isTheAsset = (read, entry) =>
+  read.ok && read.bytes === entry.bytes && read.sha256 === entry.sha256;
+
 /** Put one asset where the functions read it, and prove it is there. */
 async function ship(entry, { url, key }) {
   const object = `${url}/storage/v1/object/${BUCKET}/${entry.key}`;
   const auth = { Authorization: `Bearer ${key}`, apikey: key };
 
   // What does production hold NOW? The only question that matters.
-  const head = await fetch(object, { method: 'HEAD', headers: auth });
-  if (head.ok && Number(head.headers.get('content-length') ?? '0') === entry.bytes) {
-    console.log(`${entry.what} already present: ${BUCKET}/${entry.key} (${entry.bytes} bytes)`);
+  if (isTheAsset(await storedObject(object, auth), entry)) {
+    console.log(`${entry.what} already present: ${BUCKET}/${entry.key} (${entry.bytes} bytes, sha256 ${entry.sha256})`);
     return true;
   }
 
@@ -150,15 +176,14 @@ async function ship(entry, { url, key }) {
    * ASSERTED BY EFFECT, NEVER BY THE UPLOAD'S OWN ANSWER — the rule the
    * retention purge, the verification self-test and the function verifier
    * beside this file all answer to. A 200 from a write is not a statement
-   * about what is stored.
+   * about what is stored, and nor is a header about it.
    */
-  const confirm = await fetch(object, { method: 'HEAD', headers: auth });
-  const stored = Number(confirm.headers.get('content-length') ?? '0');
-  if (!confirm.ok || stored !== entry.bytes) {
+  const stored = await storedObject(object, auth);
+  if (!isTheAsset(stored, entry)) {
     console.error(
       `::error::upload-ocr-language: the ${entry.what} was uploaded, but it reads back as ${
-        confirm.ok ? `${stored} bytes` : `HTTP ${confirm.status}`
-      } rather than ${entry.bytes}. OCR will decline on this deployment.`,
+        stored.ok ? `${stored.bytes} bytes, sha256 ${stored.sha256}` : `HTTP ${stored.status}`
+      } rather than ${entry.bytes} bytes, sha256 ${entry.sha256}. OCR will decline on this deployment.`,
     );
     return false;
   }
