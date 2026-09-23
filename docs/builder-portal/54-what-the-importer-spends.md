@@ -491,3 +491,59 @@ stays the linked transport, so the transport equivalence now compares an
 import finished by successors with one finished where it started. And every
 route-A invocation is judged by effect: none may both parse the document
 (`document_parses`) and decode or store one of its pictures.
+
+### 11.4 The sweep read every import a second time, in one isolate
+
+The first production proof of this design finished `LOT 550` through
+successors with no kill, and then the image settler was killed twice on the
+same document, at 05:40:08 and 05:43:07 on 23 September 2026 — last completed
+stage `image_decode`. The kills came from the reader sweep (`settleReaderVersion`),
+not the import. `reader_settled_version` was written by the sweep alone, so
+every upload was outstanding the moment its import completed, and the sweep's
+next quiet tick read it again with `runStockImport` inline, without
+`resumableFromStoredBytes`: parse and decode in one isolate.
+
+A completed import is a read at the current version, so
+`importOutcomeColumns` now stamps it. Both completions spread those columns
+(`process_upload` / `reprocess_upload` through `finishImport`, and a successor
+through `continueStockImport`). A failed import stamps nothing, and the
+sweep's own rules still decide whether a failure is worth asking again. The
+gate asserts it: every route-A import a successor finished is stamped
+(`a-finished-import-is-not-read-twice`), and check 7d now simulates a reader
+deploy by moving the stamped rows one version behind, instead of relying on
+imports leaving the column empty.
+
+**What remains, and is fenced rather than fixed.** The sweep still re-reads
+in one isolate wherever it does read: after `DETERMINISTIC_READER_VERSION` is
+raised (every stored source), on a first pass of an `uploaded` row abandoned
+for fifteen minutes, on an abandoned `parsing` row, and on a `failed` row
+whose failure was ours. `LOT 550` is killed there. A kill writes nothing, so
+the row stays outstanding with no attempt bound. The sweep takes the oldest
+outstanding row first, one per quiet tick, and `readerSweepPending` holds the
+cron open, so the settler would die on every quiet tick and nothing behind
+that row would ever be re-read.
+
+That loop is not a forecast. It already happened once, on 22 September 2026.
+After the portal import was killed at 10:06:04, the upload was left unstamped.
+The sweep re-read it inline, and the settler was killed thirteen times, every
+two to three minutes from 10:09:06 to 10:35:07, each kill about 1.5 s after the
+reader logged its reading of upload `7df6a47f`. It stopped only because one
+attempt fitted, at 10:38:07 (`reader sweep re-read … reader_version: 13`).
+
+The fix is the import's own rule applied to the sweep: its re-read must cross
+isolates. There are two ways to do that, and each changes something the sweep
+promises today:
+
+- **Converge over the sweep's own ticks.** Import with
+  `resumableFromStoredBytes`, leave the row outstanding on a hand-off, and
+  resume it on the next tick. This needs a durable record that this sweep made
+  the hand-off. Without it, a later tick can resume another attempt's crossing
+  count, or restart its own hand-off for ever.
+- **Hand the re-read to the product's continuation**, as "Read again" does.
+  That moves a settled list through `parsing`, and a failed successor writes
+  `failed` over live stock. Both are things the sweep promises not to do
+  (`writeImportOutcome`).
+
+Until one of them is built, `builderStockReaderSweep.spec.ts` fails any change
+that raises the reader version while the sweep still re-reads inline. That
+change is the one that would cause the outage, and the test names the reason.

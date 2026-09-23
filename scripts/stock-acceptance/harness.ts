@@ -1486,10 +1486,44 @@ const invariants: Record<string, unknown> = {};
  */
 {
   /*
-   * NULL IS WHAT A NEW READER SEES. `reader_settled_version` is stamped by the
-   * sweep, not by an import, so every stored source is outstanding the moment
-   * a reader ships — which is exactly the condition this contract is about.
+   * A FINISHED IMPORT IS A READ, SO THE SWEEP HAS NOTHING TO ASK IT.
+   *
+   * The product's completion stamps the reader version it read at
+   * (`importOutcomeColumns`), because the sweep reading a fresh import a
+   * second time was the last place a PDF was parsed and decoded in one
+   * isolate — production killed the settler twice on 23 September 2026 doing
+   * exactly that to `LOT 550`. Judged on every route-A import a successor
+   * finished, which is the path every uploaded brochure now takes.
    */
+  const finishedBySuccessors = report
+    .filter((r: any) => r.uploadIdA && r.a?.ok && (r.handOff?.successors?.length ?? 0) > 0)
+    .map((r: any) => String(r.uploadIdA));
+  const { data: stampedRows } = finishedBySuccessors.length
+    ? await db.from('builder_stock_uploads')
+      .select('id, reader_settled_version').in('id', finishedBySuccessors)
+    : { data: [] as any[] };
+  const unstamped = (stampedRows ?? [])
+    .filter((r: any) => Number(r.reader_settled_version) !== DETERMINISTIC_READER_VERSION)
+    .map((r: any) => r.id);
+  invariants.importStampsItsRead = {
+    finishedBySuccessors: finishedBySuccessors.length,
+    stamped: (stampedRows ?? []).length - unstamped.length,
+    unstamped,
+  };
+  invariant('a-finished-import-is-not-read-twice',
+    finishedBySuccessors.length > 0 && (stampedRows ?? []).length === finishedBySuccessors.length
+      && unstamped.length === 0,
+    JSON.stringify(invariants.importStampsItsRead));
+
+  /*
+   * A DEPLOY IS WHAT MAKES A SOURCE STALE, AND THIS IS ONE. Every row stamped
+   * at today's version is moved one behind it — exactly what shipping a new
+   * reader does to every row in the table — so the contract below is judged
+   * over the whole store rather than over whatever an import left unstamped.
+   */
+  await db.from('builder_stock_uploads')
+    .update({ reader_settled_version: DETERMINISTIC_READER_VERSION - 1 })
+    .eq('reader_settled_version', DETERMINISTIC_READER_VERSION);
   const pendingBefore = await readerSweepPending(db);
   let considered = 0; let reread = 0; let ticks = 0;
   // The sweep is bounded per tick on purpose; the cron comes back. So does this.

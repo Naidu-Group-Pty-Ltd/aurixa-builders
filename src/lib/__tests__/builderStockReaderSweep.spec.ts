@@ -605,3 +605,72 @@ describe('the marker exists in the schema', () => {
     expect(migration).toContain('ensure_builder_stock_settlement_scheduled()');
   });
 });
+
+/*
+ * ===========================================================================
+ * A COMPLETED IMPORT IS A READ — AND THE ONE READ STILL MADE IN ONE ISOLATE
+ * IS FENCED UNTIL IT IS NOT.
+ * ===========================================================================
+ *
+ * MEASURED 23 September 2026: the image settler answered 546 at 05:40:08 and
+ * 05:43:07, both times re-reading `LOT 550 - ENZO 8.5 MODERN- BROCHURE V002.pdf`
+ * minutes after its import had finished cleanly through successors. The sweep
+ * stamped the version and nothing else did, so every new upload was read a
+ * second time — inline, parse and decode in one isolate, the exact shape the
+ * import was rebuilt to avoid. `importOutcomeColumns` now stamps the version an
+ * import read at, which removes that second read for every new upload.
+ *
+ * What it does NOT remove is the sweep's own reason to exist: raising
+ * `DETERMINISTIC_READER_VERSION` makes every stored source outstanding, and
+ * the sweep re-reads each one with `runStockImport` inline and without
+ * `resumableFromStoredBytes`. LOT 550 is killed there. A kill writes nothing,
+ * so the row stays outstanding with no attempt bound; the sweep takes the
+ * oldest outstanding row first, one per quiet tick, and `readerSweepPending`
+ * holds the cron open — so the settler would die on every quiet tick and no
+ * row behind that one would ever be re-read. It has happened: on 22 September
+ * 2026 the sweep re-read LOT 550 and the settler was killed thirteen times
+ * between 10:09:06 and 10:35:07, until one attempt fitted at 10:38:07.
+ * Recorded in `docs/builder-portal/54-what-the-importer-spends.md` §11.4.
+ *
+ * So the version stays where every production row was stamped until the
+ * sweep's re-read crosses isolates the way the import does. This test is the
+ * fence, not the fix: it fails the change that would make the outage, with
+ * the reason, rather than letting the next reader ship it.
+ */
+describe('a completed import is a read, and the inline re-read is fenced', () => {
+  const summary = { detected: 1, imported: 1, updated: 0, failed: 0, failures: [] };
+
+  it('the completion write stamps the reader version the import read at', async () => {
+    const { importOutcomeColumns } = await import(
+      '../../../supabase/functions/_shared/builderStock/recordImportOutcome');
+    const columns = importOutcomeColumns({ uploadStatus: 'enriching', summary }, null);
+    expect(columns[READER_SETTLED_VERSION_COLUMN]).toBe(DETERMINISTIC_READER_VERSION);
+  });
+
+  it('a failed import stamps nothing: nothing was learned about the document', async () => {
+    const { importFailureColumns } = await import(
+      '../../../supabase/functions/_shared/builderStock/recordImportOutcome');
+    expect(importFailureColumns('processing_failed', 'x'))
+      .not.toHaveProperty(READER_SETTLED_VERSION_COLUMN);
+  });
+
+  it('both completions spread those columns, so neither can leave a fresh import outstanding', () => {
+    expect(read('supabase/functions/builder-portal-stock/index.ts'))
+      .toContain('importOutcomeColumns(result, sourceNotice)');
+    expect(read('supabase/functions/_shared/builderStock/continueImport.ts'))
+      .toContain('importOutcomeColumns(result, null)');
+  });
+
+  it('the reader version is not raised while the sweep still re-reads in one isolate', () => {
+    const sweep = read('supabase/functions/_shared/builderStock/settleReaderVersion.ts');
+    const reReadsInline = !/resumableFromStoredBytes\s*:\s*true/.test(sweep);
+    if (!reReadsInline) return;
+    expect(
+      DETERMINISTIC_READER_VERSION,
+      'Raising the reader version re-reads every stored PDF inside the image '
+      + 'settler, parse and decode in one isolate — LOT 550 is killed there and '
+      + 'blocks the sweep. Make the sweep re-read across isolates first; see '
+      + 'docs/builder-portal/54-what-the-importer-spends.md §11.4.',
+    ).toBe(13);
+  });
+});
