@@ -74,6 +74,18 @@ const DWELLING_PART = new RegExp('^(?:'
 /** The row that closes a schedule. */
 const SCHEDULE_TOTAL = /^total(?:\s+(?:area|floor\s+area|size|house|home))?$/i;
 
+/**
+ * The same two vocabularies, for the schedule a brochure prints as a PICTURE
+ * (`areaSchedulePicture.pure.ts`). Named once, here, so what counts as a part
+ * of a dwelling cannot come to mean one thing in text and another in pixels.
+ */
+export function isDwellingPartLabel(label: string): boolean {
+  return DWELLING_PART.test(String(label ?? '').replace(/\s+/g, ' ').trim());
+}
+export function isScheduleTotalLabel(label: string): boolean {
+  return SCHEDULE_TOTAL.test(String(label ?? '').replace(/\s+/g, ' ').trim());
+}
+
 /** An area written at the START of a value: `129.5m2`, `91.91 m²`, `36.0sqm`. */
 const LEADING_AREA = /^(\d{1,5}(?:[.,]\d{1,2})?)\s*(?:m2|m²|sqm|sq\s?m)(?![a-z])/i;
 

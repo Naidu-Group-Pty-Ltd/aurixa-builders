@@ -1919,8 +1919,6 @@ PICTURE_SCHEDULE = (('DWELLING', 95.20), ('GARAGE', 22.59), ('COURT', 4.69),
                         # The house's total, read off the schedule's PICTURE and
                         # proved by its own squares column and by its parts.
                         build_size_sqm=129.59)],
-             known_limit='the area schedule is a picture, which the reader does not '
-                         'yet recognise',
              image='facade_page_1'))
 def _p1(c):
     picture_schedule_page(c, 'NOVA 9', ('3', '2', '1'), '$251,000', '$372,400',

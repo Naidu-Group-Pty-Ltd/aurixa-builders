@@ -186,7 +186,7 @@ import { sweepHandedOnThisParse } from './readerSweepAttempt.pure.ts';
  * Every document already imported is read again, because a document whose
  * headings were unreadable was read without them.
  */
-export const DETERMINISTIC_READER_VERSION = 16;
+export const DETERMINISTIC_READER_VERSION = 17;
 
 /*
  * VERSION 11 — A PHRASE'S OWN WORDS ARE HEADINGS TOO.
@@ -353,6 +353,33 @@ export const DETERMINISTIC_READER_VERSION = 16;
  * Every stored document is read again, because a row carrying the lot and
  * nothing else is corrected only by a re-read. The corpus reads
  * byte-identically but for the held-out fixture of this class.
+ */
+
+/*
+ * VERSION 17 — A FIGURE THE PAGE PRINTS ONLY AS A PICTURE.
+ *
+ * MEASURED 23 SEPTEMBER 2026 on `Lot 101 - PICO - BROCHURE v002.pdf`: after
+ * version 16 its card reads the lot, the estate, the design, the price and
+ * the titles, and `HOME —`, because the house's size is printed once, inside a
+ * 231 x 166 raster of its area schedule, and no text reader can see a picture.
+ *
+ * The importer now notes the small pictures on the property's own page when
+ * the text states no building size (`pdfFigures.pure.ts`), and a successor
+ * that never parsed the document reads them with the same Tesseract the scans
+ * go through (`readFigures.ts`). A figure is believed only where the picture's
+ * own arithmetic proves it (`areaSchedulePicture.pure.ts`): the squares column
+ * must restate the total exactly, or every part must be legible and add up.
+ * On the production picture recognition drops the total's decimal point
+ * (`12450`) while reading its squares (`13.40`), and the squares place the
+ * point, because only one placement restates them.
+ *
+ * A figure only ever FILLS a building size the text left empty: it never
+ * speaks over one, never settles a dispute, and never reaches a document read
+ * as several properties.
+ *
+ * Every stored document is read again, because a row carrying no building
+ * size is corrected only by a re-read. A document whose text states its build
+ * size, or whose page draws no such picture, reads byte-identically.
  */
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */

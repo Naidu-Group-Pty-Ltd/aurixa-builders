@@ -47,6 +47,7 @@ import {
   assignPdfMediaRoles, coverSearchPages, type PdfMediaPlacement,
 } from './pdfPrimaryImage.pure.ts';
 import { isolatePhotographBand } from './pdfFlattenedPhoto.pure.ts';
+import { figureCandidatesFrom, type PdfFigure } from './pdfFigures.pure.ts';
 import { cropRows, encodePng, inflate, sha256Hex } from './rasterPng.ts';
 import { validateSourceImageBytes } from './sourceAssets.pure.ts';
 import {
@@ -456,9 +457,21 @@ async function discoverCandidates(
   bytes: Uint8Array,
   recovered: ReadonlyMap<number, string>,
   limit: number,
-): Promise<{ kept: RawCandidate[]; pagesDrawnOn: Map<string, number> }> {
+): Promise<{
+  kept: RawCandidate[];
+  pagesDrawnOn: Map<string, number>;
+  figures: Array<Omit<PdfFigure, 'sha256'>>;
+}> {
   const perPage: RawCandidate[] = [];
   const pagesDrawnOn = new Map<string, number>();
+  /*
+   * AND THE INSETS THAT MAY STATE A FIGURE, from the same drawing
+   * instructions: no second walk, and nothing decoded. See `pdfFigures.pure.ts`.
+   * Counted across pages exactly as photographs are, because a logo is an
+   * inset drawn on every page and an area schedule is drawn once.
+   */
+  const figuresPerPage: Array<Omit<PdfFigure, 'sha256'> & { key: string; placements: number }> = [];
+  const figurePages = new Map<string, number>();
 
   for (let index = 0; index < limit; index++) {
     const page = readPdfPage(bytes, index, recovered);
@@ -506,11 +519,34 @@ async function discoverCandidates(
         placementsOnPage: candidate.placements,
       });
     }
+    for (const figure of figureCandidatesFrom(drawn, page.width, page.height)) {
+      const { image, placement } = figure.drawn;
+      const key = `${image.objectNumber}:${image.name}`;
+      figurePages.set(key, (figurePages.get(key) ?? 0) + 1);
+      figuresPerPage.push({
+        key,
+        placements: figure.placements,
+        page: index + 1,
+        objectNumber: image.objectNumber,
+        width: image.width,
+        height: image.height,
+        start: image.start,
+        end: image.end,
+        flate: image.filters[0] === 'FlateDecode',
+        drawn: {
+          x: placement.drawn.x, y: placement.drawn.y,
+          width: placement.drawn.width, height: placement.drawn.height,
+        },
+      });
+    }
   }
 
   const kept = perPage.filter((candidate) =>
     candidate.placementsOnPage <= 1 && (pagesDrawnOn.get(candidate.key) ?? 0) <= 1);
-  return { kept, pagesDrawnOn };
+  const figures = figuresPerPage
+    .filter((figure) => figure.placements <= 1 && (figurePages.get(figure.key) ?? 0) <= 1)
+    .map(({ key: _key, placements: _placements, ...figure }) => figure);
+  return { kept, pagesDrawnOn, figures };
 }
 
 /**
@@ -541,7 +577,7 @@ async function discoverCandidates(
  * wrong interpretation produces a plausible-looking wrong picture, which is the
  * one outcome this whole module exists to prevent.
  */
-async function pictureFromStream(
+export async function pictureFromStream(
   bytes: Uint8Array,
   stream: { start: number; end: number; flate: boolean; width: number; height: number },
 ): Promise<{
@@ -864,6 +900,12 @@ export interface PdfSourceDiscovery {
   pageOrderAuthoritative: boolean;
   /** Object streams this document carries that could not be inflated. */
   objectStreamsUnread: number;
+  /**
+   * Insets that may state a figure, as offsets into the document — never
+   * decoded here. Which of them are ever read is decided once the property is
+   * known (`figuresToRead`). See `pdfFigures.pure.ts`.
+   */
+  figures: PdfFigure[];
 }
 
 /**
@@ -907,7 +949,7 @@ async function discoverPdfSourceAssetsHoldingSlot(
   const recovered = await recoverCompressedObjects(bytes);
   const authoritative = pageOrderIsAuthoritative(bytes, recovered.objects);
   const limit = Math.max(1, Math.min(options.maxPages ?? MAX_PAGES_SEARCHED, MAX_PAGES_SEARCHED));
-  const { kept } = await discoverCandidates(bytes, recovered.objects, limit);
+  const { kept, figures: figureOffsets } = await discoverCandidates(bytes, recovered.objects, limit);
   const only = options.pages?.length ? new Set(options.pages) : null;
 
   const assets: PdfSourceAsset[] = [];
@@ -978,9 +1020,18 @@ async function discoverPdfSourceAssetsHoldingSlot(
     });
   }
 
+  // Each inset's raw stream is fingerprinted so the isolate that reads it can
+  // prove it sliced the same bytes. A digest, not a decode.
+  const figures: PdfFigure[] = [];
+  for (const figure of figureOffsets) {
+    if (figure.start < 0 || figure.end > bytes.length || figure.end <= figure.start) continue;
+    figures.push({ ...figure, sha256: await sha256Hex(bytes.slice(figure.start, figure.end)) });
+  }
+
   return {
     assets,
     pageOrderAuthoritative: authoritative,
     objectStreamsUnread: recovered.unreadStreams,
+    figures,
   };
 }

@@ -74,6 +74,7 @@
  */
 
 import { MAX_KIND_CANDIDATES } from './documentRead.pure.ts';
+import { readFigureVerdict, type FigureVerdict } from './pdfFigures.pure.ts';
 
 /** The shape's own version, so a reader can refuse one it does not know. */
 export const IMPORT_CHECKPOINT_VERSION = 1;
@@ -94,20 +95,22 @@ export const MAX_IMPORT_CONTINUATIONS = 10;
 /**
  * How many crossings the PICTURES of one import may cost.
  *
- * DERIVED, NOT CHOSEN: one crossing hands the read to a successor, and every
- * crossing after it learns at least one picture's kind (`planKindDecodes`
- * always takes one) out of at most `MAX_KIND_CANDIDATES` — so an import whose
- * kinds are all recorded cannot need more than this, and one that reaches it
- * has failed to RECORD its kinds rather than failed to learn them. Past it the
- * import finishes where it stands, which is the rule `mayContinue` states for
- * recognition.
+ * DERIVED, NOT CHOSEN: one crossing hands the read to a successor; at most
+ * one more reads the insets that may state a figure the text does not
+ * (`pdfFigures.pure.ts` — asked once per hand-off, and its verdict recorded
+ * whatever it was); and every crossing after that learns at least one
+ * picture's kind (`planKindDecodes` always takes one) out of at most
+ * `MAX_KIND_CANDIDATES` — so an import whose kinds are all recorded cannot need
+ * more than this, and one that reaches it has failed to RECORD its kinds
+ * rather than failed to learn them. Past it the import finishes where it
+ * stands, which is the rule `mayContinue` states for recognition.
  *
  * Counted apart from `continuations` because the two answer different
  * questions: a deployment with no recogniser (`ocr.unavailable`) must never
  * be asked to recognise again, and that is no reason to decode a picture in
  * the isolate that parsed the document.
  */
-export const MAX_PICTURE_CROSSINGS = 1 + MAX_KIND_CANDIDATES;
+export const MAX_PICTURE_CROSSINGS = 2 + MAX_KIND_CANDIDATES;
 
 export interface ImportCheckpoint {
   v: number;
@@ -132,6 +135,11 @@ export interface ImportCheckpoint {
     /** Names the `import` read in `builder_stock_document_reads`. */
     handover: string;
     crossings: number;
+    /**
+     * What reading the hand-off's figures came to, once they have been read.
+     * Absent until then — and absent for good where there were none to read.
+     */
+    figures?: FigureVerdict;
   };
 }
 
@@ -156,12 +164,15 @@ export function readCheckpoint(
   const pages = row.ocr && typeof row.ocr === 'object' && row.ocr.pages
     && typeof row.ocr.pages === 'object' && !Array.isArray(row.ocr.pages)
     ? row.ocr.pages as Record<string, string> : null;
+  const figures = row.pictures && typeof row.pictures === 'object'
+    ? readFigureVerdict((row.pictures as { figures?: unknown }).figures) : null;
   const pictures = row.pictures && typeof row.pictures === 'object'
     && !Array.isArray(row.pictures)
     && typeof row.pictures.handover === 'string' && row.pictures.handover.length > 0
     ? {
       handover: row.pictures.handover,
       crossings: Number.isFinite(row.pictures.crossings) ? Number(row.pictures.crossings) : 0,
+      ...(figures ? { figures } : {}),
     }
     : null;
   return {
@@ -328,6 +339,27 @@ export function withPictureCrossing(checkpoint: ImportCheckpoint): ImportCheckpo
     ...checkpoint,
     pictures: { ...checkpoint.pictures, crossings: checkpoint.pictures.crossings + 1 },
   };
+}
+
+/**
+ * What this hand-off's figures came to, or null where they have not been read.
+ * See `pdfFigures.pure.ts`.
+ */
+export function figureVerdictOf(
+  checkpoint: ImportCheckpoint | null | undefined,
+): FigureVerdict | null {
+  return checkpoint?.pictures?.figures ?? null;
+}
+
+/**
+ * Record what reading the hand-off's figures came to. Only a hand-off has
+ * figures, so a checkpoint without one is returned as it came.
+ */
+export function withFigureVerdict(
+  checkpoint: ImportCheckpoint, verdict: FigureVerdict,
+): ImportCheckpoint {
+  if (!checkpoint.pictures) return checkpoint;
+  return { ...checkpoint, pictures: { ...checkpoint.pictures, figures: verdict } };
 }
 
 /** Is there room for the pictures to cross once more? See `MAX_PICTURE_CROSSINGS`. */

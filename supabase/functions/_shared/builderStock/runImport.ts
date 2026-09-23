@@ -31,12 +31,16 @@ import {
   isImportContinuation, type RunImportContinuation,
 } from './importContinuation.pure.ts';
 import {
-  checkpointPages, checkpointSettledPages, crossingsSpent, freshAttempt,
+  checkpointPages, checkpointSettledPages, crossingsSpent, figureVerdictOf, freshAttempt,
   mayContinue, mayCrossForPictures, openCheckpoint, pictureHandover,
-  readCheckpoint, storedPictureHandover, withContinuation, withPictureCrossing,
-  withPictureHandover, withRecogniserUnavailable, withRecognisedPage,
+  readCheckpoint, storedPictureHandover, withContinuation, withFigureVerdict,
+  withPictureCrossing, withPictureHandover, withRecogniserUnavailable, withRecognisedPage,
   withRefusedPage, type ImportCheckpoint,
 } from './importCheckpoint.pure.ts';
+import {
+  figuresToRead, withFigureApplied, type FigureVerdict, type PdfFigure,
+} from './pdfFigures.pure.ts';
+import { readFigures } from './readFigures.ts';
 import { kindsOutstanding } from './documentRead.pure.ts';
 import { DECODES_PER_INVOCATION } from './workAllowance.pure.ts';
 import { learnOutstandingKinds } from './documentRead.ts';
@@ -45,7 +49,7 @@ import {
   takeHandedOverPictures, type TakenHandover,
 } from './importHandover.ts';
 import type { ImportDecision } from './importHandover.pure.ts';
-import { mayRecognisePage } from './importResumeBudget.pure.ts';
+import { mayReadFigures, mayRecognisePage } from './importResumeBudget.pure.ts';
 import type {
   ExtractedMedia, PdfDeterministicDiagnostics, StockExtraction,
 } from './extract.ts';
@@ -299,6 +303,8 @@ interface DecidedImport {
   deterministicUnaccounted: string[] | null;
   deterministicIgnored: string[] | null;
   deterministicPlacement: string[] | null;
+  /** Insets a successor may read a figure from. See `pdfFigures.pure.ts`. */
+  figures: PdfFigure[];
 }
 
 /** The part of a decision that is not the read itself: what the manifest carries. */
@@ -317,15 +323,49 @@ function importDecisionOf(decided: DecidedImport): ImportDecision {
     deterministicUnaccounted: decided.deterministicUnaccounted,
     deterministicIgnored: decided.deterministicIgnored,
     deterministicPlacement: decided.deterministicPlacement,
+    figures: decided.figures,
   };
 }
 
-/** The decision a successor took, put back together with the read it rode in. */
-function decidedFromHandover(taken: TakenHandover): DecidedImport {
+/**
+ * What a figure verdict says about the reading, in names and words only, so it
+ * can ride in the safe-to-log diagnostics beside the fields the text gave.
+ */
+function withFigureDiagnosis(
+  reading: PdfDeterministicDiagnostics | null,
+  verdict: FigureVerdict | null,
+  applied: boolean,
+): PdfDeterministicDiagnostics | null {
+  if (!reading || !verdict) return reading;
+  const diagnostics = { ...reading.diagnostics };
+  diagnostics.figures = verdict.state === 'read'
+    ? ['read', ...verdict.provedBy, ...(applied ? [] : ['not_applied'])]
+    : verdict.state === 'refused'
+      ? ['refused', ...verdict.reasons]
+      : ['unavailable', verdict.reason];
+  if (applied) {
+    diagnostics.fieldsRead = [...new Set([...(diagnostics.fieldsRead ?? []), 'building_size_sqm'])].sort();
+    diagnostics.readBy = [...(diagnostics.readBy ?? []), 'building_size_sqm:area_schedule_picture'].sort();
+  }
+  return { ...reading, diagnostics };
+}
+
+/**
+ * The decision a successor took, put back together with the read it rode in —
+ * and with what reading its figures came to, where they have been read. The
+ * verdict fills the one property's building size only where the text left it
+ * empty (`withFigureApplied`); everything else is the decision as it was made.
+ */
+function decidedFromHandover(
+  taken: TakenHandover,
+  figures: FigureVerdict | null = null,
+): DecidedImport {
   const { decision, loaded } = taken;
+  const rows = withFigureApplied(decision.rows, figures);
+  const applied = rows !== decision.rows;
   return {
     strategy: decision.strategy,
-    rows: decision.rows,
+    rows,
     completedFields: decision.completedFields,
     detectedMime: decision.detectedMime,
     classificationKind: decision.classificationKind as StockFileClassification['kind'],
@@ -339,11 +379,13 @@ function decidedFromHandover(taken: TakenHandover): DecidedImport {
     pageOrderAuthoritative: loaded.restored.pageOrderAuthoritative,
     warnings: decision.warnings,
     imageryDeferred: decision.imageryDeferred as StockExtraction['imageryDeferred'] | null,
-    deterministicReading: decision.deterministicReading as PdfDeterministicDiagnostics | null,
+    deterministicReading: withFigureDiagnosis(
+      decision.deterministicReading as PdfDeterministicDiagnostics | null, figures, applied),
     deterministicProvisionalCount: decision.deterministicProvisionalCount,
     deterministicUnaccounted: decision.deterministicUnaccounted,
     deterministicIgnored: decision.deterministicIgnored,
     deterministicPlacement: decision.deterministicPlacement,
+    figures: decision.figures ?? [],
   };
 }
 
@@ -410,6 +452,7 @@ export async function runStockImport(input: RunImportInput): Promise<RunImportRe
           visualOnlyFields: done.deterministicReading.diagnostics.visualOnlyFields ?? null,
           declinedFields: done.deterministicReading.diagnostics.declinedFields ?? null,
           readBy: done.deterministicReading.diagnostics.readBy ?? null,
+          figures: done.deterministicReading.diagnostics.figures ?? null,
           ignoredLines: done.deterministicReading.diagnostics.ignoredLines ?? null,
           unaccountedLines: done.deterministicReading.diagnostics.unaccountedLines ?? null,
         }
@@ -951,6 +994,56 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
       organisationId, uploadId: upload.id, documentSha256: sha, token: handoverToken,
     }));
     if (taken) {
+      /*
+       * THE FIGURES FIRST — ONCE, AND IN AN ISOLATE OF THEIR OWN.
+       *
+       * An inset the reading isolate noted on the property's own page, where
+       * the text stated no building size (`pdfFigures.pure.ts`), is read HERE:
+       * this isolate parsed nothing, and it holds the same document the
+       * hand-off is bound to, so the picture is sliced out of it by the
+       * offsets that were recorded and proved by the digest that was
+       * recorded. Recognition is the most expensive thing a picture can cost,
+       * so it is given a crossing of its own rather than a share of the
+       * kinds' allowance, and its verdict — read, refused, or recognition
+       * unavailable — is written into the checkpoint whatever it is, so it is
+       * asked once per hand-off and applied by whichever isolate finishes.
+       */
+      const figures = taken.decision.figures ?? [];
+      if (figures.length && !figureVerdictOf(checkpoint) && mayCrossForPictures(checkpoint)) {
+        const figuresStartedAt = Date.now();
+        // A figure is an enrichment: nothing about reading one may fail the
+        // import it rides on. A throw is recorded as recognition unavailable.
+        const read = await readFigures(bytes, figures).catch(() => ({
+          verdict: { state: 'unavailable', reason: 'figure_read_failed' } as FigureVerdict,
+          recognised: 0,
+          ms: Date.now() - figuresStartedAt,
+        }));
+        recordStage(ledger, 'image_decode', Date.now() - figuresStartedAt);
+        await commitLedger(ledger);
+        checkpoint = withFigureVerdict(withPictureCrossing(checkpoint), read.verdict);
+        // A crossing that could not be counted is not taken, exactly as for
+        // the kinds below: the verdict rides into this isolate's own work.
+        if (await commitCheckpoint()) {
+          console.log('[builderStock] import handed to a successor', {
+            phase: 'import_handoff',
+            upload_id: upload.id,
+            reason: 'pictures_outstanding',
+            figures: figures.length,
+            figures_recognised: read.recognised,
+            figure_verdict: read.verdict.state,
+            figures_ms: read.ms,
+            crossings: crossingsSpent(checkpoint),
+          });
+          termination.done();
+          return {
+            ok: true,
+            continued: true,
+            reason: 'pictures_outstanding',
+            outstanding: kindsOutstanding(taken.loaded.manifest, taken.loaded.known).length,
+            continuations: crossingsSpent(checkpoint),
+          };
+        }
+      }
       const owed = kindsOutstanding(taken.loaded.manifest, taken.loaded.known);
       if (owed.length && mayCrossForPictures(checkpoint)) {
         const kindsStartedAt = Date.now();
@@ -990,7 +1083,7 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
        * settler's own measured allowance a hero is stored and judged by the
        * settler's eligibility stage instead. See `eligibilityDecodes`.
        */
-      const finished = await finishDecided(decidedFromHandover(taken), {
+      const finished = await finishDecided(decidedFromHandover(taken, figureVerdictOf(checkpoint)), {
         eligibilityDecodes: DECODES_PER_INVOCATION,
       });
       // The import is over, whatever it answered: what was handed on for it
@@ -1553,6 +1646,19 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     deterministicUnaccounted: extraction.deterministicUnaccounted ?? null,
     deterministicIgnored: extraction.deterministicIgnored ?? null,
     deterministicPlacement: extraction.deterministicPlacement ?? null,
+    /*
+     * The insets the building size may be read from, where the text stated
+     * none. A stored document's are read on the far side of the hand-off
+     * below; only a linked source, which no successor can reproduce, reads
+     * them here, at the end, inside this isolate's ceiling. See
+     * `pdfFigures.pure.ts`.
+     */
+    figures: figuresToRead({
+      figures: extraction.pdfFigures ?? [],
+      rows,
+      pricePages: extraction.deterministicReading?.diagnostics.pricePages ?? [],
+      disputedFields: extraction.deterministicReading?.diagnostics.disputedFields ?? [],
+    }),
   };
 
   /*
@@ -1643,7 +1749,39 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     });
   }
 
-  return await finishDecided(decided);
+  /*
+   * THE FIGURES, WHERE THIS ISOLATE FINISHES THE IMPORT ITSELF.
+   *
+   * A linked source is re-fetched rather than stored, so no successor can
+   * reproduce its run, and its pictures have always been decoded here, inside
+   * the ceiling this invocation's other picture work answers to. Its figures
+   * are read the same way — the same `readFigures`, so an uploaded brochure
+   * and the same brochure linked read the same building size — and only where
+   * they fit inside that ceiling (`mayReadFigures`). A STORED document never
+   * reads one here: it handed them on above, and one whose hand-off could not
+   * be written finishes without them rather than decode beside its parse.
+   */
+  let finishing = decided;
+  if (!input.resumableFromStoredBytes && decided.figures.length
+    && mayReadFigures(ledger, decided.figures.length)) {
+    const figuresStartedAt = Date.now();
+    const read = await readFigures(bytes, decided.figures).catch(() => ({
+      verdict: { state: 'unavailable', reason: 'figure_read_failed' } as FigureVerdict,
+      recognised: 0,
+      ms: Date.now() - figuresStartedAt,
+    }));
+    recordStage(ledger, 'image_decode', Date.now() - figuresStartedAt);
+    await commitLedger(ledger);
+    const rows = withFigureApplied(decided.rows, read.verdict);
+    finishing = {
+      ...decided,
+      rows,
+      deterministicReading: withFigureDiagnosis(
+        decided.deterministicReading, read.verdict, rows !== decided.rows),
+    };
+  }
+
+  return await finishDecided(finishing);
 }
 
 function fail(code: string, message: string, detail?: string): RunImportFailure {

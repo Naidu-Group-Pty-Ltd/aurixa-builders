@@ -48,6 +48,7 @@ import {
 import { STOCK_LIST_BUCKET } from '../../supabase/functions/_shared/builderStock/fileTypes.pure.ts';
 import { DETERMINISTIC_READER_VERSION } from '../../supabase/functions/_shared/builderStock/readerVersion.pure.ts';
 import { traceWhatTheTextLayerCannotSee } from './stockPageBeyondText.ts';
+import { traceFigures } from './stockFigureTrace.ts';
 
 const PROJECT_REF = Deno.env.get('PROJECT_REF') || 'htfluofznhxeumblwbww';
 const ACCESS_TOKEN = Deno.env.get('SUPABASE_ACCESS_TOKEN') || '';
@@ -216,6 +217,8 @@ for (const id of uploadIds) {
   ignored.slice(0, 60).forEach((line, at) => {
     console.log(`      ${String(reading.placement?.[at] ?? '').padEnd(14)} ${quote(line)}`);
   });
+
+  await traceFigures(bytes, reading);
 }
 
 if (failures) {

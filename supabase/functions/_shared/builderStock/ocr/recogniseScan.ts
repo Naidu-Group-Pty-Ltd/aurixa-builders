@@ -94,6 +94,35 @@ export interface OcrPageRaster {
   height?: number;
 }
 
+/** The engine, as the two passes below use it. */
+interface Recogniser {
+  recognize: (b: unknown) => Promise<{ data: { text?: string } }>;
+  setParameters?: (p: Record<string, string>) => Promise<unknown>;
+  terminate: () => Promise<unknown>;
+}
+
+/**
+ * The engine, brought up once for one pass, or null where it cannot be.
+ * Never throws: an engine that will not load is an answer, not a fault.
+ */
+async function openRecogniser(langPath: string): Promise<Recogniser | null> {
+  try {
+    const mod = await import('https://esm.sh/tesseract.js@5.1.1');
+    const createWorker = (mod as { createWorker?: unknown }).createWorker
+      ?? (mod as { default?: { createWorker?: unknown } }).default?.createWorker;
+    if (typeof createWorker !== 'function') throw new Error('no createWorker');
+    return await (createWorker as (
+      l: string, o: number, c: Record<string, unknown>,
+    ) => Promise<Recogniser>)('eng', 1, {
+      langPath, gzip: true, cachePath: '/tmp',
+      // The engine's own logging is not this product's log.
+      logger: () => {},
+    });
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Recognise the pages handed over, in order, within one budget.
  *
@@ -147,21 +176,8 @@ export async function recogniseScannedPages(
     return { text, refusals, deferred, ms: Date.now() - startedAt, available: false };
   }
 
-  let worker: { recognize: (b: unknown) => Promise<{ data: { text?: string } }>;
-                terminate: () => Promise<unknown> } | null = null;
-  try {
-    const mod = await import('https://esm.sh/tesseract.js@5.1.1');
-    const createWorker = (mod as { createWorker?: unknown }).createWorker
-      ?? (mod as { default?: { createWorker?: unknown } }).default?.createWorker;
-    if (typeof createWorker !== 'function') throw new Error('no createWorker');
-    worker = await (createWorker as (
-      l: string, o: number, c: Record<string, unknown>,
-    ) => Promise<typeof worker>)('eng', 1, {
-      langPath, gzip: true, cachePath: '/tmp',
-      // The engine's own logging is not this product's log.
-      logger: () => {},
-    });
-  } catch {
+  const worker = await openRecogniser(langPath);
+  if (!worker) {
     for (const raster of wanted) {
       refusals.push({ page: raster.page, reason: 'engine_unavailable' });
     }
@@ -196,7 +212,7 @@ export async function recogniseScannedPages(
         continue;
       }
       try {
-        const { data } = await worker!.recognize(raster.bytes);
+        const { data } = await worker.recognize(raster.bytes);
         const read = String(data?.text ?? '').trim();
         /*
          * A READING THAT SAYS ALMOST NOTHING IS NOT A READING. The same floor
@@ -223,4 +239,64 @@ export async function recogniseScannedPages(
   }
 
   return { text, refusals, deferred, ms: Date.now() - startedAt, available: true };
+}
+
+/**
+ * ===========================================================================
+ * A FIGURE, NOT A PAGE.
+ * ===========================================================================
+ *
+ * The same engine and the same model, asked a narrower question: the text of
+ * one small picture a brochure prints a table in — its area schedule
+ * (`areaSchedulePicture.pure.ts`). Two settings differ from a page, and both
+ * were measured on that picture rather than chosen: the picture is read as ONE
+ * BLOCK of text (`psm 6`), because a table read as a page is laid out as
+ * columns and its rows are lost, and the density is stated (300 dpi), because
+ * the picture is handed over already enlarged to it (`figureRaster.pure.ts`).
+ *
+ * There is no character floor here. A page with forty characters on it is a
+ * page with something to say; a figure is judged by what it says, and by the
+ * arithmetic that must prove it, never by how much it says.
+ *
+ * NEVER THROWS, like the pass above: an engine that will not come up answers
+ * `available: false` and every figure goes unread.
+ */
+export interface FigureRecognition {
+  /** Recognised text, by the caller's own figure index. */
+  text: Map<number, string>;
+  /** False where the engine or its model could not be obtained. */
+  available: boolean;
+  ms: number;
+}
+
+export async function recogniseFigures(
+  figures: ReadonlyArray<{ index: number; png: Uint8Array }>,
+  options: {
+    deadlineAt?: number;
+    /** The page segmentation mode. `6`, one block, is what was measured. */
+    psm?: string;
+  } = {},
+): Promise<FigureRecognition> {
+  const startedAt = Date.now();
+  const text = new Map<number, string>();
+  if (!figures.length) return { text, available: true, ms: 0 };
+  const langPath = await languageDataDirectory();
+  if (!langPath) return { text, available: false, ms: Date.now() - startedAt };
+  const worker = await openRecogniser(langPath);
+  if (!worker) return { text, available: false, ms: Date.now() - startedAt };
+  try {
+    await worker.setParameters?.({ tessedit_pageseg_mode: options.psm ?? '6', user_defined_dpi: '300' });
+    for (const figure of figures) {
+      if (options.deadlineAt && Date.now() > options.deadlineAt) break;
+      try {
+        const { data } = await worker.recognize(figure.png);
+        text.set(figure.index, String(data?.text ?? ''));
+      } catch {
+        /* an unreadable figure says nothing, and says it by being absent */
+      }
+    }
+  } finally {
+    try { await worker.terminate(); } catch { /* nothing to report */ }
+  }
+  return { text, available: true, ms: Date.now() - startedAt };
 }
