@@ -34,8 +34,11 @@
  * text is never logged.
  *
  *   TRACE_UPLOAD_IDS   comma-separated upload ids (validated as uuids)
- *   TRACE_PAGES        pages whose runs and lines are printed in full
- *                      (default `1`); every page's flattened text is printed
+ *   TRACE_PAGES        pages whose text, runs and lines are printed in full
+ *                      (default `1`); every other page is summarised by its
+ *                      line count, because a seven-page brochure is five pages
+ *                      of specification copy and the reading below says which
+ *                      of its lines mattered
  */
 import { readPdfPageTexts } from '../../supabase/functions/_shared/builderStock/pdfText.ts';
 import { readPdfTextLayout } from '../../supabase/functions/_shared/builderStock/pdfTextLayout.ts';
@@ -168,6 +171,10 @@ for (const id of uploadIds) {
 
   pageTexts.forEach((text, index) => {
     const lines = text.split('\n');
+    if (!fullPages.has(index + 1)) {
+      console.log(`\n  --- page ${index + 1} · flattened text: ${lines.length} lines (not in TRACE_PAGES)`);
+      return;
+    }
     console.log(`\n  --- page ${index + 1} · flattened text (${lines.length} lines)`);
     lines.slice(0, MAX_TEXT_LINES).forEach((line, at) => console.log(`    L${String(at).padStart(3)} | ${line}`));
     if (lines.length > MAX_TEXT_LINES) console.log(`    … ${lines.length - MAX_TEXT_LINES} more lines`);
