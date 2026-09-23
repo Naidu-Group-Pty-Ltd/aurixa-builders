@@ -1804,6 +1804,132 @@ def _s2(c):
     specification_page(c)
 
 
+# ===========================================================================
+# THE PACKAGE BROCHURE WHOSE AREA SCHEDULE IS A PICTURE
+# (held out, 23 September 2026)
+#
+# The same builder, a different template, measured from the production
+# document `Lot 101 - PICO - BROCHURE v002.pdf`. Its first page states the
+# design in display type, the icon row, the price as a breakdown closed by a
+# TOTAL (`Land - $…`, `Build - $…`, `TOTAL - $…`, each split into cells a
+# column gap apart), the lot and its estate on ONE line with nothing after
+# them, and the titles date with no separator. No street, no suburb and no
+# lot size anywhere, in text or in pixels: the brochure does not state them.
+#
+# And the house's size is a PICTURE: a 231x166-pixel raster of the area
+# schedule drawn 151 points wide in the left column, where the builder's other
+# template sets `Lot Size` and `House Specifications` as text. Each row states
+# the area twice, in square metres and in squares, and the total is the sum of
+# the parts — the two facts that let a recognised figure be proved rather than
+# believed.
+# ===========================================================================
+
+SQUARE_M2 = 9.290304
+
+
+def area_schedule_picture(rows, w=231, h=166, seed=7):
+    """The schedule as the production brochure embeds it: a small raster with
+    table rules, drawn large and reduced, so its type is as coarse as the
+    real one's (about 110 dpi where it is drawn)."""
+    from PIL import ImageDraw, ImageFont
+    scale = 4
+    img = Image.new('RGB', (w * scale, h * scale), (255, 255, 255))
+    dr = ImageDraw.Draw(img)
+    face = next((p for p in SCAN_FONTS if os.path.exists(p)), None)
+    bold = face.replace('Regular', 'Bold') if face and 'Regular' in face else face
+    title_font = ImageFont.truetype(bold or face, 13 * scale) if face else None
+    font = ImageFont.truetype(face, 11 * scale) if face else None
+    dr.text((34 * scale, 4 * scale), 'AREA SCHEDULE', fill=(20, 20, 24), font=title_font)
+    top, row_h = 26, 27
+    cols = (2, 88, 170, 229)
+    for i in range(len(rows) + 1):
+        y = (top + i * row_h) * scale
+        dr.line([(cols[0] * scale, y), (cols[-1] * scale, y)], fill=(60, 60, 60), width=scale)
+    for x in cols:
+        dr.line([(x * scale, top * scale), (x * scale, (top + len(rows) * row_h) * scale)],
+                fill=(60, 60, 60), width=scale)
+    for i, (label, area) in enumerate(rows):
+        y = (top + i * row_h + 7) * scale
+        squares = f'{area / SQUARE_M2:.2f}sq'
+        dr.text((6 * scale, y), f'{label}:', fill=(20, 20, 24), font=font)
+        dr.text((92 * scale, y), f'{area:.2f}m²', fill=(20, 20, 24), font=font)
+        dr.text((176 * scale, y), squares, fill=(20, 20, 24), font=font)
+    img = img.resize((w, h), Image.LANCZOS)
+    buf = io.BytesIO(); img.save(buf, format='JPEG', quality=85); buf.seek(0)
+    return buf
+
+
+def picture_schedule_page(c, design, counts, land, build, total, lot, estate, titles,
+                          schedule, seed):
+    """Page 1 as the production PICO template lays it out, in points."""
+    pt(c, 29.7, 776.9, design, 30, True)
+    icon_row(c, counts, y=740.4)
+    # Label, dash and figure are three cells a column gap apart, as drawn.
+    for (label, figure), y in zip((('Land', land), ('Build', build)), (695.3, 671.4)):
+        pt(c, 24.1, y, label, 20, True)
+        pt(c, 81.7, y, '-', 20, True)
+        pt(c, 104.7, y, figure, 20, True)
+    end = pt(c, 24.1, 647.4, 'TOTAL - $', 20, True)
+    pt(c, end + 0.3, 647.4, total.lstrip('$'), 20, True)
+    end = pt(c, 29.8, 587.4, 'Lot', 24)
+    end = pt(c, end + 4.0, 587.4, lot, 24)
+    pt(c, end + 4.0, 587.4, estate, 24)
+    end = pt(c, 29.8, 558.6, 'Titles', 24)
+    pt(c, end + 4.0, 558.6, titles, 24)
+    pt(c, 15.8, 483.4, 'ALTO Inclusions & Turnkey Pack', 18, True)
+    pt(c, 16.1, 460.7, 'ALTO Quality Inclusions:', 10)
+    for i, item in enumerate(['Architecturally Designed Facade',
+                              'Low Profile Concrete Rooftiles',
+                              '2590mm high ceiling throughout',
+                              'Stone benchtops throughout']):
+        pt(c, 26.1, 448.2 - i * 12.5, '•', 10)
+        pt(c, 39.5, 448.2 - i * 12.5, item, 10)
+    c.drawImage(ImageReader(facade(seed)), 329.4, 630.7, width=265.3, height=210.9,
+                preserveAspectRatio=False, mask=None)
+    c.drawImage(ImageReader(floorplan()), 346.1, 82.3, width=193.9, height=443.6,
+                preserveAspectRatio=False, mask=None)
+    c.drawImage(ImageReader(area_schedule_picture(schedule)), 45.3, 79.9,
+                width=151.2, height=108.7, preserveAspectRatio=False, mask=None)
+    package_foot(c)
+    c.showPage()
+
+
+PICTURE_SCHEDULE = (('DWELLING', 95.20), ('GARAGE', 22.59), ('COURT', 4.69),
+                    ('PORCH', 7.11), ('TOTAL', 129.59))
+
+
+@fixture('heldout-picture-area-schedule', 'Lot 118 - NOVA - BROCHURE v002.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='118',
+                        # THE LOT AND ITS ESTATE ON ONE LINE, and nothing after:
+                        # the estate names itself with its own field word.
+                        estate='Kestrel Reach Estate',
+                        # NOTHING IS INVENTED. The brochure states no street, no
+                        # suburb, no state, no postcode and no lot size.
+                        street_name=None, suburb=None, state=None, postcode=None,
+                        land_size_sqm=None,
+                        # The filename names the design family, the page names the
+                        # family and its size in display type.
+                        design='NOVA 9',
+                        bedrooms=3, bathrooms=2, car_spaces=1,
+                        # `TOTAL - $623,400` closes `Land` and `Build`, and
+                        # 251,000 + 372,400 is 623,400.
+                        price=623400,
+                        # The house's total, read off the schedule's PICTURE and
+                        # proved by its own squares column and by its parts.
+                        build_size_sqm=129.59)],
+             known_limit='the area schedule is a picture, which the reader does not '
+                         'yet recognise',
+             image='facade_page_1'))
+def _p1(c):
+    picture_schedule_page(c, 'NOVA 9', ('3', '2', '1'), '$251,000', '$372,400',
+                          '$623,400', '118', 'Kestrel Reach Estate', 'March 2027',
+                          PICTURE_SCHEDULE, 37)
+    specification_page(c)
+    specification_page(c)
+
+
 def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     manifest = []

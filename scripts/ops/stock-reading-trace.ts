@@ -47,6 +47,7 @@ import {
 } from '../../supabase/functions/_shared/builderStock/pdfDeterministicRows.pure.ts';
 import { STOCK_LIST_BUCKET } from '../../supabase/functions/_shared/builderStock/fileTypes.pure.ts';
 import { DETERMINISTIC_READER_VERSION } from '../../supabase/functions/_shared/builderStock/readerVersion.pure.ts';
+import { traceWhatTheTextLayerCannotSee } from './stockPageBeyondText.ts';
 
 const PROJECT_REF = Deno.env.get('PROJECT_REF') || 'htfluofznhxeumblwbww';
 const ACCESS_TOKEN = Deno.env.get('SUPABASE_ACCESS_TOKEN') || '';
@@ -194,6 +195,8 @@ for (const id of uploadIds) {
       console.log(`    r${String(at).padStart(3)} y${n1(line.y)}  ${cells}`);
     });
   }
+
+  await traceWhatTheTextLayerCannotSee(bytes, fullPages);
 
   const reading = readPdfDeterministicRows({
     pageTexts,

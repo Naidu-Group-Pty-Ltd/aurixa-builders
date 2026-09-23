@@ -186,7 +186,7 @@ import { sweepHandedOnThisParse } from './readerSweepAttempt.pure.ts';
  * Every document already imported is read again, because a document whose
  * headings were unreadable was read without them.
  */
-export const DETERMINISTIC_READER_VERSION = 15;
+export const DETERMINISTIC_READER_VERSION = 16;
 
 /*
  * VERSION 11 — A PHRASE'S OWN WORDS ARE HEADINGS TOO.
@@ -322,6 +322,37 @@ export const DETERMINISTIC_READER_VERSION = 15;
  * changes is the one builders on this platform upload — `LOT 214`, `LOT 315`,
  * `LOT 717`, `LOT 4327` and `LOT 927` are one template — and a row carrying
  * no land size or the siting's building area is corrected only by a re-read.
+ */
+
+/*
+ * VERSION 16 — FOUR SPELLINGS THE READER KNEW, IN ARRANGEMENTS IT DID NOT.
+ *
+ * MEASURED 23 SEPTEMBER 2026 on `Lot 101 - PICO - BROCHURE v002.pdf`,
+ * uploaded to the production project that afternoon: the card read `Lot 101`
+ * and the icon row's `3 2 1` and nothing else, over a property page printing
+ * `TOTAL - $604,500`, `Lot 101 Watsons Reach Estate`, `PICO 8` and `Titles
+ * December 2026`. The builder's second template, and every fact on it a
+ * spelling this vocabulary already had:
+ *
+ *   • `total $` is a price heading, and only the reader that takes a label
+ *     and its value with NO separator retried a bare label with the marker
+ *     its value carries — so a spaced hyphen between them hid the package
+ *     price (`readLabelledValue`, `readVerticalPair`);
+ *   • the lot line's tail was read only to be refused, never as the estate it
+ *     names itself (`estateAfterLot`);
+ *   • the filename names the design's FAMILY and the page prints the family
+ *     and its size (`corroborateDesignFromFilename`);
+ *   • `Titles December 2026` is a completion after its label with no
+ *     separator, read only in the shape of a date (`readLeadingCompletion`).
+ *
+ * The page names no street and no suburb, and its text states no lot size and
+ * no build size: the build size is printed only inside a picture of the
+ * house's area schedule, and the lot size nowhere in the document. Nothing
+ * here invents either.
+ *
+ * Every stored document is read again, because a row carrying the lot and
+ * nothing else is corrected only by a re-read. The corpus reads
+ * byte-identically but for the held-out fixture of this class.
  */
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */

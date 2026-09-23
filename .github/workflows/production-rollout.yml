@@ -176,6 +176,13 @@ jobs:
         with:
           deno-version: v2.x
 
+      # The trace's view of what a page SHOWS beyond its text layer: poppler
+      # draws the page as a viewer does and Tesseract reads it. Both are fed
+      # through pipes; see `traceWhatTheTextLayerCannotSee`.
+      - name: page renderer and OCR for the reading trace
+        if: ${{ inputs.phase == 'stock-reading-trace' }}
+        run: sudo apt-get update -q && sudo apt-get install -y -q poppler-utils tesseract-ocr
+
       - name: refuse to pretend
         if: ${{ env.TOKEN == '' }}
         env:
