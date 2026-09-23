@@ -13,6 +13,11 @@
  * because provenance travels; the expectations come from `manifest.json`,
  * which is authored from what each document STATES.
  */
+/*
+ * FIRST, before any product module loads: this process starts no worker, because
+ * the runtime production runs on starts none. See `hostedRuntime.ts`.
+ */
+import { HOSTED_WORKER_REFUSAL, workersRequested } from './hostedRuntime.ts';
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
 import { runStockImport } from '../../supabase/functions/_shared/builderStock/runImport.ts';
 import { isImportContinuation } from '../../supabase/functions/_shared/builderStock/importContinuation.pure.ts';
@@ -209,6 +214,11 @@ interface Expect {
   forbid?: Record<string, unknown>;
   refusal_must_not_be?: string[];
   known_limit?: string;
+  /**
+   * What a LINKED read of this document leaves unread, and why — for a
+   * document the linked route reads less of by design. See 6b.
+   */
+  linked_limit?: string;
 }
 interface Entry {
   name: string; org: string; filename: string; path: string;
@@ -582,16 +592,34 @@ async function routeA(entry: Entry, bytes: Uint8Array, tag = 'A') {
   }
   /*
    * THE RULE THIS WHOLE HAND-OFF EXISTS FOR, judged by effect: no invocation
-   * both parsed the document and decoded or stored one of its pictures.
+   * both parsed the document and decoded or stored one of its pictures — and
+   * none both parsed it and made or recognised a scanned page, which is the
+   * same rule for the engine that now runs in the isolate that asks.
    */
   const isolation = invocations.map((own, index) => ({
     invocation: index,
     parses: own.document_parses ?? 0,
     decodeMs: (own.image_decode_ms ?? 0) + (own.image_store_ms ?? 0),
+    rasterised: own.rasterisations ?? 0,
+    recognised: own.ocr_pages ?? 0,
+    attempted: own.ocr_attempted ?? 0,
   }));
+  /*
+   * AND NO PAGE IS RECOGNISED TWICE. Each recognition adds one to its
+   * invocation's `ocr_pages` and one key to the checkpoint, and keys never
+   * disappear — so the sum over every invocation equals the pages held
+   * exactly when no page was paid for twice.
+   */
+  const { data: finalRow } = await db.from('builder_stock_uploads')
+    .select('import_checkpoint').eq('id', upload.id).maybeSingle();
+  const ocrOnce = {
+    recognisedTotal: isolation.reduce((sum, own) => sum + own.recognised, 0),
+    recognisedDistinct: Object.keys(
+      (finalRow?.import_checkpoint as any)?.ocr?.pages ?? {}).length,
+  };
   return { result, uploadId: upload.id, ms: performance.now() - t0,
            rssDelta: rss() - m0, transferred: downloaded.length,
-           successors, isolation };
+           successors, isolation, ocrOnce };
 }
 
 /**
@@ -813,10 +841,18 @@ for (const entry of manifest) {
    * successor chain that never finished is its own failure: the import is
    * still `parsing`, which a builder sees as a stock list that never loads.
    */
-  row.handOff = { successors: a.successors, isolation: a.isolation };
+  row.handOff = { successors: a.successors, isolation: a.isolation, ocrOnce: a.ocrOnce };
   const mixed = a.isolation.filter((i) => i.parses > 0 && i.decodeMs > 0);
   if (mixed.length) {
     fail(entry, `an invocation parsed the document and decoded its pictures: ${JSON.stringify(mixed)}`);
+  }
+  const parsedAndRecognised = a.isolation.filter((i) => i.parses > 0
+    && (i.rasterised > 0 || i.recognised > 0 || i.attempted > 0));
+  if (parsedAndRecognised.length) {
+    fail(entry, `an invocation parsed the document and recognised a page: ${JSON.stringify(parsedAndRecognised)}`);
+  }
+  if (a.ocrOnce.recognisedTotal !== a.ocrOnce.recognisedDistinct) {
+    fail(entry, `a page was recognised more than once: ${JSON.stringify(a.ocrOnce)}`);
   }
   if (a.successors.length && a.successors.at(-1) === 'continued') {
     fail(entry, `the import was still handing itself on after ${a.successors.length} successors`);
@@ -973,22 +1009,65 @@ for (const entry of manifest) {
     if (sx !== sy) fail(entry, `transport changed ${what}: A=${sx} B=${sy}`);
   };
 
-  eq('the verdict', verdictOf(a.result), verdictOf(b.result));
-  eq('the reading', readingOf(a.result), readingOf(b.result));
-  row.equivalence = { documentName: b.documentName, reading: readingOf(a.result) };
-
-  if (itemsA.length !== itemsB.length) {
-    fail(entry, `route A produced ${itemsA.length} properties, route B ${itemsB.length}`);
+  /*
+   * A LINKED SCAN IS READ ONE PAGE DEEP, BY DESIGN — SO FOR IT THE CLAIM IS
+   * "NEVER A WRONG VALUE", NOT "THE SAME DOCUMENT".
+   *
+   * A linked source cannot be continued: a successor re-reads stored bytes
+   * and nothing else, while a link's name and address are evidence the reader
+   * uses (`resumableFromStoredBytes`). So a scan whose facts are spread over
+   * several pages reads further as an upload than as a link, and asserting
+   * the two equal would assert a product nobody ships — the rule this
+   * harness keeps about the duplicate guard. What route B is still held to:
+   * it succeeds, it finds the same properties, and every field it states is
+   * the field route A states. The gap is ABSENT fields only, it is declared
+   * in the corpus beside the document, and it is reported on every run.
+   */
+  if (entry.expect.linked_limit) {
+    row.equivalence = { documentName: b.documentName, linked: entry.expect.linked_limit };
+    if (!b.result.ok) fail(entry, `the linked route was refused: ${(b.result as any).code}`);
+    if (itemsA.length !== itemsB.length) {
+      fail(entry, `route A produced ${itemsA.length} properties, route B ${itemsB.length}`);
+    } else {
+      const unread: string[] = [];
+      for (let i = 0; i < itemsA.length; i += 1) {
+        for (const key of [...COMPARED, 'house_design']) {
+          const va = valueOf(itemsA[i], key);
+          const vb = valueOf(itemsB[i], key);
+          if (vb === null) {
+            if (va !== null) unread.push(`${i}.${key}`);
+          } else if (JSON.stringify(vb) !== JSON.stringify(va)) {
+            fail(entry, `the linked route stated a different ${key}: A=${JSON.stringify(va)} B=${JSON.stringify(vb)}`);
+          }
+        }
+      }
+      (row.equivalence as any).unread = unread;
+      // A declared limit that no longer holds is removed, never left to be believed.
+      if (!unread.length) {
+        fail(entry, 'the linked route read every field route A read: remove `linked_limit`');
+      } else {
+        limits.push(`${entry.name}: the linked route left ${unread.join(', ')} unread `
+          + `[linked: ${entry.expect.linked_limit}]`);
+      }
+    }
   } else {
-    // Ordered by the document's own identity rather than by insertion, so a
-    // difference in the order rows landed is not reported as a difference in
-    // what the document says — and an identity difference is caught by the
-    // comparison itself rather than being hidden by the sort.
-    const byIdentity = (rows: any[]) => [...rows].sort((x, y) =>
-      JSON.stringify(documentShape(x)) < JSON.stringify(documentShape(y)) ? -1 : 1);
-    const sa = byIdentity(itemsA), sb = byIdentity(itemsB);
-    for (let i = 0; i < sa.length; i += 1) {
-      eq(`property ${i}`, documentShape(sa[i]), documentShape(sb[i]));
+    eq('the verdict', verdictOf(a.result), verdictOf(b.result));
+    eq('the reading', readingOf(a.result), readingOf(b.result));
+    row.equivalence = { documentName: b.documentName, reading: readingOf(a.result) };
+
+    if (itemsA.length !== itemsB.length) {
+      fail(entry, `route A produced ${itemsA.length} properties, route B ${itemsB.length}`);
+    } else {
+      // Ordered by the document's own identity rather than by insertion, so a
+      // difference in the order rows landed is not reported as a difference in
+      // what the document says — and an identity difference is caught by the
+      // comparison itself rather than being hidden by the sort.
+      const byIdentity = (rows: any[]) => [...rows].sort((x, y) =>
+        JSON.stringify(documentShape(x)) < JSON.stringify(documentShape(y)) ? -1 : 1);
+      const sa = byIdentity(itemsA), sb = byIdentity(itemsB);
+      for (let i = 0; i < sa.length; i += 1) {
+        eq(`property ${i}`, documentShape(sa[i]), documentShape(sb[i]));
+      }
     }
   }
 
@@ -2509,7 +2588,12 @@ const invariants: Record<string, unknown> = {};
    *
    * WHAT MUST HOLD, and each is a way this could ship broken:
    *
-   *   • it hands off — asserted, never merely permitted;
+   *   • it hands off — asserted, never merely permitted — and the isolate
+   *     that parsed the document recognises NONE of it: it locates every
+   *     owed page's picture and hands those on (`ocr/scanRaster.pure.ts`);
+   *   • no invocation both parses the document and makes or recognises a
+   *     page — the engine runs in the isolate that asks, and that isolate
+   *     parses nothing;
    *   • no hand-off writes a count, a completion stamp or a property (the
    *     22 September lie was `records_detected: 0` on a row mid-import);
    *   • a dispatch arriving while another worker holds the import does
@@ -2553,6 +2637,24 @@ const invariants: Record<string, unknown> = {};
       return (data ?? {}) as any;
     };
     const pagesIn = (row: any) => Object.keys(row?.import_checkpoint?.ocr?.pages ?? {}).length;
+    const rastersIn = (row: any) => Object.keys(row?.import_checkpoint?.ocr?.rasters ?? {}).length;
+    /*
+     * EACH INVOCATION'S OWN ACCOUNT, read off the running total on the row —
+     * which is what the isolation rule is judged on.
+     */
+    const ownLedgers: Array<Record<string, number>> = [];
+    let seenLedger: Record<string, unknown> = {};
+    const accountFor = (row: any) => {
+      const now = (row?.stage_timings ?? {}) as Record<string, unknown>;
+      const own: Record<string, number> = {};
+      for (const [key, value] of Object.entries(now)) {
+        if (typeof value !== 'number') continue;
+        const was = typeof seenLedger[key] === 'number' ? seenLedger[key] as number : 0;
+        if (value - was > 0) own[key] = value - was;
+      }
+      ownLedgers.push(own);
+      seenLedger = now;
+    };
     /** Everything a hand-off must not have written, counted. */
     const writtenMidImport = async (row: any) => (await itemsFor(upload.id)).length
       + (row.status !== 'parsing' ? 1 : 0)
@@ -2582,6 +2684,7 @@ const invariants: Record<string, unknown> = {};
     if (handedOff) await releaseThenContinue(db, claimForFirst, upload.id);
     else await claimForFirst?.release();
     const afterFirst = await readRow();
+    accountFor(afterFirst);
     const leakedByFirst = await writtenMidImport(afterFirst);
 
     /*
@@ -2603,8 +2706,12 @@ const invariants: Record<string, unknown> = {};
       const next = await continueStockImport(db, upload.id);
       state = next.state;
       successors.push(next.state);
-      if (next.state === 'continued') leakedMidImport += await writtenMidImport(await readRow());
+      const rowNow = await readRow();
+      accountFor(rowNow);
+      if (next.state === 'continued') leakedMidImport += await writtenMidImport(rowNow);
     }
+    const parsedAndRecognised = ownLedgers.filter((own) => (own.document_parses ?? 0) > 0
+      && ((own.rasterisations ?? 0) > 0 || (own.ocr_pages ?? 0) > 0 || (own.ocr_attempted ?? 0) > 0));
 
     // A DISPATCH ARRIVING AFTER THE FINISH.
     const late = await continueStockImport(db, upload.id);
@@ -2635,7 +2742,11 @@ const invariants: Record<string, unknown> = {};
 
     faults.cpuHandOff = {
       handedOff,
-      afterFirst: { status: afterFirst.status, pages: pagesIn(afterFirst), leaked: leakedByFirst },
+      afterFirst: {
+        status: afterFirst.status, pages: pagesIn(afterFirst), located: rastersIn(afterFirst),
+        leaked: leakedByFirst,
+      },
+      parsedAndRecognised,
       whileClaimHeld: whileHeld.state,
       heldChangedNothing: pagesIn(afterHeld) === pagesIn(afterFirst),
       successors,
@@ -2653,8 +2764,12 @@ const invariants: Record<string, unknown> = {};
     };
     invariant('an-import-that-runs-out-of-cpu-hands-off-and-is-finished-exactly-once',
       handedOff
-      // A hand-off states nothing about a document it has not finished reading.
-      && afterFirst.status === 'parsing' && leakedByFirst === 0 && pagesIn(afterFirst) >= 1
+      // A hand-off states nothing about a document it has not finished reading,
+      // and the isolate that parsed it located every owed page and read none.
+      && afterFirst.status === 'parsing' && leakedByFirst === 0
+      && pagesIn(afterFirst) === 0 && rastersIn(afterFirst) >= 2
+      // No invocation both parsed the document and made or recognised a page.
+      && parsedAndRecognised.length === 0
       // A worker holding the claim is never displaced, and the refusal is inert.
       && whileHeld.state === 'held'
       && pagesIn(afterHeld) === pagesIn(afterFirst)
@@ -2812,6 +2927,103 @@ const invariants: Record<string, unknown> = {};
       && sheet.withPictures === sheet.properties
       && sheet.duplicateImageRows === 0,
       JSON.stringify(sheet));
+  }
+
+  // --- 8n. A RECOGNITION WORKER DIES MID-PAGE ------------------------------
+  /*
+   * The hosted runtime kills a worker that spends past its allowance, and a
+   * dense page's recognition alone can be that. Such a worker leaves exactly
+   * one thing behind: the page it had BEGUN, marked before the engine was
+   * asked (`withRecognitionBegun`). This case leaves that state — what a
+   * worker killed on page 2 has committed, and nothing else — and asserts
+   * what recovery does with it:
+   *
+   *   • page 2 is never recognised: not by the worker that died, and not by
+   *     the one that finds its mark, because the next worker would die on it
+   *     too and the recovery that restarts a dead import is bounded;
+   *   • recognition stops for the attempt, and the document is READ — by an
+   *     isolate that recognised nothing — with the page recognised before the
+   *     loss, so the import finishes rather than being left mid-flight;
+   *   • the property is the one page 1 states, with nothing invented for what
+   *     page 2 would have said.
+   */
+  {
+    const entry = manifest.find((e: any) => e.name === 'heldout-scanned-brochure');
+    if (!entry) throw new Error('no heldout-scanned-brochure in the corpus: run make-corpus.py');
+    const org = orgs[FAULT_HANDOFF];
+    const bytes = await Deno.readFile(`${corpusDir}/${entry.path}`);
+    const path = `${STOCK_LIST_STORAGE_PREFIX}${org.id}/${crypto.randomUUID()}/${safeObjectName(entry.filename)}`;
+    await db.storage.from(BUCKET).upload(path, bytes, { contentType: 'application/pdf', upsert: true });
+    const upload = await newUpload(FAULT_HANDOFF, entry.filename, path);
+    const readRow = async () => ((await db.from('builder_stock_uploads')
+      .select('status, records_detected, processing_completed_at, import_checkpoint, stage_timings')
+      .eq('id', upload.id).maybeSingle()).data ?? {}) as any;
+
+    const portal = await claimImport(db, upload.id);
+    await db.from('builder_stock_uploads').update({
+      status: 'parsing', processing_started_at: new Date().toISOString(),
+    }).eq('id', upload.id);
+    const first = await runStockImport({
+      supabase: db, organisationId: org.id, organisationName: org.name,
+      builderUserId: org.userId,
+      upload: { id: upload.id, original_filename: upload.original_filename },
+      bytes, sourceKind: 'file',
+      resumableFromStoredBytes: true,
+    });
+    const handedOff = isImportContinuation(first);
+    const claim = portal.ok ? portal.claim : null;
+    if (handedOff) await releaseThenContinue(db, claim, upload.id);
+    else await claim?.release();
+    // Page 1, recognised by a worker of its own.
+    const pageOne = handedOff ? (await continueStockImport(db, upload.id)).state : 'not_run';
+    // THE KILL: the next worker began page 2 and never reported back.
+    const beforeKill = await readRow();
+    await db.from('builder_stock_uploads').update({
+      import_checkpoint: {
+        ...beforeKill.import_checkpoint,
+        ocr: { ...(beforeKill.import_checkpoint?.ocr ?? {}), begun: [2] },
+      },
+    }).eq('id', upload.id);
+    // RECOVERY: successors, until the import stops handing itself on.
+    const successors: string[] = [];
+    let state = 'continued';
+    while (state === 'continued' && successors.length <= MAX_IMPORT_CROSSINGS) {
+      state = (await continueStockImport(db, upload.id)).state;
+      successors.push(state);
+    }
+    const final = await readRow();
+    const items = await itemsFor(upload.id);
+    const ocr = final.import_checkpoint?.ocr ?? {};
+    const recognised = Object.keys(ocr.pages ?? {}).map(Number).sort((x, y) => x - y);
+    faults.lostRecognition = {
+      handedOff,
+      pageOne,
+      successors,
+      status: final.status,
+      recognised,
+      lost: ocr.lost ?? [],
+      begun: ocr.begun ?? [],
+      recognisedTotal: Number(final.stage_timings?.ocr_pages ?? 0),
+      rows: items.length,
+      lot: items[0]?.lot_number ?? null,
+      street: items[0]?.address_line ?? null,
+      land: items[0]?.land_size_sqm ?? null,
+      bedrooms: items[0]?.bedrooms ?? null,
+    };
+    invariant('a-page-whose-worker-died-is-never-recognised-again-and-the-import-finishes',
+      handedOff && pageOne === 'continued'
+      // Page 1 was read once; page 2 was never read and is settled as lost.
+      && JSON.stringify(recognised) === JSON.stringify([1])
+      && JSON.stringify(ocr.lost ?? []) === JSON.stringify([2])
+      && !(ocr.begun ?? []).length
+      && Number(final.stage_timings?.ocr_pages ?? 0) === 1
+      // The import finished, and is not left reading "still working".
+      && successors.at(-1) === 'completed'
+      && final.status !== 'parsing' && !!final.processing_completed_at
+      // The property page 1 states, and nothing page 2 would have.
+      && items.length === 1 && String(items[0].lot_number) === '57'
+      && items[0].land_size_sqm == null && items[0].bedrooms == null,
+      JSON.stringify(faults.lostRecognition));
   }
 
   // --- 8j. NOTHING IN THE MATRIX LEFT A ROW MID-FLIGHT --------------------
@@ -3049,10 +3261,22 @@ await fileServer.shutdown();
 
 // 7 · The verdict
 // ---------------------------------------------------------------------------
-console.log(JSON.stringify({ report, invariants, fails, limits, modelCallAttempts, urlFetches }, null, 2));
+/*
+ * A WORKER ASKED FOR IS A FAILURE OF ITS OWN, whatever the fixtures said: it is
+ * a path that works here and is refused on the hosted runtime, which is the
+ * exact infidelity `hostedRuntime.ts` exists to close. It fails once, here,
+ * with the runtime's own words, rather than as a scatter of empty readings.
+ */
+if (workersRequested() > 0) {
+  fails.push(`the product asked for ${workersRequested()} worker(s); the hosted runtime answers `
+    + `"${HOSTED_WORKER_REFUSAL}"`);
+}
+console.log(JSON.stringify({ report, invariants, fails, limits, modelCallAttempts, urlFetches,
+  workersRequested: workersRequested() }, null, 2));
 console.log(`\n${manifest.length} documents · ${fails.length} failures · `
   + `${limits.length} named limits · `
-  + `${modelCallAttempts.length} generative-model calls attempted`);
+  + `${modelCallAttempts.length} generative-model calls attempted · `
+  + `${workersRequested()} workers requested`);
 if (limits.length) {
   console.log('\nNAMED LIMITS (reported every run, do not fail the gate):');
   for (const l of limits) console.log('  ' + l);

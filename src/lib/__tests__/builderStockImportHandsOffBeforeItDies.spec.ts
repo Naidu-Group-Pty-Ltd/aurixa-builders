@@ -224,8 +224,10 @@ describe('a hand-off actually hands off', () => {
   it('only a caller that can be reproduced from stored bytes is handed off', () => {
     // A linked source carries documentName, baseUrl, rowAssets, linkDiscovery
     // and sheetTab alongside its bytes; a successor re-reading the snapshot
-    // alone would produce a different document.
-    expect(runImport).toContain('ocrOutstanding.length && input.resumableFromStoredBytes');
+    // alone would produce a different document — so it recognises where it
+    // parsed (`inline`), and only a stored document locates and hands on.
+    expect(runImport).toContain("const ocrMode: 'inline' | 'handoff' | 'carried' = !input.resumableFromStoredBytes\n"
+      + "    ? 'inline'");
     const linked = portal.slice(portal.indexOf("if (operation === 'import_url')"));
     expect(linked).not.toContain('resumableFromStoredBytes');
   });

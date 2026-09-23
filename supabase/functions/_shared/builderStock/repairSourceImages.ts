@@ -83,6 +83,9 @@ import { chooseAndStorePrimaryImage } from './primaryImage.ts';
 import { readAllRows } from './pagedRead.ts';
 import { loadDocumentRead, learnOutstandingKinds, writeDocumentRead } from './documentRead.ts';
 import { sha256Hex } from './rasterPng.ts';
+import {
+  checkpointPages, checkpointSettledPages, readCheckpoint,
+} from './importCheckpoint.pure.ts';
 
 /**
  * The house design a row states, or null — WHICHEVER SHAPE THE CALLER HOLDS.
@@ -516,7 +519,8 @@ export async function repairSourceImagesForUpload(
   const { data: upload } = await db
     .from('builder_stock_uploads')
     .select('id, organisation_id, source_type, source_url, final_url, original_filename, '
-      + 'storage_bucket, storage_path, deleted_at, image_stage_summary, file_sha256')
+      + 'storage_bucket, storage_path, deleted_at, image_stage_summary, file_sha256, '
+      + 'import_checkpoint')
     .eq('id', input.uploadId)
     .eq('organisation_id', input.organisationId)
     .maybeSingle();
@@ -742,8 +746,27 @@ export async function repairSourceImagesForUpload(
         if (classification.kind === 'unsupported') {
           return { ...outcome, error: 'That source cannot be read for imagery.' };
         }
+        /*
+         * A SCANNED PAGE IS READ WITH WHAT THE IMPORT RECOGNISED, AND NEVER
+         * RECOGNISED HERE.
+         *
+         * This re-read parses the document and then decodes its pictures, and
+         * recognition would add the most expensive stage there is to both, on
+         * no allowance at all. It also has nothing to add: the import wrote
+         * every page it recognised into its checkpoint, bound to the digest
+         * of these bytes, so the pages this reads are the pages the import
+         * read. A checkpoint for other bytes — a live sheet fetched since —
+         * is refused whole by `readCheckpoint`, and a page nobody recognised
+         * is read as the text layer states it, as it always was here.
+         */
+        const recognised = classification.kind === 'pdf' && !liveFetched
+          ? readCheckpoint(upload.import_checkpoint, await sha256Hex(bytes))
+          : null;
         const extraction = await extractStockFile(
           bytes, upload.original_filename, classification, {
+            ocrMode: 'carried',
+            ocrCarried: checkpointPages(recognised),
+            ocrSettled: checkpointSettledPages(recognised),
             baseUrl: sourceUrl ?? undefined,
             /*
              * THE SAME RULE THE IMPORT ANSWERS TO. A linked source's stored

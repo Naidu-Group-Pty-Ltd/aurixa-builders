@@ -203,7 +203,7 @@ describe('the parse isolate stops before any picture is decoded', () => {
 
   it('the successor takes the read before any extraction, and only for its own token', () => {
     const successor = run.indexOf('const handoverToken = input.resumed && input.resumableFromStoredBytes');
-    const extraction = run.indexOf('extraction = await extractStockFile(');
+    const extraction = run.indexOf('extraction = await extractAs(ocrMode);');
     expect(successor).toBeGreaterThan(-1);
     expect(extraction).toBeGreaterThan(successor);
     expect(run).toContain('? pictureHandover(checkpoint) : null;');

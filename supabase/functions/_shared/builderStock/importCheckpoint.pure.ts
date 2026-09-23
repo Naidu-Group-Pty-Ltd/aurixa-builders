@@ -66,15 +66,21 @@
  *
  * A checkpoint that grows without limit becomes a row nobody can read and an
  * UPDATE nobody can afford. Both bounds below fail in the same direction:
- * past them, nothing is stored and the page is recognised again. Paying 3
- * seconds of CPU twice is a cost; writing a megabyte into a row on every
- * stage boundary is a fault.
+ * past them, nothing is stored. Where a document is read in the isolate that
+ * recognised it — a linked source — that page is simply recognised again.
+ * Where it is read by ANOTHER isolate, which is every stored upload now, the
+ * checkpoint is the only way a page's text reaches the reading, so a page
+ * past a bound is REFUSED and named (`runImport.ts`) rather than recognised
+ * beside the parse. Measured, a dense A4 page recognises to about 2,000
+ * characters, a sixteenth of the per-page bound. Paying 3 seconds of CPU twice
+ * is a cost; writing a megabyte into a row on every stage boundary is a fault.
  *
  * Pure: no IO and no clock.
  */
 
 import { MAX_KIND_CANDIDATES } from './documentRead.pure.ts';
 import { readFigureVerdict, type FigureVerdict } from './pdfFigures.pure.ts';
+import { readScanRasterLocation, type ScanRasterLocation } from './ocr/scanRaster.pure.ts';
 
 /** The shape's own version, so a reader can refuse one it does not know. */
 export const IMPORT_CHECKPOINT_VERSION = 1;
@@ -86,9 +92,12 @@ export const MAX_CHECKPOINT_TOTAL_CHARS = 256_000;
 /**
  * How many times one upload may be continued before it stops.
  *
- * `OCR_MAX_PAGES` is 8 and a hand-off recognises at least one page, so eight
- * crossings covers the worst document the recogniser will accept. Two spare,
- * because a crossing can also be spent on a page the recogniser refuses.
+ * `OCR_MAX_PAGES` is 8, and every page is recognised in an isolate of its own
+ * that parsed nothing (`ocr/scanRaster.pure.ts`): one crossing out of the
+ * isolate that located the pages, one out of each isolate that recognised one,
+ * the last of them into the isolate that reads the document. Eight pages is
+ * therefore nine crossings, and a page the recogniser refuses costs the same
+ * crossing a page it reads does. One spare.
  */
 export const MAX_IMPORT_CONTINUATIONS = 10;
 
@@ -125,6 +134,24 @@ export interface ImportCheckpoint {
     refused?: number[];
     /** The recogniser reported itself unavailable in this deployment. */
     unavailable?: boolean;
+    /**
+     * WHERE EACH OWED PAGE'S PICTURE IS, by 1-based page, as the isolate that
+     * parsed the document located it — so the isolates that recognise them
+     * never parse it. See `ocr/scanRaster.pure.ts`.
+     */
+    rasters?: Record<string, ScanRasterLocation>;
+    /**
+     * Pages an isolate has BEGUN recognising. Written before the engine is
+     * asked and cleared when the pass ends, so a page still here, neither read
+     * nor refused, is one whose isolate never reported back.
+     */
+    begun?: number[];
+    /**
+     * Pages whose recognition was begun and never reported back. Settled for
+     * the rest of this attempt — a page is never recognised twice — and the
+     * attempt recognises nothing more. See `lostRecognitions`.
+     */
+    lost?: number[];
   };
   /**
    * The read this import handed to a successor to attach its pictures, and
@@ -183,12 +210,42 @@ export function readCheckpoint(
     ...(pages || row.ocr ? {
       ocr: {
         pages: pages ?? {},
-        refused: Array.isArray(row.ocr?.refused)
-          ? row.ocr!.refused.filter((page) => Number.isFinite(page)).map(Number) : [],
+        refused: pageList(row.ocr?.refused),
         unavailable: row.ocr?.unavailable === true,
+        ...readOcrHandOff(row.ocr),
       },
     } : {}),
   };
+}
+
+/** A stored list of 1-based pages, keeping only what is one. */
+function pageList(stored: unknown): number[] {
+  return Array.isArray(stored)
+    ? stored.filter((page) => Number.isInteger(page) && page > 0).map(Number)
+    : [];
+}
+
+/**
+ * What a stored checkpoint says about recognition handed between isolates.
+ * Each part is read on its own terms and an unreadable part is absent, never
+ * repaired — an absent raster is a page the parsing isolate locates again.
+ */
+function readOcrHandOff(stored: ImportCheckpoint['ocr'] | undefined): Partial<NonNullable<ImportCheckpoint['ocr']>> {
+  const out: Partial<NonNullable<ImportCheckpoint['ocr']>> = {};
+  const rasters = stored?.rasters;
+  if (rasters && typeof rasters === 'object' && !Array.isArray(rasters)) {
+    const kept: Record<string, ScanRasterLocation> = {};
+    for (const [key, value] of Object.entries(rasters)) {
+      const location = readScanRasterLocation(value);
+      if (location && String(location.page) === key) kept[key] = location;
+    }
+    if (Object.keys(kept).length) out.rasters = kept;
+  }
+  const begun = pageList(stored?.begun);
+  if (begun.length) out.begun = begun;
+  const lost = pageList(stored?.lost);
+  if (lost.length) out.lost = lost;
+  return out;
 }
 
 /** The recognised pages a checkpoint holds, as the recogniser's own map. */
@@ -203,12 +260,16 @@ export function checkpointPages(
   return out;
 }
 
-/** Pages this checkpoint says not to ask for again. */
+/**
+ * Pages this checkpoint says not to ask for again: read, refused, or — for
+ * the rest of this attempt — begun by an isolate that never reported back.
+ */
 export function checkpointSettledPages(
   checkpoint: ImportCheckpoint | null | undefined,
 ): Set<number> {
   const settled = new Set<number>(checkpointPages(checkpoint).keys());
   for (const page of checkpoint?.ocr?.refused ?? []) settled.add(page);
+  for (const page of checkpoint?.ocr?.lost ?? []) settled.add(page);
   return settled;
 }
 
@@ -283,21 +344,109 @@ export function mayContinue(
 ): boolean {
   if (!checkpoint) return true;
   if (checkpoint.ocr?.unavailable) return false;
+  // A page whose isolate never reported back ends recognition for the attempt:
+  // one such loss is one killed worker, and the next would be another.
+  if (checkpoint.ocr?.lost?.length) return false;
   return checkpoint.continuations < MAX_IMPORT_CONTINUATIONS;
 }
 
 /**
  * A FRESH ATTEMPT at an upload, from the checkpoint a previous one left.
  *
- * The recognised pages are kept, because they are facts about the bytes. The
- * crossing count starts again, because it bounds an ATTEMPT. And the picture
- * hand-off is dropped, because it names a read a previous attempt DECIDED —
- * its rows, its strategy — and a fresh attempt decides for itself: a stale
- * hand-off adopted here would write yesterday's decision on today's request.
+ * The recognised pages are kept, because they are facts about the bytes, and
+ * so are the pages refused for a reason about the page. The crossing count
+ * starts again, because it bounds an ATTEMPT. And the picture hand-off is
+ * dropped, because it names a read a previous attempt DECIDED — its rows, its
+ * strategy — and a fresh attempt decides for itself: a stale hand-off adopted
+ * here would write yesterday's decision on today's request.
+ *
+ * So is everything recognition learned about the ATTEMPT rather than the
+ * page: where the owed pictures were located (the fresh attempt's own parse
+ * locates them again), which pages were begun or lost, and whether the
+ * recogniser was available — a statement about a deployment on a day, which
+ * a person pressing "Read again" is entitled to have asked again.
  */
 export function freshAttempt(checkpoint: ImportCheckpoint): ImportCheckpoint {
   const { pictures: _dropped, ...rest } = checkpoint;
-  return { ...rest, continuations: 0 };
+  if (!rest.ocr) return { ...rest, continuations: 0 };
+  const { rasters: _rasters, begun: _begun, lost: _lost, ...ocr } = rest.ocr;
+  return { ...rest, continuations: 0, ocr: { ...ocr, unavailable: false } };
+}
+
+/**
+ * Record where each owed page's picture is, for the isolates that will
+ * recognise them. Replaces what an earlier parse of this attempt recorded:
+ * the locations are a fact about these bytes, and the latest is the whole of it.
+ */
+export function withScanRasters(
+  checkpoint: ImportCheckpoint, locations: readonly ScanRasterLocation[],
+): ImportCheckpoint {
+  const ocr = checkpoint.ocr ?? { pages: {}, refused: [], unavailable: false };
+  const rasters: Record<string, ScanRasterLocation> = {};
+  for (const location of locations) rasters[String(location.page)] = location;
+  return { ...checkpoint, ocr: { ...ocr, rasters } };
+}
+
+/**
+ * The located pages still owed a recognition, in page order: located, and
+ * neither read, refused nor lost.
+ */
+export function scanRastersOwed(
+  checkpoint: ImportCheckpoint | null | undefined,
+): ScanRasterLocation[] {
+  const settled = checkpointSettledPages(checkpoint);
+  return Object.values(checkpoint?.ocr?.rasters ?? {})
+    .filter((location) => !settled.has(location.page))
+    .sort((a, b) => a.page - b.page);
+}
+
+/** Record that this isolate is about to begin recognising these pages. */
+export function withRecognitionBegun(
+  checkpoint: ImportCheckpoint, pages: readonly number[],
+): ImportCheckpoint {
+  const ocr = checkpoint.ocr ?? { pages: {}, refused: [], unavailable: false };
+  return { ...checkpoint, ocr: { ...ocr, begun: [...new Set([...(ocr.begun ?? []), ...pages])] } };
+}
+
+/**
+ * The pass is over: every page it began is read, refused, or put back for a
+ * successor. Nothing begun remains to be mistaken for a lost one.
+ */
+export function withRecognitionEnded(checkpoint: ImportCheckpoint): ImportCheckpoint {
+  if (!checkpoint.ocr?.begun?.length) return checkpoint;
+  const { begun: _ended, ...ocr } = checkpoint.ocr;
+  return { ...checkpoint, ocr };
+}
+
+/**
+ * Pages whose recognition an isolate began and never reported: begun, and
+ * neither read nor refused. The only way to leave one is for the worker to
+ * die mid-page — which on the hosted runtime means the page cost more than an
+ * invocation may spend.
+ */
+export function lostRecognitions(
+  checkpoint: ImportCheckpoint | null | undefined,
+): number[] {
+  const done = new Set<number>(checkpointPages(checkpoint).keys());
+  for (const page of checkpoint?.ocr?.refused ?? []) done.add(page);
+  for (const page of checkpoint?.ocr?.lost ?? []) done.add(page);
+  return (checkpoint?.ocr?.begun ?? []).filter((page) => !done.has(page));
+}
+
+/**
+ * Settle pages whose isolate never reported back, and end recognition for the
+ * attempt. NEVER RECOGNISED AGAIN in it: a page that killed one worker is one
+ * the next worker would die on too, and the recovery that restarts a dead
+ * import is bounded — so a page recognised twice is how a document with a few
+ * heavy scans would end up read by nobody. Not a refusal of the page: a fresh
+ * attempt asks again (`freshAttempt`).
+ */
+export function withRecognitionLost(
+  checkpoint: ImportCheckpoint, pages: readonly number[],
+): ImportCheckpoint {
+  const ocr = checkpoint.ocr ?? { pages: {}, refused: [], unavailable: false };
+  const { begun: _ended, ...rest } = ocr;
+  return { ...checkpoint, ocr: { ...rest, lost: [...new Set([...(ocr.lost ?? []), ...pages])] } };
 }
 
 /** The read a previous invocation of this attempt handed on, or null. */

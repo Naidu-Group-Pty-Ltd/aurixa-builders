@@ -1125,3 +1125,109 @@ needs measuring on the hosted runtime before a builder's scan depends on it.
 Reader 18 is what reaches the stored document. The sweep re-reads the one
 upload version 17 could not finish, and every other document reads
 byte-identically.
+
+## 18 · The scanned page, recognised apart from the parse
+
+**The defect, observed this time rather than inferred.** §17 inferred that a
+scan was declining for the figure's reason. On 23 September 2026 an isolated
+production proof asked (`scripts/ops/stock-scan-proof.mjs`, run 35877700148):
+a fully scanned brochure uploaded through the portal's own path was refused
+`pdf_no_text_layer` in 10,682 ms, and the one line the recogniser wrote was
+`ocr engine unavailable { engine: "tesseract.js", detail: "Not implemented:
+Worker.prototype.constructor" }`. The deployed functions resolve no import map
+(`import_map: false` on all 27), so production loads `tesseract.js` from esm.sh
+and the runtime refuses the worker it asks for. None of the 51 uploads in
+production carried a recognised page: no scan had ever been read there.
+
+**Why the gate could not see it, and what it does now.** The Deno CLI starts
+workers. `scripts/stock-acceptance/hostedRuntime.ts` refuses both kinds a
+library can ask for, the web `Worker` and `node:worker_threads`, with the
+runtime's own words. It is imported first by the gate, the CPU profile and the
+latency script. The library is not replaced, so an old path run through the gate
+fails in the library's own constructor, the way it fails in production. A
+worker requested by anything fails the gate.
+
+**The fixture came first.** `heldout-scanned-brochure` is three pages of pixels
+with the facts spread across all three: identity and price on the cover,
+counts and areas on the specification sheet, nothing on the third. Its bytes
+are the production proof's (`scripts/ops/fixtures/`). On the old path under
+the hosted refusal the gate failed with 10 failures and 18 refused workers:
+- the brochure produced 0 properties;
+- `mixed-scan-and-text` lost all five fields on its scanned page;
+- the 8l hand-off failed;
+- `scanned-no-text-layer` and `heldout-mixed-scan-multi` produced 0
+  properties, hidden behind their named limits. A `known_limit` can hide a
+  regression unrelated to the limit it names.
+
+**What changed.**
+1. **The engine.** `recogniseScannedPages` opens `openInProcessRecogniser`,
+   the figure reader's engine and model, already pinned and deployed. It sets
+   nothing over the library's own worker defaults, exactly as before.
+   `openRecogniser` and the esm.sh import are deleted.
+2. **Where it runs.** The engine's whole cost is now in the isolate that asks,
+   so that isolate must never be the one that parsed the PDF.
+   `extractPdfPagePhoto` is split into its two halves:
+   - `locatePdfPagePhoto` reads the page and decides which raster it
+     presents, decoding nothing;
+   - `photoAtLocation` makes the picture from the stream alone.
+
+   The parsing isolate locates every owed page and records each stream's
+   offsets and SHA-256 in the checkpoint (`ocr.rasters`,
+   `ocr/scanRaster.pure.ts`). Each owed page is then recognised by an isolate
+   that parses nothing. The document is read by one that recognises nothing.
+   A stored scan of N pages crosses N + 1 times before its pictures are
+   handed on. Eight pages is 9 of the 10 allowed crossings. The one-page
+   allowance and the crossing bound are unchanged.
+3. **Never twice.** A recognition isolate marks its page `begun` before the
+   engine is asked. A mark that is still there when the next isolate arrives
+   means the worker died on the page. That page is settled as `lost` and not
+   asked again, and recognition stops for the attempt. On the hosted runtime,
+   asking again means dying again, and restarting a dead import is limited to
+   three recoveries. A fresh attempt forgets what was true of an attempt:
+   locations, marks, losses, availability. It keeps what is true of the page:
+   the recognised text and page refusals.
+4. **Linked sources.** They cannot be continued (`resumableFromStoredBytes`),
+   so they still recognise where they parse, one page deep, as before. The
+   gate declares this per document (`linked_limit`). It holds the linked
+   read to "never a wrong value" and reports what it left unread on every
+   run.
+5. **The image settler** reads the pages the import recognised (from the
+   checkpoint, bound to the same digest) and never recognises.
+
+**Same text.** The two engines were compared on the same rasters: 14 pages
+across 6 documents, 250–620 ms a sparse page and 4.1–4.7 s a dense one, all
+byte-identical. `builderStockScanRecognisedApart.spec.ts` pins the old
+library's exact text for the fixture's three pages and runs the in-process
+engine against it with every worker refused. It also proves the two halves
+make byte-identical pictures on a real scan and on a flattened page.
+
+Over the whole corpus the gate was run twice more: once on the old engine
+with workers allowed, once on the new code. All 37 documents produced
+identical route-A readings (398 fields, the same verdicts and strategies).
+
+**Measured.**
+- **Gate:** 37 documents, 0 failures, 8 named limits (the linked read is the
+  eighth), 0 generative-model calls, 0 workers requested.
+- **The held-out brochure** takes 9 invocations:
+  - 1 parses twice and recognises nothing;
+  - 2–4 each recognise one page and parse nothing;
+  - 5 reads it;
+  - the rest decode pictures.
+
+  All eleven fields are read.
+- **8l, the stress scan:** 5 pages located by the parse and each recognised
+  exactly once, in 12 crossings.
+- **8n:** a worker killed on page 2 leaves page 2 unrecognised and settled.
+  The import completes with page 1's property, and nothing is invented.
+- **CPU profile, stress corpus (3 iterations, median):**
+  - 0 invocations both parsed and recognised, and 0 parsed and decoded;
+  - never more than one page an invocation;
+  - worst single invocation 4,646 ms, against 5,121;
+  - document class 24,163 ms, against 29,244;
+  - `stress-scanned-pages`: 5 document parses, against 20;
+  - `stress-many-images`: 5, against 28.
+
+**What remains.** A dense page costs 4.1–4.7 s of recognition on this machine,
+and a page is the unit nothing can divide. A page whose recognition alone
+exceeds what one hosted invocation may spend will be killed once. It is then
+settled as lost, and the import finishes with every page read before it.

@@ -7,9 +7,10 @@
  * The question this answers is about a RUNTIME, not a document: when a
  * builder uploads a brochure whose pages are photographs of paper, does the
  * deployed product's text recognition come up on the hosted Supabase Edge
- * Runtime and read them? The acceptance gate cannot answer it. It runs the
- * importer under the Deno CLI, which starts the worker `tesseract.js` runs its
- * engine in, and the hosted runtime is the thing in question.
+ * Runtime and read them? The acceptance gate cannot fully answer it. It now
+ * refuses workers the way this runtime does (`hostedRuntime.ts`), but it runs
+ * under the Deno CLI on another machine, and what an isolate may SPEND here —
+ * the thing a 546 is about — is a property of this runtime alone.
  *
  * So this imports a SAFE fixture — `heldout-scanned-brochure`, three pages of
  * pixels with no text layer, nothing in it any customer's
@@ -141,6 +142,43 @@ async function logLines(table, pattern, fromMs, toMs) {
     return { ok: true, lines: (body?.result ?? []).map((row) => String(row.event_message ?? '')) };
   } catch (error) {
     return { ok: false, lines: [], why: String(error?.message ?? error).slice(0, 160) };
+  }
+}
+
+/**
+ * Every invocation of one function in the window: its status, the runtime's
+ * own execution time and the deployed version that served it.
+ */
+async function edgeInvocations(fn, fromMs, toMs) {
+  const sql = 'select function_edge_logs.timestamp, response.status_code as status, '
+    + 'm.execution_time_ms, m.version from function_edge_logs '
+    + 'cross join unnest(metadata) as m '
+    + 'cross join unnest(m.response) as response '
+    + `where regexp_contains(event_message, ${sqlLit(fn)}) `
+    + 'order by function_edge_logs.timestamp asc limit 200';
+  const params = new URLSearchParams({
+    sql,
+    iso_timestamp_start: new Date(fromMs).toISOString(),
+    iso_timestamp_end: new Date(toMs).toISOString(),
+  });
+  try {
+    const response = await fetch(
+      `https://api.supabase.com/v1/projects/${PROJECT_REF}/analytics/endpoints/logs.all?${params}`,
+      { headers: { Authorization: `Bearer ${ACCESS_TOKEN}` } },
+    );
+    const text = await response.text();
+    if (!response.ok) return { ok: false, rows: [], why: `HTTP ${response.status}: ${text.slice(0, 160)}` };
+    const body = JSON.parse(text);
+    if (body?.error) return { ok: false, rows: [], why: JSON.stringify(body.error).slice(0, 160) };
+    return {
+      ok: true,
+      rows: (body?.result ?? []).map((row) => ({
+        status: row.status ?? null, execution_time_ms: row.execution_time_ms ?? null,
+        version: row.version ?? null,
+      })),
+    };
+  } catch (error) {
+    return { ok: false, rows: [], why: String(error?.message ?? error).slice(0, 160) };
   }
 }
 
@@ -433,6 +471,19 @@ try {
     JSON.stringify(recognisedPages) === JSON.stringify(Array.from({ length: FIXTURE.pages }, (_, i) => i + 1)),
     `recognised ${JSON.stringify(recognisedPages)}, refused ${JSON.stringify(ocr?.refused ?? [])}`,
     { runtime: true });
+  /*
+   * AND NONE OF THEM TWICE. Each recognition adds one to the import's
+   * `ocr_pages` and one page to the checkpoint, and pages are never removed —
+   * so the two agree exactly when no page was paid for twice.
+   */
+  record('4: no page was recognised twice, and none was lost',
+    Number(timings.ocr_pages ?? -1) === recognisedPages.length
+      && Number(timings.ocr_attempted ?? -1) === recognisedPages.length
+      && !(ocr?.lost ?? []).length && !(ocr?.begun ?? []).length,
+    `ocr_pages ${timings.ocr_pages ?? '—'}, ocr_attempted ${timings.ocr_attempted ?? '—'}, `
+    + `rasterisations ${timings.rasterisations ?? '—'}, located ${timings.ocr_located ?? '—'}, `
+    + `lost ${JSON.stringify(ocr?.lost ?? [])}`,
+    { runtime: true });
 
   // --- 5. THE PROPERTY THE DOCUMENT STATES ------------------------------
   const items = await itemsOf(proofId);
@@ -466,13 +517,39 @@ try {
     console.log(`  note  the engine log could not be read: ${engineLog.why}`);
   }
   if (functionLog.ok) {
-    const handOffs = functionLog.lines.filter((line) => line.includes('import handed to a successor'));
-    const recognisedSeq = handOffs.map((line) => Number((/recognised:\s*(\d+)/.exec(line) ?? [])[1] ?? NaN));
-    summary.handOffs = handOffs.map((line) => line.replace(/\s+/g, ' ').slice(0, 300));
-    console.log(`  log  hand-offs for this upload: ${handOffs.length}, recognised after each: ${JSON.stringify(recognisedSeq)}`);
+    /*
+     * RECOGNITION'S OWN HAND-OFFS, and only those: the reader's picture
+     * hand-off that follows them is a different crossing, carries no page
+     * count, and a figure line's `figures_recognised` would read as one.
+     */
+    const allHandOffs = functionLog.lines.filter((line) => line.includes('import handed to a successor'));
+    const handOffs = allHandOffs.filter((line) => /reason:\s*["']ocr_outstanding["']/.test(line));
+    const numberIn = (line, key) => Number((new RegExp(`[^_a-z]${key}:\\s*(\\d+)`).exec(line) ?? [])[1] ?? NaN);
+    const recognisedSeq = handOffs.map((line) => numberIn(line, 'recognised'));
+    const hereSeq = handOffs.map((line) => numberIn(line, 'recognised_here'));
+    const ocrMs = handOffs.map((line) => numberIn(line, 'ocr_ms')).filter(Number.isFinite);
+    summary.handOffs = allHandOffs.map((line) => line.replace(/\s+/g, ' ').slice(0, 300));
+    summary.recognitionMsPerIsolate = ocrMs;
+    console.log(`  log  recognition hand-offs: ${handOffs.length}, recognised after each: `
+      + `${JSON.stringify(recognisedSeq)}, recognised in each: ${JSON.stringify(hereSeq)}, `
+      + `recognition ms in each: ${JSON.stringify(ocrMs)}`);
     record('6: each crossing recognised a page none before it had',
-      recognisedSeq.every((n, i) => Number.isFinite(n) && (i === 0 || n > recognisedSeq[i - 1])),
+      recognisedSeq.length > 0
+      && recognisedSeq.every((n, i) => Number.isFinite(n) && (i === 0 || n > recognisedSeq[i - 1])),
       JSON.stringify(recognisedSeq), { runtime: true });
+    /*
+     * THE ISOLATE THAT PARSED THE DOCUMENT RECOGNISED NOTHING, AND EVERY ONE
+     * AFTER IT ONE PAGE. The first hand-off is the parse's — it located the
+     * pages, so it carries no `recognised_here` — and each after it is a
+     * recognition isolate's, which parses nothing (`runImport.ts`).
+     */
+    record('6: the isolate that parsed the document recognised none of it, and each after it one page',
+      handOffs.length === FIXTURE.pages + 1
+      && recognisedSeq[0] === 0 && !Number.isFinite(hereSeq[0])
+      && hereSeq.slice(1).every((n) => n === 1),
+      `${handOffs.length} recognition hand-off(s): recognised ${JSON.stringify(recognisedSeq)}, `
+      + `in each ${JSON.stringify(hereSeq)}`,
+      { runtime: true });
   } else {
     console.log(`  note  the function log could not be read: ${functionLog.why}`);
   }
@@ -483,6 +560,21 @@ try {
       `builder-portal-stock answered ${JSON.stringify(statuses)}`, { runtime: true });
   } else {
     console.log(`  note  the edge log could not be read: ${edgeLog.why}`);
+  }
+  /*
+   * WHAT EACH INVOCATION TOOK, AND WHICH DEPLOYED BUILD SERVED IT — read, not
+   * asserted: the runtime's own execution time per call, and the function
+   * version, so the proof says which build it proved.
+   */
+  const invocations = await edgeInvocations('builder-portal-stock', windowStart, windowEnd);
+  if (invocations.ok) {
+    summary.invocations = invocations.rows;
+    console.log(`  log  builder-portal-stock invocations: ${invocations.rows.length}`);
+    for (const row of invocations.rows) {
+      console.log(`       ${row.status}  ${row.execution_time_ms} ms  version ${row.version}`);
+    }
+  } else {
+    console.log(`  note  the invocation log could not be read: ${invocations.why}`);
   }
 
   // --- 7. NOTHING STRANDED, AND NOTHING MOVES AFTERWARDS ------------------

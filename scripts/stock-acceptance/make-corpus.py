@@ -1410,6 +1410,13 @@ def _m11(c):
              # NO PHOTOGRAPH: every page is a photograph OF PAPER, so there is no
              # facade in this document and nothing may designate one.
              image=None,
+             # AND A LINK TO IT READS PAGE 1 ALONE, which is the product's
+             # rule rather than a gap in it: a linked source is not continued
+             # (`resumableFromStoredBytes`), so it is recognised where it was
+             # parsed, one page deep. The gate holds that read to "never a
+             # wrong value" and reports what it left unread on every run.
+             linked_limit='a linked source is not continued, so a scan is recognised '
+                          'one page deep and the pages after the first are not read',
              refusal_must_not_be=['ai_budget_exhausted', 'assisted_reader_unavailable',
                                   'assisted_reader_refused', 'assisted_reader_timeout',
                                   'assisted_reader_invalid_response']))
