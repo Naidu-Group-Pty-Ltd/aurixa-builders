@@ -28,7 +28,15 @@
  */
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
 import { runStockImport } from '../../supabase/functions/_shared/builderStock/runImport.ts';
-import { recordImportCounts } from '../../supabase/functions/_shared/builderStock/recordImportOutcome.ts';
+import { isImportContinuation } from '../../supabase/functions/_shared/builderStock/importContinuation.pure.ts';
+import { continueStockImport } from '../../supabase/functions/_shared/builderStock/continueImport.ts';
+import { claimImport, releaseThenContinue } from '../../supabase/functions/_shared/builderStock/importClaim.ts';
+import { MAX_IMPORT_CONTINUATIONS } from '../../supabase/functions/_shared/builderStock/importCheckpoint.pure.ts';
+import {
+  EXPENSIVE_SPEND_CEILING_MS, expensiveSpendMs,
+} from '../../supabase/functions/_shared/builderStock/importResumeBudget.pure.ts';
+import { importOutcomeColumns } from '../../supabase/functions/_shared/builderStock/recordImportOutcome.ts';
+import { STOCK_LIST_STORAGE_PREFIX, safeObjectName } from '../../supabase/functions/_shared/builderStock/fileTypes.pure.ts';
 import {
   IMPORT_STAGES, importWorkClassOf, ledgerTotalMs,
   stageMsKey, type ImportStageLedger, type ImportWorkClass,
@@ -65,12 +73,41 @@ async function seedOrganisation(label: string) {
   return { id: org.id, name: label, userId: user.id };
 }
 
-/** One import, exactly as the portal runs it, returning the stage ledger. */
+/**
+ * What ONE invocation spent: the row's merged ledger after it, less the
+ * merged ledger before it. The row is the import's running total across
+ * isolates (`mergeLedgers`), so the difference is exactly this worker's own
+ * account — the one the budget reads.
+ */
+function spentBetween(before: ImportStageLedger, after: ImportStageLedger): ImportStageLedger {
+  const delta: ImportStageLedger = {};
+  for (const [key, value] of Object.entries(after)) {
+    if (typeof value !== 'number' || key === 'total_ms') continue;
+    const was = typeof before[key] === 'number' ? before[key] as number : 0;
+    if (value - was > 0) delta[key] = value - was;
+  }
+  return delta;
+}
+
+/**
+ * One import, exactly as the product runs a FILE: the portal's claim,
+ * `runStockImport` with `resumableFromStoredBytes`, `finishImport`'s
+ * release-then-dispatch on a hand-off, and then the dispatched successor
+ * `continueStockImport` until the import stops handing itself on. Every
+ * invocation's own spend is kept, because "no single invocation spends past
+ * the ceiling" is a statement about each of them, not about their sum.
+ *
+ * The first version of this profiler predated the hand-off: it called the
+ * importer the way a LINKED source is called, which never hands off, so on a
+ * long scan it would have measured a degraded read rather than the import a
+ * customer's upload performs.
+ */
 async function profile(entry: Entry, iteration: number) {
   const org = await seedOrganisation(
     `Profile ${entry.name} #${iteration} ${crypto.randomUUID().slice(0, 8)}`);
   const bytes = await Deno.readFile(`${corpusDir}/${entry.path}`);
-  const storagePath = `${org.id}/profile-${crypto.randomUUID()}.pdf`;
+  // Where the portal stores it: a successor refuses any path outside the prefix.
+  const storagePath = `${STOCK_LIST_STORAGE_PREFIX}${org.id}/${crypto.randomUUID()}/${safeObjectName(entry.filename)}`;
   const up = await db.storage.from(BUCKET)
     .upload(storagePath, bytes, { contentType: 'application/pdf', upsert: true });
   if (up.error) throw new Error(`storage: ${up.error.message}`);
@@ -81,36 +118,72 @@ async function profile(entry: Entry, iteration: number) {
   }).select('id, original_filename').single();
   if (error) throw new Error(`upload row: ${error.message}`);
 
-  const startedAt = performance.now();
-  const result = await runStockImport({
-    supabase: db, organisationId: org.id, organisationName: org.name,
-    builderUserId: org.userId,
-    upload: { id: upload.id, original_filename: upload.original_filename },
-    bytes, sourceKind: 'file',
-  });
-  const wallMs = performance.now() - startedAt;
-  if (result.ok) {
-    await recordImportCounts(db, {
-      uploadId: upload.id, organisationId: org.id, summary: result.summary,
-    });
-  }
-
   /*
    * READ THE LEDGER BACK OUT OF THE ROW rather than from the return value.
    * The row is what a production investigation has, and reading anything else
    * would measure a path production does not use — the infidelity this
    * harness keeps finding in itself.
    */
-  const { data: row } = await db.from('builder_stock_uploads')
-    .select('stage_timings').eq('id', upload.id).maybeSingle();
+  const ledgerNow = async (): Promise<ImportStageLedger> => {
+    const { data: row } = await db.from('builder_stock_uploads')
+      .select('stage_timings').eq('id', upload.id).maybeSingle();
+    return (row?.stage_timings ?? {}) as ImportStageLedger;
+  };
+  const invocations: Array<{ expensiveMs: number; wallMs: number; ocrPages: number }> = [];
+  let seen: ImportStageLedger = {};
+  const account = async (wallMs: number) => {
+    const now = await ledgerNow();
+    const own = spentBetween(seen, now);
+    invocations.push({
+      expensiveMs: expensiveSpendMs(own), wallMs,
+      ocrPages: Number(own.ocr_pages ?? 0),
+    });
+    seen = now;
+  };
+
+  // `process_upload`: claim, then mark the row as being read.
+  const portal = await claimImport(db, upload.id);
+  await db.from('builder_stock_uploads').update({
+    status: 'parsing', processing_started_at: new Date().toISOString(),
+  }).eq('id', upload.id);
+  const startedAt = performance.now();
+  let t = performance.now();
+  const result = await runStockImport({
+    supabase: db, organisationId: org.id, organisationName: org.name,
+    builderUserId: org.userId,
+    upload: { id: upload.id, original_filename: upload.original_filename },
+    bytes, sourceKind: 'file',
+    resumableFromStoredBytes: true,
+  });
+  await account(performance.now() - t);
+  const claim = portal.ok ? portal.claim : null;
+  let ok = result.ok;
+  let code: string | null = result.ok ? null : String((result as { code?: string }).code ?? '');
+  if (isImportContinuation(result)) {
+    await releaseThenContinue(db, claim, upload.id);
+    // THE DISPATCHER'S PART: every successor, in turn, as production runs them.
+    for (let n = 0; n <= MAX_IMPORT_CONTINUATIONS; n += 1) {
+      t = performance.now();
+      const next = await continueStockImport(db, upload.id);
+      await account(performance.now() - t);
+      if (next.state !== 'continued') {
+        ok = next.state === 'completed';
+        code = ok ? null : next.state;
+        break;
+      }
+    }
+  } else {
+    // `finishImport`'s own write, for an import that finished where it started.
+    if (result.ok) {
+      await db.from('builder_stock_uploads')
+        .update(importOutcomeColumns(result, null)).eq('id', upload.id);
+    }
+    await claim?.release();
+  }
+  const wallMs = performance.now() - startedAt;
   const { count: properties } = await db.from('builder_stock_items')
     .select('id', { count: 'exact', head: true }).eq('upload_id', upload.id);
-  return {
-    ok: result.ok,
-    code: result.ok ? null : String((result as { code?: string }).code ?? ''),
-    ledger: (row?.stage_timings ?? {}) as ImportStageLedger,
-    wallMs, properties: properties ?? 0,
-  };
+  return { ok, code, ledger: await ledgerNow(), wallMs, properties: properties ?? 0, invocations };
 }
 
 const pad = (s: string, n: number) => s.length >= n ? s : s + ' '.repeat(n - s.length);
@@ -121,6 +194,7 @@ console.log(`cpu-profile: ${ITERATIONS} iteration(s) per document, corpus ${corp
 const classTotals: Record<ImportWorkClass, number[]> = {
   document: [], raster: [], metadata: [],
 };
+let worstInvocation = 0;
 
 for (const entry of manifest) {
   const runs: Array<Awaited<ReturnType<typeof profile>>> = [];
@@ -150,7 +224,19 @@ for (const entry of manifest) {
   }
   const counters = ['document_parses', 'rasterisations', 'ocr_pages', 'images_extracted']
     .map((key) => `${key}=${ledger[key] ?? 0}`).join('  ');
-  console.log(`    ${counters}\n`);
+  console.log(`    ${counters}`);
+  /*
+   * AND EACH INVOCATION ON ITS OWN, which is what the ceiling governs. The
+   * budget is asked before a step, so the most any invocation may spend is
+   * the ceiling plus one step — and a number past that is a finding.
+   */
+  const perInvocation = median.invocations
+    .map((inv) => `${inv.expensiveMs.toFixed(0)}${inv.ocrPages ? `(${inv.ocrPages}p)` : ''}`)
+    .join(' · ');
+  const worst = Math.max(0, ...median.invocations.map((inv) => inv.expensiveMs));
+  worstInvocation = Math.max(worstInvocation, worst);
+  console.log(`    invocations ${median.invocations.length}   expensive ms each: ${perInvocation}`
+    + `   worst ${worst.toFixed(0)} (ceiling ${EXPENSIVE_SPEND_CEILING_MS})\n`);
 }
 
 console.log('class totals across the corpus (ms, median run each):');
@@ -159,3 +245,5 @@ for (const [name, values] of Object.entries(classTotals) as Array<[ImportWorkCla
   const worst = values.length ? Math.max(...values) : 0;
   console.log(`  ${pad(name, 10)} total ${ms(sum)}   worst single document ${ms(worst)}`);
 }
+console.log(`  worst single INVOCATION, document + raster: ${ms(worstInvocation)}`
+  + `   (ceiling ${EXPENSIVE_SPEND_CEILING_MS} + at most one step)`);

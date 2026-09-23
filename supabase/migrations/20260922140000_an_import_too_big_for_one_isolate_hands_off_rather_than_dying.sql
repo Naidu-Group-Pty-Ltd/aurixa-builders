@@ -40,8 +40,10 @@
 -- invocation that runs out of allowance dispatches its own successor before it
 -- returns, the same way `builder_stock_kick_image_work` dispatches settlers.
 -- The tick exists for the invocation that died without being able to say so —
--- an out-of-memory abort, a host that vanished — and it turns a fifteen-minute
--- gap into a sixty-second one for that case alone.
+-- an out-of-memory abort, a host that vanished — and for the hand-off whose
+-- successor never arrived, and it turns a fifteen-minute gap into a minute or
+-- two for those cases alone. It also has to be RUNNING when they happen, so a
+-- claim arms it and every import in flight keeps it alive.
 --
 -- ----------------------------------------------------------------------------
 -- WHY A RELEASE CAN NEVER REWIND
@@ -59,6 +61,7 @@ ALTER TABLE public.builder_stock_uploads
   ADD COLUMN IF NOT EXISTS import_checkpoint jsonb,
   ADD COLUMN IF NOT EXISTS import_claim_token text,
   ADD COLUMN IF NOT EXISTS import_claim_until timestamptz,
+  ADD COLUMN IF NOT EXISTS import_released_at timestamptz,
   ADD COLUMN IF NOT EXISTS import_recovery_attempts integer NOT NULL DEFAULT 0;
 
 COMMENT ON COLUMN public.builder_stock_uploads.import_checkpoint IS
@@ -69,6 +72,8 @@ COMMENT ON COLUMN public.builder_stock_uploads.import_recovery_attempts IS
   'How many times the recovery sweep has restarted this import. Bounded, because an import that dies three times is not one more dispatch away from working, and a minute-tick that keeps re-dispatching it is a loop nobody is watching. Reset when a person starts the import again.';
 COMMENT ON COLUMN public.builder_stock_uploads.import_claim_until IS
   'When the current import claim expires. Invocation-sized, never generous: a lease is how long a DEAD worker blocks the work, and lengthening it is the opposite of a fix.';
+COMMENT ON COLUMN public.builder_stock_uploads.import_released_at IS
+  'When this import was last let go of: a worker releasing its claim, or a hand-off dispatching its successor. Beside a NULL claim token on a row still being read, and newer than processing_started_at, it is the only durable evidence that THIS attempt is owed a successor nobody has taken — a dispatch that was lost, or a successor that never started. Older than the attempt, it belongs to a previous import and means nothing, which is what stops recovery starting a second reader beside a re-read that holds no claim.';
 
 -- Only rows that are actually claimed. The table is small; this exists so the
 -- recovery scan below never reads the whole table on a quiet deployment.
@@ -110,6 +115,24 @@ BEGIN
      AND (import_claim_until IS NULL OR import_claim_until < now());
 
   GET DIAGNOSTICS v_claimed = ROW_COUNT;
+
+  /*
+   * AN IMPORT THAT CAN NEED RECOVERING ARMS THE THING THAT RECOVERS IT.
+   *
+   * The minute tick unschedules itself when it finds nothing to do, and only
+   * an upload INSERT schedules it again. A re-read of an existing list inserts
+   * nothing, so without this a worker that died holding the claim would be
+   * waiting on a tick that is not running. Idempotent, and never allowed to
+   * fail the claim: a tick that cannot be scheduled costs recovery, while a
+   * claim that fails costs the import.
+   */
+  IF v_claimed THEN
+    BEGIN
+      PERFORM public.ensure_builder_stock_settlement_scheduled();
+    EXCEPTION WHEN OTHERS THEN
+      NULL;
+    END;
+  END IF;
   RETURN v_claimed;
 END;
 $$;
@@ -136,7 +159,11 @@ BEGIN
 
   UPDATE public.builder_stock_uploads
      SET import_claim_token = NULL,
-         import_claim_until = NULL
+         import_claim_until = NULL,
+         -- WHEN IT WAS LET GO, which is lease bookkeeping and not progress.
+         -- It is what lets recovery tell an import whose successor never
+         -- arrived from one no worker ever held. See `import_released_at`.
+         import_released_at = now()
    WHERE id = p_upload_id
      -- THE WHOLE SAFETY PROPERTY. A worker whose lease already expired, and
      -- whose work a successor has already taken over, names a token the row no
@@ -168,6 +195,26 @@ BEGIN
   IF p_upload_id IS NULL THEN
     RETURN false;
   END IF;
+  /*
+   * THE MOMENT IT WAS HANDED ON, AND THE TICK THAT STANDS BEHIND IT.
+   *
+   * A claimed worker's release already stamps `import_released_at`, but
+   * "Read again" hands off holding no claim, so nothing else would record
+   * that this attempt is now owed a successor — and a re-read inserts no
+   * upload, so nothing else would schedule the tick that recovers it if this
+   * dispatch is lost. Both are written BEFORE the dispatch, because the
+   * dispatch is the part that can fail.
+   */
+  UPDATE public.builder_stock_uploads
+     SET import_released_at = now()
+   WHERE id = p_upload_id
+     AND status = 'parsing'
+     AND deleted_at IS NULL;
+  BEGIN
+    PERFORM public.ensure_builder_stock_settlement_scheduled();
+  EXCEPTION WHEN OTHERS THEN
+    NULL;
+  END;
   BEGIN
     PERFORM public.cron_invoke_signed_function(
       'builder-portal-stock',
@@ -189,7 +236,29 @@ COMMENT ON FUNCTION public.builder_stock_dispatch_import_continuation(uuid) IS
 -- ----------------------------------------------------------------------------
 -- RECOVERY, WHICH IS NOT TRANSPORT
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION public.builder_stock_stalled_imports()
+/*
+ * TWO QUESTIONS, AND KEEPING THEM APART IS THE POINT.
+ *
+ * "Must the tick stay alive?" is asked of every import a worker has held and
+ * not finished — the one being read right now included — because a worker
+ * can die at any moment and the tick must already be running when it does.
+ * "Which imports are owed a worker now?" is asked only of the two ways an
+ * import can be left with nobody reading it. Folding the first into the
+ * second is how the tick unscheduled itself under a live successor: the count
+ * saw only what had ALREADY stalled, so a quiet deployment stopped the tick
+ * mid-import and the successor's death then had nothing to recover it.
+ *
+ * AND THE SECOND QUESTION HAS TWO ANSWERS. The first version of this migration
+ * knew only one — a worker that died HOLDING the claim — and the other was
+ * proved by effect against the real functions before it shipped: a hand-off
+ * RELEASES the claim and then dispatches, so a dispatch that is lost (pg_net,
+ * the vault, a successor that fails to boot) leaves a row reading `parsing`
+ * with no token at all. The count read 0, recovery dispatched 0, and the row
+ * would have said "still reading" until somebody pressed Read again fifteen
+ * minutes later — `RECOVERABLE_UPLOAD_STATUSES` is `imported` alone, so the
+ * fifteen-minute sweep never touches a `parsing` row.
+ */
+CREATE OR REPLACE FUNCTION public.builder_stock_imports_in_flight()
 RETURNS bigint
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path TO 'public', 'pg_catalog'
@@ -198,17 +267,66 @@ RETURNS bigint
     FROM public.builder_stock_uploads u
    WHERE u.deleted_at IS NULL
      AND u.status = 'parsing'
-     -- IT WAS CLAIMED AND THE CLAIM IS GONE. That is what "a worker died"
-     -- looks like, definitively, and it is a far better signal than the
-     -- fifteen-minute clock `parseIsAbandoned` has to use — a clock cannot
-     -- tell a running import from a dead one, and a lease can.
-     AND u.import_claim_token IS NOT NULL
-     AND (u.import_claim_until IS NULL OR u.import_claim_until < now())
+     -- A WORKER HAS HELD THIS ATTEMPT: claimed since it began, or let go
+     -- since it began. See `builder_stock_imports_owed_recovery` for why a
+     -- claim or a release from an EARLIER attempt counts for nothing.
+     AND ((u.import_claim_token IS NOT NULL
+           AND u.import_claim_until > u.processing_started_at)
+          OR u.import_released_at >= u.processing_started_at)
      AND u.import_recovery_attempts < 3;
 $$;
 
-COMMENT ON FUNCTION public.builder_stock_stalled_imports() IS
-  'Imports that were claimed, whose claim is gone, and whose status still says they are being read: a worker died without handing off. Counted so the minute tick stays armed while one exists, and bounded so a document that dies every time cannot loop.';
+COMMENT ON FUNCTION public.builder_stock_imports_in_flight() IS
+  'Imports a worker has held and not finished: being read now, waiting for a successor, or abandoned by a worker that died. Counted into the minute tick''s keep-alive so recovery is already running when any of them needs it, and bounded so a document that dies every time cannot hold the tick for ever.';
+
+CREATE OR REPLACE FUNCTION public.builder_stock_imports_owed_recovery()
+RETURNS SETOF uuid
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path TO 'public', 'pg_catalog'
+    AS $$
+  SELECT u.id
+    FROM public.builder_stock_uploads u
+   WHERE u.deleted_at IS NULL
+     AND u.status = 'parsing'
+     -- BOUNDED. An import that has died three times is not one more dispatch
+     -- away from working.
+     AND u.import_recovery_attempts < 3
+     /*
+      * ONLY WHAT HAPPENED IN THIS ATTEMPT. A row keeps its claim columns from
+      * every import it has ever had, and "Read again" (`reprocess_upload`)
+      * deliberately takes no claim — so a re-read in progress is `parsing`
+      * with no token and the PREVIOUS import's release still on the row.
+      * Unscoped, the second arm below read that as a hand-off nobody took and
+      * would have started a second reader beside the live one. Every path
+      * that sets `parsing` stamps `processing_started_at` in the same write,
+      * and a continuation deliberately never refreshes it, so "since the
+      * attempt began" is exactly "belongs to this import".
+      */
+     AND (
+       -- A WORKER DIED HOLDING IT. Claimed in this attempt, and the lease ran
+       -- out: what "a worker died" looks like definitively, and a far better
+       -- signal than the fifteen-minute clock `parseIsAbandoned` has to use —
+       -- a clock cannot tell a running import from a dead one, and a lease
+       -- can.
+       (u.import_claim_token IS NOT NULL
+         AND u.import_claim_until > u.processing_started_at
+         AND u.import_claim_until < now())
+       OR
+       -- IT WAS LET GO AND NOBODY TOOK IT. Released, or handed on by a
+       -- dispatch, in this attempt, and untaken for longer than any successor
+       -- takes to start: a dispatched successor claims within seconds, so a
+       -- minute without a claim is a dispatch that never arrived. A minute is
+       -- also the tick's own period, so one tick can never race the successor
+       -- it is standing behind.
+       (u.import_claim_token IS NULL
+         AND u.import_released_at >= u.processing_started_at
+         AND u.import_released_at < now() - interval '60 seconds')
+     )
+   ORDER BY u.updated_at;
+$$;
+
+COMMENT ON FUNCTION public.builder_stock_imports_owed_recovery() IS
+  'Imports left with nobody reading them: a worker died holding the claim, or let go of it (a hand-off) and no successor took it within a minute. Read-only, so it can be asked of any deployment; builder_stock_recover_stalled_imports is what acts on it.';
 
 CREATE OR REPLACE FUNCTION public.builder_stock_recover_stalled_imports()
 RETURNS integer
@@ -220,17 +338,8 @@ DECLARE
   v_sent integer := 0;
 BEGIN
   FOR v_row IN
-    SELECT u.id
-      FROM public.builder_stock_uploads u
-     WHERE u.deleted_at IS NULL
-       AND u.status = 'parsing'
-       AND u.import_claim_token IS NOT NULL
-       AND (u.import_claim_until IS NULL OR u.import_claim_until < now())
-       -- BOUNDED. An import that has died three times is not one more
-       -- dispatch away from working, and the fifteen-minute finalisation
-       -- sweep remains behind this as it always was.
-       AND u.import_recovery_attempts < 3
-     ORDER BY u.updated_at
+    SELECT owed.id
+      FROM public.builder_stock_imports_owed_recovery() AS owed(id)
      -- Six, the same ceiling the settler fan-out uses and for the same
      -- reason: a backlog is a reason to work steadily, not to stampede.
      LIMIT 6
@@ -250,7 +359,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION public.builder_stock_recover_stalled_imports() IS
-  'Re-dispatch continuations for imports whose worker died without handing off. RECOVERY, not stage transport: the normal path dispatches its own successor before it returns, and never reaches this.';
+  'Re-dispatch continuations for imports left with nobody reading them — a worker that died holding the claim, or a hand-off whose successor never arrived. RECOVERY, not stage transport: the normal path dispatches its own successor before it returns, and never reaches this.';
 
 REVOKE ALL ON FUNCTION public.builder_stock_claim_import(uuid, text, integer)
   FROM PUBLIC, anon, authenticated;
@@ -264,9 +373,12 @@ REVOKE ALL ON FUNCTION public.builder_stock_dispatch_import_continuation(uuid)
   FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.builder_stock_dispatch_import_continuation(uuid)
   TO service_role;
-REVOKE ALL ON FUNCTION public.builder_stock_stalled_imports()
+REVOKE ALL ON FUNCTION public.builder_stock_imports_in_flight()
   FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.builder_stock_stalled_imports() TO service_role;
+GRANT EXECUTE ON FUNCTION public.builder_stock_imports_in_flight() TO service_role;
+REVOKE ALL ON FUNCTION public.builder_stock_imports_owed_recovery()
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.builder_stock_imports_owed_recovery() TO service_role;
 REVOKE ALL ON FUNCTION public.builder_stock_recover_stalled_imports()
   FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.builder_stock_recover_stalled_imports()
@@ -275,10 +387,10 @@ GRANT EXECUTE ON FUNCTION public.builder_stock_recover_stalled_imports()
 -- ----------------------------------------------------------------------------
 -- THE TICK LEARNS THE ONE NEW KIND OF STALLED WORK
 -- ----------------------------------------------------------------------------
--- Two lines: run the recovery beside the other watchdogs, and count a stalled
--- import into the keep-alive sum so the tick cannot unschedule itself while
--- one is waiting. Everything else in this function is byte-identical to
--- `20260921080000`.
+-- Two lines: run the recovery beside the other watchdogs, and count every
+-- import in flight into the keep-alive sum so the tick cannot unschedule
+-- itself while one might still need it. Everything else in this function is
+-- byte-identical to `20260921080000`.
 
 CREATE OR REPLACE FUNCTION public.settle_builder_stock_marketplace_eligibility_tick()
  RETURNS void
@@ -297,7 +409,7 @@ DECLARE
   v_upload_completion integer;
   v_stranded integer;
   v_blocked integer;
-  v_stalled_imports integer;
+  v_imports_in_flight integer;
   v_dispatched integer;
 BEGIN
   PERFORM public.builder_stock_image_watchdog();
@@ -390,13 +502,15 @@ BEGIN
        SELECT 1 FROM public.builder_stock_items i
         WHERE i.upload_id = u.id AND i.lifecycle_status = 'staged'));
 
-  -- A stalled import keeps the tick alive, for the same reason a stranded
-  -- finalisation does: unscheduling here would leave the one case this
-  -- recovery exists for waiting on the fifteen-minute sweep after all.
-  v_stalled_imports := public.builder_stock_stalled_imports()::integer;
+  -- AN IMPORT IN FLIGHT keeps the tick alive — the one being read now as well
+  -- as the one already stalled, because recovery has to be running at the
+  -- moment a worker dies, not armed afterwards by something that noticed.
+  -- Counting only what had already stalled let a quiet deployment unschedule
+  -- the tick under a live successor. See `builder_stock_imports_in_flight`.
+  v_imports_in_flight := public.builder_stock_imports_in_flight()::integer;
 
   IF v_outstanding + v_fallback + v_item_work + v_publications
-     + v_upload_completion + v_stranded + v_blocked + v_stalled_imports = 0 THEN
+     + v_upload_completion + v_stranded + v_blocked + v_imports_in_flight = 0 THEN
     IF EXISTS (
       SELECT 1 FROM cron.job
        WHERE jobname = 'settle-builder-stock-marketplace-eligibility'

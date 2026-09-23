@@ -308,3 +308,66 @@ describe('recognition can stop without refusing', () => {
     expect(extract).toContain('maxPages: OCR_MAX_PAGES, pages: outstanding,');
   });
 });
+
+// ---------------------------------------------------------------------------
+describe('an import left with nobody reading it is recovered — this attempt only', () => {
+  /**
+   * `scripts/ops/probe-import-claim.mjs` proves these by EFFECT against a real
+   * PostgreSQL, in the acceptance gate. This pins their shape in CI, because
+   * the gate runs where a person runs it and a regression here would be a
+   * second reader started beside a live one.
+   */
+  const migration = read(
+    'supabase/migrations/20260922140000_an_import_too_big_for_one_isolate_hands_off_rather_than_dying.sql');
+  const fn = (name: string) => migration.slice(
+    migration.indexOf(`FUNCTION public.${name}(`),
+    migration.indexOf(`COMMENT ON FUNCTION public.${name}(`),
+  );
+
+  it('a release records when it let go, and still states no progress', () => {
+    const release = fn('builder_stock_release_import');
+    expect(release).toContain('import_released_at = now()');
+    expect(release).not.toContain('status =');
+    expect(release).not.toContain('import_checkpoint =');
+  });
+
+  it('both ways of being owed a worker are scoped to the attempt in hand', () => {
+    // "Read again" takes no claim, so a re-read in progress carries the
+    // PREVIOUS import's release; unscoped, that read as a lost hand-off.
+    for (const name of ['builder_stock_imports_owed_recovery', 'builder_stock_imports_in_flight']) {
+      const body = fn(name);
+      expect(body).toContain('u.import_claim_until > u.processing_started_at');
+      expect(body).toContain('u.import_released_at >= u.processing_started_at');
+    }
+  });
+
+  it('the question is read-only, and the act is the only thing that dispatches', () => {
+    expect(fn('builder_stock_imports_owed_recovery')).toContain('LANGUAGE sql STABLE');
+    expect(fn('builder_stock_recover_stalled_imports'))
+      .toContain('FROM public.builder_stock_imports_owed_recovery()');
+  });
+
+  it('a hand-off is recorded and its tick armed BEFORE the dispatch that can fail', () => {
+    const dispatch = fn('builder_stock_dispatch_import_continuation');
+    const stamped = dispatch.indexOf('SET import_released_at = now()');
+    const armed = dispatch.indexOf('ensure_builder_stock_settlement_scheduled()');
+    const sent = dispatch.indexOf('cron_invoke_signed_function(');
+    expect(stamped).toBeGreaterThan(-1);
+    expect(armed).toBeGreaterThan(stamped);
+    expect(sent).toBeGreaterThan(armed);
+  });
+
+  it('a claim arms the recovery tick and can never fail for it', () => {
+    const claim = fn('builder_stock_claim_import');
+    const arming = claim.slice(claim.indexOf('IF v_claimed THEN'));
+    expect(arming).toContain('PERFORM public.ensure_builder_stock_settlement_scheduled();');
+    expect(arming).toContain('EXCEPTION WHEN OTHERS THEN');
+  });
+
+  it('every import in flight keeps the tick alive, not only one already stalled', () => {
+    expect(migration)
+      .toContain('v_imports_in_flight := public.builder_stock_imports_in_flight()::integer;');
+    expect(migration).toMatch(/\+ v_blocked \+ v_imports_in_flight = 0 THEN/);
+    expect(migration).not.toContain('builder_stock_stalled_imports');
+  });
+});

@@ -149,7 +149,13 @@ export async function claimImport(
  * BEST-EFFORT ON THE DISPATCH, NEVER ON THE RELEASE. The release is awaited
  * because the successor depends on it; the dispatch is the accelerator, and
  * `builder_stock_recover_stalled_imports` reaches the same row within a
- * minute if pg_net or the vault is having a bad day.
+ * minute or two if pg_net or the vault is having a bad day.
+ *
+ * It can only do that because the release stamps `import_released_at`. A
+ * released row carries no token, and the first version of the recovery
+ * looked for tokens alone — so a lost dispatch left an import reading
+ * `parsing` that nothing could see, which was proved against the real
+ * functions before it shipped. See `builder_stock_imports_owed_recovery`.
  */
 export async function releaseThenContinue(
   supabase: any,

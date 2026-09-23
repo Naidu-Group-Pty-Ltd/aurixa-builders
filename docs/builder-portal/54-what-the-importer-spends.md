@@ -241,13 +241,15 @@ Three rules carry it:
   stage it *thought* it held and walked a property back down its ladder. Here
   the statement clears the claim only `WHERE import_claim_token = p_token`, so
   a stale worker cannot release a successor's claim — not by timing, but
-  because it cannot spell the token. A release also writes nothing else.
+  because it cannot spell the token. A release writes nothing else except the
+  moment it let go (`import_released_at`), which is lease bookkeeping rather
+  than progress and is what §10's second recovery case reads.
 * **`held` and `unavailable` lead opposite ways.** `held` means stop.
   `unavailable` means the migration has not reached this deployment, and the
   caller proceeds unclaimed, exactly as every import did before.
 
-Eight of these properties are asserted against a real PostgreSQL by
-`scripts/ops/probe-import-claim.mjs`, which runs in the acceptance gate —
+These properties, and §10's recovery, are asserted against a real PostgreSQL
+by `scripts/ops/probe-import-claim.mjs`, which runs in the acceptance gate —
 because reading the function back proves the text applied and nothing else,
 which is the class of mistake the retention purge, the `manual_stats` CHECK
 and the AML `.or()` each shipped once.
@@ -319,6 +321,43 @@ Its signal is better than the one the fifteen-minute sweep has to use. A clock
 cannot tell a running import from a dead one; a lease can. `parsing` plus a
 claim token plus an expired claim is a worker that died, definitively, and it
 turns a fifteen-minute gap into a sixty-second one.
+
+**There is a second way to be left with nobody reading, and the first version
+could not see it.** A hand-off *releases* the claim and then dispatches, so a
+dispatch that is lost — pg_net, the vault, a successor that fails to boot —
+leaves a row reading `parsing` with no token at all. Put in exactly that state
+against the real functions, the keep-alive counted 0, recovery dispatched 0,
+and the row would have said "still reading" until a person pressed Read again
+fifteen minutes later: `RECOVERABLE_UPLOAD_STATUSES` is `imported` alone, so
+the fifteen-minute sweep never touches a `parsing` row. So a release stamps
+`import_released_at`, and `builder_stock_imports_owed_recovery()` answers both
+cases — died holding the claim, or let go and not taken within a minute (a
+successor claims within seconds; a minute is also the tick's own period, so
+one tick never races the successor it stands behind). A row no worker ever
+held carries no stamp and is never recovered, because recovery beside an
+import that never needed a claim is two readers.
+
+**Only this attempt counts, and the first draft of the fix got that wrong.**
+A row keeps its claim columns from every import it has ever had, and "Read
+again" (`reprocess_upload`) deliberately takes no claim — so a re-read in
+progress is `parsing`, carries no token, and still holds the PREVIOUS import's
+release. The unscoped rule read that as a hand-off nobody took and would have
+started a second reader beside the live one. Both arms are therefore scoped to
+the attempt in hand: a claim or a release counts only if it is newer than
+`processing_started_at`, which every path that sets `parsing` stamps in the
+same write and which a continuation deliberately never refreshes. And because
+that re-read hands off holding no claim, nothing would record its hand-off —
+so the dispatch itself stamps `import_released_at` and arms the tick before it
+sends, the send being the part that can fail.
+
+**And recovery must already be running.** The keep-alive used to count only
+what had already stalled, so a quiet deployment could unschedule the tick
+under a live successor and leave that successor's death with nothing to
+recover it. `builder_stock_imports_in_flight()` counts every import a worker
+has held and not finished, and a claim arms the tick — only an upload INSERT
+did, and a re-read inserts nothing. The read-only question and the act are
+separate functions so the probe can ask the question of any deployment
+without dispatching a real invocation.
 
 It is bounded at three restarts per attempt, because an import that has died
 three times is not one more dispatch away from working, and a minute tick

@@ -17,8 +17,9 @@ import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
 import { runStockImport } from '../../supabase/functions/_shared/builderStock/runImport.ts';
 import { isImportContinuation } from '../../supabase/functions/_shared/builderStock/importContinuation.pure.ts';
 import { continueStockImport } from '../../supabase/functions/_shared/builderStock/continueImport.ts';
-import { claimImport } from '../../supabase/functions/_shared/builderStock/importClaim.ts';
-import { EXPENSIVE_SPEND_CEILING_MS } from '../../supabase/functions/_shared/builderStock/importResumeBudget.pure.ts';
+import { claimImport, releaseThenContinue } from '../../supabase/functions/_shared/builderStock/importClaim.ts';
+import { MAX_IMPORT_CONTINUATIONS } from '../../supabase/functions/_shared/builderStock/importCheckpoint.pure.ts';
+import { STOCK_LIST_STORAGE_PREFIX, safeObjectName } from '../../supabase/functions/_shared/builderStock/fileTypes.pure.ts';
 /*
  * THE PORTAL'S OWN SERVING STEP, imported rather than imitated. This is what
  * `builder-portal-stock`'s `image_url` operation calls, so what the gate
@@ -2157,128 +2158,195 @@ const invariants: Record<string, unknown> = {};
   // --- 8l. THE IMPORT RUNS OUT OF CPU AND HANDS ITSELF ON -----------------
   /*
    * THE CASE THE WHOLE RESUMABLE IMPORTER EXISTS FOR, driven end to end
-   * through the real modules: `runStockImport` hands off, the successor
-   * `continueStockImport` finishes, and the document that comes out is the
-   * one a single invocation would have produced.
+   * through the real modules in the order production runs them: the
+   * portal's claim, `runStockImport`, `finishImport`'s `releaseThenContinue`,
+   * and then the dispatched successor `continueStockImport`, as many times as
+   * the document needs, until the import finishes — once.
    *
-   * HOW THE HAND-OFF IS FORCED, AND WHY IT IS NOT A STUB. The run is handed a
-   * ledger that has ALREADY SPENT the invocation's allowance — which is
-   * exactly what a real document does to itself after a few OCR pages, and
-   * which `mayRecognisePage` reads without knowing or caring how the spend
-   * got there. Nothing is mocked: the real budget module makes the real
-   * decision, the real checkpoint is written to the real column, and the real
-   * successor reads it back.
+   * THE DOCUMENT FORCES THE HAND-OFF, AND NOTHING ELSE DOES. A scanned
+   * brochure of five pages, from the stress corpus. With a 3,000 ms
+   * allowance and each page charged at 3,100 ms, a fresh invocation can
+   * afford exactly one page — `max(1, floor(remaining / OCR_PAGE_MS))` is 1
+   * on every fresh ledger — so this document crosses isolates on any machine,
+   * however fast. Nothing is mocked and no spend is injected.
    *
-   * FOUR THINGS MUST HOLD, and each one is a way this could ship broken:
+   * WHY NOT AN INJECTED SPEND, WHICH IS WHAT THIS CASE FIRST DID. It handed
+   * `runStockImport` a ledger that had "already spent" its allowance. The
+   * ledger an invocation is passed is the import's INHERITED total, which the
+   * budget deliberately never reads — every budget decision reads the
+   * invocation's own fresh account (`runImport.ts`, "TWO ACCOUNTS") — so the
+   * injected spend reached nothing and a one-page scan never handed off. The
+   * case could then only pass vacuously (it permitted `!handedOff`) or fail,
+   * and it failed for two more reasons of its own: it asked for `held` after
+   * the import had FINISHED, when `continueStockImport` answers
+   * `not_importing` before it looks at any claim, and it read
+   * `records_detected` through a helper that never selects it.
    *
-   *   • the hand-off writes NO count and NO completion stamp — the
-   *     22 September lie was `records_detected: 0` on a row mid-import;
-   *   • the successor produces the properties, exactly once;
-   *   • a SECOND successor, dispatched while the first holds the claim, does
-   *     nothing at all — the double dispatch is expected, not exceptional,
-   *     because the hand-off and the recovery sweep reach the same row;
-   *   • the finished row reads `enriching`/`partially_complete` with real
-   *     counts, never `parsing` and never a false zero.
+   * WHAT MUST HOLD, and each is a way this could ship broken:
+   *
+   *   • it hands off — asserted, never merely permitted;
+   *   • no hand-off writes a count, a completion stamp or a property (the
+   *     22 September lie was `records_detected: 0` on a row mid-import);
+   *   • a dispatch arriving while another worker holds the import does
+   *     nothing, and changes nothing;
+   *   • the successors finish it within the crossing bound;
+   *   • every page is recognised EXACTLY ONCE across every invocation — a page
+   *     paid for twice is the loop the checkpoint exists to prevent;
+   *   • a dispatch arriving after the finish does nothing;
+   *   • and what comes out is the document: one property carrying the
+   *     package's own fields, real counts, never `parsing`.
    */
   {
+    const stressDir = Deno.env.get('STRESS_CORPUS') ?? '/var/tmp/stress-corpus';
+    const stress = JSON.parse(await Deno.readTextFile(`${stressDir}/manifest.json`));
+    const entry = stress.find((e: any) => e.name === 'stress-scanned-pages');
+    if (!entry) throw new Error(`no stress-scanned-pages in ${stressDir}: run make-stress-corpus.py`);
     /*
-     * A SCANNED DOCUMENT, because only recognition can hand off. Its own
-     * organisation, because the duplicate guard is keyed on (bytes,
-     * organisation) and every other fault case has already imported the
-     * singles into theirs.
+     * Its first page is the package the corpus's one-page scan carries, so
+     * that fixture's expectation is this document's too — less the design,
+     * which is a named limit of the reader and not of the hand-off.
      */
-    const entry = manifest.find((e: any) => e.name === 'scanned-no-text-layer')
-      ?? manifest.find((e: any) => e.expect?.ocr)
-      ?? docOf(7);
+    const expected = (manifest.find((e: any) => e.name === 'scanned-no-text-layer')
+      ?.expect?.rows?.[0] ?? {}) as Record<string, unknown>;
     const org = orgs[FAULT_HANDOFF];
-    const bytes = await Deno.readFile(`${corpusDir}/${entry.org}/${entry.filename}`);
-    const path = `${org.id}/${crypto.randomUUID()}.pdf`;
+    const bytes = await Deno.readFile(`${stressDir}/${entry.path}`);
+    /*
+     * WHERE THE PORTAL PUTS IT. A successor re-reads the stored object, and
+     * `continueStockImport` refuses any path outside the stock-list prefix
+     * before it does anything else — the first run of this case stored the
+     * bytes where the rest of the matrix does and every successor answered
+     * `failed`, including the one asked while the claim was held.
+     */
+    const path = `${STOCK_LIST_STORAGE_PREFIX}${org.id}/${crypto.randomUUID()}/${safeObjectName(entry.filename)}`;
     await db.storage.from(BUCKET).upload(path, bytes, { contentType: 'application/pdf', upsert: true });
     const upload = await newUpload(FAULT_HANDOFF, entry.filename, path);
+
+    const readRow = async () => {
+      const { data } = await db.from('builder_stock_uploads')
+        .select('status, records_detected, processing_completed_at, import_checkpoint, stage_timings')
+        .eq('id', upload.id).maybeSingle();
+      return (data ?? {}) as any;
+    };
+    const pagesIn = (row: any) => Object.keys(row?.import_checkpoint?.ocr?.pages ?? {}).length;
+    /** Everything a hand-off must not have written, counted. */
+    const writtenMidImport = async (row: any) => (await itemsFor(upload.id)).length
+      + (row.status !== 'parsing' ? 1 : 0)
+      + (row.processing_completed_at ? 1 : 0)
+      + (Number(row.records_detected ?? 0) > 0 ? 1 : 0);
+
+    // `process_upload`: claim, then mark the row as being read.
+    const portal = await claimImport(db, upload.id);
     await db.from('builder_stock_uploads').update({
       status: 'parsing', processing_started_at: new Date().toISOString(),
     }).eq('id', upload.id);
-
-    /*
-     * A run whose allowance is already gone before it reaches recognition.
-     * `ocr_ms` is charged to the `document` class, which is what the ceiling
-     * counts — see `importResumeBudget.pure.ts` — and this is exactly what a
-     * real scan does to itself after a couple of pages. Nothing is mocked:
-     * the real budget module makes the real decision.
-     */
-    const spent = { ocr_ms: EXPENSIVE_SPEND_CEILING_MS + 1, stage: 'ocr' };
     const first = await runStockImport({
       supabase: db, organisationId: org.id, organisationName: org.name,
       builderUserId: org.userId,
       upload: { id: upload.id, original_filename: upload.original_filename },
       bytes, sourceKind: 'file',
-      ledger: { ...spent },
       resumableFromStoredBytes: true,
     });
-
     const handedOff = isImportContinuation(first);
-    const afterFirst = await stateOf(upload.id);
-    const rowsAfterFirst = (await itemsFor(upload.id)).length;
+    /*
+     * `finishImport`'s hand-off branch: release, THEN dispatch. The dispatch
+     * reaches no function on this stack — this harness is the dispatcher
+     * below — which is also exactly the lost-dispatch state recovery exists
+     * for, asserted from the database by `probe-import-claim.mjs`.
+     */
+    const claimForFirst = portal.ok ? portal.claim : null;
+    if (handedOff) await releaseThenContinue(db, claimForFirst, upload.id);
+    else await claimForFirst?.release();
+    const afterFirst = await readRow();
+    const leakedByFirst = await writtenMidImport(afterFirst);
 
     /*
-     * AND THE SUCCESSOR, WHICHEVER WAY THE FIRST RUN WENT.
-     *
-     * On a document that handed off it finishes the import. On one that did
-     * not it must be a NO-OP — the row is no longer `parsing`, so there is
-     * nothing owed, and a continuation that re-imported a finished document
-     * would fork every property in it. Both are asserted below, from the one
-     * call, because both are how this can be wrong.
+     * A DISPATCH ARRIVING WHILE ANOTHER WORKER HOLDS THE IMPORT — the recovery
+     * sweep and a hand-off reaching the same row. Asked while the import is
+     * still being read, which is the only time the answer means anything.
      */
-    const second = await continueStockImport(db, upload.id);
-
-    // A SECOND DISPATCH, while nothing is holding the row. It must find the
-    // import already finished and do nothing rather than import again.
-    const third = await continueStockImport(db, upload.id);
-
-    // AND ONE THAT ARRIVES WHILE A WORKER STILL HOLDS THE CLAIM.
     const holder = await claimImport(db, upload.id);
     const whileHeld = await continueStockImport(db, upload.id);
     if (holder.ok) await holder.claim.release();
+    const afterHeld = await readRow();
 
-    const rowsFinal = (await itemsFor(upload.id)).map((i: any) => i.id).sort();
-    const state = await stateOf(upload.id);
-    const lots = (await itemsFor(upload.id)).map((i: any) => String(i.lot_number ?? ''));
-    const distinctLots = new Set(lots).size;
+    // THE SUCCESSORS, as the dispatcher runs them: until the import stops
+    // handing itself on, and never past the crossing bound.
+    const successors: string[] = [];
+    let leakedMidImport = 0;
+    let state = handedOff ? 'continued' : 'not_run';
+    while (state === 'continued' && successors.length <= MAX_IMPORT_CONTINUATIONS) {
+      const next = await continueStockImport(db, upload.id);
+      state = next.state;
+      successors.push(next.state);
+      if (next.state === 'continued') leakedMidImport += await writtenMidImport(await readRow());
+    }
+
+    // A DISPATCH ARRIVING AFTER THE FINISH.
+    const late = await continueStockImport(db, upload.id);
+
+    const final = await readRow();
+    const items = await itemsFor(upload.id);
+    const distinctLots = new Set(items.map((i: any) => String(i.lot_number ?? ''))).size;
+    const recognisedDistinct = pagesIn(final);
+    const recognisedTotal = Number(final.stage_timings?.ocr_pages ?? 0);
+    const handOffs = Number(final.import_checkpoint?.continuations ?? 0);
+    const fieldMismatches: string[] = [];
+    for (const [field, want] of Object.entries(expected)) {
+      if (NOT_A_COLUMN.has(field) || field === 'design') continue;
+      const key = FIELD_COLUMN[field] ?? field;
+      const got = items[0] ? valueOf(items[0], key) : null;
+      // 6c's own rule, so this case holds the reading to the corpus's
+      // standard and no stricter: an address line may carry the street number
+      // the one-page expectation omits ("22 Wattlebird Way").
+      const same = key === 'address_line'
+        ? String(got ?? '').toLowerCase().includes(String(want).toLowerCase())
+        : String(got).toLowerCase() === String(want).toLowerCase();
+      if (!same) {
+        fieldMismatches.push(`${key}: expected ${JSON.stringify(want)}, got ${JSON.stringify(got)}`);
+      }
+    }
 
     faults.cpuHandOff = {
       handedOff,
-      // What the hand-off left on the row: nothing, if it happened.
-      afterFirst: handedOff
-        ? {
-          status: afterFirst.status,
-          recordsDetected: afterFirst.records_detected ?? null,
-          completedAt: afterFirst.processing_completed_at ?? null,
-          rows: rowsAfterFirst,
-        }
-        : null,
-      successor: second.state,
-      secondDispatch: third.state,
+      afterFirst: { status: afterFirst.status, pages: pagesIn(afterFirst), leaked: leakedByFirst },
       whileClaimHeld: whileHeld.state,
-      rows: rowsFinal.length,
+      heldChangedNothing: pagesIn(afterHeld) === pagesIn(afterFirst),
+      successors,
+      leakedMidImport,
+      lateDispatch: late.state,
+      handOffs,
+      recognisedDistinct,
+      recognisedTotal,
+      rows: items.length,
       distinctLots,
-      status: state.status,
-      recordsDetected: state.records_detected ?? null,
+      status: final.status,
+      recordsDetected: final.records_detected ?? null,
+      completedAt: final.processing_completed_at ? 'set' : null,
+      fieldMismatches,
     };
     invariant('an-import-that-runs-out-of-cpu-hands-off-and-is-finished-exactly-once',
-      // The hand-off states nothing about a document it has not read.
-      (!handedOff || (afterFirst.status === 'parsing'
-        && !afterFirst.processing_completed_at
-        && !afterFirst.records_detected
-        && rowsAfterFirst === 0))
-      // A worker holding the claim is never displaced by a second dispatch.
+      handedOff
+      // A hand-off states nothing about a document it has not finished reading.
+      && afterFirst.status === 'parsing' && leakedByFirst === 0 && pagesIn(afterFirst) >= 1
+      // A worker holding the claim is never displaced, and the refusal is inert.
       && whileHeld.state === 'held'
+      && pagesIn(afterHeld) === pagesIn(afterFirst)
+      // Every successor but the last hands on; the last finishes; nothing leaks.
+      && successors.length >= 1
+      && successors.at(-1) === 'completed'
+      && successors.slice(0, -1).every((s) => s === 'continued')
+      && leakedMidImport === 0
+      // One hand-off per successor, and every page read exactly once.
+      && handOffs === successors.length
+      && recognisedDistinct >= 2
+      && recognisedTotal === recognisedDistinct
       // A finished import is never re-imported by a late dispatch.
-      && third.state === 'not_importing'
-      // And the document that came out is one document, once.
-      && rowsFinal.length > 0
-      && distinctLots === rowsFinal.length
-      && state.status !== 'parsing'
-      && Number(state.records_detected ?? 0) === rowsFinal.length,
+      && late.state === 'not_importing'
+      // And the document that came out is one document, once, as it reads.
+      && items.length === 1 && distinctLots === 1
+      && final.status !== 'parsing' && !!final.processing_completed_at
+      && Number(final.records_detected ?? 0) === items.length
+      && fieldMismatches.length === 0,
       JSON.stringify(faults.cpuHandOff));
   }
 
