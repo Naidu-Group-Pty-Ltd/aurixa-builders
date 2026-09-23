@@ -39,9 +39,10 @@
  *   6. a re-read of the proof's own upload — begun only once the first read
  *      had finished and settled, so it rescues nothing — corrects its own
  *      rows rather than forking them: the same property ids, the same
- *      reading, the same pictures, no pending patch;
- *   7. and after a recovery window nothing moved — no second worker, no new
- *      row, no status change.
+ *      reading, the same pictures, no pending patch — and the product then
+ *      completes the upload by itself;
+ *   7. and after a recovery window, measured from that completion, nothing
+ *      moved — no second worker, no new row, no status change.
  *
  * Runs from the production-rollout workflow (phase `stock-import-proof`),
  * which holds SUPABASE_ACCESS_TOKEN and NETWORK_SESSION_PEPPER. No secret is
@@ -470,14 +471,33 @@ try {
   record('6: the re-read answered, and not with a CPU kill',
     reread.status === 200 && reread.json?.success !== false,
     `HTTP ${reread.status} in ${reread.ms} ms${reread.status === 546 ? ' — 546 CPU TIME EXCEEDED' : ''}`);
+  /*
+   * FINISHED MEANS THE PRODUCT'S LAST WORD, NOT THE IMPORT'S.
+   *
+   * A successful import leaves the upload `enriching`. The settler's
+   * completion moves it to `complete` on its next tick, and when no picture
+   * work is outstanding that is the minute tick. The first production run of
+   * this proof on #89 (23 September 2026, run 118) took step 7's snapshot at
+   * `enriching`, five seconds after the re-read. The settler then completed
+   * the upload 52 s later, by itself and as designed, and step 7 reported that
+   * as rows that moved after the import had finished. Step 7 asserts that
+   * nothing moves once the product has finished, which it cannot do from a
+   * snapshot taken before the product finished. So the wait below also waits
+   * for the upload's own terminal status, and says when it arrived.
+   */
+  const SETTLING = ['parsing', 'uploaded', 'imported', 'enriching'];
   const rereadAt = Date.now();
   while (Date.now() - rereadAt < IMPORT_DEADLINE_MS) {
     upload = await uploadOf(proofId);
     items = await itemsOf(proofId);
-    if (upload?.processing_completed_at && !['parsing', 'uploaded', 'imported'].includes(upload.status)
+    if (upload?.processing_completed_at && !SETTLING.includes(upload.status)
       && items.every((i) => ['settled', 'failed'].includes(i.image_work_stage))) break;
     await sleep(3_000);
   }
+  summary.rereadSettledMs = Date.now() - rereadAt;
+  record('6: the product completed the upload by itself',
+    !!upload?.processing_completed_at && !SETTLING.includes(upload?.status),
+    `status ${upload?.status}, ${summary.rereadSettledMs} ms after the re-read was accepted`);
   const rereadImages = await imagesOf(proofId);
   record('6: the re-read corrected its own rows rather than forking them',
     JSON.stringify(items.map((i) => i.id).sort()) === JSON.stringify(firstReading.map((i) => i.id).sort()),
@@ -504,8 +524,12 @@ try {
     items: laterItems.map((i) => [i.id, i.primary_image_id, i.lifecycle_status, i.image_work_stage]),
     images: laterImages.map((i) => i.id), status: laterUpload?.status,
   });
+  // A failure names what moved, so it can be read without the rows, which
+  // cleanup deletes before anybody can look at them.
   record('7: after a recovery window nothing moved', before === after,
-    before === after ? `${SETTLEMENT_WINDOW_MS / 1000} s` : 'rows changed after the import had finished');
+    before === after
+      ? `${SETTLEMENT_WINDOW_MS / 1000} s`
+      : `rows changed after the import had finished: before ${before.slice(0, 400)} after ${after.slice(0, 400)}`);
   record('7: no second worker, no pending patch',
     Number(laterUpload?.import_recovery_attempts ?? -1) === 0 && laterUpload?.claimed === false
     && laterItems.every((i) => !i.has_pending_patch && !i.pending_upload_id),
