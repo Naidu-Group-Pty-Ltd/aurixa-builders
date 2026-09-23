@@ -54,10 +54,12 @@
  * if the step costs change, the ceiling moves with them.
  *
  * AND PRODUCTION HAS SINCE SHOWN IT TO BE AN UPPER BOUND, NOT A MEASUREMENT.
- * 23 September 2026: the same brochure was killed three more times after this
- * shipped, with the ledger reading 1,155 ms of document stages and 485 ms of
- * decode — well under 3,000 — because the platform charges CPU this ledger
- * cannot see: the isolate's start-up, the download, the engine's cold passes.
+ * 23 September 2026: the same brochure was killed five more times after this
+ * shipped — twice on the portal's paths, three times in the settler's re-read
+ * of the same bytes — and the one ledger the runtime left read 1,155 ms of
+ * document stages and 485 ms of decode — well under 3,000 — because the
+ * platform charges CPU this ledger cannot see: the isolate's start-up, the
+ * download, the engine's cold passes.
  * So it is no longer what keeps a PDF alive. A paginated document's pictures
  * are not decoded in the isolate that parsed it at all
  * (`importHandover.pure.ts`), which needs no number; the isolates that decode

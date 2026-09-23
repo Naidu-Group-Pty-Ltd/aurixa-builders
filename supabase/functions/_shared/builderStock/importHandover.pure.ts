@@ -7,9 +7,9 @@
  *
  * An isolate that parses a PDF decodes none of its pictures
  * (`documentRead.pure.ts` has the production measurement: `LOT 550 - ENZO 8.5
- * MODERN- BROCHURE V002.pdf` killed on `process_upload`, on its recovery and
- * on "Read again", each time after the reader had finished, inside the decode
- * that decides the pictures' roles).
+ * MODERN- BROCHURE V002.pdf` killed on `process_upload`, on "Read again" and
+ * in the settler's re-read of the same bytes, each time after the reader had
+ * finished, inside the decode that decides the pictures' roles).
  *
  * The first answer to that sent the pictures to the image settler and did
  * not attach them here at all. The acceptance gate refused it on its first

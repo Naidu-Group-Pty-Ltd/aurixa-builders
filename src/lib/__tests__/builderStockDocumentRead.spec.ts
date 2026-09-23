@@ -2,9 +2,10 @@
  * A PDF IS READ IN ONE ISOLATE AND ITS PICTURES ARE DECODED IN ANOTHER.
  *
  * Production, 23 September 2026: `LOT 550 - ENZO 8.5 MODERN- BROCHURE
- * V002.pdf` was killed on the portal, on its recovery and on "Read again",
- * each time after the reader finished and inside the pictures' decode; on the
- * 22nd the settler had been killed twelve times the same way. A settler
+ * V002.pdf` was killed on the portal, on "Read again" and in the settler's
+ * re-read of the same bytes, each time after the reader finished and inside
+ * the pictures' decode; on the 22nd the settler had been killed twelve times
+ * the same way. A settler
  * invocation that parsed the same document and decoded nothing survived. So
  * the read is carried across the boundary instead of being repeated beside a
  * decode, and this file pins what makes that safe: the read restores to

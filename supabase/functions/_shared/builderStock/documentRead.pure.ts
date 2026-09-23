@@ -8,20 +8,23 @@
  *
  * `LOT 550 - ENZO 8.5 MODERN- BROCHURE V002.pdf` (8,530,307 bytes) was
  * imported through the live portal after the resumable importer shipped, and
- * the runtime killed it again — three times, on three different paths:
+ * the runtime killed it again, on both of the portal's paths and in the image
+ * settler's re-read of the same bytes (`function_logs`):
  *
  *   05:35:36  process_upload       546  reader done, killed inside the
  *                                        pictures' role decode, no notice
- *   05:40:08  recovery re-run      546  `beforeunload` reason "cpu" printed
+ *   05:40:08  settler re-read      546  `beforeunload` reason "cpu" printed
  *                                        the ledger: document stages 1,155 ms
  *                                        (three parses), image_decode 485 ms —
  *                                        and the hard kill 10 ms later
  *   05:40:42  "Read again"         546  the same place
+ *   05:43:07  settler re-read      546  and again at 05:45:08
  *
  * while a settler invocation that parsed the SAME document and decoded
  * nothing (`source`, 4.8 s of wall clock, `decodes: 0`) finished cleanly. On
  * 22 September the same brochure had been killed thirteen times in a row, by
- * the portal and then by twelve recovery re-runs, before one survived.
+ * the portal and then twelve times by the settler's re-read of it, before one
+ * survived.
  *
  * The ledger's own ceiling (3,000 ms) was never reached: the platform charges
  * CPU the ledger cannot see — the isolate's own start-up, the eight-megabyte

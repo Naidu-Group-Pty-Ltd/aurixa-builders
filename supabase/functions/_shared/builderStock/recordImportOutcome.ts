@@ -116,11 +116,12 @@ export async function recordImportCounts(
  * That second read is the one thing in this pipeline that still parses a PDF
  * and decodes its pictures in ONE isolate: the sweep runs `runStockImport`
  * inline, without `resumableFromStoredBytes`, inside the image settler.
- * MEASURED 23 September 2026: the settler answered 546 at 05:40:08 and
- * 05:43:07, both times on `LOT 550 - ENZO 8.5 MODERN- BROCHURE V002.pdf`
- * re-read by the sweep minutes after its import had finished cleanly through
- * successors, with the worker's last completed stage `image_decode`. So the
- * import that was made to survive was then killed by its own echo.
+ * MEASURED in `function_logs`: the settler was killed twelve times between
+ * 10:09:06 and 10:35:07 on 22 September 2026, and three more times on
+ * 23 September, every time re-reading `LOT 550 - ENZO 8.5 MODERN- BROCHURE
+ * V002.pdf`, or a copy of it, after its import, with last completed stage
+ * `image_decode`. An import made to survive would still have been killed by
+ * its own echo.
  *
  * A failed import stamps nothing (`importFailureColumns`): what the reader
  * would say about the document has not been learned, and the sweep's own

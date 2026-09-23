@@ -1559,11 +1559,13 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
    * ═══════════════════════════════════════════════════════════════════════
    *
    * MEASURED 23 SEPTEMBER 2026, production: `LOT 550 - ENZO 8.5 MODERN-
-   * BROCHURE V002.pdf` was killed on `process_upload`, on its recovery and on
-   * "Read again" — each time AFTER the reader had finished, inside the decode
-   * that settles its pictures' roles. The ledger read 1,155 ms of document
-   * work and 485 ms of decode, under the 3,000 ms ceiling `mayDecideRoles`
-   * prices against: the platform charges CPU this ledger cannot see.
+   * BROCHURE V002.pdf` was killed on `process_upload`, on "Read again" and in
+   * the settler's re-read of the same bytes — each time AFTER the reader had
+   * finished, inside the decode that settles its pictures' roles. The one
+   * ledger the runtime left (the settler's, the same `runStockImport`) read
+   * 1,155 ms of document work and 485 ms of decode, under the 3,000 ms
+   * ceiling `mayDecideRoles` prices against: the platform charges CPU this
+   * ledger cannot see.
    *
    * So the pictures are not decoded here. The read and the decision are
    * written down and THIS IMPORT crosses once more, through the continuation

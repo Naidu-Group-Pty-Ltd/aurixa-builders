@@ -612,12 +612,13 @@ describe('the marker exists in the schema', () => {
  * IS FENCED UNTIL IT IS NOT.
  * ===========================================================================
  *
- * MEASURED 23 September 2026: the image settler answered 546 at 05:40:08 and
- * 05:43:07, both times re-reading `LOT 550 - ENZO 8.5 MODERN- BROCHURE V002.pdf`
- * minutes after its import had finished cleanly through successors. The sweep
- * stamped the version and nothing else did, so every new upload was read a
- * second time — inline, parse and decode in one isolate, the exact shape the
- * import was rebuilt to avoid. `importOutcomeColumns` now stamps the version an
+ * MEASURED in `function_logs`: the image settler was killed twelve times
+ * between 10:09:06 and 10:35:07 on 22 September 2026, and three more times on
+ * 23 September (05:40:08, 05:43:07, 05:45:08). Every kill was the reader
+ * sweep re-reading `LOT 550 - ENZO 8.5 MODERN- BROCHURE V002.pdf`, or a copy
+ * of it, after its import. The sweep stamped the version and nothing else
+ * did, so every new upload was read a second time: inline, parse and decode
+ * in one isolate, the shape the import was rebuilt to avoid. `importOutcomeColumns` now stamps the version an
  * import read at, which removes that second read for every new upload.
  *
  * What it does NOT remove is the sweep's own reason to exist: raising
@@ -627,10 +628,9 @@ describe('the marker exists in the schema', () => {
  * so the row stays outstanding with no attempt bound; the sweep takes the
  * oldest outstanding row first, one per quiet tick, and `readerSweepPending`
  * holds the cron open — so the settler would die on every quiet tick and no
- * row behind that one would ever be re-read. It has happened: on 22 September
- * 2026 the sweep re-read LOT 550 and the settler was killed thirteen times
- * between 10:09:06 and 10:35:07, until one attempt fitted at 10:38:07.
- * Recorded in `docs/builder-portal/54-what-the-importer-spends.md` §11.4.
+ * row behind that one would ever be re-read. Both series above ended only
+ * when one attempt happened to fit (10:38:07 and 05:48:07). Recorded in
+ * `docs/builder-portal/54-what-the-importer-spends.md` §11.4.
  *
  * So the version stays where every production row was stamped until the
  * sweep's re-read crosses isolates the way the import does. This test is the

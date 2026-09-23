@@ -410,17 +410,18 @@ file that failed three times last week must not be permanently unreadable.
 
 §6.3 derived a ceiling from wall clock and said so. Production answered it on
 23 September 2026, after all of the above was deployed: `LOT 550` was
-imported again through the live portal and killed again, three times, on
-three paths.
+imported again through the live portal and killed again, on both of the
+portal's paths and in the image settler's re-read of the same bytes (§11.4).
 
 ```
 05:35:36  process_upload   546  after the reader, inside the role decode
-05:40:08  recovery re-run  546  beforeunload "cpu": document stages 1,155 ms,
+05:40:08  settler re-read  546  beforeunload "cpu": document stages 1,155 ms,
                                  image_decode 485 ms, then the hard kill
 05:40:42  "Read again"     546  the same place
 ```
 
-The ledger read 1,640 ms against a 3,000 ms ceiling. The platform charges CPU
+The one ledger the runtime left, from the settler's run of the same
+`runStockImport`, read 1,640 ms against a 3,000 ms ceiling. The platform charges CPU
 the ledger cannot see — the isolate's start-up, the download, the engine's
 cold passes — so a ceiling priced in the ledger's currency cannot promise
 anything about the runtime's. What the evidence does support is the rule the
@@ -494,14 +495,27 @@ route-A invocation is judged by effect: none may both parse the document
 
 ### 11.4 The sweep read every import a second time, in one isolate
 
-The first production proof of this design finished `LOT 550` through
-successors with no kill, and then the image settler was killed twice on the
-same document, at 05:40:08 and 05:43:07 on 23 September 2026 — last completed
-stage `image_decode`. The kills came from the reader sweep (`settleReaderVersion`),
-not the import. `reader_settled_version` was written by the sweep alone, so
-every upload was outstanding the moment its import completed, and the sweep's
-next quiet tick read it again with `runStockImport` inline, without
-`resumableFromStoredBytes`: parse and decode in one isolate.
+Every CPU kill in production over the 24 hours before this change is in
+`function_logs` as `CPU Time exceeded`. Half of them were not the import.
+
+| when (UTC) | function | what died |
+|---|---|---|
+| 22 Sep 10:06:04 | `builder-portal-stock` | the `LOT 550` import (§1) |
+| 22 Sep 10:09:06 – 10:35:07 | `builder-stock-image-settler` | twelve re-reads of `LOT 550`, every two to three minutes |
+| 23 Sep 05:35:36, 05:40:42 | `builder-portal-stock` | the first proof of #88 on a copy of `LOT 550`: its import, then its "Read again" |
+| 23 Sep 05:40:08, 05:43:07, 05:45:08 | `builder-stock-image-settler` | three re-reads of that copy |
+
+The settler's kills were the reader sweep (`settleReaderVersion`). Each one
+died with last completed stage `image_decode`, about 1.5 s after the reader
+logged its reading of the upload. Each series ended when one attempt happened
+to fit (`reader sweep re-read … reader_version: 13` at 10:38:07 and 05:48:07).
+`reader_settled_version` was written by the sweep alone, so every upload was
+outstanding the moment its import completed. The sweep's next quiet tick then
+read it again with `runStockImport` inline, without
+`resumableFromStoredBytes`: parse and decode in one isolate. That is the shape
+the import was rebuilt to avoid, and it would have survived the import's fix
+untouched. The edge log also undercounts: the 05:45:08 kill has no 546 in
+`function_edge_logs`, so a check for kills reads both logs.
 
 A completed import is a read at the current version, so
 `importOutcomeColumns` now stamps it. Both completions spread those columns
@@ -523,12 +537,8 @@ outstanding row first, one per quiet tick, and `readerSweepPending` holds the
 cron open, so the settler would die on every quiet tick and nothing behind
 that row would ever be re-read.
 
-That loop is not a forecast. It already happened once, on 22 September 2026.
-After the portal import was killed at 10:06:04, the upload was left unstamped.
-The sweep re-read it inline, and the settler was killed thirteen times, every
-two to three minutes from 10:09:06 to 10:35:07, each kill about 1.5 s after the
-reader logged its reading of upload `7df6a47f`. It stopped only because one
-attempt fitted, at 10:38:07 (`reader sweep re-read … reader_version: 13`).
+The table above shows that loop is not a forecast. It has run twice, and each
+time it stopped only because one attempt happened to fit.
 
 The fix is the import's own rule applied to the sweep: its re-read must cross
 isolates. There are two ways to do that, and each changes something the sweep

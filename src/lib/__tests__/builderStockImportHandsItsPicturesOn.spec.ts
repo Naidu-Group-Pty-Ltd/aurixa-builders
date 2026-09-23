@@ -3,9 +3,9 @@
  * ATTACHES THEM EXACTLY AS THE IMPORT WOULD HAVE.
  *
  * Production, 23 September 2026: `LOT 550 - ENZO 8.5 MODERN- BROCHURE
- * V002.pdf` was killed on `process_upload`, on its recovery and on "Read
- * again", each time after the reader finished, inside the decode that settles
- * the pictures' roles. The first fix sent the pictures to the image settler
+ * V002.pdf` was killed on `process_upload`, on "Read again" and in the
+ * settler's re-read of the same bytes, each time after the reader finished,
+ * inside the decode that settles the pictures' roles. The first fix sent the pictures to the image settler
  * instead, and the acceptance gate refused it: ten brochures with no
  * photograph, because the settler's repair re-reads a brochure without the
  * evidence the importer reads it with and matched none of their properties
