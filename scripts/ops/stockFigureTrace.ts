@@ -30,16 +30,19 @@ import { readPictureSchedule } from '../../supabase/functions/_shared/builderSto
 import { readFigures } from '../../supabase/functions/_shared/builderStock/readFigures.ts';
 
 /**
- * The product's language model, from this checkout, where the recogniser looks
- * for an already-fetched copy first (`languageData.ts`). The deploy ships this
- * same file to the project's storage, so it is the model production reads with.
+ * The product's language model and engine, from this checkout, where the
+ * recogniser looks for an already-fetched copy first (`languageData.ts`,
+ * `ocr/engine.ts`). The deploy ships these same files to the project's
+ * storage, so they are what production reads with — and the engine checks
+ * the engine's digest either way.
  */
 async function provideLanguageModel(): Promise<void> {
-  const dir = '/tmp/ocr-lang';
-  const target = `${dir}/eng.traineddata.gz`;
-  if (await Deno.stat(target).then((s) => s.isFile).catch(() => false)) return;
-  await Deno.mkdir(dir, { recursive: true });
-  await Deno.copyFile(new URL('../../assets/ocr/eng.traineddata.gz', import.meta.url), target);
+  for (const [dir, file] of [['/tmp/ocr-lang', 'eng.traineddata.gz'], ['/tmp/ocr-engine', 'tesseract-core-simd-lstm.wasm']]) {
+    const target = `${dir}/${file}`;
+    if (await Deno.stat(target).then((s) => s.isFile).catch(() => false)) continue;
+    await Deno.mkdir(dir, { recursive: true });
+    await Deno.copyFile(new URL(`../../assets/ocr/${file}`, import.meta.url), target);
+  }
 }
 
 export async function traceFigures(

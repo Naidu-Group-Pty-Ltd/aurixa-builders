@@ -24,6 +24,15 @@ rm -rf /var/tmp/acceptance-storage
 OCR_OBJ=/var/tmp/acceptance-storage/builder-stock-lists/system/ocr/4.0.0_best_int
 mkdir -p "$OCR_OBJ"
 cp assets/ocr/eng.traineddata.gz "$OCR_OBJ/eng.traineddata.gz"
+# AND THE ENGINE, the same way and for the same reason: a figure is recognised
+# in the isolate that asks (`ocr/engine.ts`), which fetches Tesseract's
+# WebAssembly from this store and checks its digest. The import map below maps
+# `tesseract.js` to its npm build, whose worker the Deno CLI can start and the
+# hosted runtime could not — so the figure path deliberately imports neither,
+# and what the gate runs is what production runs.
+ENGINE_OBJ=/var/tmp/acceptance-storage/builder-stock-lists/system/ocr/tesseract.js-core-5.1.1
+mkdir -p "$ENGINE_OBJ"
+cp assets/ocr/tesseract-core-simd-lstm.wasm "$ENGINE_OBJ/tesseract-core-simd-lstm.wasm"
 curl -s -X POST "http://localhost:54998/rpc/nonexistent" >/dev/null 2>&1 || true
 # PostgREST caches the catalogue; a rebuilt database needs it reloaded.
 psql -h localhost -p 54999 -U postgres -d stock_acceptance -c "NOTIFY pgrst, 'reload schema'" >/dev/null

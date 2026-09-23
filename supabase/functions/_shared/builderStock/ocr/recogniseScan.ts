@@ -22,6 +22,7 @@
  */
 import { MIN_PAGE_TEXT_CHARS } from './ocrPolicy.pure.ts';
 import { languageDataDirectory } from './languageData.ts';
+import { openInProcessRecogniser } from './engine.ts';
 
 /**
  * The bounds, stated rather than discovered.
@@ -118,7 +119,19 @@ async function openRecogniser(langPath: string): Promise<Recogniser | null> {
       // The engine's own logging is not this product's log.
       logger: () => {},
     });
-  } catch {
+  } catch (error) {
+    /*
+     * AN ANSWER, AND ONE THAT SAYS WHY. This returned null in silence, and a
+     * figure read in production answered `recognition_unavailable` on
+     * 23 September 2026 with nothing in the log to say that the worker this
+     * library runs its engine in never started. The figure reader no longer
+     * uses this opener (`engine.ts`); a scan still does, so its refusal is
+     * named here the same way.
+     */
+    console.warn('[builderStock] ocr engine unavailable', {
+      phase: 'ocr_engine', engine: 'tesseract.js',
+      detail: String((error as { message?: string })?.message ?? error).slice(0, 160),
+    });
     return null;
   }
 }
@@ -258,8 +271,18 @@ export async function recogniseScannedPages(
  * page with something to say; a figure is judged by what it says, and by the
  * arithmetic that must prove it, never by how much it says.
  *
+ * THE ENGINE RUNS IN THIS ISOLATE (`engine.ts`), not in the worker
+ * `tesseract.js` spawns. Measured in production on 23 September 2026, the
+ * hosted runtime never started that worker, and the stored `Lot 101` brochure
+ * the Deno CLI read as `124.50` answered `recognition_unavailable`. It is the
+ * same engine build and the same model, driven by the same calls, so the text
+ * is the text the figure reader's thresholds were measured on. The page pass
+ * above keeps its opener until a page's cost is measured on the hosted
+ * runtime: a scanned page was measured at about 3.1 s of recognition, a
+ * figure at about 0.35 s.
+ *
  * NEVER THROWS, like the pass above: an engine that will not come up answers
- * `available: false` and every figure goes unread.
+ * `available: false`, logs why, and every figure goes unread.
  */
 export interface FigureRecognition {
   /** Recognised text, by the caller's own figure index. */
@@ -282,8 +305,9 @@ export async function recogniseFigures(
   if (!figures.length) return { text, available: true, ms: 0 };
   const langPath = await languageDataDirectory();
   if (!langPath) return { text, available: false, ms: Date.now() - startedAt };
-  const worker = await openRecogniser(langPath);
-  if (!worker) return { text, available: false, ms: Date.now() - startedAt };
+  const opening = await openInProcessRecogniser(langPath);
+  if (!opening.ok) return { text, available: false, ms: Date.now() - startedAt };
+  const worker = opening.recogniser;
   try {
     await worker.setParameters?.({ tessedit_pageseg_mode: options.psm ?? '6', user_defined_dpi: '300' });
     for (const figure of figures) {

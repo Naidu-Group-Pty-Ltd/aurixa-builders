@@ -110,6 +110,12 @@ declare const Deno: {
   stat(path: string): Promise<{ isFile: boolean; size: number }>;
   mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
   writeFile(path: string, data: Uint8Array): Promise<void>;
+  /**
+   * And the one the in-process engine makes (`ocr/engine.ts`): the model the
+   * loader above wrote, and a copy of the engine a trace provides. Each read
+   * is inside a catch that answers a named refusal.
+   */
+  readFile(path: string): Promise<Uint8Array>;
 };
 
 /**

@@ -148,7 +148,7 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         run: node scripts/ops/verify-functions-deployed.mjs "${{ steps.deploy.outputs.started_at }}"
 
-      # THE OCR MODEL, AFTER THE CODE AND NOT BEFORE IT.
+      # THE OCR MODEL AND ENGINE, AFTER THE CODE AND NOT BEFORE THEM.
       #
       # The first draft put this first, "for the same reason schema comes
       # before code". That reason does not transfer, and the difference is
@@ -165,9 +165,13 @@ jobs:
       # leaves the functions correctly shipped, OCR honestly declining, and
       # the run red so somebody looks. The second is strictly better.
       #
+      # The engine is the second asset and answers to the same reasoning: a
+      # function deployed without it declines to read a figure and says why
+      # (`ocr/engine.ts`), which is what every deployment did before it.
+      #
       # `always()` for the reason the verifier above uses it: this must report
       # even when the step before it did not finish.
-      - name: ship the OCR language model
+      - name: ship the OCR language model and engine
         if: ${{ always() }}
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}

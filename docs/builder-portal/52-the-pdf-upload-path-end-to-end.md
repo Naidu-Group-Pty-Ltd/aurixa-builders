@@ -1027,4 +1027,101 @@ refusals are the safe direction.
 
 Reader 17 is what reaches the stored document. The reader sweep re-reads it,
 the successor reads its schedule, and the importer corrects its own row, so the
-property keeps its id and its photographs.
+property keeps its id and its photographs. What production then showed about
+the engine is §17.
+
+
+## 17 · The engine that never started where it was asked
+
+**The defect, measured the hour §16 shipped.** Reader 17 reached production at
+12:59 on 23 September 2026. The reader sweep re-read the stored `Lot 101`
+brochure at 13:00:14 and handed its one inset on, exactly as designed. The
+successor that read the figure answered `recognition_unavailable` in 1,293 ms,
+and nothing in the log said why. It was the same brochure the same code had
+read as `124.50` under the Deno CLI in CI an hour earlier.
+
+**Why every gate passed.** `tesseract.js` never runs its engine in the isolate
+that calls it. Its Node build spawns a `worker_threads` Worker from a file
+inside its npm package, and its browser build spawns a Web Worker. The
+acceptance gate, the CPU profile and the reading trace all run under the Deno
+CLI, which starts that worker. The hosted edge runtime did not, and
+`openRecogniser` returned `null` without recording the error. The gate's
+import map also resolved `tesseract.js` to its npm build, and nothing shows the
+deploy honouring `supabase/functions/deno.json`, so production was probably
+not even running the same build of the library. The check that fitted this
+class was "the same bytes reach the engine the same way in the gate and in
+production", and it was not being made.
+
+**What replaced it.** The engine is one WebAssembly module and the loader
+that drives it, which is what the worker runs. `ocr/engineDriver.ts` makes
+the worker script's calls itself, in the isolate that asks:
+- instantiate from bytes it is handed;
+- write the model to `./eng.traineddata`;
+- `Init(null, 'eng', 1)`;
+- the worker's defaults, then the caller's parameters;
+- `SetImageFile`, `Recognize`, `GetUTF8Text`.
+
+The pieces are:
+
+- **The engine** is `tesseract.js-core@5.1.1`'s SIMD + LSTM build, the one
+  `tesseract.js` itself loads on every host that measured the figure reader.
+  It is 2.86 MB, so it is an asset in the project's own storage, as the model
+  is and for the model's measured reason: the module graph answered 413 at
+  6.59 MB (`ocr/languageSource.pure.ts`). The deploy ships it
+  (`scripts/ops/upload-ocr-language.mjs`). `ocr/engine.ts` fetches it and
+  refuses it unless its SHA-256 is the pinned one (`ocr/engineSource.pure.ts`),
+  because it is code the isolate will execute.
+- **The loader** is vendored from the same package by
+  `scripts/ocr/vendor-engine.mjs`, with two changes, each asserted to occur
+  exactly once. Its host tests are replaced by `false`: Deno 2 defines
+  `process`, so it chose Node and reached for `require('fs')`. Its
+  CommonJS/AMD export is replaced by one ES export: the unit suite's runner
+  defines `module`, and there that branch overwrote the module's own default
+  export. Both changes make the loader behave the same whatever host runs it,
+  which is the property whose absence this section is about.
+- **Every refusal is logged with its step**, under phase `ocr_engine`:
+  `engine_not_shipped`, `engine_unreachable`, `engine_not_measured`,
+  `language_unreadable`, `engine_start_failed` or `engine_init_failed`. The
+  scan pass's own opener now logs its error too. A capability that declines
+  silently cannot be told apart from one that was never asked.
+
+**Same engine, same text.** On the held-out picture, prepared as the product
+prepares it, the in-process engine's text is byte-identical to
+`tesseract.js`'s in both segmentation modes measured (psm 6 and psm 4). So
+every §16 measurement stands, including the production picture's `124.50`.
+Starting the engine takes 114–229 ms and recognition 316–360 ms. It adds about
+90 MB of process memory against the runtime's ~256 MB ceiling. The engine's
+own WebAssembly memory is 19 MB; most of the rest is compiled code.
+
+**Proved where the old proof could not reach.**
+`builderStockOcrEngineInProcess.spec.ts` runs the real engine in the ordinary
+unit suite, under Node, with `Worker` replaced by a class that throws. It reads
+the committed synthetic picture and the schedule reader proves `129.59` by its
+squares. A deliberately wrong engine is refused by name with nothing thrown.
+The digests are pinned everywhere they are named: the asset, the module, the
+deploy script and the acceptance stack. The gate now fetches the engine from
+the acceptance stack's storage by the production key, so the figure path it
+runs is the one production runs.
+
+**Measured.** The acceptance gate read 36 documents with 0 failures, 7 named
+limits and 0 generative-model calls, the same as §16's run, with the engine
+fetched from the acceptance stack's storage by the production key. Both routes
+import `129.59`, and the isolate that parsed the fixture decoded nothing. The
+figure's own invocation spent 489 ms, against 604 ms with the worker engine.
+In the CPU profile the figure invocation costs 477 ms of the 3,000 ms ceiling,
+against 654 ms before. The stress corpus, whose paths this change does not touch, measured 29,244 ms for the document class against 28,765, with a worst single invocation of 5,121 ms against 5,000 (the scanned-pages recognition, on the unchanged opener). Every document drifted by 2–8% in the same run, including decode-only ones, and one fell by 40%, so this is run-to-run variation on the machine. No invocation both parsed and decoded.
+
+**What it deliberately does not change.** The scanned-page pass keeps its
+worker-based opener. That is the opener that failed here, so on the hosted
+runtime a scan must be declining for the same reason; that is inferred, not
+observed, because no scan reached production in the logs that were read. It
+now says so in the log when it does. Moving it to the in-process engine is
+right.
+It is not in this change because a scanned page costs about 3.1 s to
+recognise, against the ~6.4 s shortest kill measured
+(`importResumeBudget.pure.ts`). A figure costs about 0.35 s. That page cost
+needs measuring on the hosted runtime before a builder's scan depends on it.
+
+Reader 18 is what reaches the stored document. The sweep re-reads the one
+upload version 17 could not finish, and every other document reads
+byte-identically.

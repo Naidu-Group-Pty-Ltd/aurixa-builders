@@ -186,7 +186,7 @@ import { sweepHandedOnThisParse } from './readerSweepAttempt.pure.ts';
  * Every document already imported is read again, because a document whose
  * headings were unreadable was read without them.
  */
-export const DETERMINISTIC_READER_VERSION = 17;
+export const DETERMINISTIC_READER_VERSION = 18;
 
 /*
  * VERSION 11 — A PHRASE'S OWN WORDS ARE HEADINGS TOO.
@@ -380,6 +380,29 @@ export const DETERMINISTIC_READER_VERSION = 17;
  * Every stored document is read again, because a row carrying no building
  * size is corrected only by a re-read. A document whose text states its build
  * size, or whose page draws no such picture, reads byte-identically.
+ *
+ * VERSION 18 — THE ENGINE RUNS WHERE IT IS ASKED.
+ *
+ * MEASURED 23 SEPTEMBER 2026, the first production re-read at version 17: the
+ * figure stage ran in its own isolate, as designed, and answered
+ * `recognition_unavailable` in 1,293 ms with nothing in the log to say why —
+ * over the stored `Lot 101` brochure the same code had read as `124.50` under
+ * the Deno CLI in CI. `tesseract.js` runs its engine in a worker it spawns (a
+ * `worker_threads` Worker from a file inside its npm package, or a Web
+ * Worker); the CLI starts one and the hosted edge runtime did not, and the
+ * opener swallowed the error.
+ *
+ * The figure reader now drives the same engine in the isolate that asks
+ * (`ocr/engine.ts`, `ocr/engineDriver.ts`): Tesseract's WebAssembly, shipped to
+ * the project's storage by the deploy and refused unless its digest is the
+ * pinned one, with the loader vendored from the same package. Same engine
+ * build, same model, same calls: on the held-out picture its text is
+ * byte-identical to `tesseract.js`'s under both segmentation modes measured,
+ * so every measurement version 17 recorded stands. Every refusal now names
+ * its step in the log.
+ *
+ * The one stored document whose reading this changes is the one version 17
+ * could not finish; every other document reads byte-identically.
  */
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */
