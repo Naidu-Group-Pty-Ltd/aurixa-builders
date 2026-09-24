@@ -3011,6 +3011,236 @@ def _u24(c):
     c.showPage()
 
 
+# --- h1. THE LOT AS A HEADING OVER ITS STREET AND LOCALITY -------------------
+#
+# A REGRESSION AT READER 21, and the most ordinary flyer there is: `LOT 572`
+# as a heading, and under it `Egret Street, Marsden Park NSW 2765`. Reader 20
+# read the lot, the street, the suburb, the state and the postcode. Reader 21
+# reads the lot and nothing of where it is: the heading now pairs itself with
+# the line beneath it, and a locality whose commas had become punctuation read
+# that line as ONE suburb, `Egret Street Marsden Park` — a second address the
+# whole-document guard then refused together with the real one.
+@fixture('heldout-lot-heading-over-a-street-and-its-locality',
+         'LOT 572 - EGRET - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='572', street_name='Egret Street',
+                        suburb='Marsden Park', state='NSW', postcode='2765',
+                        land_size_sqm=412, price=689000)]))
+def _h1(c):
+    pt(c, 43, 800, 'LOT 572', 22, True)
+    pt(c, 43, 776, 'Egret Street, Marsden Park NSW 2765', 12)
+    pt(c, 43, 740, 'Land Size 412m²', 12)
+    pt(c, 43, 720, 'Price $689,000', 12, True)
+    c.showPage()
+
+
+# --- h2. THE LOT AND ITS ADDRESS SET APART BY A DASH -------------------------
+#
+# The same regression on one line: `LOT 681 - Heron Avenue, Box Hill NSW 2765`.
+# A spaced dash is split before the reader sees the line, which makes it the
+# heading-over-address shape above, and reader 21 lost the whole address
+# reader 20 read.
+@fixture('heldout-lot-and-address-set-apart-by-a-dash',
+         'LOT 681 - HERON - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='681', street_name='Heron Avenue',
+                        suburb='Box Hill', state='NSW', postcode='2765',
+                        land_size_sqm=400, price=712000)]))
+def _h2(c):
+    pt(c, 43, 800, 'LOT 681 - Heron Avenue, Box Hill NSW 2765', 16, True)
+    pt(c, 43, 760, 'Land Size 400m²', 12)
+    pt(c, 43, 740, 'Price $712,000', 12, True)
+    c.showPage()
+
+
+# --- h3. THE LOT AS A HEADING OVER AN UNPUNCTUATED ADDRESS -------------------
+#
+# A WRONG VALUE AT READER 21: `LOT 745` over `Wren Street Riverstone NSW 2765`
+# stores the suburb `Wren Street Riverstone`. Reader 20 read no address at
+# all. The same words on one line (`LOT 745 Wren Street Riverstone NSW 2765`)
+# are split where the street's type word ends it, and so is this.
+@fixture('heldout-lot-heading-over-an-unpunctuated-address',
+         'LOT 745 - WREN - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='745', street_name='Wren Street',
+                        suburb='Riverstone', state='NSW', postcode='2765',
+                        land_size_sqm=375, price=655000)]))
+def _h3(c):
+    pt(c, 43, 800, 'LOT 745', 22, True)
+    pt(c, 43, 776, 'Wren Street Riverstone NSW 2765', 12)
+    pt(c, 43, 740, 'Land Size 375m²', 12)
+    pt(c, 43, 720, 'Price $655,000', 12, True)
+    c.showPage()
+
+
+# --- h4. THE LOT AS A HEADING OVER ITS ESTATE AND LOCALITY -------------------
+#
+# A WRONG VALUE AT READER 21: `Lot 318` over `Sandpiper Estate, Oran Park NSW
+# 2570` stores the suburb `Sandpiper Estate Oran Park`. Reader 20 read the
+# estate and no locality. The estate is the estate and the suburb is Oran Park.
+@fixture('heldout-lot-heading-over-an-estate-and-its-locality',
+         'LOT 318 - SANDPIPER - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='318', estate='Sandpiper Estate',
+                        suburb='Oran Park', state='NSW', postcode='2570',
+                        land_size_sqm=420, price=699000)]))
+def _h4(c):
+    pt(c, 43, 800, 'Lot 318', 22, True)
+    pt(c, 43, 776, 'Sandpiper Estate, Oran Park NSW 2570', 12)
+    pt(c, 43, 740, 'Land Size 420m²', 12)
+    pt(c, 43, 720, 'Price $699,000', 12, True)
+    c.showPage()
+
+
+# --- h5. THE LOT AND ITS STREET SET APART BY A DASH, OVER ESTATE AND SUBURB ---
+#
+# A WRONG VALUE AT READER 21: `LOT 463 - Plover Avenue` over `Lorikeet Estate,
+# Tarneit VIC 3029`. The spaced dash splits the heading into the lot and the
+# street, and the line under the street was read as one locality, the suburb
+# `Lorikeet Estate Tarneit`. Reader 20 read the estate and no address. Set
+# without the dash (`Lot 463 Plover Avenue`) the same lines have always read
+# completely, and this is the same address.
+@fixture('heldout-lot-and-street-set-apart-by-a-dash-over-an-estate',
+         'LOT 463 - PLOVER - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='463', street_name='Plover Avenue',
+                        estate='Lorikeet Estate', suburb='Tarneit',
+                        state='VIC', postcode='3029',
+                        land_size_sqm=392, price=702500)]))
+def _h5(c):
+    pt(c, 43, 800, 'LOT 463 - Plover Avenue', 22, True)
+    pt(c, 43, 776, 'Lorikeet Estate, Tarneit VIC 3029', 12)
+    pt(c, 43, 740, 'Land Size 392m²', 12)
+    pt(c, 43, 720, 'Price $702,500', 12, True)
+    c.showPage()
+
+
+# --- h6. AN ESTATE RUN INTO ITS SUBURB WITH NO COMMA ---------------------------
+#
+# A WRONG VALUE AT READERS 20 AND 21: `Lot 229 Currawong Drive` over
+# `Kingfisher Estate Clyde North VIC 3978` stores the suburb `Kingfisher Estate
+# Clyde North`. `Estate` is the one development word no Australian locality is
+# named with, so it says where the estate's name ends as plainly as a comma.
+@fixture('heldout-an-estate-run-into-its-suburb',
+         'LOT 229 - CURRAWONG - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='229', street_name='Currawong Drive',
+                        estate='Kingfisher Estate', suburb='Clyde North',
+                        state='VIC', postcode='3978',
+                        land_size_sqm=448, price=745000)]))
+def _h6(c):
+    pt(c, 43, 800, 'Lot 229 Currawong Drive', 22, True)
+    pt(c, 43, 776, 'Kingfisher Estate Clyde North VIC 3978', 12)
+    pt(c, 43, 740, 'Land Size 448m²', 12)
+    pt(c, 43, 720, 'Price $745,000', 12, True)
+    c.showPage()
+
+
+# --- h7. A PIPE BETWEEN THE LOT AND ITS STREET --------------------------------
+#
+# A WRONG VALUE AT READERS 20 AND 21: `LOT 537 | Magpie Crescent` stores the
+# street `| Magpie Crescent`. The pipe is the heading's separator, as a dash or
+# a colon is, and never part of the street's name. Asserted as the whole line,
+# because the ordinary street assertion is a containment and passes it.
+@fixture('heldout-a-pipe-between-the-lot-and-its-street',
+         'LOT 537 - MAGPIE - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='537', street_line='Magpie Crescent',
+                        suburb='Werribee', state='VIC', postcode='3030',
+                        land_size_sqm=400, price=668000)]))
+def _h7(c):
+    pt(c, 43, 800, 'LOT 537 | Magpie Crescent', 22, True)
+    pt(c, 43, 776, 'Werribee VIC 3030', 12)
+    pt(c, 43, 740, 'Land Size 400m²', 12)
+    pt(c, 43, 720, 'Price $668,000', 12, True)
+    c.showPage()
+
+
+# --- h8. AN ESTATE AND ITS SUBURB ON ONE LINE, WITH NO STATE -----------------
+#
+# LOST AT READERS 20 AND 21: `Lot 814 Brolga Street` over `Jacana Estate,
+# Wyndham Vale` reads the estate and neither the street nor the suburb. Set on
+# two lines (`Jacana Estate,` / `Wyndham Vale`) it is the LOT 326 brochure's
+# own address block and reads completely. The page names no state and no
+# postcode, and none is invented.
+@fixture('heldout-an-estate-and-its-suburb-with-no-state',
+         'LOT 814 - BROLGA - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='814', street_name='Brolga Street',
+                        estate='Jacana Estate', suburb='Wyndham Vale',
+                        state=None, postcode=None,
+                        land_size_sqm=360, price=615000)]))
+def _h8(c):
+    pt(c, 43, 800, 'Lot 814 Brolga Street', 22, True)
+    pt(c, 43, 776, 'Jacana Estate, Wyndham Vale', 12)
+    pt(c, 43, 740, 'Land Size 360m²', 12)
+    pt(c, 43, 720, 'Price $615,000', 12, True)
+    c.showPage()
+
+
+# --- h9. THE LOT, ITS STREET, AND AN ESTATE RUN INTO ITS SUBURB, AND A PRICE --
+#
+# IMPORTS NOTHING AT READER 20: `LOT 692` over `Tern Street` over `Osprey
+# Estate Point Cook VIC 3030` and a price. With no land size and the locality
+# unread, the lot and the price alone are too few to call a property, and the
+# document stood down. Reader 21 imported it with the suburb `Osprey Estate
+# Point Cook`. The page says everything a card needs, and all of it is read.
+@fixture('heldout-a-lot-heading-its-street-and-an-estate-run-into-its-suburb',
+         'LOT 692 - TERN - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='692', street_name='Tern Street',
+                        estate='Osprey Estate', suburb='Point Cook',
+                        state='VIC', postcode='3030', price=731000)]))
+def _h9(c):
+    pt(c, 43, 800, 'LOT 692', 22, True)
+    pt(c, 43, 776, 'Tern Street', 12)
+    pt(c, 43, 760, 'Osprey Estate Point Cook VIC 3030', 12)
+    pt(c, 43, 724, 'Price $731,000', 12, True)
+    c.showPage()
+
+
+# --- h10. THE LOT AND ITS STREET NUMBER ON ONE LINE, OVER THE LOCALITY -------
+#
+# IMPORTS NOTHING AT READERS 20 AND 21: `Lot 906, 14 Heath Street` over
+# `Riverstone NSW 2765`. The street line was read only where the lot stood
+# alone before the street's name, so a street carrying its own number after
+# the lot was no street, the locality under it was a line nobody read, and the
+# document stood down. On one line (`Lot 906, 14 Heath Street, Riverstone NSW
+# 2765`) the same address has always read completely.
+@fixture('heldout-a-lot-and-its-street-number-over-the-locality',
+         'LOT 906 - HEATH - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='906', street_line='14 Heath Street',
+                        suburb='Riverstone', state='NSW', postcode='2765',
+                        land_size_sqm=395, price=684000)]))
+def _h10(c):
+    pt(c, 43, 800, 'Lot 906, 14 Heath Street', 22, True)
+    pt(c, 43, 776, 'Riverstone NSW 2765', 12)
+    pt(c, 43, 740, 'Land Size 395m²', 12)
+    pt(c, 43, 720, 'Price $684,000', 12, True)
+    c.showPage()
+
+
 def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     manifest = []

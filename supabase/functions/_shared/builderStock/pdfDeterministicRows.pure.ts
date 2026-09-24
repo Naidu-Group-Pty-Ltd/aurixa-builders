@@ -2334,6 +2334,45 @@ const POSTCODE_RANGES: Readonly<Record<string, ReadonlyArray<readonly [number, n
   NT: [[800, 999]],
 };
 
+/**
+ * `NSW`, `Victoria`, `New South Wales` — A STATE, AND NEVER A PLACE'S NAME.
+ *
+ * `NSW 2765` under a street is the state and the postcode with no suburb
+ * before them, and read as a place and its postcode it stored the suburb
+ * `NSW`. Refused wherever a bare place is read (`readBarePlaceName`, and
+ * `readPostcodedPlace` through it): no Australian locality is named with a
+ * state's name alone, and the place names that carry one carry more
+ * (`Mount Victoria`, `Victoria Park`).
+ */
+function namesOnlyAState(words: readonly string[]): boolean {
+  const lower = words.map((word) => word.toLowerCase().replace(/\.$/, ''));
+  if (lower.length === 1 && AU_STATE_TOKEN.test(lower[0])) return true;
+  return STATE_NAMES.some(([name]) =>
+    name.length === lower.length && name.every((word, index) => word === lower[index]));
+}
+
+/**
+ * `NSW 2765` — A STATE AND ITS POSTCODE, WITH NO PLACE BEFORE THEM.
+ *
+ * Under a street it is the rest of the address with the suburb unprinted, and
+ * it is read as exactly that: the state and the postcode, and no suburb. A
+ * state spelled out is taken only where the postcode agrees (`stateAtEnd`'s
+ * rule). Asked only of the line under a street, as every locality reader is.
+ */
+function readStateAndPostcode(line: string): LocalityLine | null {
+  const tokens = localityTokens(line);
+  const postcode = tokens[tokens.length - 1] ?? '';
+  if (tokens.length < 2 || !/^\d{4}$/.test(postcode)) return null;
+  const words = tokens.slice(0, -1);
+  if (words.length === 1 && AU_STATE_TOKEN.test(words[0])) {
+    return { suburb: '', state: words[0].replace(/\.$/, '').toUpperCase(), postcode };
+  }
+  const lower = words.map((word) => word.toLowerCase());
+  const named = STATE_NAMES.find(([name]) =>
+    name.length === lower.length && name.every((word, index) => word === lower[index]));
+  return named && postcodeIsIn(named[1], postcode) ? { suburb: '', state: named[1], postcode } : null;
+}
+
 function postcodeIsIn(state: string, postcode: string): boolean {
   const code = Number(postcode);
   return (POSTCODE_RANGES[state] ?? []).some(([low, high]) => code >= low && code <= high);
@@ -2451,6 +2490,22 @@ function readStreetLine(line: string): string | null {
   if (tokens.length >= 4 && /^lots?[:.]?$/i.test(tokens[0])
     && LOT_DESIGNATION.test(tokens[1].replace(DESIGNATION_PUNCTUATION, ''))) {
     tokens = tokens.slice(2);
+    /*
+     * `LOT 537 | Magpie Crescent` — THE MARK SET BETWEEN THE LOT AND ITS
+     * STREET IS NEITHER. It separates them as a comma or a colon after the
+     * designation does, and it reached the card as the street's first word:
+     * `| Magpie Crescent`, at every reader before this one.
+     */
+    while (tokens.length && LOT_STREET_SEPARATOR.test(tokens[0])) tokens = tokens.slice(1);
+    /*
+     * `Lot 906, 14 Heath Street` — THE LOT, THEN THE STREET'S OWN NUMBER. The
+     * name after a lot had to be words alone, so a street carrying its number
+     * after the lot was no street: the locality under it was a line nothing
+     * read, and the document stood down. It is the numbered street, read by
+     * the numbered street's own rule — exactly what the one-line reader does
+     * with `Lot 906, 14 Heath Street, Riverstone NSW 2765`.
+     */
+    if (tokens.length >= 3 && STREET_NUMBER.test(tokens[0])) return readStreetLine(tokens.join(' '));
   } else {
     // A number, optionally with a unit letter — never `20mm`, which is a size.
     if (tokens.length < 3) return null;
@@ -2476,6 +2531,8 @@ function readStreetLine(line: string): string | null {
  * is, no property was imported.
  */
 const DESIGNATION_PUNCTUATION = /[,;:]+$/;
+/** A mark standing alone between a lot designation and its street. */
+const LOT_STREET_SEPARATOR = /^[|:/\u00b7\u2022\u2013\u2014-]+$/;
 
 /**
  * `Lot 7 (No. 15)`, `Lot 7 (15)`, `Lot 7 (#15)` — the lot, then the street
@@ -3023,6 +3080,136 @@ const ESTATE_WORDS_THAT_ARE_ALSO_STREETS = new Set([
 type LotAddressBlock =
   LocalityLine & { street: string; lot: string; development: string | null; lines: string[] };
 
+/**
+ * A LOCALITY UNDER A LOT IS A PLACE, NEVER A STREET OR AN ESTATE RUN INTO ONE.
+ *
+ * The locality readers take everything before the state as the suburb, and a
+ * comma between a locality's PARTS (`Clyde North, VIC, 3978`) is punctuation —
+ * so under a bare `LOT 572`, `Egret Street, Marsden Park NSW 2765` read as the
+ * suburb `Egret Street Marsden Park`, `Sandpiper Estate, Oran Park NSW 2570` as
+ * `Sandpiper Estate Oran Park`, and `Wren Street Riverstone NSW 2765` as `Wren
+ * Street Riverstone`. Reader 20 read the first of those completely; reader 21
+ * read it as a second address, and the whole-document guard refused both.
+ *
+ * Two tests, both about the words of the place itself: a comma BETWEEN them
+ * (never the one after the last, which sets the place apart from its state),
+ * and a street type or `Estate` with a word on each side of it. A suburb that
+ * begins or ends in such a word — `Lane Cove`, `Glen Waverley`, `Wattle Grove`,
+ * `Marsden Park` — is a place and is read as one.
+ */
+function runsOnFromAStreet(locality: LocalityLine, text: string): boolean {
+  const place = locality.suburb.split(/\s+/).filter(Boolean);
+  if (!place.length) return false;
+  const written = String(text ?? '').trim().replace(/[.,;]+$/, '')
+    .replace(/\s*,\s*/g, ', ').split(/\s+/).filter(Boolean);
+  for (let i = 0; i < Math.min(place.length - 1, written.length); i++) {
+    if (written[i].endsWith(',')) return true;
+  }
+  for (let i = 1; i < place.length - 1; i++) {
+    const word = place[i].toLowerCase().replace(/[.,]+$/, '');
+    if (STREET_TYPE.has(word) || word === 'estate') return true;
+  }
+  return false;
+}
+
+/**
+ * `Palomino Estate, Armstrong Creek VIC 3217` — AN ESTATE AND ITS LOCALITY ON
+ * ONE LINE.
+ *
+ * Under a lot's street, the line that says where the lot is often opens with
+ * its estate, and every reader of a locality took the estate for part of the
+ * suburb: `Palomino Estate Armstrong Creek` reached the card wherever the
+ * one-line reader was not asked first, and after `runsOnFromAStreet` the same
+ * lines read no locality at all. The one-line reader already knows that a
+ * comma after a development ends it, and it is asked first. The two shapes it
+ * does not read are its own rule applied to a line that OPENS with an estate,
+ * and both end the estate at the word ESTATE and nowhere else:
+ *
+ *   • `Jacana Estate, Wyndham Vale` — the estate, a comma, and a place's name
+ *     with no state. Only where `barePlace` says the frame makes a bare place
+ *     safe (a lot's own block), exactly as `Jacana Estate,` over `Wyndham
+ *     Vale` on two lines has always read. No state or postcode is invented.
+ *   • `Kingfisher Estate Clyde North VIC 3978` — no comma, split at the word
+ *     ESTATE and nowhere else. It is the one development word no Australian
+ *     locality is named with; `Park`, `Grove`, `Heights`, `Waters` and `Rise`
+ *     all are (`Marsden Park`, `Wattle Grove`), so a line naming its estate
+ *     with one of those and no comma is left exactly as it was.
+ *
+ * The locality is a full one, a place and its postcode, or (where allowed) a
+ * place alone — never one run on from a street (`runsOnFromAStreet`). A place
+ * with no state that ends in a street word, or only repeats the estate's own
+ * words, is refused, as the lot's frame already refuses it after an estate.
+ */
+function readEstateAndLocality(
+  line: string,
+  organisation: readonly string[],
+  barePlace: boolean,
+): (LocalityLine & { development: string }) | null {
+  const text = String(line ?? '').trim().replace(/[\s.,;]+$/, '');
+  if (!text || PUBLISHER_PREMISES.test(text)) return null;
+
+  const composed = readComposedAddressLine(text);
+  if (composed && !composed.street && !composed.lot && composed.development && composed.suburb) {
+    return {
+      development: composed.development,
+      suburb: composed.suburb, state: composed.state, postcode: composed.postcode,
+    };
+  }
+
+  /*
+   * Only `Estate` ends a development here, with or without the comma or rule
+   * after it. `Marsden Park, NSW 2765` is a suburb and its state, and every
+   * other development word names suburbs too; where a full locality follows
+   * one of those after a comma, the one-line reader above has decided.
+   */
+  const words = text.split(/\s+/).filter(Boolean);
+  const isEstate = (word: string) => word.toLowerCase().replace(/[,|\u2022]+$/, '') === 'estate';
+  const at = words.findIndex(isEstate);
+  if (at < 1 || at >= words.length - 1 || words.filter(isEstate).length !== 1) return null;
+  // The estate's own name is words: capitalised, no figure, no punctuation.
+  const name = words.slice(0, at);
+  if (name.length > MAX_PLACE_WORDS || !name.every((word) => PLACE_WORD.test(word))) return null;
+  const estate = `${name.join(' ')} ${words[at].replace(/[,|\u2022]+$/, '')}`;
+  const rest = words.slice(at + 1).join(' ').replace(/^[\s,|\u2022]+/, '');
+  if (!rest) return null;
+
+  const full = readComposedLocality(rest);
+  if (full) return runsOnFromAStreet(full, rest) ? null : { development: estate, ...full };
+  const coded = readPostcodedPlace(rest, organisation);
+  const bare = !coded && barePlace ? readBarePlaceName(rest, organisation) : null;
+  const place: LocalityLine | null = coded ?? (bare ? { suburb: bare, state: '', postcode: '' } : null);
+  if (!place || runsOnFromAStreet(place, rest)) return null;
+  const last = place.suburb.split(/\s+/).pop()?.toLowerCase() ?? '';
+  if (STREET_TYPE.has(last)) return null;
+  if (corroboratedBy(place.suburb, [nameTokens(estate)])) return null;
+  return { development: estate, ...place };
+}
+
+/**
+ * `LOT 463 - Plover Avenue` — THE LOT'S OWN LINE, SPLIT AT ITS DASH.
+ *
+ * A spaced dash separates two statements (`LOT 88 - HARLOW 21`, a lot and a
+ * design), so the lot and its street become two units. On a flattened page
+ * each is a line of its own and the street is the line under the lot. With
+ * positions they share the ROW, and the line under the lot is the line under
+ * the street: the street was skipped and never read. Here the street is the
+ * rest of the lot's own line, as the page set it — the next unit split from
+ * the same line, and only where it reads as a street.
+ */
+function streetBesideLot(
+  units: readonly BrochureUnit[],
+  index: number,
+): { street: string; at: number } | null {
+  const lot = units[index];
+  const next = units[index + 1];
+  if (!lot || !next || lot.normalisation?.rule !== 'field_separator') return null;
+  if (next.row !== lot.row || next.raw !== lot.raw) return null;
+  if (next.normalisation?.rule !== 'field_separator') return null;
+  const text = next.text.trim().replace(/[\s,]+$/, '');
+  const street = readStreetLine(text) ?? readStreetName(text);
+  return street ? { street, at: index + 1 } : null;
+}
+
 function readLotAddressBlock(
   line: string,
   index: number,
@@ -3039,8 +3226,14 @@ function readLotAddressBlock(
    * street, its estate and its locality one line each beneath it. The lot's
    * line names no place, so every place is asked of the lines under it.
    */
-  const bareLot = !trimmed.slice(lotMatch[0].length).trim();
-  const street = bareLot ? null : readStreetLine(trimmed);
+  const headingOnly = !trimmed.slice(lotMatch[0].length).trim();
+  // `LOT 463 - Plover Avenue`, split at its dash onto one row: the street is
+  // the rest of the lot's own line (`streetBesideLot`).
+  const besideAt = headingOnly ? streetBesideLot(units, index) : null;
+  const beside = besideAt && !consumed.has(besideAt.at) ? besideAt : null;
+  const bareLot = headingOnly && !beside;
+  const street = beside ? beside.street : bareLot ? null : readStreetLine(trimmed);
+  const lotLines = beside ? [line, units[beside.at].text] : [line];
   /*
    * `Lot 4544 Riverwalk Estate` — NO STREET, AND THE DEVELOPMENT NAMES ITSELF.
    * The lot's own line then says everything the page says about where it is
@@ -3059,11 +3252,16 @@ function readLotAddressBlock(
   if (under === null || consumed.has(under)) return null;
 
   const second = units[under].text;
+  // Whatever reads the locality, a street or an estate run into it is not one.
+  const placeOnly = (locality: LocalityLine | null, text: string) =>
+    locality && !runsOnFromAStreet(locality, text) ? locality : null;
   const localityOf = (text: string) => {
-    const full = readComposedLocality(text);
+    const full = placeOnly(readComposedLocality(text), text);
     if (full) return full;
-    const coded = readPostcodedPlace(text, organisation);
+    const coded = placeOnly(readPostcodedPlace(text, organisation), text);
     if (coded) return coded;
+    const stated = readStateAndPostcode(text);
+    if (stated) return stated;
     const place = readBarePlaceName(text, organisation);
     return place ? { suburb: place, state: '', postcode: '' } : null;
   };
@@ -3085,6 +3283,42 @@ function readLotAddressBlock(
 
   const secondBare = second.trim().replace(/[\s,]+$/, '');
   if (bareLot) {
+    /*
+     * `LOT 572` / `Egret Street, Marsden Park NSW 2765` — THE LINE UNDER A BARE
+     * LOT IS THE REST OF ONE ADDRESS. Set on one line, `LOT 572 Egret Street,
+     * Marsden Park NSW 2765` is read by `readComposedAddressLine`, and set as a
+     * heading over the rest it is the same address, so it is read the same way:
+     * the street, or the estate, and the suburb that line names — never a
+     * locality run on from its street (`runsOnFromAStreet`). Taken only where
+     * that reading names a street or an estate AND a suburb; anything less is
+     * left to the readings below, exactly as before.
+     *
+     * Joined to the lot's DESIGNATION, not its line, so a heading set `LOT 572
+     * -` lends no dash to the street. And an estate named by a word that is
+     * also a street type (`Egret Grove`) is not taken as the estate here: the
+     * words say a street as readily, a lot over them has never read either,
+     * and the place after the comma is read all the same.
+     */
+    const joined = readComposedAddressLine(`Lot ${lotMatch[1]} ${secondBare}`);
+    if (joined && (joined.street || joined.development) && joined.suburb) {
+      const estateWord = joined.development?.split(/\s+/).pop()?.toLowerCase() ?? '';
+      return {
+        street: joined.street, lot: lotMatch[1],
+        development: joined.development && !ESTATE_WORDS_THAT_ARE_ALSO_STREETS.has(estateWord)
+          ? joined.development : null,
+        suburb: joined.suburb, state: joined.state, postcode: joined.postcode,
+        lines: [line, second],
+      };
+    }
+    /*
+     * `LOT 692` / `Osprey Estate Point Cook VIC 3030` — the estate and its
+     * locality with no comma, which the one-line reader does not split. See
+     * `readEstateAndLocality`.
+     */
+    const estateFirst = readEstateAndLocality(second, organisation, true);
+    if (estateFirst) {
+      return { street: '', lot: lotMatch[1], ...estateFirst, lines: [line, second] };
+    }
     /*
      * `LOT 47` / `Heron Court` / `Mount Barker SA 5251`. The street is a street
      * of the closed type set, numbered or not, and it is what makes the line
@@ -3111,6 +3345,13 @@ function readLotAddressBlock(
           ...locality, lines: [line, second, third, fourth],
         };
       }
+      // `Tern Street` / `Osprey Estate Point Cook VIC 3030`.
+      const estateLocality = readEstateAndLocality(third, organisation, true);
+      if (estateLocality) {
+        return {
+          street: lotStreet, lot: lotMatch[1], ...estateLocality, lines: [line, second, third],
+        };
+      }
       const locality = localityOf(third);
       if (!locality) return null;
       return {
@@ -3125,7 +3366,7 @@ function readLotAddressBlock(
      * as a suburb, and nothing on the page says which.
      */
     if (!secondBare.match(NAMED_DEVELOPMENT)) {
-      const full = readComposedLocality(second);
+      const full = placeOnly(readComposedLocality(second), second);
       if (full) return { street: '', lot: lotMatch[1], development: null, ...full, lines: [line, second] };
       /*
        * `Lot 402` / `Marlo 23` / `Wollert VIC 3750` — the design between the
@@ -3139,7 +3380,7 @@ function readLotAddressBlock(
       const beneath = below(under);
       if (beneath === null || consumed.has(beneath)) return null;
       const third = units[beneath].text;
-      const locality = readComposedLocality(third);
+      const locality = placeOnly(readComposedLocality(third), third);
       return locality
         ? { street: '', lot: lotMatch[1], development: null, ...locality, lines: [line, third] }
         : null;
@@ -3155,14 +3396,19 @@ function readLotAddressBlock(
     if (!locality || !afterEstate(locality.suburb, estate)) return null;
     return {
       street: street ?? '', lot: lotMatch[1], development: estate,
-      ...locality, lines: [line, second, third],
+      ...locality, lines: [...lotLines, second, third],
     };
+  }
+  // `Lot 229 Currawong Drive` / `Kingfisher Estate Clyde North VIC 3978`.
+  const estateLocality = readEstateAndLocality(second, organisation, true);
+  if (estateLocality) {
+    return { street: street ?? '', lot: lotMatch[1], ...estateLocality, lines: [...lotLines, second] };
   }
 
   const locality = localityOf(second);
   if (!locality) return null;
   return {
-    street: street ?? '', lot: lotMatch[1], development: null, ...locality, lines: [line, second],
+    street: street ?? '', lot: lotMatch[1], development: null, ...locality, lines: [...lotLines, second],
   };
 }
 
@@ -3224,6 +3470,7 @@ function readBarePlaceName(line: string, organisation: readonly string[]): strin
   const words = trimmed.split(/\s+/).filter(Boolean);
   if (!words.length || words.length > MAX_PLACE_WORDS) return null;
   if (!words.every((word) => PLACE_WORD.test(word))) return null;
+  if (namesOnlyAState(words)) return null;
   if (fieldForHeader(trimmed)) return null;
   // `Titled Land`, `Stage Release`: a word this vocabulary reads as a field is
   // the document labelling something, and a suburb is never labelled by itself.
@@ -5170,17 +5417,34 @@ export function readPdfBrochure(
            * it is asked first and the simpler reader is the fallback.
            */
           const composedUnder = under ? readComposedAddressLine(under) : null;
+          /*
+           * And where the one-line reader does not split it, an estate opening
+           * the locality line is still the estate (`Kingfisher Estate Clyde
+           * North VIC 3978`), and a locality run on from a street or an estate
+           * is no locality — the suburb `Kingfisher Estate Clyde North` is the
+           * page's two facts read as one. See `readEstateAndLocality` and
+           * `runsOnFromAStreet`.
+           */
+          const estateUnder = under && !(composedUnder && composedUnder.suburb)
+            ? readEstateAndLocality(under, organisation, false) : null;
+          const placeUnder = (read: LocalityLine | null) =>
+            read && under !== null && !runsOnFromAStreet(read, under) ? read : null;
           const locality = composedUnder && composedUnder.suburb
             ? {
                 suburb: composedUnder.suburb,
                 state: composedUnder.state,
                 postcode: composedUnder.postcode,
               }
-            : (under ? (readLocalityLine(under) ?? readPostcodedPlace(under, organisation)) : null);
+            : estateUnder
+              ? { suburb: estateUnder.suburb, state: estateUnder.state, postcode: estateUnder.postcode }
+              : (under
+                ? (placeUnder(readLocalityLine(under)) ?? placeUnder(readPostcodedPlace(under, organisation))
+                  ?? readStateAndPostcode(under))
+                : null);
           if (locality && under !== null) {
             addressBlocks.push({
               street, ...locality,
-              development: composedUnder?.development ?? null,
+              development: composedUnder?.development ?? estateUnder?.development ?? null,
               /*
                * The lot the street line opens with, where it names one. The lot
                * heading reads it too, except where the line also carries the

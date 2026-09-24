@@ -1664,3 +1664,126 @@ two properties where it imported none, and the six stress covers above.
 heading `RELEASE 6`. A release designation is now recognised, and both columns
 read their lot, locality, land and price. What is left is its design and counts,
 printed with no label and no icons, which are never read by rule.
+
+## 22 · A lot, its street and its locality, however they are set out (reader 22)
+
+**Found 24 September 2026, the day reader 21 shipped, by sweeping it against
+reader 20.** Reader 21 made a locality's commas punctuation (`Clyde North, VIC,
+3978` is one place), and under a lot set as a heading of its own that turned
+the most ordinary flyer there is into a second address:
+
+| printed | reader 20 | reader 21 | now |
+|---|---|---|---|
+| `LOT 572` over `Egret Street, Marsden Park NSW 2765` | lot, street, suburb, state, postcode | the lot only | the same as reader 20 |
+| `LOT 745` over `Wren Street Riverstone NSW 2765` | the lot only | suburb `Wren Street Riverstone` | street `Wren Street`, suburb `Riverstone` |
+| `Lot 318` over `Sandpiper Estate, Oran Park NSW 2570` | the estate, no locality | suburb `Sandpiper Estate Oran Park` | estate `Sandpiper Estate`, suburb `Oran Park` |
+
+The heading paired itself with the line beneath it, the locality reader took
+everything before the state as the suburb, and the result was either a suburb
+no register has or, where the whole-document guard counted it as a second
+address, no address at all. Swept against the values the page means, **528
+lot-heading layouts read 45 wrong and lost 63 at reader 21, and 0 and 0 now.**
+
+Two rules close it:
+
+- **A locality under a lot is a place, never a street or an estate run into
+  one** (`runsOnFromAStreet`). A comma between the place's own words, or a
+  street type or `Estate` with a word on each side of it, says the line holds
+  more than a place. A suburb that begins or ends in such a word is untouched
+  (`Lane Cove`, `Glen Waverley`, `Wattle Grove`, `Marsden Park`), and so is
+  one whose middle word merely looks like one (`Holland Park West`, `Box Hill
+  North`, `Lane Cove West`).
+- **The line under a bare lot is the rest of one address.** Set on one line,
+  `LOT 572 Egret Street, Marsden Park NSW 2765` has always been read by the
+  one-line reader, and set as a heading over the rest it is the same address,
+  so it is read the same way. It is joined to the lot's *designation*, never its
+  line, so a heading closed by a dash (`LOT 572 -`) lends the street no dash.
+
+**And seven more shapes, four of them wrong or lost at every reader.** Sweeping
+a lot or a street over every way a locality is set under it (1,116 more
+layouts) found them:
+
+| printed | reader 20 | reader 21 | now |
+|---|---|---|---|
+| `Lot 229 Currawong Drive` over `Kingfisher Estate Clyde North VIC 3978` | suburb `Kingfisher Estate Clyde North` | the same | estate and suburb |
+| `Lot 814 Brolga Street` over `Jacana Estate, Wyndham Vale` | the estate only | the same | street, estate and suburb, no state invented |
+| `LOT 537 \| Magpie Crescent` | street `\| Magpie Crescent` | the same | street `Magpie Crescent` |
+| `Lot 906, 14 Heath Street` over `Riverstone NSW 2765` | **nothing imported** | **nothing imported** | lot, street, suburb, state, postcode |
+| `LOT 692` / `Tern Street` / `Osprey Estate Point Cook VIC 3030` and a price | **nothing imported** | suburb `Osprey Estate Point Cook` | street, estate and suburb |
+| `LOT 463 - Plover Avenue` over `Lorikeet Estate, Tarneit VIC 3029` | the estate only | suburb `Lorikeet Estate Tarneit` | street, estate and suburb |
+| `18 Egret Street` over `NSW 2765` | **nothing imported** | suburb `NSW` | street, state and postcode |
+
+- **An estate beside its suburb is the estate and the suburb**
+  (`readEstateAndLocality`). The one-line reader already splits
+  `Palomino Estate, Armstrong Creek VIC 3217` at its comma and is asked first.
+  The shapes it does not read are split at the word **`Estate` and nowhere
+  else**, however the line is punctuated around it (`Kingfisher Estate Clyde
+  North, VIC 3978`, `Kingfisher Estate | Clyde North VIC 3978`): it is the one
+  development word no Australian locality is named with, while `Park`,
+  `Grove`, `Heights`, `Waters` and `Rise` all are. A place with no state after
+  an estate is read only inside a lot's own block, as `Jacana Estate,` over
+  `Wyndham Vale` on two lines always has been.
+- **The mark between a lot and its street is neither** (`LOT_STREET_SEPARATOR`).
+- **A street number after a lot is the street's.** The name after a lot had to
+  be words alone, so `Lot 906, 14 Heath Street` was no street, the locality
+  under it was a line nothing read, and the document stood down. It is read by
+  the numbered street's own rule now, exactly as the one-line reader reads
+  `Lot 906, 14 Heath Street, Riverstone NSW 2765`.
+- **A dashed lot line keeps its street** (`streetBesideLot`). A spaced dash
+  splits `LOT 463 - Plover Avenue` into the lot and the street. On a flattened
+  page each becomes a line and the street is the line under the lot; with
+  positions they share the lot's *row*, and the line under the lot was the line
+  under the street, so the street was skipped. The rest of the lot's own line
+  is its street now, only where it reads as one: `LOT 88 - HARLOW 21` is a lot
+  and a design, exactly as before.
+- **A state is never a suburb** (`namesOnlyAState`). `18 Egret Street` over
+  `NSW 2765` stored the suburb `NSW`. It is the state and the postcode now,
+  and no suburb (`readStateAndPostcode`); a state spelled out is taken only
+  where the postcode agrees, so `Victoria 2029` reads neither.
+
+**What is still not read, and why.** A street over a line that names no place
+(`Harlow 21`, `Spring 2026`, a count line) is not claimed as an address, as
+before, because a street alone could be anyone's. A suburb and a region after a
+comma (`Armstrong Creek, Geelong VIC 3217`) reads no locality rather than the
+suburb `Armstrong Creek Geelong`. And **an estate named with a word that also
+names suburbs, run into its suburb with no comma** (`Palomino Park Armstrong
+Creek VIC 3217`), is still stored whole as the suburb, as at every reader
+before: `Holland Park West` is a real suburb of the same shape, and nothing on
+the page tells the two apart. `Palomino Rise Armstrong Creek` reads no locality,
+because `Rise` is also a street type. And **a suburb named with such a word,
+then its city** (`Marsden Park, Sydney NSW 2765`) is read as the estate `Marsden
+Park` in the suburb `Sydney`: that is how the one-line reader has read it since
+it was written, because `Harbour Waters, Wyndham Vale VIC 3024` is an estate and
+its suburb in the same shape. Every street form now reads that line the same
+way, including the three that imported nothing before (`Lot 906, 14 Heath
+Street` and its kin), so 28 layouts carrying it are counted apart below.
+
+**Held out first.** Ten fixtures, committed before the code in three commits:
+`heldout-lot-heading-over-a-street-and-its-locality`,
+`heldout-lot-and-address-set-apart-by-a-dash` (a guard, read correctly by
+both), `heldout-lot-heading-over-an-unpunctuated-address`,
+`heldout-lot-heading-over-an-estate-and-its-locality`,
+`heldout-lot-and-street-set-apart-by-a-dash-over-an-estate`,
+`heldout-an-estate-run-into-its-suburb`,
+`heldout-a-pipe-between-the-lot-and-its-street`,
+`heldout-an-estate-and-its-suburb-with-no-state`,
+`heldout-a-lot-heading-its-street-and-an-estate-run-into-its-suburb` and
+`heldout-a-lot-and-its-street-number-over-the-locality`. The harness compares a
+street as *contained*, because an address line may carry the number an
+expectation omits, and that passes `| Magpie Crescent`, so a fixture whose
+subject is the characters around a street states `street_line`, the whole line
+exactly (`fieldHolds`).
+
+**Measured.** Against reader 21, 76 of the 85 corpus and stress documents read
+identically, and the 9 that change are the held-out fixtures (the tenth is the
+guard). Swept against the values the page means (528 lot headings, 360
+lot-and-street layouts, 756 street lines over every locality form) nothing reads
+wrong, where reader 21 read 45, 78 and 110 wrong. The street lines read exactly
+616 times in 756 (reader 21: 374), and in no sweep, nor in the 1,656-layout
+comparison with reader 20, does anything reader 20 or reader 21 read exactly
+read less. The 28 layouts of the named limit above read wrong at every reader
+(reader 20: 14, reader 21: 22, now 28, because the street forms that imported
+nothing now import).
+`builderStockLotAddressFrame.spec.ts` pins each shape; 21 of its 31 cases fail
+against reader 21, and the other 10 are the guards above, which both readers
+must pass.

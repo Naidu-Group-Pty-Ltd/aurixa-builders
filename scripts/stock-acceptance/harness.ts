@@ -779,7 +779,25 @@ const FIELD_COLUMN: Record<string, string> = {
   estate: 'development_name',
   build_size_sqm: 'building_size_sqm',
   street_name: 'address_line',
+  street_line: 'address_line',
 };
+
+/**
+ * Does the card hold what the expectation states?
+ *
+ * `street_name` is compared as CONTAINED, because an address line may carry
+ * the street number the expectation omits (`22 Wattlebird Way`). That also
+ * passes a line carrying anything else beside the street, so a fixture whose
+ * subject is the characters AROUND a street (`| Magpie Crescent`, the pipe a
+ * heading set between the lot and the street) states `street_line`: the
+ * whole line, exactly. Case is never compared — see 6c.
+ */
+function fieldHolds(field: string, key: string, got: unknown, want: unknown): boolean {
+  if (key === 'address_line' && field !== 'street_line') {
+    return String(got ?? '').toLowerCase().includes(String(want).toLowerCase());
+  }
+  return String(got).toLowerCase() === String(want).toLowerCase();
+}
 /**
  * Keys an expectation row carries that are NOT columns of a property.
  *
@@ -1090,10 +1108,7 @@ for (const entry of manifest) {
        * read `ASPIRE 24 GRANDE`, which is a PRESENTATION question and is
        * reported as an observation rather than smuggled in here as a defect.
        */
-      const same = want === null ? got === null
-        : key === 'address_line'
-          ? String(got ?? '').toLowerCase().includes(String(want).toLowerCase())
-          : String(got).toLowerCase() === String(want).toLowerCase();
+      const same = want === null ? got === null : fieldHolds(field, key, got, want);
       if (!same) fail(entry, `row ${i} ${key}: expected ${JSON.stringify(want)}, got ${JSON.stringify(got)}`);
     }
   }
@@ -2732,9 +2747,7 @@ const invariants: Record<string, unknown> = {};
       // 6c's own rule, so this case holds the reading to the corpus's
       // standard and no stricter: an address line may carry the street number
       // the one-page expectation omits ("22 Wattlebird Way").
-      const same = key === 'address_line'
-        ? String(got ?? '').toLowerCase().includes(String(want).toLowerCase())
-        : String(got).toLowerCase() === String(want).toLowerCase();
+      const same = fieldHolds(field, key, got, want);
       if (!same) {
         fieldMismatches.push(`${key}: expected ${JSON.stringify(want)}, got ${JSON.stringify(got)}`);
       }
@@ -3103,9 +3116,7 @@ await fileServer.shutdown();
         totals.fieldsExpected += 1;
         const key = FIELD_COLUMN[field] ?? field;
         const got = (row?.items ?? [])[i]?.[key] ?? null;
-        const same = got !== null && (key === 'address_line'
-          ? String(got).toLowerCase().includes(String(want).toLowerCase())
-          : String(got).toLowerCase() === String(want).toLowerCase());
+        const same = got !== null && fieldHolds(field, key, got, want);
         if (same) totals.fieldsDelivered += 1;
         else {
           (entry.expect.known_limit ? totals.fieldsMissingNamedLimit : totals.fieldsMissing)
