@@ -53,7 +53,13 @@ import {
   coverIdentityRefusal, packageFactsOn,
 } from '../../supabase/functions/_shared/builderStock/pdfPrimaryImage.pure.ts';
 import { sniffImageContentType } from '../../supabase/functions/_shared/builderStock/sourceAssets.pure.ts';
-import { imageHeaderPixels } from '../../supabase/functions/_shared/builderStock/sourceImageRaster.ts';
+import {
+  decodeFullRaster, decodeThumbnailResult, imageHeaderPixels,
+} from '../../supabase/functions/_shared/builderStock/sourceImageRaster.ts';
+import {
+  measureFlatColourRegions, overlayTextBoxes, readMarketingOverlay,
+} from '../../supabase/functions/_shared/builderStock/marketingOverlay.pure.ts';
+import { encodePng } from '../../supabase/functions/_shared/builderStock/rasterPng.ts';
 import { fetchStockSource } from '../../supabase/functions/_shared/builderStock/fetchSource.ts';
 import {
   stockIdentityHints, stockRecordLabel,
@@ -346,6 +352,15 @@ async function pdfCensus(asset: FetchedAsset, identity: RowIdentity): Promise<vo
       console.log(`          cover rule: ${refusal ?? 'states this property'}`
         + ` | package facts ${facts.length}${facts.length ? ` (${facts.join(', ')})` : ''}`
         + ` | designations typed: [${lotDesignationsAsTyped(text).join(' ; ')}]`);
+      // Where a page falls short of a package's facts, what it printed that
+      // looks like money — so a price the rule did not recognise is visible.
+      if (facts.length < 2) {
+        const money = Array.from(
+          text.matchAll(/(?:\$|aud)\s*\d[\d,. ]{0,14}(?:k|m)?|\b\d{3}[, ]\d{3}\b|\bprice\b[^\n]{0,40}/gi),
+          (match) => match[0].replace(/\s+/g, ' ').trim(),
+        ).slice(0, 8);
+        console.log(`          money-like: [${money.map((m) => redactContacts(m)).join(' ; ')}]`);
+      }
     }
   }
   if (pageCount > limit) console.log(`        … census capped at ${limit} of ${pageCount} pages (count above is exact)`);
@@ -373,6 +388,74 @@ async function pdfCensus(asset: FetchedAsset, identity: RowIdentity): Promise<vo
     } catch (error) {
       console.log(`      election threw: ${String((error as { message?: string })?.message ?? error).slice(0, 200)}`);
     }
+  }
+}
+
+/**
+ * What the display gate will see in a recovered picture: the overlay verdict,
+ * where each line of type and each flat block sits, and what Tesseract reads
+ * in each line of type at full size. Nothing here decides anything; it names
+ * what the marketplace eligibility rule will be judging.
+ */
+async function overlayReport(bytes: Uint8Array): Promise<void> {
+  const decoded = await decodeThumbnailResult(bytes);
+  if (!decoded.ok) {
+    console.log(`      overlay: could not decode (${decoded.reason})`);
+    return;
+  }
+  const view = decoded.thumbnail;
+  const verdict = readMarketingOverlay(view);
+  console.log(`      overlay: annotated=${verdict.annotated} uncertain=${verdict.uncertain}`
+    + ` lines=${verdict.textLineCount} lineHeight=${verdict.textHeightShare}`
+    + ` blocks=${verdict.regionCount} largestBlock=${verdict.largestShare}`
+    + ` faintLines=${verdict.faintTextLineCount} (thumbnail ${view.width}x${view.height})`);
+  const pct = (value: number, of: number) => `${Math.round((value / of) * 1000) / 10}%`;
+  const blocks = measureFlatColourRegions(view).regions;
+  for (const region of blocks) {
+    const b = region.box;
+    console.log(`        block x ${pct(b.left, view.width)}–${pct(b.right, view.width)}`
+      + ` y ${pct(b.top, view.height)}–${pct(b.bottom, view.height)}`);
+  }
+  const lines = overlayTextBoxes(view);
+  const full = lines.length ? await decodeFullRaster(bytes) : null;
+  let index = 0;
+  for (const line of lines.slice(0, 6)) {
+    index += 1;
+    let read = '';
+    if (full) {
+      const sx = full.width / view.width;
+      const sy = full.height / view.height;
+      const pad = 4;
+      const left = Math.max(0, Math.floor(line.left * sx) - pad);
+      const top = Math.max(0, Math.floor(line.top * sy) - pad);
+      const right = Math.min(full.width, Math.ceil((line.right + 1) * sx) + pad);
+      const bottom = Math.min(full.height, Math.ceil((line.bottom + 1) * sy) + pad);
+      const width = right - left;
+      const height = bottom - top;
+      if (width > 0 && height > 0) {
+        const crop = new Uint8Array(width * height * 3);
+        for (let y = 0; y < height; y++) {
+          const from = ((top + y) * full.width + left) * 3;
+          crop.set(full.pixels.subarray(from, from + width * 3), y * width * 3);
+        }
+        const png = await encodePng(crop, { width, height, components: 3 });
+        if (png) {
+          const path = await Deno.makeTempFile({ suffix: '.png' });
+          await Deno.writeFile(path, png);
+          try {
+            const out = await new Deno.Command('tesseract', {
+              args: [path, 'stdout', '--psm', '7'], stdout: 'piped', stderr: 'null',
+            }).output();
+            read = new TextDecoder().decode(out.stdout).replace(/\s+/g, ' ').trim();
+          } catch {
+            read = '(tesseract unavailable)';
+          }
+        }
+      }
+    }
+    console.log(`        type ${index}: x ${pct(line.left, view.width)}–${pct(line.right, view.width)}`
+      + ` y ${pct(line.top, view.height)}–${pct(line.bottom, view.height)}`
+      + (read ? ` reads "${redactContacts(read).slice(0, 80)}"` : ''));
   }
 }
 
@@ -633,6 +716,10 @@ for (const item of items) {
           url: branch.url,
         });
         licensed = describeOutcome(outcome);
+        const recovered = outcome as { status?: string; image?: { bytes?: Uint8Array } };
+        if (recovered.status === 'recovered' && recovered.image?.bytes) {
+          await overlayReport(recovered.image.bytes);
+        }
       } catch (error) {
         licensed = `threw: ${String((error as { message?: string })?.message ?? error).slice(0, 200)}`;
       }
