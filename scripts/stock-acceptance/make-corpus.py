@@ -3217,6 +3217,30 @@ def _h9(c):
     c.showPage()
 
 
+# --- h10. THE LOT AND ITS STREET NUMBER ON ONE LINE, OVER THE LOCALITY -------
+#
+# IMPORTS NOTHING AT READERS 20 AND 21: `Lot 906, 14 Heath Street` over
+# `Riverstone NSW 2765`. The street line was read only where the lot stood
+# alone before the street's name, so a street carrying its own number after
+# the lot was no street, the locality under it was a line nobody read, and the
+# document stood down. On one line (`Lot 906, 14 Heath Street, Riverstone NSW
+# 2765`) the same address has always read completely.
+@fixture('heldout-a-lot-and-its-street-number-over-the-locality',
+         'LOT 906 - HEATH - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='906', street_line='14 Heath Street',
+                        suburb='Riverstone', state='NSW', postcode='2765',
+                        land_size_sqm=395, price=684000)]))
+def _h10(c):
+    pt(c, 43, 800, 'Lot 906, 14 Heath Street', 22, True)
+    pt(c, 43, 776, 'Riverstone NSW 2765', 12)
+    pt(c, 43, 740, 'Land Size 395m²', 12)
+    pt(c, 43, 720, 'Price $684,000', 12, True)
+    c.showPage()
+
+
 def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     manifest = []
