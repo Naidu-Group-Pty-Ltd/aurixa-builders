@@ -2418,6 +2418,127 @@ def _p1(c):
     c.showPage()
 
 
+# --- u1. A HOUSE PRINTED IN SQUARES, AND LAND IN ACRES ----------------------
+#
+# Found 24 September 2026 by probing the reader rather than by a customer's
+# document, which is why it is held out: `House Size 28.6 squares` was set
+# aside whole, because `squares` was not a unit the inline reader knew, and
+# `0.5 acres` was refused as land under one square metre. Where either got
+# through (`House Size` over `21.5 squares`), the card read a 21.5 m² house.
+# A square is 100 square feet and an acre 4,046.8564224 m², both by
+# definition, and the card holds square metres.
+@fixture('heldout-sizes-in-squares-and-acres',
+         'LOT 12 - WATTLE 28 - ACREAGE BROCHURE.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='12', street_name='Wattle Grove Road',
+                        suburb='Bungendore', state='NSW', postcode='2621',
+                        # 28.6 squares x 9.290304 m^2, to the hundredth.
+                        build_size_sqm=265.7,
+                        # 0.5 acres x 4,046.8564224 m^2.
+                        land_size_sqm=2023.43,
+                        price=1245000)],
+             # The figures as printed, which are not square metres.
+             forbid=dict(build_size_not_in=[28.6], land_size_not_in=[0.5]),
+             image='facade_page_1'))
+def _u1(c):
+    pt(c, 43, 800, 'LOT 12 Wattle Grove Road', 20, True)
+    pt(c, 43, 778, 'Stoneleigh Rise Estate, Bungendore NSW 2621', 12)
+    c.drawImage(ImageReader(facade(57)), 43, 500, width=300, height=190,
+                preserveAspectRatio=True, mask=None)
+    pt(c, 43, 470, 'House Size 28.6 squares', 12)
+    pt(c, 43, 448, 'LAND SIZE', 10, True)
+    pt(c, 43, 434, '0.5 acres', 12)
+    pt(c, 43, 406, 'PACKAGE PRICE $1,245,000', 12, True)
+    c.showPage()
+
+
+# --- u2. `HOUSE` OVER A FIGURE IN SQUARES -----------------------------------
+#
+# `HOUSE` over `199.7 m2` has always been read as the building size: the unit
+# composes the heading into `house m2`. Over `24.6 sq` the unit was one that
+# composition did not know, so the heading stayed `house`, which this
+# vocabulary reads as the DESIGN, and the design became "24.6 sq". A
+# measurement is never a name.
+@fixture('heldout-house-heading-over-squares',
+         'LOT 31 - AURORA 25 - BROCHURE.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='31', street_name='Kestrel Street',
+                        suburb='Box Hill', state='NSW', postcode='2765',
+                        design='Aurora 25',
+                        land_size_sqm=450,
+                        # 24.6 squares x 9.290304 m^2.
+                        build_size_sqm=228.54,
+                        price=899000)],
+             forbid=dict(build_size_not_in=[24.6])))
+def _u2(c):
+    pt(c, 43, 800, 'LOT 31 Kestrel Street', 20, True)
+    pt(c, 43, 778, 'Box Hill NSW 2765', 12)
+    pt(c, 43, 748, 'Home Design: Aurora 25', 12)
+    for x, heading, figure in ((43, 'LAND', '450m²'), (180, 'HOUSE', '24.6 sq'),
+                               (317, 'PRICE', '$899,000')):
+        pt(c, x, 700, heading, 9, True)
+        pt(c, x, 684, figure, 14)
+    c.showPage()
+
+
+# --- u3. SEVERAL `Label: value` PAIRS ON ONE LINE, AND `House:` A MEASUREMENT
+#
+# Found 24 September 2026 by probing the reader with the ways brochures set a
+# specification line. `Beds: 4 Baths: 2 Cars: 2` was read as ONE pair, a
+# bedroom count of "4 Baths: 2 Cars: 2", declined, and all three counts lost.
+# `Land: 448m² | Frontage: 14m` lost the land the same way. And `House: 212m²`
+# wrote "212m²" into the DESIGN, which conflicted with the design the page
+# labelled and refused the whole brochure, which is the worst of the three.
+@fixture('heldout-spec-pairs-on-one-line',
+         'LOT 44 - HARLOW 22 - BROCHURE.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='44', street_name='Currawong Crescent',
+                        suburb='Leppington', state='NSW', postcode='2179',
+                        design='Harlow 22',
+                        land_size_sqm=448, build_size_sqm=212,
+                        bedrooms=4, bathrooms=2, car_spaces=2,
+                        price=845000)]))
+def _u3(c):
+    pt(c, 43, 800, 'LOT 44 Currawong Crescent', 20, True)
+    pt(c, 43, 778, 'Leppington NSW 2179', 12)
+    pt(c, 43, 740, 'Home Design: Harlow 22', 12)
+    pt(c, 43, 720, 'House: 212m²', 12)
+    pt(c, 43, 700, 'Land: 448m² | Frontage: 14m', 12)
+    pt(c, 43, 680, 'Beds: 4 Baths: 2 Cars: 2', 12)
+    pt(c, 43, 660, 'Price: $845,000', 12)
+    c.showPage()
+
+
+# --- u4. THE LAND'S FRONTAGE AND DEPTH ON THE LAND'S OWN LINE ----------------
+#
+# `Land Size 512m²  Frontage 16m  Depth 32m` was refused whole, because
+# `Frontage` is not a field this product stores, so the land size beside it
+# was lost with nothing recorded. A frontage is stated and not stored; it may
+# not cost the land. And `Home 24.8 sq` is the house in squares: the heading
+# is composed with the figure's unit, exactly as `Home 220m2` always was.
+@fixture('heldout-frontage-beside-the-land',
+         'LOT 57 - MERIDIAN 25 - BROCHURE.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='57', street_name='Brolga Way',
+                        suburb='Tarneit', state='VIC', postcode='3029',
+                        land_size_sqm=512,
+                        # 24.8 squares x 9.290304 m^2.
+                        build_size_sqm=230.4,
+                        price=912000)],
+             forbid=dict(land_size_not_in=[16, 32], build_size_not_in=[24.8])))
+def _u4(c):
+    pt(c, 43, 800, 'LOT 57 Brolga Way', 20, True)
+    pt(c, 43, 778, 'Tarneit VIC 3029', 12)
+    pt(c, 43, 740, 'Land Size 512m²  Frontage 16m  Depth 32m', 12)
+    pt(c, 43, 720, 'Home 24.8 sq', 12)
+    pt(c, 43, 700, 'PACKAGE PRICE $912,000', 12, True)
+    c.showPage()
+
+
 def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     manifest = []
