@@ -23,7 +23,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
-  identityDifferences, reReadHoldsSameProperty, stockPropertyIdentity,
+  identityDifferences, ownRowKey, ownRowKeyHasLot, reReadHoldsSameProperty,
+  stockPropertyIdentity, suburbsDisagree,
 } from '../../../supabase/functions/_shared/builderStock/stockIdentity.pure';
 
 /** The row as it stood, from production. */
@@ -133,6 +134,53 @@ describe('the import asks it, and claims the row once', () => {
   it('claims an own-anchor row at most once per run', () => {
     expect(importStock).toContain('claimedOwnAnchors.add(keys.anchor as string)');
     expect(importStock).toMatch(/!claimedOwnAnchors\.has\(keys\.anchor as string\)/);
+  });
+});
+
+/**
+ * A ROW WITH NO LOT STILL HAS A KEY WITHIN ITS OWN UPLOAD.
+ *
+ * MEASURED 24 SEPTEMBER 2026 on the acceptance gate: `TOWNHOUSE 3` over
+ * `18 Swift Street` — no picture, no estate, no lot — read one property, and a
+ * re-read of the same bytes inserted a second. Nothing could find the row: a
+ * PDF record is anchored only through a picture, and this key stood on the
+ * lot alone.
+ */
+describe('the key a re-read finds its own row by', () => {
+  it('is exactly the lot key it always was wherever a lot is stated', () => {
+    expect(ownRowKey({ lot_number: '12' })).toBe('12');
+    expect(ownRowKey({ lot_number: 'Lot 12A ', unit_number: '3' })).toBe('lot 12a//3');
+    expect(ownRowKey({ lot_number: '12', address_line: '18 Swift Street' })).toBe('12');
+    expect(ownRowKeyHasLot('12')).toBe(true);
+    expect(ownRowKeyHasLot('12//3')).toBe(true);
+  });
+
+  it('keys a unit at its street, and a street alone, where no lot is stated', () => {
+    expect(ownRowKey({ unit_number: '3', address_line: '18  Swift Street' })).toBe('//3@18 swift street');
+    expect(ownRowKey({ unit_number: '5', address_line: '5/12 Kestrel Street' })).toBe('//5@5/12 kestrel street');
+    expect(ownRowKey({ unit_number: '5' })).toBe('//5');
+    expect(ownRowKey({ address_line: '12A Kestrel Street' })).toBe('@12a kestrel street');
+    expect(ownRowKeyHasLot('//3@18 swift street')).toBe(false);
+    expect(ownRowKeyHasLot('@12a kestrel street')).toBe(false);
+  });
+
+  it('has nothing to key where the row states no lot, no unit and no street', () => {
+    expect(ownRowKey({})).toBeNull();
+    expect(ownRowKey({ lot_number: '  ', unit_number: '', address_line: ' ' })).toBeNull();
+  });
+
+  it('holds two stated suburbs apart, and never an absent one', () => {
+    expect(suburbsDisagree({ suburb: 'Box Hill' }, { suburb: 'Leppington' })).toBe(true);
+    expect(suburbsDisagree({ suburb: 'Box  Hill' }, { suburb: 'box hill' })).toBe(false);
+    expect(suburbsDisagree({ suburb: null }, { suburb: 'Box Hill' })).toBe(false);
+  });
+
+  it('is what the import indexes and looks up by, with the suburb guard where no lot stands', () => {
+    const importStock = readFileSync(
+      join(process.cwd(), 'supabase/functions/_shared/builderStock/importStock.ts'), 'utf8');
+    expect(importStock).toContain('const ownLotKey = ownRowKey;');
+    expect(importStock).toMatch(
+      /ownRowKeyHasLot\(lotKey as string\) \|\| !suburbsDisagree\(ownLotRow!\.fields, record\)/);
   });
 });
 

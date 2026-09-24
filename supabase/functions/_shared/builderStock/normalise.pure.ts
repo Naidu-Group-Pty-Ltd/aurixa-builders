@@ -267,7 +267,19 @@ alias('land_size_sqm',
    * together, which is what makes the pair unambiguous.
    */
   'site area', 'site area m2', 'site area m²', 'site area sqm',
-  'site size', 'site size m2', 'site size m²', 'site size sqm');
+  'site size', 'site size m2', 'site size m²', 'site size sqm',
+  /*
+   * `Allotment 512m²`, `Lot Area 450m2` — THE SAME HALF-A-LIST, TWO MORE WORDS.
+   * Each set the land aside with the reading still complete (24 September
+   * 2026, by probing). `allotment` ALONE is deliberately absent: in South
+   * Australia an allotment is the LOT (`Allotment 12`), so the bare word is a
+   * designation there and a size nowhere. With its unit or `size`/`area` it
+   * can only be the land.
+   */
+  'allotment size', 'allotment size m2', 'allotment size m²', 'allotment size sqm',
+  'allotment area', 'allotment area m2', 'allotment area m²', 'allotment area sqm',
+  'allotment m2', 'allotment m²', 'allotment sqm',
+  'lot area', 'lot area m2', 'lot area m²', 'lot area sqm');
 
 /*
  * THE HOUSE'S AREA IS WRITTEN AS MANY WAYS AS THE LAND'S, AND THIS LIST HAD
@@ -320,7 +332,11 @@ alias('building_size_sqm',
   // floor / internal / living area …
   'floor area', 'floor area m2', 'floor area m²', 'floor area sqm',
   'internal area', 'internal area m2', 'internal area m²', 'internal area sqm',
-  'living area', 'living area m2', 'living area m²', 'living area sqm');
+  'living area', 'living area m2', 'living area m²', 'living area sqm',
+  // `Dwelling Size 231m²`. `dwelling` alone is `unit_number`'s, and stays so.
+  'dwelling size', 'dwelling size m2', 'dwelling size m²', 'dwelling size sqm',
+  'dwelling area', 'dwelling area m2', 'dwelling area m²', 'dwelling area sqm',
+  'dwelling m2', 'dwelling m²', 'dwelling sqm');
 
 /**
  * THE PRICE IS WHAT THE PROPERTY COSTS, which for a house-and-land package is
@@ -336,7 +352,31 @@ alias('price',
   'price', 'total price', 'list price', 'package price', 'asking price',
   'sale price', 'price from', 'full price', 'purchase price', 'amount',
   'price $', 'total $', 'package $', 'total package $', 'package price $',
-  'house and land $', 'house land $', 'total price $', 'list price $');
+  'house and land $', 'house land $', 'total price $', 'list price $',
+  // `House & Land Package $899,500`: the package is the price when the value
+  // carries the marker, or when the heading says `price` itself.
+  'house and land package $', 'house land package $',
+  'house and land package price', 'house land package price',
+  'house and land price', 'house land price',
+  /*
+   * THE HEADINGS A PRICE IS QUALIFIED UNDER. `Total Package Price`, `Fixed
+   * Price` and `Turnkey Package` each head the one figure a buyer is quoted,
+   * and each set its line aside with the reading still complete. Found 24
+   * September 2026 by probing. A heading that could as easily head a YES/NO or
+   * a name in a spreadsheet column (`Turnkey Package`, `Fixed Price House &
+   * Land`) is listed only with the `$` its value carries, so it is a price
+   * where the figure says it is money and nothing otherwise.
+   */
+  'total package price', 'total package price $', 'package total', 'package total $',
+  'fixed price', 'fixed price $', 'fixed price package', 'fixed price package $',
+  'fixed package price', 'fixed price house and land $', 'fixed price house land $',
+  'fixed price house and land package $', 'fixed price house land package $',
+  'turnkey price', 'turnkey price $', 'turnkey package price', 'turnkey package $',
+  'turnkey $', 'turnkey house and land $', 'turnkey house land $',
+  'house and land package price $', 'house land package price $',
+  'house and land total $', 'house land total $', 'total package cost',
+  'package cost', 'total cost $', 'price guide', 'selling price',
+  'h and l price', 'hl price', 'h and l package $', 'hl package $', 'h and l $', 'hl $');
 
 alias('availability_status',
   'status', 'availability', 'available', 'sales status', 'stock status',
@@ -476,11 +516,68 @@ export function coerceArea(value: unknown, field: AreaField): number | null {
 export function coercePrice(value: unknown): { price: number | null; display: string | null } {
   const raw = text(value, 120);
   if (raw === null) return { price: null, display: null };
-  const numeric = coerceNumber(raw);
+  const numeric = typeof value === 'number' ? coerceNumber(value) : coerceMoney(raw);
   const bare = /^\$?\s*\d[\d,]*(\.\d+)?$/.test(raw);
   if (numeric === null) return { price: null, display: raw };
+  /*
+   * A FIGURE NO PROPERTY IS SOLD FOR IS NOT ITS PRICE, AND IT IS NOT PRINTED
+   * EITHER — absent beats wrong, here as for the sizes. See `MIN_PLAUSIBLE_PRICE`.
+   */
+  if (numeric < MIN_PLAUSIBLE_PRICE || numeric > MAX_PLAUSIBLE_PRICE) {
+    return { price: null, display: null };
+  }
   return { price: numeric, display: bare ? null : raw };
 }
+
+/**
+ * ===========================================================================
+ * A SUM OF MONEY AS A PRICE LIST WRITES IT, INCLUDING ITS MULTIPLIER.
+ * ===========================================================================
+ *
+ * `$829k` was stored as a price of EIGHT HUNDRED AND TWENTY-NINE DOLLARS, and
+ * `$1.15M` as one dollar fifteen, on every source that reaches a card: the
+ * digits were read and the letter after them dropped. Found 24 September 2026
+ * by probing, not by a customer — no stored price carries either (the lowest
+ * is $596,500) — so no card reads differently for this; it decides what the
+ * next sheet or brochure that writes one gets.
+ *
+ * The multiplier is a definition, not a guess: `k` and `thousand` are a
+ * thousand, `m`, `mil` and `million` a million, and only where the letter is
+ * written straight after the FIRST figure in the value, so `4 bed from $799k`
+ * is not four thousand of anything. And a space set as the thousands separator
+ * (`$799 000`, which some templates set in place of a comma) groups the figure
+ * rather than ending it.
+ */
+export function coerceMoney(raw: string): number | null {
+  const source = String(raw ?? '');
+  const scaled = source.replace(/,/g, '')
+    .match(/^\D*?(\d+(?:\.\d+)?)\s*(k|thousand|m|mil|mill|million)(?![a-z])/i);
+  if (scaled) {
+    const factor = /^(?:k|thousand)$/i.test(scaled[2]) ? 1_000 : 1_000_000;
+    const amount = Number(scaled[1]) * factor;
+    return Number.isFinite(amount) ? Math.round(amount) : null;
+  }
+  const grouped = source.match(/^\D*?(\d{1,3}(?:[    ]\d{3})+)(?:\.\d{1,2})?(?![\d,])/);
+  if (grouped) {
+    const amount = Number(grouped[1].replace(/\D/g, ''));
+    return Number.isFinite(amount) ? amount : null;
+  }
+  return coerceNumber(source);
+}
+
+/**
+ * THE PRICE A PROPERTY CAN PLAUSIBLY BE SOLD FOR.
+ *
+ * The same kind of bound as `MAX_LAND_SQM`: not a judgement about the market,
+ * a judgement about units. Ten thousand dollars is below any lot of land a
+ * builder lists and far above a price written in thousands (`799` for
+ * $799,000), which is the failure the floor exists to catch — a card saying
+ * `$799` is published as a fact, and an absent price is not. A hundred million
+ * is above any house and land package and below a price with a misplaced
+ * multiplier. No stored price is outside either bound.
+ */
+const MIN_PLAUSIBLE_PRICE = 10_000;
+const MAX_PLAUSIBLE_PRICE = 100_000_000;
 
 const STATES: Record<string, string> = {
   nsw: 'NSW', newsouthwales: 'NSW',
@@ -750,17 +847,37 @@ function parseBedBathCar(raw: string): {
    * null, and the label words are an explicit list so "2 Carrara" can
    * never read as two car spaces.
    */
+  /*
+   * AND THE ABBREVIATIONS AND MULTIPLIERS A LISTING PRINTS — `4 BR 2 BA`,
+   * `4 x Bedrooms`, `4 Bdrm` — which the brochure's count-line reader admits
+   * and hands on here verbatim (24 September 2026). A word this list does not
+   * name (`2 Living`, `1 Study`) is still not a count of anything.
+   */
   const labelled = [...raw.matchAll(
-    /(\d+(?:\.\d+)?)\s*(bed(?:room)?s?|bath(?:room)?s?|cars?|carports?)\b/gi)];
+    /(\d+(?:\.\d+)?)\s*(?:[x×]\s*)?(bed(?:room)?s?|br|bdrm?s?|bath(?:room)?s?|ba|bths?|car\s?spaces?|cars?|carports?|garages?)\b/gi)];
   if (labelled.length) {
     const sums: Record<'bed' | 'bath' | 'car', number | null> = {
       bed: null, bath: null, car: null,
     };
     for (const match of labelled) {
-      const label = match[2].toLowerCase().startsWith('bed') ? 'bed'
-        : match[2].toLowerCase().startsWith('bath') ? 'bath'
+      const word = match[2].toLowerCase();
+      const label = /^b(?:ed|r|d)/.test(word) ? 'bed'
+        : /^b(?:a|th)/.test(word) ? 'bath'
           : 'car';
       sums[label] = (sums[label] ?? 0) + Number(match[1]);
+    }
+    /*
+     * `Double Garage` IS TWO CAR SPACES, BY DEFINITION, where the cell states
+     * no car figure of its own — `Single` is one and `Triple` three. A figure
+     * beside it (`2 Car Double Garage`) is the car count and is not added to.
+     */
+    if (sums.car === null) {
+      const garages = [...raw.matchAll(
+        /\b(single|one|double|twin|two|triple|three)[- ]?(?:car\s+)?(?:lock[- ]?up\s+)?(?:garage|carport)\b/gi)];
+      if (garages.length) {
+        sums.car = garages.reduce((total, match) => total
+          + (/^(?:single|one)$/i.test(match[1]) ? 1 : /^(?:triple|three)$/i.test(match[1]) ? 3 : 2), 0);
+      }
     }
     return {
       bedrooms: clampCount(sums.bed),

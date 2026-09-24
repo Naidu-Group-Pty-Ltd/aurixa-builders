@@ -110,7 +110,18 @@ export function unitConvertsArea(raw: string, field: AreaField): boolean {
  * unit and the field cannot both be true. The result is unrounded; the
  * caller's own bounds and rounding apply after it.
  */
+/** `12.5m x 36m`, `12.5 × 36`, `15 metres x 30 metres` — a frontage and a depth. */
+const TWO_LENGTHS =
+  /^\s*\d+(?:\.\d+)?\s*(?:m|mm|metres?|meters?|mtrs?)?\.?\s*[x×]\s*\d+(?:\.\d+)?\s*(?:m|mm|metres?|meters?|mtrs?)?\.?\s*$/i;
+
 export function areaInSquareMetres(raw: string, field: AreaField): number | null {
+  /*
+   * TWO LENGTHS ARE NOT AN AREA. `12.5m x 36m` is a frontage and a depth, and
+   * its first figure was stored as a 12.5 m² block on every source. Nothing is
+   * multiplied: a block is not always a rectangle, and a figure the page did
+   * not print is not one this module prints either.
+   */
+  if (TWO_LENGTHS.test(String(raw ?? ''))) return null;
   const read = firstNumber(raw);
   if (!read) return null;
   const { amount, unit } = read;

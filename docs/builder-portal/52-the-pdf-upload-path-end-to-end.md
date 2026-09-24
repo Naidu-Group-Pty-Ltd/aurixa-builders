@@ -1476,3 +1476,191 @@ Each fails against reader 19. Two lost their sizes, and two were refused
 whole as `conflicting_values:house_design`. Against reader 19's reader and
 normaliser together, 51 of the 55 corpus and stress documents read
 identically, and the four that change are these.
+
+## 21 · The ways a brochure phrases a fact, found before a customer found them (reader 21)
+
+**Probed, 24 September 2026.** Each earlier section began with a customer's
+document that had lost something. This one began with 130 phrasings put through
+the reader on purpose — the ways Australian brochures set an address, a price,
+a count and a size — so the next document does not have to be the one that
+finds the gap. Three kinds of failure came back, and the first is the one the
+builder sees as "the PDF has no property information".
+
+**Four address layouts imported nothing.** The line naming the property was the
+line nobody read, so the reading had no identity and no property was found:
+
+| printed | why nothing read it | now |
+|---|---|---|
+| `LOT 214 Kingfisher Road, Clyde North, VIC, 3978` | the last comma segment was asked to be the whole locality, and it was only the postcode | lot, street, suburb, state, postcode |
+| `Lot 58 \| Wren Street \| Box Hill NSW 2765` | only a comma separated the parts of an address | the same |
+| `Lot 903 Fairwater Drive Tarneit VIC 3029` | no comma, so one segment | the same |
+| `Lot 7 (No. 15) Banksia Way` over `Baldivis Western Australia 6171` | a digit in the lot's tail, and only abbreviated states | the same, street `15 Banksia Way` |
+
+- **A locality's commas are punctuation** (`localityTokens`,
+  `foldLocalitySegments`): the postcode is folded back onto its state and the
+  state onto the place before it, only while something is left in front to be
+  the street or the lot.
+- **A rule or a bullet separates the parts as a comma does.**
+- **An address with no comma is split only where the page leaves one answer**
+  (`readUnpunctuatedAddress`). The street ends at its last type word that is
+  unambiguously a street type (`Road`, `Drive`, never `Grove`, `Glen` or `St`,
+  which also begin suburbs), the street holds exactly one such word, and the
+  suburb after it holds no street type at all. `Smith Street Glen Waverley`
+  reads; `Smith Street Lane Cove` and `Smith St Albans` do not split, and read
+  the lot, state and postcode alone: thinner, never wrong.
+- **A state spelled out is the state only where the postcode agrees**
+  (`stateAtEnd`, Australia Post's ranges). `Mount Victoria 2786` is in New South
+  Wales, so it is never read as a suburb called `Mount` in Victoria.
+- **A street number in brackets after the lot is the street's**
+  (`LOT_WITH_STREET_NUMBER`).
+
+Three more address layouts lost their street or locality with the reading still
+complete: the lot, the street and the locality on three lines (`LOT 47` /
+`Heron Court` / `Mount Barker SA 5251`), a whole address under a label
+(`Address: Lot 33 Ridgeline Crescent, Ripley QLD 4306`, which was stored whole
+as the street), and a place and postcode with no state (`Clyde North 3978`).
+Each is read now, and a street called `The Promenade` (the article is its name)
+and a stage designation beside the estate (`Seabreeze Estate - Stage 3`, which
+stood the reading down as a project nobody took) are read as the page means
+them.
+
+**And a landscape page stored rotated read nothing at all.** A landscape
+brochure is often stored as a portrait page with `/Rotate 90`, its text drawn
+turned a quarter so the page reads upright in a viewer. The flattened text is
+perfect. The positioned layout took each run's coordinates as drawn, so every
+line landed on one row and merged into one cell with no spaces
+(`LOT 64 Currawong StreetBox Hill NSW 2765…`), and the reading found no field.
+A page whose text is mostly not upright now contributes no positioned runs
+(`mostlyUpright` in `pdfTextLayout.ts`), so it is read as the flattened lines
+it already has, as every page the layout could not read always was. An upright
+page is byte-for-byte unchanged, and so is an upright page with one sideways
+caption: the test counts characters.
+
+**A townhouse was addressed by nothing.** `5/12 Kestrel Street, Box Hill NSW
+2765` is how an Australian unit or townhouse is addressed, and a street number
+had to be one figure, so the line naming the property imported nothing.
+`Unit 5, 12 Kestrel Street`, `Townhouse 5/12 Kestrel Street` (on one line or
+over its locality), a range of numbers (`12-14 Kestrel Street`) and a street
+ending in a direction (`Lot 118 Main Road East`) were the same gap. Each is read
+now, and the unit is read from the address itself (`unitOfStreet`,
+`unitOfStreetLine`).
+
+A flyer headed `TOWNHOUSE 3` over `18 Swift Street, Marsden Park NSW 2765` did
+worse than lose the unit: the heading was stored as the house *design*, because
+the filename names the same words. The unit is the one thing that says which
+townhouse at number 18 this is. It is read as the unit now, on three terms:
+
+- **only where the document names one unit** — a site plan labelling eight
+  townhouses names none of them as this one, and reads exactly as before;
+- **only beside a street** — a unit says which dwelling at an address, and a
+  bare `Townhouse 28` on a page with no street is as likely a design's name;
+- **never over a unit the document already holds** — `Unit: 5` labelled, or
+  `5/12` in the address, stands, the heading is not taken, and nothing that
+  imported stops importing.
+
+`Villa` and `Residence` are not unit words here, because builders name designs
+with them. Taken or not, a unit heading is never a candidate for a design.
+
+**And reading a townhouse again made a second one.** The gate reads every
+document a second time from its own upload, as "Read again" and the reader
+sweep do, and both townhouse fixtures came back as two properties. A re-read
+finds the row it is correcting by the document's own anchor, which a PDF
+record gets only through a picture, or by the lot, scoped to the same upload.
+A townhouse known by its unit and its street, with no picture, no estate and
+no lot, had neither, so nothing could find the row it already was and the
+re-read inserted a copy. The sweep re-reads every stored upload at every reader
+version, so each upgrade would have added one more copy of every such
+property. A row with no lot is now keyed, within its own upload, by its unit
+at its street, or by its street alone (`ownRowKey`), and on that key alone two
+stated suburbs that disagree are held apart, because two streets of one name
+are ordinary. A row that states a lot is keyed exactly as before.
+
+**And a block given as its frontage by its depth was stored as its frontage.**
+`Land Size: 12.5m x 36m` read 12.5 m², on every source: the typed gate refused
+the shape, but the page's units kept the value and the normaliser took its first
+figure. Two lengths state a block's shape and no area, so no land size is stored
+from them (`TWO_LENGTHS` in `areaUnits.pure.ts`), while `450m² (15m x 30m)` is
+450, which the gate used to refuse as out of range. `Price $812,000 inc GST`,
+`Price $812,000 fixed` and `Land Size 450 m2.` each set their figure aside over
+the words after it, and are read.
+
+**Two prices were wrong on every source.** `$829k` was stored as $829 and
+`$1.15M` as $1.15: the digits were read and the multiplier dropped, in the
+normaliser that every source goes through. `coerceMoney` reads `k`, `m` and
+`million` by definition and only straight after the first figure, reads a space
+set as the thousands separator (`$799 000`), and a price below $10,000 or above
+$100 million is refused rather than printed. No stored price carries a
+multiplier and none is outside those bounds (the lowest is $596,500), so no
+card reads differently for this.
+
+**And a design was wrong on six stress-corpus covers.** Each sets the locality
+line directly over a `Home Design` row whose design is drawn beside the
+heading. The caption reading took the locality upwards as the name over its
+caption and spent the heading, so every one stored `Officer VIC 3809` or
+similar as the design, and the design the row states was never read. The stress
+corpus asserts lot numbers only, so nothing reported it. Two rules close it: a
+caption with a value beside it on its own row is that value's label
+(`labelsItsOwnRow`), and a locality with its state and postcode is never a
+design or an estate (`a_locality_is_not_a_name`). No stored design or estate is
+shaped like a locality.
+
+**The rest lost one printed fact:**
+
+| printed | now |
+|---|---|
+| `Fixed Price House & Land $829k`, `Turnkey Package $1.15M`, `Total Package Price $799,000` | the price (headings up to six words where the value carries its `$`) |
+| `Land Price $415,000  House Price $402,900  Total $817,900` | $817,900 (a component is stated, never stored, and never costs the total) |
+| `Land $350,000 + House $449,000 = $799,000` | $799,000, only because the parts add up to it |
+| `4 Bed + Study \| 2 Bath \| 2 Living \| Double Garage` | 4, 2, 2 (rooms this product does not store are recognised, a double garage is two cars by definition) |
+| `4 BR 2 BA 2 CAR`, `4 x Bedrooms`, `4 Bedroom Home` | the counts |
+| `Allotment 512m² (approx)`, `Lot Area 450m2`, `450m² Lot`, `Land Size approx. 450m²` | the land |
+| `Dwelling Size 231m²`, `231m² Home` | the house |
+
+`parseBedBathCar` learned the same count words, so a Sheets or Notion
+`Configuration` cell reads them too. A word it does not name (`2 Living`,
+`1 Study`) is still not a count, and every shape it read before reads the same.
+
+**What stays unread, on purpose.** `Double Garage` alone on a line (a floor plan
+names its garage that way, and a dual-key home has two). A singular count label
+(`Bed 3` is the third bedroom). An ensuite beside a bath count (the bathrooms
+would be stated in two parts). An all-capitals suburb is stored as the page
+prints it. `Floorplan:` and `House Type:` stay the vocabulary's other meanings
+(a link to a drawing, and the kind of dwelling), and `Home:` is not a design
+heading, because "Your Dream Home" would become one. A suburb with no state and
+no postcode after an unpunctuated street stays unread, because nothing marks
+where the street ends.
+
+**The negative half is pinned as firmly as the positive.** 38 lines that must
+still read nothing — a builder's head office, `12 Months Warranty Tarneit VIC
+3029`, `Deposit $10,000`, a sum that does not add up, `From $699,000`, `Bed 3`,
+`Double Storey`, `Spring 2026`, `The Hampton` and the rest — are appended to a
+complete brochure in `builderStockPhrasingMatrix.spec.ts`, and each must leave
+every field as it was and the reading complete.
+
+**Held out first.** Seventeen fixtures describe these:
+`heldout-address-locality-set-apart-by-commas`,
+`heldout-address-set-apart-by-rules`, `heldout-address-with-no-comma`,
+`heldout-address-lot-street-locality-on-three-lines`,
+`heldout-address-state-spelled-out-and-number-bracketed`,
+`heldout-address-under-its-own-label`,
+`heldout-street-named-the-promenade-and-a-staged-estate`,
+`heldout-price-in-thousands-under-a-fixed-price-heading`,
+`heldout-component-prices-beside-the-total`,
+`heldout-counts-beside-rooms-not-stored`,
+`heldout-sizes-under-other-headings-and-a-price-in-millions`,
+`heldout-design-beside-its-heading-under-the-locality`,
+`heldout-landscape-page-stored-rotated`,
+`heldout-land-given-as-frontage-by-depth`,
+`heldout-townhouse-unit-over-street-number`,
+`heldout-street-with-a-direction-and-a-price-with-its-gst` and
+`heldout-townhouse-named-above-its-street`, each asserted to read
+COMPLETELY, beside the three count and price fixtures written first. Each fails
+against reader 20. Against reader 20's layout, reader and normaliser together,
+48 of the 75 corpus and stress documents read identically. The 27 that change
+are the twenty held-out fixtures, the two-column page, which now imports its
+two properties where it imported none, and the six stress covers above.
+
+**The two-column page's named limit moved.** It was refused over its shared
+heading `RELEASE 6`. A release designation is now recognised, and both columns
+read their lot, locality, land and price. What is left is its design and counts,
+printed with no label and no icons, which are never read by rule.

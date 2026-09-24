@@ -261,10 +261,15 @@ describe('a reading keeps what it attributed to nothing', () => {
     // placed and could not name is the other half of the same question, and
     // the assisted reader that picks the document up next is not the one who
     // has to fix this reader's vocabulary.
+    //
+    // The unread line was `Stage 12 Release 4` until reader 21, which
+    // recognises a release designation as naming which release of an estate
+    // this is and lets it cost a document nothing. A price stated two ways is
+    // a statement no reader may settle, so it stands the document down instead.
     const refused = readPdfBrochure([
-      `${SPEC}\nStage 12 Release 4\n${UNLABELLED_ADDRESS}`]);
+      `${SPEC}\nPrice $799,000 or $820,000\n${UNLABELLED_ADDRESS}`]);
     expect(refused.status).toBe('incomplete');
-    expect(refused.unaccounted).toContain('Stage 12 Release 4');
+    expect(refused.unaccounted).toContain('Price $799,000 or $820,000');
     expect(refused.ignored).toContain(UNLABELLED_ADDRESS);
   });
 });

@@ -553,9 +553,24 @@ def _f7(c):
     # subsystem is frozen against, and the document imports zero properties
     # before and after the segmentation work — so nothing regressed and the
     # gap is a vocabulary gap rather than a layout one.
-    known_limit='segmentation divides this page correctly; the shared heading '
-                '"RELEASE 6" names no field this vocabulary knows, and a '
-                'shared line no region can account for stands the document down',
+    #
+    # THE LIMIT MOVED AGAIN, 24 SEPTEMBER 2026, and not by that route.
+    #
+    #   what closed it: a release or stage designation (`Stage 3`, `Release
+    #          12`) is recognised as naming which release of an estate this
+    #          is — the class `heldout-street-named-the-promenade-and-a-staged-
+    #          estate` holds out, not this document — and it costs a document
+    #          nothing. Nothing in the alias table learned "release". Both
+    #          regions now read their lot, `Wollert VIC 3750` (a full locality
+    #          two lines under a bare lot, with the design between), the land
+    #          and the price: two properties where there were none.
+    #   what is left: the design and the counts are printed with no label —
+    #          `Marlo 23` alone on a line, and `4  2  2` with no icons beside
+    #          it — and an unlabelled name or a bare row of figures is never
+    #          read as a design or as counts. That is the rule working.
+    known_limit='both properties import with lot, locality, land and price; '
+                'the design and the counts are printed with no label and no '
+                'icons, and an unlabelled name or bare figures are never read',
     properties=2,
     rows=[dict(lot_number='402', suburb='Wollert', state='VIC', bedrooms=4,
                bathrooms=2, car_spaces=2, land_size_sqm=400, price=768000,
