@@ -205,10 +205,26 @@ describe('a cover refusal names the test that refused', () => {
     '$810,000', '35 Cockrell Rd,', 'Mernda VIC 3754', 'EMBER 16 MOD 2', '148 m2',
   ].join('\n');
 
+  /*
+   * THIS CASE USED TO PIN THE DEFECT. It asserted that `LOT 46, 47, 48, 49,`
+   * — the lots the Ember design is released on, printed on lot 48's own flyer
+   * — made the page "state another lot", which is exactly how eleven linked
+   * flyers were refused their photographs on 24 September 2026: a list read
+   * as one designation of its first number. A list names a group, never the
+   * subject, so it now refuses nothing; what a multi-property document may
+   * not ignore is another lot the page states ON ITS OWN.
+   */
+  it('reads the design\'s release list as a list, not as another lot', async () => {
+    const { coverIdentityRefusal } = await import(
+      '../../../supabase/functions/_shared/builderStock/pdfPrimaryImage.pure');
+    expect(coverIdentityRefusal(PAGE, 'Lot 48, 35 Cockrell Rd, Mernda', [], false)).toBeNull();
+  });
+
   it('names the other lot a multi-property document may not ignore', async () => {
     const { coverIdentityRefusal } = await import(
       '../../../supabase/functions/_shared/builderStock/pdfPrimaryImage.pure');
-    expect(coverIdentityRefusal(PAGE, 'Lot 48, 35 Cockrell Rd, Mernda', [], false))
+    const twoLots = `${PAGE}\nLot 49 $820,000`;
+    expect(coverIdentityRefusal(twoLots, 'Lot 48, 35 Cockrell Rd, Mernda', [], false))
       .toBe('the page states another lot');
   });
 

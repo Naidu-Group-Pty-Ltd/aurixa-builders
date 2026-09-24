@@ -75,6 +75,10 @@ import {
   claimOneImageWorkItem, completeItemWork,
 } from '../../supabase/functions/_shared/builderStock/itemWorkClaim.ts';
 import { settleClaimedItem } from '../../supabase/functions/_shared/builderStock/settleItemImages.ts';
+import { repairSourceImagesForUpload } from '../../supabase/functions/_shared/builderStock/repairSourceImages.ts';
+import type { PackageFetcher } from '../../supabase/functions/_shared/builderStock/packageImages.ts';
+import { driveFileId } from '../../supabase/functions/_shared/builderStock/drivePackage.pure.ts';
+import { readPdfPageTextResult } from '../../supabase/functions/_shared/builderStock/pdfText.ts';
 import {
   readOutstandingUploads, runSettlementTick, settleUploadSourceImages,
 } from '../../supabase/functions/_shared/builderStock/settleSourceImages.ts';
@@ -230,10 +234,57 @@ interface Entry {
    * properties a builder already listed and identical bytes are not that.
    */
   revision?: { filename: string; path: string; bytes: number };
+  /**
+   * A SPREADSHEET stock list, whose rows link their own documents. Absent for
+   * every PDF, which is read as the stock list itself.
+   */
+  kind?: 'sheet';
+  /** What the upload and the URL say the file is. `application/pdf` otherwise. */
+  content_type?: string;
+  /** Each document a row links, under the Drive file id its link names. */
+  linked?: Array<{ id: string; filename: string; path: string; bytes: number }>;
 }
 
 const manifest: Entry[] = JSON.parse(
   await Deno.readTextFile(`${corpusDir}/manifest.json`));
+
+/*
+ * THE DOCUMENTS A SHEET'S ROWS LINK, SERVED AS DRIVE SERVES THEM.
+ *
+ * A row's link is fetched by `recoverPackageImage` through the fetcher it is
+ * handed; in production that is the guarded fetch of `drive.google.com`. This
+ * answers the same download address with the fixture's own bytes, keyed by
+ * the file id the link names, and answers anything else as a failed fetch —
+ * so what the gate exercises is everything after the network: the branch
+ * enumeration, the column's declaration, the identity rules, the election and
+ * the attach. The election runs in this process because the page reader is
+ * handed over, which is the product's own rule for a caller that brings one
+ * (`runElection`); nothing about the election itself differs.
+ */
+const linkedDocuments = new Map<string, Uint8Array>();
+for (const entry of manifest) {
+  for (const doc of entry.linked ?? []) {
+    linkedDocuments.set(doc.id, await Deno.readFile(`${corpusDir}/${doc.path}`));
+  }
+}
+let linkedFetches = 0;
+const linkedDocumentFetch: PackageFetcher = async (url: string) => {
+  const id = driveFileId(url);
+  const bytes = id ? linkedDocuments.get(id) : undefined;
+  if (!bytes) {
+    throw Object.assign(new Error(`no linked document answers ${url}`), {
+      safeMessage: 'That document could not be retrieved.',
+    });
+  }
+  linkedFetches += 1;
+  return { bytes: bytes.slice(), finalUrl: url };
+};
+const linkedPageTexts = async (bytes: Uint8Array): Promise<string[]> => {
+  const read = await readPdfPageTextResult(bytes);
+  if (!read.ok) throw new Error(`the linked document's text could not be read (${read.reason})`);
+  return read.pages;
+};
+const imageryDeps = { fetchPackage: linkedDocumentFetch, readPageTexts: linkedPageTexts };
 
 // ---------------------------------------------------------------------------
 // 3 · Two isolated organisations
@@ -304,6 +355,7 @@ for (const [key, legal] of [
 // 4 · A local origin that serves the corpus over HTTP — route B's transport
 // ---------------------------------------------------------------------------
 const served = new Map<string, Uint8Array>();
+const servedTypes = new Map<string, string>();
 let urlFetches = 0;
 const fileServer = Deno.serve({ port: 54996, onListen: () => {} }, (req) => {
   const key = new URL(req.url).pathname.slice(1);
@@ -315,7 +367,7 @@ const fileServer = Deno.serve({ port: 54996, onListen: () => {} }, (req) => {
   const body = new Uint8Array(bytes.length);
   body.set(bytes);
   return new Response(body.buffer as ArrayBuffer,
-    { headers: { 'content-type': 'application/pdf' } });
+    { headers: { 'content-type': servedTypes.get(key) ?? 'application/pdf' } });
 });
 
 /**
@@ -401,6 +453,8 @@ async function settleImagery(organisationId: string, uploadId: string) {
       }
       const settlement = await settleClaimedItem(db, item, {
         deadlineAt: Date.now() + 20_000,
+      }, {
+        repairSource: (client, input) => repairSourceImagesForUpload(client, input, imageryDeps),
       });
       await completeItemWork(db, item.id, {
         nextStage: settlement.nextStage,
@@ -421,7 +475,7 @@ async function settleImagery(organisationId: string, uploadId: string) {
           needsProvenance: candidate.needsProvenance,
           needsEligibility: candidate.needsEligibility,
           needsSanitization: candidate.needsSanitization,
-        }));
+        }, imageryDeps));
     }
     await enforceStrictPrimaryImages(db, organisationId);
     /*
@@ -502,7 +556,7 @@ async function routeA(entry: Entry, bytes: Uint8Array, tag = 'A') {
   const storagePath = `${STOCK_LIST_STORAGE_PREFIX}${org.id}/${tag}-${crypto.randomUUID()}/`
     + safeObjectName(entry.filename);
   const up = await db.storage.from(BUCKET).upload(storagePath, bytes, {
-    contentType: 'application/pdf', upsert: true,
+    contentType: entry.content_type ?? 'application/pdf', upsert: true,
   });
   if (up.error) throw new Error(`storage upload: ${up.error.message}`);
   const upload = await newUpload(entry.org, entry.filename, storagePath);
@@ -686,13 +740,15 @@ async function readAgainAsThePortalDoes(entry: Entry, uploadId: string, bytes: U
 async function routeB(entry: Entry, bytes: Uint8Array) {
   const key = `${entry.org}/${encodeURIComponent(entry.filename)}`;
   served.set(key, bytes);
+  if (entry.content_type) servedTypes.set(key, entry.content_type);
   const t0 = performance.now(); const m0 = rss();
   const response = await realFetch(`http://localhost:54996/${key}`);
   const fetched = new Uint8Array(await response.arrayBuffer());
 
   const twin = `${entry.org}:b`;
   const sourceUrl = `http://localhost:54996/${key}`;
-  const storagePath = `${orgs[twin].id}/B-${crypto.randomUUID()}.pdf`;
+  const extension = entry.kind === 'sheet' ? 'csv' : 'pdf';
+  const storagePath = `${orgs[twin].id}/B-${crypto.randomUUID()}.${extension}`;
   /*
    * THE SNAPSHOT, WHICH IS NOT OPTIONAL AND WAS MISSING.
    *
@@ -708,7 +764,7 @@ async function routeB(entry: Entry, bytes: Uint8Array) {
    * was in the harness rather than in the product.
    */
   const snapshot = await db.storage.from(BUCKET).upload(storagePath, fetched, {
-    contentType: 'application/pdf', upsert: true,
+    contentType: entry.content_type ?? 'application/pdf', upsert: true,
   });
   if (snapshot.error) throw new Error(`snapshot: ${snapshot.error.message}`);
   const upload = await newUpload(twin, entry.filename, storagePath);
@@ -891,10 +947,23 @@ for (const entry of manifest) {
    * own functions.
    */
   if (a.result.ok) {
+    const linkedBefore = linkedFetches;
     try {
       row.imagery = await settleImagery(orgs[entry.org].id, a.uploadId);
     } catch (e) {
       fail(entry, `the image settler threw: ${(e as Error).message}`);
+    }
+    /*
+     * A SHEET WHOSE LINKS WERE NEVER FOLLOWED PROVES NOTHING about them. The
+     * route this fixture exists for is the linked document, so a run that
+     * reached none of them fails here rather than passing on whatever else
+     * happened to put a picture on the card.
+     */
+    if (entry.kind === 'sheet') {
+      row.linkedFetches = linkedFetches - linkedBefore;
+      if (!row.linkedFetches) {
+        fail(entry, 'no document a row links was ever fetched: the settler never reached the rows\' links');
+      }
     }
   }
   /*
@@ -1016,10 +1085,25 @@ for (const entry of manifest) {
   const asText = (v: unknown) => v === null || v === undefined
     ? null
     : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+  /*
+   * THE SAME RULE, ONE LEVEL DOWN. A row whose own cells link documents keeps
+   * a record per link in `source_provenance_result`, and each record states
+   * WHEN it was answered — a clock reading, and the two routes read at two
+   * different moments. Everything else in the record (the answer, the version
+   * it was reached under, the document it is about, why) is compared.
+   */
+  const withoutClockReadings = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(withoutClockReadings);
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .filter(([k]) => !k.endsWith('_at'))
+      .map(([k, v]) => [k, withoutClockReadings(v)]));
+  };
   const documentShape = (it: any) => Object.fromEntries(
     Object.entries(it)
       .filter(([k]) => !OF_THE_RUN.has(k))
-      .map(([k, v]) => [k, asText(v)] as const)
+      .map(([k, v]) => [k, asText(
+        k === 'source_provenance_result' ? withoutClockReadings(v) : v)] as const)
       .sort((x, y) => x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0));
 
   const eq = (what: string, x: unknown, y: unknown) => {
@@ -3282,7 +3366,7 @@ if (workersRequested() > 0) {
   fails.push(`the product asked for ${workersRequested()} worker(s); the hosted runtime answers `
     + `"${HOSTED_WORKER_REFUSAL}"`);
 }
-console.log(JSON.stringify({ report, invariants, fails, limits, modelCallAttempts, urlFetches,
+console.log(JSON.stringify({ report, invariants, fails, limits, modelCallAttempts, urlFetches, linkedFetches,
   workersRequested: workersRequested() }, null, 2));
 console.log(`\n${manifest.length} documents · ${fails.length} failures · `
   + `${limits.length} named limits · `
