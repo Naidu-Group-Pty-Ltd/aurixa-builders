@@ -105,6 +105,13 @@ name: Production rollout
 #            readers over the stored bytes with the inputs the import hands
 #            them. Takes `upload_id` (one or more, comma-separated). SELECT and
 #            a storage GET only; writes nothing.
+#   stock-overlay-audit
+#            read-only: every distinct stored picture with a display verdict
+#            put through the marketing-overlay reading again — where each strict
+#            line of type sits, whether it reaches a side of the frame, the flat
+#            blocks and whether any is a brand colour — and each picture a
+#            proposed rule about those lines would judge differently printed
+#            for inspection. SELECT and a storage GET only; writes nothing.
 #   stock-scan-proof
 #            imports a SAFE fully scanned fixture (`scripts/ops/fixtures/
 #            scanned-brochure-lot-57.pdf`, digest pinned in the script) through
@@ -140,11 +147,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-overlay-audit'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-overlay-audit]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1)'
         required: false
@@ -191,7 +198,7 @@ jobs:
         with:
           node-version: 22
       - uses: denoland/setup-deno@v2
-        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' || inputs.phase == 'stock-collateral-reprocess' || inputs.phase == 'network-sync-state' || inputs.phase == 'network-connection-remap' || inputs.phase == 'portal-scope-state' || inputs.phase == 'stock-source-restore' || inputs.phase == 'stock-reading-trace' }}
+        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' || inputs.phase == 'stock-collateral-reprocess' || inputs.phase == 'network-sync-state' || inputs.phase == 'network-connection-remap' || inputs.phase == 'portal-scope-state' || inputs.phase == 'stock-source-restore' || inputs.phase == 'stock-reading-trace' || inputs.phase == 'stock-overlay-audit' }}
         with:
           deno-version: v2.x
 
@@ -249,4 +256,5 @@ jobs:
             stock-import-proof)   node scripts/ops/stock-import-proof.mjs ;;
             stock-reading-trace)  deno run -A --config supabase/functions/deno.json scripts/ops/stock-reading-trace.ts ;;
             stock-scan-proof)     node scripts/ops/stock-scan-proof.mjs ;;
+            stock-overlay-audit)  deno run -A --config supabase/functions/deno.json scripts/ops/stock-overlay-audit.ts ;;
           esac
