@@ -2539,6 +2539,82 @@ def _u4(c):
     c.showPage()
 
 
+# --- u5. COUNTS AND A PRICE AS A SENTENCE-LIKE LINE WRITES THEM -------------
+#
+# Found 24 September 2026 by probing the reader with the ways brochures phrase
+# a specification. `4 Bedrooms, 2 Bathrooms, 2 Car Garage` lost all three
+# counts, because `Car Garage` was not a count word the line reader knew and
+# the whole line is refused if one word is unaccounted for. `Land 512 sq.m`
+# lost the land, because `sq.m` was not a unit it knew. And `House & Land
+# Package $899,500` lost the price, because the vocabulary spelled the heading
+# `house and land $` and never with `package`.
+@fixture('heldout-counts-and-price-in-prose-shaped-lines',
+         'LOT 63 - SORRENTO 28 - BROCHURE.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='63', street_name='Sandpiper Parade',
+                        suburb='Shell Cove', state='NSW', postcode='2529',
+                        estate='Harbourside Estate', design='Sorrento 28',
+                        bedrooms=4, bathrooms=2, car_spaces=2,
+                        land_size_sqm=512, price=899500)]))
+def _u5(c):
+    pt(c, 43, 800, 'LOT 63 Sandpiper Parade', 20, True)
+    pt(c, 43, 778, 'Harbourside Estate, Shell Cove NSW 2529', 12)
+    pt(c, 43, 740, 'Home Design: Sorrento 28', 12)
+    pt(c, 43, 720, '4 Bedrooms, 2 Bathrooms, 2 Car Garage', 12)
+    pt(c, 43, 700, 'Land 512 sq.m', 12)
+    pt(c, 43, 680, 'House & Land Package $899,500', 12, True)
+    c.showPage()
+
+
+# --- u6. A COUNT LINE THAT CALLS THE CARS A GARAGE --------------------------
+#
+# `3 Bedrooms | 2 Bathrooms | 2 Garage`: `Garage` is the word this vocabulary
+# already reads as the car spaces heading, and the line reader did not count
+# with it, so all three counts were lost.
+@fixture('heldout-count-line-with-a-garage',
+         'LOT 71 - ASHBY 23 - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='71', street_name='Magpie Lane',
+                        suburb='Tarneit', state='VIC', postcode='3029',
+                        bedrooms=3, bathrooms=2, car_spaces=2,
+                        land_size_sqm=400, price=652000)]))
+def _u6(c):
+    pt(c, 43, 800, 'LOT 71 Magpie Lane', 20, True)
+    pt(c, 43, 778, 'Tarneit VIC 3029', 12)
+    pt(c, 43, 740, '3 Bedrooms | 2 Bathrooms | 2 Garage', 12)
+    pt(c, 43, 720, 'Land Size 400m²', 12)
+    pt(c, 43, 700, 'Price $652,000', 12, True)
+    c.showPage()
+
+
+# --- u7. COUNTS WRITTEN LABEL FIRST, WITH ONE SINGULAR -----------------------
+#
+# `Bedrooms 4 Bathrooms 2 Garage 2`. A singular count heading is refused on
+# purpose (`Bed 3` names the third bedroom on a plan, and `Garage 2` the
+# second garage of a dual-key one), and refusing it used to refuse the WHOLE
+# line, so the two counts the page did state in the plural were lost with it.
+# The singular pair is accounted for and claims nothing; the rest is read.
+@fixture('heldout-counts-label-first-with-a-singular',
+         'LOT 85 - BRAMBLE 27 - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='85', street_name='Kookaburra Road',
+                        suburb='Box Hill', state='NSW', postcode='2765',
+                        bedrooms=4, bathrooms=2,
+                        # `Garage 2` is singular, so it states nothing here.
+                        car_spaces=None,
+                        land_size_sqm=450, price=915000)]))
+def _u7(c):
+    pt(c, 43, 800, 'LOT 85 Kookaburra Road', 20, True)
+    pt(c, 43, 778, 'Box Hill NSW 2765', 12)
+    pt(c, 43, 740, 'Bedrooms 4 Bathrooms 2 Garage 2', 12)
+    pt(c, 43, 720, 'Land Size 450m²', 12)
+    pt(c, 43, 700, 'Price $915,000', 12, True)
+    c.showPage()
+
+
 def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     manifest = []
