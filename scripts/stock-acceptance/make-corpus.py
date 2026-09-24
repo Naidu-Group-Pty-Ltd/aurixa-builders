@@ -2974,6 +2974,28 @@ def _u23(c):
     c.showPage()
 
 
+# --- u24. THE TOWNHOUSE NAMED ABOVE ITS STREET ------------------------------
+#
+# `TOWNHOUSE 3` over `18 Swift Street, Marsden Park NSW 2765`. The unit is what
+# says WHICH townhouse at number 18 this is, and it was read by nothing — so
+# every townhouse in the development would carry the same address and no unit,
+# and a re-import could not tell them apart.
+@fixture('heldout-townhouse-named-above-its-street',
+         'TOWNHOUSE 3 - SWIFT - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(unit_number='3', street_name='18 Swift Street',
+                        suburb='Marsden Park', state='NSW', postcode='2765',
+                        bedrooms=3, bathrooms=2, car_spaces=1, price=719000)]))
+def _u24(c):
+    pt(c, 43, 800, 'TOWNHOUSE 3', 22, True)
+    pt(c, 43, 776, '18 Swift Street, Marsden Park NSW 2765', 12)
+    pt(c, 43, 740, '3 Bed | 2 Bath | 1 Car', 12)
+    pt(c, 43, 720, 'Price $719,000', 12, True)
+    c.showPage()
+
+
 def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     manifest = []
