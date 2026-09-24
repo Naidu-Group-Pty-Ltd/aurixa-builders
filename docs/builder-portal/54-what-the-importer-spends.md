@@ -623,3 +623,34 @@ where `plan.resumes`, the claim comes first, and the record is written before
 `runImport` is called. Removing any of them fails the spec, the same way
 raising the version used to.
 
+
+### 11.6 A count is not a price
+
+The attach isolate's three display judgements (`DECODES_PER_INVOCATION`)
+were bounded by a count alone. A count does not know how long a decode takes.
+Measured on 24 September 2026, through the real stack, on
+`stress-multi-property`, in the one isolate that attaches its eight pictures:
+
+| part of the step | cost on that machine |
+|---|---|
+| storing a picture (upload, carried record, row) | about 10 ms each |
+| judging a hero for display (decode + overlay read) | 750-1,000 ms each |
+| the whole step | 2,699-3,162 ms, against 1,826-2,019 ms the day before on a faster machine |
+
+Unmodified `main` failed the acceptance gate on that machine at 3,034 ms, on
+the invariant that exists for exactly this: *the decode that settles picture
+roles is priced before it begins*. So each judgement now answers to the same
+rule as the role decode (`mayJudgeEligibility`, the one inequality both
+share). It is priced from the picture's header (`eligibilityDecodePixels`) at
+the production rate, and it must fit **inside** the ceiling, because it is an
+estimate. It is asked only where the count is in force: the isolate a stored
+document hands its pictures to. A linked source's inline path is unchanged.
+
+Nothing was raised. The ceiling is still 3,000 and the count is still three.
+A judgement that does not fit is left to the property's image settler
+exactly as a fourth one is. The picture is still stored, attributed and given
+its role, and it goes out with no verdict. A judgement priced out does not use
+up one of the three, so a smaller hero after it can still be judged if it
+fits. On a machine where three fit, nothing changes. The import logs
+`eligibility_priced_out` with the count and the spend when one does not fit.
+Afterwards, on the same machine, the step read 2,512-2,728 ms.

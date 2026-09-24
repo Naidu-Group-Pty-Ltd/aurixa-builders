@@ -194,6 +194,46 @@ export function mayDecideRoles(
   ledger: ImportStageLedger | null | undefined,
   pixels: number,
 ): boolean {
+  return decodeFitsInside(ledger, pixels);
+}
+
+/**
+ * May the isolate that attaches a document's pictures JUDGE one of them for
+ * display here — decode it and read it for overlays
+ * (`eligibilityDetailFor`) — at `pixels`, read from its header?
+ *
+ * THE SAME RULE AS `mayDecideRoles`, BECAUSE IT IS THE SAME WORK. Both decode
+ * a picture the document chose the size of, and both are estimates, so each
+ * must fit INSIDE the ceiling rather than one step past it. This decode was
+ * bounded by a COUNT alone — `DECODES_PER_INVOCATION`, three — and a count
+ * does not know how long a decode takes. MEASURED 24 September 2026 on
+ * `stress-multi-property` through the real stack: the attaching isolate
+ * stored eight pictures at about 10 ms each and spent 750-1,000 ms on each of
+ * its three judgements. That was 2,700-3,160 ms in all on that machine, against
+ * 1,826-2,019 ms for the same step the day before on a faster one. Unmodified
+ * `main` failed the same way, at 3,034 ms.
+ *
+ * Declining costs what the count's own refusal costs, and no more. The
+ * picture is still STORED — attributed, with its role and its provenance —
+ * and goes out with no verdict, which is exactly what the property's image
+ * settler judges in an isolate of its own. A judgement that fits is made here
+ * exactly as before, so on a machine where three fit, nothing changes.
+ */
+export function mayJudgeEligibility(
+  ledger: ImportStageLedger | null | undefined,
+  pixels: number,
+): boolean {
+  return decodeFitsInside(ledger, pixels);
+}
+
+/**
+ * The one inequality both decodes answer to. A null ledger answers YES, so
+ * a caller that has not opted in behaves exactly as it always has.
+ */
+function decodeFitsInside(
+  ledger: ImportStageLedger | null | undefined,
+  pixels: number,
+): boolean {
   if (!ledger) return true;
   return expensiveSpendMs(ledger) + roleDecodeMs(pixels) <= EXPENSIVE_SPEND_CEILING_MS;
 }

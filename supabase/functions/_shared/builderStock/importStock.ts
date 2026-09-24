@@ -30,7 +30,9 @@ import {
   recordStage, type ImportStageLedger,
 } from './importStageLedger.pure.ts';
 import { IMAGE_BUDGET_MS } from './importBudget.pure.ts';
-import { mayDecideRoles, mayStoreImage, roleDecodeMs, expensiveSpendMs } from './importResumeBudget.pure.ts';
+import {
+  mayDecideRoles, mayJudgeEligibility, mayStoreImage, roleDecodeMs, expensiveSpendMs,
+} from './importResumeBudget.pure.ts';
 import {
   describeIdentityChange, identityDifferences, reReadHoldsSameProperty,
   stockPropertyIdentity,
@@ -59,7 +61,8 @@ import {
   anchorPdfRowsToPages, pdfAnchorPage, pdfAnchorPageOrRegion,
 } from './pdfRowAnchors.pure.ts';
 import {
-  documentVisualKinds, documentVisualKindsPixels, eligibilityDecodes, eligibilityDetailFor,
+  documentVisualKinds, documentVisualKindsPixels, eligibilityDecodePixels, eligibilityDecodes,
+  eligibilityDetailFor,
 } from './assessSourceImage.ts';
 
 /** What `attachDocumentMedia` did with one picture, for a caller that counts. */
@@ -1654,6 +1657,9 @@ export async function attachDocumentMedia(
      * goes out with no eligibility verdict: the state an oversized primary
      * already takes here (`eligibilityDetailFor`), which the settler's
      * eligibility stage exists to find and judges in an isolate of its own.
+     * Where this is set, each of the three is also PRICED before it begins
+     * and must fit inside the ceiling (`mayJudgeEligibility`), because a
+     * count does not know how long a decode takes.
      */
     eligibilityDecodes?: number | null;
   },
@@ -1766,6 +1772,8 @@ export async function attachDocumentMedia(
 
   let deferred = 0;
   let eligibilityDecodesLeft = input.eligibilityDecodes ?? null;
+  /** Judgements the allowance's COUNT admitted and its price did not. */
+  let judgementsPricedOut = 0;
   for (const [index, media] of input.media.entries()) {
     /*
      * ASKED BEFORE THE PICTURE, NEVER AFTER IT.
@@ -1852,6 +1860,18 @@ export async function attachDocumentMedia(
             }
             if (eligibilityDecodesLeft !== null) {
               if (eligibilityDecodesLeft <= 0) return {};
+              /*
+               * AND PRICED BEFORE IT BEGINS, where the allowance is in force.
+               * Three is a count, and a count does not know how long a decode
+               * takes: a judgement that would not fit inside the ceiling is
+               * left to the settler exactly as a fourth one is. See
+               * `mayJudgeEligibility`.
+               */
+              if (!mayJudgeEligibility(input.ledger,
+                eligibilityDecodePixels(media.bytes, roles[index].role))) {
+                judgementsPricedOut += 1;
+                return {};
+              }
               eligibilityDecodesLeft -= 1;
             }
             return await eligibilityDetailFor(media.bytes, roles[index].role);
@@ -1908,6 +1928,14 @@ export async function attachDocumentMedia(
       // is one a run of failures walks straight through.
       if (input.ledger) recordStage(input.ledger, 'image_store', Date.now() - mediaStartedAt);
     }
+  }
+  if (judgementsPricedOut) {
+    console.log('[builderStock] display judgements left for the settler', {
+      phase: 'eligibility_priced_out',
+      upload_id: input.uploadId,
+      judgements: judgementsPricedOut,
+      spent_ms: Math.round(expensiveSpendMs(input.ledger)),
+    });
   }
   if (deferred) {
     input.onImageryDeferred?.(deferred);

@@ -141,6 +141,18 @@ export function eligibilityDecodes(bytes: Uint8Array, role: unknown): boolean {
   return isPrimaryRole(role) && !oversizedForInlineDecode(bytes);
 }
 
+/**
+ * How many pixels `eligibilityDetailFor` would decode for these bytes, read
+ * from the HEADER — nothing is decoded to answer it. Zero where it would not
+ * decode at all, by `eligibilityDecodes`' own tests. A header that states no
+ * size is priced as the largest picture that may be judged inline, because
+ * that is the most the decode it stands for can cost here.
+ */
+export function eligibilityDecodePixels(bytes: Uint8Array, role: unknown): number {
+  if (!eligibilityDecodes(bytes, role)) return 0;
+  return imageHeaderPixels(bytes) ?? MAX_INLINE_DECODE_PIXELS;
+}
+
 type RoleDecodeCandidate = {
   bytes?: Uint8Array | null;
   placement?: { placementsOnPage?: number; pagesDrawnOn?: number } | null;
