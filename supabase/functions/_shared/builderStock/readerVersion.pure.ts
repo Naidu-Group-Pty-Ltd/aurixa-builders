@@ -186,7 +186,7 @@ import { sweepHandedOnThisParse } from './readerSweepAttempt.pure.ts';
  * Every document already imported is read again, because a document whose
  * headings were unreadable was read without them.
  */
-export const DETERMINISTIC_READER_VERSION = 19;
+export const DETERMINISTIC_READER_VERSION = 20;
 
 /*
  * VERSION 11 — A PHRASE'S OWN WORDS ARE HEADINGS TOO.
@@ -432,6 +432,32 @@ export const DETERMINISTIC_READER_VERSION = 19;
  * byte-identically to reader 18: 37 of the corpus's 42 documents and all 8
  * of the stress corpus's do, and the five that change are the five fixtures
  * that describe these layouts.
+ *
+ * VERSION 20 — A SIZE PRINTED IN ANOTHER UNIT IS THAT SIZE, OR IT IS ABSENT.
+ *
+ * FOUND 24 SEPTEMBER 2026 BY PROBING THE READER, not by a customer's document:
+ * `House Size` over `21.5 squares` was stored as a 21.5 m² house, `1.2 acres`
+ * as a 1.2 m² block and `2,000 sq ft` as 2,000 m². `House Size 28.6 squares`
+ * and `Land Size 0.5 acres` written on one line were set aside whole, with no
+ * record. And `HOUSE` over `24.6 sq` became the house's DESIGN, which then
+ * conflicted with the design the page labelled and refused the whole brochure.
+ * No stored size carries a unit (every one is a bare number), so nothing in
+ * production reads differently for this. It decides what the next document
+ * that prints one gets. `areaUnits.pure.ts` is the rule: every conversion is
+ * a definition, and a unit the field is not measured in is refused by name.
+ *
+ * And the ways a brochure sets a specification line, probed the same way.
+ * `Beds: 4 Baths: 2 Cars: 2` was ONE pair whose bedroom count "4 Baths: 2
+ * Cars: 2" was declined, so all three counts were lost. `Land Size 512m²
+ * Frontage 16m` was refused whole, because a frontage is not stored, so the
+ * land size was lost. And `House: 220m²` became the DESIGN "220m²", which
+ * beside `Home Design: Aurora 25` refused the whole brochure. Several pairs
+ * on one line are each read (`readLabelledPairs`), a frontage is consumed and
+ * claims nothing, a heading over a measurement is composed with its unit, and
+ * a figure with its unit is never a name (`a_measurement_is_not_a_name`).
+ * Against reader 19, 51 of the 55 corpus and stress documents read
+ * identically, and the four that change are the four fixtures that describe
+ * this.
  */
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */
