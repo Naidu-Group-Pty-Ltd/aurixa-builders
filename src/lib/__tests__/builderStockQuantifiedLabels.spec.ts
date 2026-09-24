@@ -173,7 +173,15 @@ describe('a quantified heading over a value, read end to end', () => {
     const row = normaliseStockRow(reading.rows[0] ?? {});
     expect(row?.building_size_sqm ?? null).toBeNull();
     expect(row?.land_size_sqm ?? null).toBeNull();
-    expect(JSON.stringify(row ?? {})).not.toContain('547407');
+    /*
+     * And what it IS, since reader version 19: the page says in words that it
+     * carries the package's price and prints exactly one sum of money nothing
+     * else accounted for, so that sum is the price (`PACKAGE_PRICE_CAPTION`).
+     * The only field it may ever reach is the price.
+     */
+    expect(row?.price).toBe(547407);
+    const { price: _price, ...rest } = row ?? {};
+    expect(JSON.stringify(rest)).not.toContain('547407');
   });
 
   it('declines the money by name rather than dropping it silently', () => {

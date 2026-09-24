@@ -804,6 +804,7 @@ type ClaimSource =
   | 'below'
   | 'caption'
   | 'figure_caption'
+  | 'caption_on_page'
   | 'filename'
   | 'icon_row'
   | 'area_schedule';
@@ -2386,6 +2387,42 @@ const FOOTNOTE_MARKS = /\s*[*†‡^#]+$/;
 const ONE_AMOUNT = /^[$€£¥]\s?\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?$|^[$€£¥]\s?\d{4,9}(?:\.\d{1,2})?$/;
 const FIGURE_CAPTION_FIELDS = new Set(['price', 'land_size_sqm', 'building_size_sqm']);
 
+/**
+ * ===========================================================================
+ * THE PAGE'S ONE PRICE — A CAPTION THAT SAYS THE PRICE IS HERE, AND ONE FIGURE.
+ * ===========================================================================
+ *
+ * MEASURED 21 SEPTEMBER 2026 on `Lot 37 - Miami 190 - Property Package.pdf`
+ * and its sibling `Lot 52 - Bishop 258` (the import's own record of where
+ * every line it could not read was drawn; the bytes are gone): the package
+ * price is set alone in display type, `$1,327,407` at x 66, three rows under
+ * a tracked caption line that opens at x 43 — `T O T A L  P A C K A G E ·
+ * L A N D + B U I L D · I N C .  G S T` — with the build price and a rental
+ * appraisal in the column to its right in between. Twenty-three points out of
+ * column and two other frames' rows apart, it pairs by no rule, and neither
+ * card showed a price.
+ *
+ * WHAT MAKES IT SAFE IS HOW LITTLE IT ASKS FOR, NOT HOW NEAR IT LOOKS. The page
+ * says in words that it carries the price (`PRICE`, `TOTAL PACKAGE`, `PACKAGE
+ * PRICE` — a closed list, or a heading the vocabulary reads as the price), and
+ * it prints exactly ONE sum of money no label, caption or pairing on the page
+ * accounted for. Nothing is measured and nothing is chosen: a second
+ * unaccounted figure on that page — a land price, a rebate, a price it was
+ * once — is two answers, and the page says nothing. It is asked only where
+ * no other reading found a price, so it can never overrule one.
+ */
+const PACKAGE_PRICE_CAPTION = new RegExp([
+  '^(?:(?:total|full|fixed|turn\\s*key)\\s+)?(?:house\\s*(?:&|and|\\+)\\s*land\\s+)?package(?:\\s+price)?$',
+  '^(?:total|package|full|fixed)\\s+price$',
+  '^price$',
+  '^land\\s*\\+\\s*build$',
+  '^house\\s*(?:&|and|\\+)\\s*land(?:\\s+price)?$',
+].join('|'), 'i');
+/** A house-and-land package costs at least this; a deposit or a fee does not. */
+const MIN_PACKAGE_PRICE = 50_000;
+
+const moneyOf = (amount: string) => Number(amount.replace(/[^0-9.]/g, ''));
+
 function isAFigure(line: string | null | undefined): boolean {
   const text = String(line ?? '').trim().replace(FOOTNOTE_MARKS, '');
   return ONE_AMOUNT.test(text) || BARE_MEASUREMENT.test(text);
@@ -3693,6 +3730,10 @@ export function readPdfBrochure(
    * the diagnostics go to the import log.
    */
   const unresolved: string[] = [];
+  /** Pages whose words say they carry the price. See `PACKAGE_PRICE_CAPTION`. */
+  const priceCaptionPages = new Set<number>();
+  /** Sums of money nothing on their page accounted for, with the page. */
+  const loneAmounts: Array<{ page: number; line: string; amount: string }> = [];
   /** Lines POSITIVELY recognised as furniture. Reported, not blocking. */
   let incidental = 0;
   /** Canonical fields the document stated and this reader declines by policy. */
@@ -4177,6 +4218,16 @@ export function readPdfBrochure(
          */
         const bareLabel = fieldForHeader(line);
         /*
+         * WHAT THE PAGE'S ONE PRICE IS JUDGED ON, noted before anything below
+         * decides the line was furniture. See `PACKAGE_PRICE_CAPTION`.
+         */
+        const captionWords = line.trim().replace(/[\s,.:;|\u2013\u2014-]+$/, '');
+        if (bareLabel === 'price' || PACKAGE_PRICE_CAPTION.test(captionWords)) {
+          priceCaptionPages.add(pageIndex);
+        }
+        const lone = line.trim().replace(FOOTNOTE_MARKS, '');
+        if (ONE_AMOUNT.test(lone)) loneAmounts.push({ page: pageIndex, line, amount: lone });
+        /*
          * ================================================================
          * A LABEL WITH NOTHING THIS READER COULD PAIR TO IT STATES NOTHING.
          * ================================================================
@@ -4491,6 +4542,29 @@ export function readPdfBrochure(
       diagnostics.unaccountedLines = unresolved.length;
       diagnostics.incidentalLines = incidental;
       return refuse('incomplete', 'line_ceiling_reached', diagnostics);
+    }
+  }
+
+  /*
+   * THE PAGE'S ONE PRICE, where nothing else read one — before the sizes
+   * settle, because the page that states the price is the property's own and
+   * its measurements are the ones that stand. See `PACKAGE_PRICE_CAPTION`.
+   */
+  if (!claimed.has('price')) {
+    for (const page of [...priceCaptionPages].sort((a, b) => a - b)) {
+      const onPage = loneAmounts.filter((entry) => entry.page === page);
+      if (new Set(onPage.map((entry) => moneyOf(entry.amount))).size !== 1) continue;
+      const { amount } = onPage[0];
+      if (!(moneyOf(amount) >= MIN_PACKAGE_PRICE)) continue;
+      if (!acceptFieldValue('price', amount, 'label').accepted) continue;
+      claimed.set('price', amount);
+      readBy.set('price', 'caption_on_page');
+      pricePages.add(page);
+      const accounted = new Set(onPage.map((entry) => entry.line));
+      for (let k = unresolved.length - 1; k >= 0; k--) {
+        if (accounted.has(unresolved[k])) unresolved.splice(k, 1);
+      }
+      break;
     }
   }
 

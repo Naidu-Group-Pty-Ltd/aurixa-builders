@@ -253,3 +253,59 @@ describe('a figure over a caption is read only where both stand alone', () => {
     expect(reading.diagnostics.readBy ?? []).not.toContain('price:figure_caption');
   });
 });
+
+/**
+ * THE PAGE'S ONE PRICE — `Lot 37 - Miami 190 - Property Package.pdf`'s shape:
+ * the package price set alone in display type, out of column and rows away
+ * from the tracked caption line that names it. See `PACKAGE_PRICE_CAPTION`.
+ */
+describe("a price caption and the page's one unaccounted figure", () => {
+  const packagePage = (extra: PdfTextItem[] = [], figure = '$1,204,880'): PdfTextItem[] => [
+    run(806, 43, 60, 9, 'PROPLAUNCH'),
+    run(624, 43, 90, 7, 'TOTAL PACKAGE'),
+    run(624, 156, 20, 7, 'LAND'),
+    run(624, 180, 5, 7, '+'),
+    run(624, 192, 28, 7, 'BUILD'),
+    run(610, 460, 70, 9, 'Build $512,880'),
+    run(596, 361, 150, 9, 'Rental appraisal $1,150–$1,200 /wk'),
+    run(578, 66, 160, 30, figure),
+    run(578, 376, 140, 9, 'Fixed price site costs included'),
+    run(520, 43, 200, 10, 'Lot 64, Wattlebird Estate, Kingscliff NSW'),
+    ...extra,
+  ];
+  const priceOf = (items: PdfTextItem[]) => {
+    const { reading, record } = read(items, 'Lot 64 - Coral 205 - Property Package.pdf');
+    return { price: record?.price ?? null, readBy: reading.diagnostics.readBy ?? [] };
+  };
+
+  it('reads the one figure no label claimed as the price the caption names', () => {
+    const { price, readBy } = priceOf(packagePage());
+    expect(price).toBe(1204880);
+    expect(readBy).toContain('price:caption_on_page');
+  });
+
+  it('never takes the build price or the rental appraisal for it', () => {
+    expect(priceOf(packagePage()).price).not.toBe(512880);
+  });
+
+  it('reads nothing where the page prints a second unaccounted figure', () => {
+    expect(priceOf(packagePage([run(560, 66, 120, 20, '$1,254,880')])).price).toBeNull();
+  });
+
+  it('reads nothing where no caption says the page carries the price', () => {
+    const uncaptioned = packagePage().filter((item) => item.text !== 'TOTAL PACKAGE'
+      && item.text !== 'LAND' && item.text !== 'BUILD' && item.text !== '+');
+    expect(priceOf(uncaptioned).price).toBeNull();
+  });
+
+  it('reads nothing that is not the price of a house and land', () => {
+    expect(priceOf(packagePage([], '$4,990')).price).toBeNull();
+  });
+
+  it('never overrules a price the page labelled', () => {
+    const labelled = packagePage([run(700, 43, 200, 12, 'Package Price - $1,199,000')]);
+    const { price, readBy } = priceOf(labelled);
+    expect(price).toBe(1199000);
+    expect(readBy).not.toContain('price:caption_on_page');
+  });
+});
