@@ -146,7 +146,7 @@ on:
         type: choice
         options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof]
       items:
-        description: 'item-state / item-reopen: comma-separated stock item ids (blank = the default set). stock-reading-trace: pages to print in full (blank = 1)'
+        description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1)'
         required: false
         default: ''
         type: string
@@ -221,6 +221,7 @@ jobs:
           # before it reaches a statement, which is the second half of the same
           # rule.
           STOCK_ITEM_IDS: ${{ inputs.items }}
+          FORENSICS_ITEM_IDS: ${{ inputs.items }}
           TARGET_ORGANISATION_ID: ${{ inputs.organisation_id }}
           RESTORE_UPLOAD_ID: ${{ inputs.upload_id }}
           PROOF_UPLOAD_ID: ${{ inputs.upload_id }}
