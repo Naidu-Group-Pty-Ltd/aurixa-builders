@@ -27,6 +27,13 @@ import {
   RUNTIME_VERSION,
 } from '../../../supabase/functions/_shared/builderStock/runtimeVersion.pure';
 import {
+  MARKETPLACE_ELIGIBILITY_VERSION,
+} from '../../../supabase/functions/_shared/builderStock/marketplaceEligibility.pure';
+import {
+  SANITIZATION_VERSION,
+} from '../../../supabase/functions/_shared/builderStock/sanitizedDerivative.pure';
+import { readdirSync } from 'node:fs';
+import {
   lifecycleForNewProperty,
 } from '../../../supabase/functions/_shared/builderStock/stockLifecycle.pure';
 
@@ -35,6 +42,7 @@ const read = (p: string) => readFileSync(join(REPO_ROOT, p), 'utf8');
 
 const MIGRATION = 'supabase/migrations/20260915200000_stock_image_invariant.sql';
 const UNIVERSAL = 'supabase/migrations/20260916090000_stock_invariant_universal.sql';
+const LOT_LISTS = 'supabase/migrations/20260924100000_a_list_of_lots_is_a_list.sql';
 const SHARED = 'supabase/functions/_shared/builderStock';
 
 describe('external imagery is never a Builder Stock substitute', () => {
@@ -289,13 +297,64 @@ describe('publication requires 100% builder-source photo coverage', () => {
 });
 
 describe('the versions that reopen the wrongly-retired branches', () => {
-  it('provenance 26 (full-size in-process election) and runtime 4 (bounded fallback, honest listings)', () => {
-    expect(PROVENANCE_VERSION).toBe(26);
+  it('provenance 27 (a list of lots is a list) and runtime 4 (bounded fallback, honest listings)', () => {
+    expect(PROVENANCE_VERSION).toBe(27);
     expect(RUNTIME_VERSION).toBe(4);
     const migration = read(MIGRATION);
     expect(migration).toContain('set_builder_stock_source_images_target(25)');
     expect(migration).toContain('image_runtime_version');
     expect(read(UNIVERSAL)).toContain('set_builder_stock_source_images_target(26)');
+    expect(read(LOT_LISTS)).toContain('set_builder_stock_source_images_target(27)');
+    expect(read(LOT_LISTS)).toContain('set_builder_stock_eligibility_target(4)');
+  });
+
+  /*
+   * A CONSTANT AND ITS TARGET MAY NEVER DISAGREE.
+   *
+   * The pg_cron tick decides in SQL whether work is left, and SQL cannot read
+   * a TypeScript constant — so a bump that ships only the constant changes new
+   * imports and silently leaves every stored image on the old rules, and a
+   * target raised past the constant keeps the sweep looking for a version the
+   * code can never write. Read off the migrations as a whole rather than one
+   * named file, so the next bump is held to it without anyone remembering to.
+   */
+  it('every settlement target the migrations raise is the version the code writes', () => {
+    const dir = join(REPO_ROOT, 'supabase', 'migrations');
+    const sql = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()
+      .map((f) => readFileSync(join(dir, f), 'utf8')).join('\n');
+    const highest = (fn: string) => Math.max(...[...sql.matchAll(
+      new RegExp(`${fn}\\((\\d+)\\)`, 'g'))].map((m) => Number(m[1])));
+    expect(highest('set_builder_stock_source_images_target')).toBe(PROVENANCE_VERSION);
+    expect(highest('set_builder_stock_eligibility_target')).toBe(MARKETPLACE_ELIGIBILITY_VERSION);
+    // No migration has raised the sanitization target past the seeded row, and
+    // this change deliberately does not: see `sanitizationSettled`.
+    expect(sql).not.toMatch(/set_builder_stock_sanitization_target\(\d+\)/);
+    expect(SANITIZATION_VERSION).toBe(2);
+  });
+
+  /*
+   * THE REOPEN THAT SHIPS WITH 27 AND 4, as the properties it must reach.
+   * Both terminal stages, because under the invariant a pictureless property
+   * ends `failed`; no property that shows a picture; and a first attempt the
+   * rules being replaced cannot claim, because migrations deploy before code.
+   */
+  it('reopens both terminal stages, only pictureless properties, after the deploy', () => {
+    const migration = read(LOT_LISTS);
+    const updates = migration.split(/\bupdate public\.builder_stock_items\b/).slice(1);
+    expect(updates).toHaveLength(2);
+    for (const update of updates) {
+      expect(update).toContain("i.image_work_stage in ('settled', 'failed')");
+      expect(update).toContain('i.primary_image_id is null');
+      expect(update).toContain("i.lifecycle_status in ('active', 'staged')");
+      expect(update).toContain("image_work_next_attempt_at = now() + interval '20 minutes'");
+      // Bookkeeping only: no property fact and no image row is written.
+      for (const column of ['price', 'lifecycle_status =', 'availability_status', 'bedrooms',
+        'primary_image_id =', 'organisation_id =']) {
+        expect(update.slice(0, update.indexOf(' where '))).not.toContain(column);
+      }
+    }
+    expect(migration).not.toMatch(/update public\.builder_stock_item_images/i);
+    expect(migration).not.toMatch(/delete from/i);
   });
 
   /*

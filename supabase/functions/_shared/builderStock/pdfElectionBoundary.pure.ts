@@ -24,9 +24,16 @@
  *
  * Pure: no IO, no clock, no network.
  */
+import { PROVENANCE_VERSION } from './provenanceVersion.pure.ts';
 
-/** Bumped when the shape below changes in a way the other end must notice. */
-export const PDF_ELECTION_PROTOCOL = 1;
+/**
+ * Bumped when the shape below changes in a way the other end must notice.
+ *
+ *   1  first release
+ *   2  the context names the extractor version it asks under, and a worker
+ *      built at any other version refuses it (see `provenanceVersion` below)
+ */
+export const PDF_ELECTION_PROTOCOL = 2;
 
 export const ELECTION_CONTEXT_HEADER = 'x-election-context';
 
@@ -105,6 +112,28 @@ export const ELECTION_TIMEOUT_MS = 60_000;
 
 export interface WireElectionContext {
   protocol: number;
+  /**
+   * THE EXTRACTOR VERSION THE CALLER WILL FILE THE ANSWER UNDER.
+   *
+   * The settler writes every answer with its own `PROVENANCE_VERSION`, and a
+   * negative filed at the current version stands for ever — that is what
+   * stops a document being re-read every lap. But the rules that PRODUCE the
+   * answer run here, in a worker that deploys on its own lane and on its own
+   * clock. So in the minutes between the Edge functions and this worker
+   * shipping, a worker still running the previous cover rules could answer
+   * "this document names no image", the new settler would file it at the new
+   * version, and the property the new rules were written for would keep the
+   * old refusal permanently — the fix deployed, and the one row it existed
+   * for untouched.
+   *
+   * Measured risk, not a hypothetical: the two lanes are separate workflows,
+   * `deploy-supabase-functions` and `deploy-pdf-worker`, and neither waits for
+   * the other. So the version travels, and a worker built at any other
+   * version refuses the request. A refusal is `unreachable` at the caller —
+   * retried on its bounded budget and never written down as a verdict — so
+   * the skew costs a retry, never an answer.
+   */
+  provenanceVersion: number;
   label: string;
   identifiedBy: 'folder_structure' | 'direct_link';
   design: string | null;
@@ -123,6 +152,7 @@ export function encodeElectionContext(context: {
 }): string {
   const wire: WireElectionContext = {
     protocol: PDF_ELECTION_PROTOCOL,
+    provenanceVersion: PROVENANCE_VERSION,
     label: context.label,
     identifiedBy: context.identifiedBy,
     design: context.design ?? null,
@@ -155,12 +185,16 @@ export function decodeElectionContext(raw: string | null | undefined): WireElect
   if (!parsed || typeof parsed !== 'object') return null;
   const c = parsed as Record<string, unknown>;
   if (Number(c.protocol) !== PDF_ELECTION_PROTOCOL) return null;
+  // Rules of a different version would answer a different question. See
+  // `WireElectionContext.provenanceVersion`.
+  if (Number(c.provenanceVersion) !== PROVENANCE_VERSION) return null;
   if (typeof c.label !== 'string' || !c.label) return null;
   if (c.identifiedBy !== 'folder_structure' && c.identifiedBy !== 'direct_link') return null;
   if (typeof c.documentName !== 'string') return null;
   if (typeof c.url !== 'string') return null;
   return {
     protocol: PDF_ELECTION_PROTOCOL,
+    provenanceVersion: PROVENANCE_VERSION,
     label: c.label,
     identifiedBy: c.identifiedBy,
     design: typeof c.design === 'string' ? c.design : null,

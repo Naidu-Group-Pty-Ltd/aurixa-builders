@@ -1787,3 +1787,104 @@ nothing now import).
 `builderStockLotAddressFrame.spec.ts` pins each shape; 21 of its 31 cases fail
 against reader 21, and the other 10 are the guards above, which both readers
 must pass.
+
+## 23 · A stock list's own flyers: a list of lots is a list, a split price is a price, a kerb is not a caption (extractor 27, display rule 4)
+
+**Found 24 September 2026, on a Google Sheet stock list imported by URL.**
+Every row links that lot's own flyer, every flyer carries a facade render, and
+thirteen of the twenty-three properties came back with no photograph. Nothing
+was wrong with the link, the fetch or the sheet: the forensics run over the
+real flyers (`stock-source-forensics`, now printing which cover rule refused
+each page and the money-like strings each page carries) named three misreadings,
+and no fixture could have seen any of them, because **no fixture had ever
+linked a document from a spreadsheet row**.
+
+| the flyer printed | what was read | the effect | now |
+|---|---|---|---|
+| its own lot, then the lots its design is released on: `Lot 29` … `LOT 28, 29, 30, 36, 37, 40, 41, 43, 44` | the list as ONE designation of its first number (`28`, or `2829` fused) | the page "states another lot" for every lot but the one leading the list — eleven properties | a list names a group; the lot the page states on its own is the one that counts |
+| `Price - $841, 000` | one package fact (the price took one separator character) | Lot 45's page carried one fact against a cover's two | a price split at its thousands is a price |
+| a clean facade render, kerb and lawn across its lower fifth | one line of lettering, from the frame's left edge to 86.7% across | Lot 54's photograph, elected and stored, hidden as a marketing tile with nothing to remove | structure the crop cut is not type |
+
+**A list of lots is a list** (`lotListsIn`, `pageLotDesignations`). A lot
+followed by a comma, an ampersand, `and` or a plus and at least one more number
+is a list, whatever line it continues on. It names a group, never the subject:
+a page that states a lot ON ITS OWN is about that lot and a list cannot change
+that, and a page that names its lots only as a list may present any of them.
+What a list may never do is make something else a lot, so each member has to
+end where a list member ends — never before a street (`Lot 906, 14 Heath
+Street` is lot 906 and its street), never before a count or a size (`Lot 12,
+3 Bed`, `Lot 12, 300m2`), never inside a grouped thousand (`Lot 32, 699,000`,
+`Lot 1,037`). A sibling's flyer linked on the wrong row is still refused, for
+the lot it states, and the refusal names that lot rather than a fusion of the
+list. `builderStockRereadHoldsItsLot.spec.ts` had pinned the defect — it
+asserted that the Ember release list made lot 48's own flyer "state another
+lot" — and says so where it was renegotiated.
+
+**A price split at its thousands is a price.** The text layer sets some
+exporters' thousands as a run of their own (`$841, 000`, `$841 ,000`, `$1, 050,
+000`); the package-price fact now admits a space on either side of each
+separator, and nothing else changes about what counts as a price.
+
+**Structure the crop cut is not type** (`FRAME_STRUCTURE_MIN_WIDTH_SHARE`). The
+strict type pass no longer counts a run that reaches a side of the frame AND
+spans half its width or more. Measured over every distinct picture this
+deployment had stored with a display verdict (`stock-overlay-audit`, 112
+pictures, 44 convicted, 21 strict runs on the 13 convicted on type): twenty runs
+are real captions, every one inset, the widest 34% of the frame; exactly one
+reached a side — Lot 54's kerb — and the rule changes that verdict and no other.
+A short run at the edge (a caption the crop clipped) and a long run inside the
+frame (a banner's line of type) are both still type, the flat-colour pass and
+the plate test convict exactly as before, and the faint pass is unchanged. The
+blind spot this opens is named where the constant is: a headline that reaches a
+side and crosses half the frame is not type to this pass, weighed like the
+edge-to-edge banner the flat-colour pass already exempts.
+
+**The versions, and the two things a bump alone would have got wrong.**
+`PROVENANCE_VERSION` 27 and `MARKETPLACE_ELIGIBILITY_VERSION` 4, with their SQL
+targets raised by `20260924100000_a_list_of_lots_is_a_list.sql`; a test now
+reads every migration and fails if any target and its constant disagree.
+
+- **The cover rules run in the PDF worker, and the worker ships on its own
+  lane.** In the minutes between the functions deploy and the worker deploy, a
+  worker still on the old rules could have answered "this flyer names no image"
+  and the new settler would have filed it at 27, where a negative stands for
+  ever — the fix live, and the rows it was written for untouched. The election
+  context now carries the extractor version (`PDF_ELECTION_PROTOCOL` 2), a
+  worker built at any other version refuses the request, and a refusal is
+  `unreachable`: a retry, never a verdict. `/health` states the version, and the
+  deploy canary reads both numbers from source rather than restating them.
+- **Not a `SANITIZATION_VERSION` bump.** That would expire every clearance in
+  production — every card showing a builder's original under "nothing to
+  remove" would blank until the sweep came round — and reopen refusals the
+  repair reached by rebuilding pixels, which can be handed to the generative
+  route when asked again. Instead a refusal records the reading of type it was
+  reached under (`STRICT_TYPE_READING`), and `sanitizationSettled` reopens
+  exactly one kind: nothing removed, refused for `type_present`, under an older
+  reading. With less type there is less to remove, never more, so that retry
+  cannot reach a model.
+
+**The properties the old rules had already concluded are reopened by
+condition, never by account.** Under the photograph invariant a property whose
+sources were all read and named no photograph ends `failed`, not `settled`, so
+the migration looks at both terminal stages: a pictureless property carrying a
+builder source that was READ and refused under an extractor older than 27 goes
+back to `source`; one holding its own picture behind a type refusal from the
+older reading goes back to `eligibility`. Measured in production before it
+shipped, those two tests match the thirteen properties of this stock list and
+nothing else. The first attempt is set twenty minutes out, because migrations
+apply before the functions deploy and a property claimed in that gap would be
+concluded again by the rules being replaced — and, being terminal again, never
+asked a third time.
+
+**Held out first.** `builderStockLotListOnACover.spec.ts` (lot lists and split
+prices, 17 cases), `builderStockFrameStructureIsNotType.spec.ts` (an invented
+picture with a band of lettering-shaped ink placed where Lot 54's kerb was, and
+where the audit's real captions were) and the corpus fixture
+`heldout-a-sheet-whose-rows-link-flyers-that-list-their-designs-lots` — the
+first fixture of its kind: a CSV whose rows link their own flyers under Drive
+file ids, served to the product's own package recovery by the harness, with a
+lot that leads its list as the control. Against the code before the change, 14
+of the new unit cases fail and the other 33 are guards both sides pass, and the
+sheet imports five properties of which four get no photograph, with the
+product's own refusal reading `Its first page reads "Lot 220 — LOT 212, 213,
+214,"` — the production sentence, word for word.

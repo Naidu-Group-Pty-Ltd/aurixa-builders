@@ -28,6 +28,7 @@
  */
 
 import { MAX_REPAIRED_SHARE } from './repairRegion.pure.ts';
+import { STRICT_TYPE_READING } from './marketingOverlay.pure.ts';
 
 /**
  * Bumped when a repair would come out differently for bytes already handled.
@@ -204,6 +205,13 @@ export interface SanitizationFailure {
    * rule this repository already holds everywhere else.
    */
   clearance_refusal?: string | null;
+  /**
+   * THE READING OF "A LINE OF TYPE" THIS REFUSAL WAS REACHED UNDER
+   * (`STRICT_TYPE_READING`). Absent on every record written before it
+   * existed, which is read as the first reading. See `sanitizationSettled`
+   * for the one refusal it can reopen.
+   */
+  type_reading?: number;
 }
 
 /**
@@ -430,9 +438,37 @@ export function sanitizationSettled(
     if (!Number.isFinite(version) || version < SANITIZATION_VERSION) continue;
     if (typeof record.original_sha256 !== 'string') continue;
     if (!originalSha256 || record.original_sha256 !== originalSha256) continue;
+    if (key === FAILURE_KEY && typeRefusalOutread(raw as Partial<SanitizationFailure>)) continue;
     return true;
   }
   return false;
+}
+
+/**
+ * A REFUSAL THAT RESTS ON TYPE THE CURRENT READING NO LONGER SEES.
+ *
+ * MEASURED 24 SEPTEMBER 2026, Lot 54: a clean facade render whose kerb line
+ * the strict pass read as a line of lettering. The repair had nothing to take
+ * off (`nothing_to_remove`), the clearance refused because type was present
+ * (`type_present`), and a failure at the current `SANITIZATION_VERSION`
+ * settles the row — so the property's own photograph stayed hidden for ever,
+ * although the reading that convicted it has since been corrected.
+ *
+ * WHY THIS AND NOT A `SANITIZATION_VERSION` BUMP. A bump reopens every
+ * refusal and expires every clearance, and both are wrong here: a clearance
+ * means no type was found, and a reading that sees LESS type cannot overturn
+ * that, so expiring them would blank every cleared card until the sweep came
+ * round again; and a refusal the repair reached by rebuilding pixels can be
+ * handed to the generative route when it is asked again. This reopens exactly
+ * the one refusal the new reading can change — nothing removed, refused for
+ * type, under an older reading — and that refusal cannot reach a model on the
+ * way back: with less type there is less to remove, never more.
+ */
+function typeRefusalOutread(record: Partial<SanitizationFailure>): boolean {
+  if (record.reason !== 'nothing_to_remove') return false;
+  if (record.clearance_refusal !== 'type_present') return false;
+  const reading = Number(record.type_reading ?? 1);
+  return !Number.isFinite(reading) || reading < STRICT_TYPE_READING;
 }
 
 /**

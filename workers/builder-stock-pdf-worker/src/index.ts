@@ -33,6 +33,7 @@ import {
 import {
   ELECTION_CONTEXT_HEADER, PDF_ELECTION_PROTOCOL, decodeElectionContext,
 } from '../../../supabase/functions/_shared/builderStock/pdfElectionBoundary.pure.ts';
+import { PROVENANCE_VERSION } from '../../../supabase/functions/_shared/builderStock/provenanceVersion.pure.ts';
 
 export { PdfElection };
 
@@ -76,16 +77,19 @@ export default {
 
     /*
      * `/health` IS UNAUTHENTICATED AND DELIBERATELY DULL. It states the
-     * service name, the protocol it speaks and whether a token is configured
-     * — three facts a deploy needs before it points anything at this worker,
-     * and none of which help an attacker. It never states the token, and it
-     * never runs an election.
+     * service name, the protocol it speaks, the extractor version its rules
+     * are, and whether a token is configured — facts a deploy needs before it
+     * points anything at this worker, and none of which help an attacker. The
+     * extractor version is how a rollout PROVES the worker it is about to rely
+     * on runs the rules it shipped, rather than assuming the other lane
+     * finished. It never states the token, and it never runs an election.
      */
     if (url.pathname === '/health') {
       return json({
         ok: Boolean(env.BUILDER_STOCK_PDF_WORKER_TOKEN),
         service: 'builder-stock-pdf-worker',
         protocol: PDF_ELECTION_PROTOCOL,
+        provenanceVersion: PROVENANCE_VERSION,
       }, env.BUILDER_STOCK_PDF_WORKER_TOKEN ? 200 : 503);
     }
 

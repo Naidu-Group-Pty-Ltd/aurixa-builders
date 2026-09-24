@@ -26,6 +26,7 @@ import {
   WORKER_RUNTIME_VERSION, electionRoute,
 } from '../../../supabase/functions/_shared/builderStock/pdfElectionRoute.pure';
 import { RUNTIME_VERSION } from '../../../supabase/functions/_shared/builderStock/runtimeVersion.pure';
+import { PROVENANCE_VERSION } from '../../../supabase/functions/_shared/builderStock/provenanceVersion.pure';
 import { runElectionOnRoute } from '../../../supabase/functions/_shared/builderStock/pdfElectionClient';
 import { readPdfPageTextResult } from '../../../supabase/functions/_shared/builderStock/pdfText';
 import workerEntry, { type Env } from '../../../workers/builder-stock-pdf-worker/src/index';
@@ -53,7 +54,9 @@ const PRODUCTION_READER = readPdfPageTextResult;
 describe('the wire between the settler and the PDF worker', () => {
   it('carries a context through base64 and back unchanged', () => {
     const decoded = decodeElectionContext(encodeElectionContext(CONTEXT));
-    expect(decoded).toEqual({ protocol: PDF_ELECTION_PROTOCOL, ...CONTEXT });
+    expect(decoded).toEqual({
+      protocol: PDF_ELECTION_PROTOCOL, provenanceVersion: PROVENANCE_VERSION, ...CONTEXT,
+    });
   });
 
   /**
@@ -75,17 +78,41 @@ describe('the wire between the settler and the PDF worker', () => {
     // A protocol this deployment does not speak. Encoded the same UTF-8 way
     // the real encoder does, because `btoa` throws on this label's em-dash —
     // which is the whole reason the encoder does not use it.
-    const future = bytesToBase64(new TextEncoder().encode(
-      JSON.stringify({ ...CONTEXT, protocol: PDF_ELECTION_PROTOCOL + 1 })));
-    expect(decodeElectionContext(future)).toBeNull();
+    // Every refusal below starts from a context the decoder WOULD accept, so
+    // each is refused for its own reason and not for a field it was missing.
+    const wire = (fields: Record<string, unknown>) => bytesToBase64(new TextEncoder().encode(
+      JSON.stringify({
+        ...CONTEXT, protocol: PDF_ELECTION_PROTOCOL, provenanceVersion: PROVENANCE_VERSION,
+        ...fields,
+      })));
+    expect(decodeElectionContext(wire({}))).not.toBeNull();
+    expect(decodeElectionContext(wire({ protocol: PDF_ELECTION_PROTOCOL + 1 }))).toBeNull();
     // The label is the property. Without it nothing may be elected.
-    const unlabelled = bytesToBase64(new TextEncoder().encode(
-      JSON.stringify({ ...CONTEXT, protocol: PDF_ELECTION_PROTOCOL, label: '' })));
-    expect(decodeElectionContext(unlabelled)).toBeNull();
+    expect(decodeElectionContext(wire({ label: '' }))).toBeNull();
     // `identifiedBy` decides whether a structural cover is licensed at all.
-    const unattributed = bytesToBase64(new TextEncoder().encode(
-      JSON.stringify({ ...CONTEXT, protocol: PDF_ELECTION_PROTOCOL, identifiedBy: 'vibes' })));
-    expect(decodeElectionContext(unattributed)).toBeNull();
+    expect(decodeElectionContext(wire({ identifiedBy: 'vibes' }))).toBeNull();
+  });
+
+  /**
+   * THE DEPLOY SKEW, MEASURED ON 24 SEPTEMBER 2026 AS A RISK RATHER THAN AN
+   * INCIDENT. The cover rules run in the worker and the answer is filed by the
+   * settler under ITS extractor version. The two ship on separate lanes, so a
+   * worker still running the old rules could refuse a document during the
+   * minutes the new settler is live, and the refusal would be filed at the new
+   * version — where a negative stands for ever. Asking under one version and
+   * answering under another is therefore refused at the door.
+   */
+  it('refuses a context asked under any other extractor version', () => {
+    const asked = (provenanceVersion: unknown) => bytesToBase64(new TextEncoder().encode(
+      JSON.stringify({
+        ...CONTEXT, protocol: PDF_ELECTION_PROTOCOL, provenanceVersion,
+      })));
+    expect(decodeElectionContext(asked(PROVENANCE_VERSION))).not.toBeNull();
+    for (const other of [PROVENANCE_VERSION - 1, PROVENANCE_VERSION + 1, null, undefined, '']) {
+      expect(decodeElectionContext(asked(other)), String(other)).toBeNull();
+    }
+    expect(JSON.parse(new TextDecoder().decode(base64ToBytes(encodeElectionContext(CONTEXT))))
+      .provenanceVersion).toBe(PROVENANCE_VERSION);
   });
 
   /**
@@ -363,7 +390,9 @@ describe('the worker’s front door', () => {
   it('states the protocol it speaks, so a deploy can refuse a mismatch', async () => {
     const health = await call('/health');
     expect(health.status).toBe(200);
-    expect(await health.json()).toMatchObject({ ok: true, protocol: PDF_ELECTION_PROTOCOL });
+    expect(await health.json()).toMatchObject({
+      ok: true, protocol: PDF_ELECTION_PROTOCOL, provenanceVersion: PROVENANCE_VERSION,
+    });
   });
 
   it('never states the token', async () => {

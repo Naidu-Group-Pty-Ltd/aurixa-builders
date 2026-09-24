@@ -564,12 +564,69 @@ const FAINT_MIN_CORE_PROFILE = 0.55;
  */
 const MIN_TEXT_WIDTH_SHARE = 0.055;
 
+/**
+ * TYPE LAID OVER A PICTURE IS SET INSIDE IT.
+ *
+ * MEASURED 24 SEPTEMBER 2026, over every distinct picture this deployment has
+ * stored and measured (`stock-overlay-audit`, 112 pictures, 44 convicted, 21
+ * strict runs across the 13 convicted on type). Twenty of those runs are the
+ * lettering on real marketing tiles, and every one of them is INSET — a
+ * caption, a pill, a badge is placed on the photograph with a margin round
+ * it. Exactly one run reached a side of the frame: the kerb and lawn edge
+ * across the lower fifth of Lot 54's facade render, a clean builder picture
+ * with no treatment on it at all, whose grass blades over the kerb line pass
+ * every test above as a word does. It began at the left edge and ran 86% of
+ * the way across, and it hid that property's own photograph with nothing to
+ * remove and no clearance to give.
+ *
+ * A band of ink that runs into the frame AND across most of it is the
+ * picture's own structure cut by the crop — a kerb, a horizon, a fence line,
+ * a roof edge — and not lettering placed on top of it. So the strict pass
+ * does not count such a run as type. Both conditions, never one: a short run
+ * at the edge (a caption the crop clipped) and a long run inside the frame
+ * (a banner's line of type) are both still type.
+ *
+ * WHAT THIS DOES NOT TOUCH, which is what keeps it from admitting a tile:
+ * the flat-colour pass convicts a picture on its blocks exactly as before; a
+ * brand-coloured block still refuses the clearance; the faint pass is
+ * unchanged and still hides a picture it doubts. On the measured corpus the
+ * rule changes one verdict — Lot 54's — and no other.
+ *
+ * A HEADLINE THE CROP CUT, RUNNING HALF THE FRAME, IS THEREFORE NOT TYPE TO
+ * THIS PASS — a known blind spot, weighed and kept, exactly as the edge-to-
+ * edge banner is for the flat-colour pass (`MAX_SPAN_SHARE`). None of the
+ * twenty measured lines of type reaches a side and the widest runs 34% of the
+ * frame, so the gap between the two populations is wide on both sides; and
+ * the cost of the other direction is not a hidden card but a hidden card for
+ * ever, because a refusal for type is a picture the repair has nothing to
+ * take off. Such a headline is still caught by its plate where it has one,
+ * and by a recorded `repair_region` where it does not.
+ */
+const FRAME_STRUCTURE_MIN_WIDTH_SHARE = 0.5;
+
+/**
+ * WHICH READING OF "A LINE OF TYPE" AN ANSWER WAS REACHED UNDER.
+ *
+ * Bumped when what the STRICT pass counts as type changes in the direction
+ * that can clear a picture it used to refuse. An answer that depends on the
+ * strict pass — a sanitization refusal that says "there is type on this
+ * picture and nothing to remove" — carries the reading it was reached under,
+ * so a later reading that no longer sees that type can ask the question
+ * again, and ONLY that question: every other refusal, every derivative and
+ * every clearance stand exactly as they are. See `sanitizationSettled`.
+ *
+ *   1  everything before 24 September 2026 (a record carrying no reading)
+ *   2  structure the crop cut is not type (`FRAME_STRUCTURE_MIN_WIDTH_SHARE`)
+ */
+export const STRICT_TYPE_READING = 2;
+
 const STRICT_SHAPE: RunShape = {
   minFill: MIN_TEXT_FILL,
   maxFill: MAX_TEXT_FILL,
   minStripes: MIN_TEXT_STRIPES,
   minCore: MIN_TEXT_CORE_PROFILE,
   minMiddle: MIN_TEXT_MIDDLE_PROFILE,
+  frameStructureIsNotType: true,
 };
 const FAINT_SHAPE: RunShape = {
   minFill: FAINT_MIN_FILL,
@@ -577,6 +634,7 @@ const FAINT_SHAPE: RunShape = {
   minStripes: FAINT_MIN_STRIPES,
   minCore: FAINT_MIN_CORE_PROFILE,
   minMiddle: FAINT_MIN_CORE_PROFILE * 0.7,
+  frameStructureIsNotType: false,
 };
 
 /** What a component has to look like to count as a line of type. */
@@ -586,6 +644,8 @@ interface RunShape {
   minStripes: number;
   minCore: number;
   minMiddle: number;
+  /** See `FRAME_STRUCTURE_MIN_WIDTH_SHARE`. The strict pass only. */
+  frameStructureIsNotType: boolean;
 }
 
 export interface TextMeasurement {
@@ -775,6 +835,11 @@ function runsIn(
      * this rejects, so every control that passed before passes now.
      */
     if (runWidth < width * MIN_TEXT_WIDTH_SHARE) continue;
+    // Structure the crop cut, not lettering laid over the picture. See
+    // `FRAME_STRUCTURE_MIN_WIDTH_SHARE`.
+    if (shape.frameStructureIsNotType
+      && (minX <= 0 || maxX >= width - 1)
+      && runWidth >= width * FRAME_STRUCTURE_MIN_WIDTH_SHARE) continue;
     const fill = area / (runWidth * runHeight);
     if (fill < shape.minFill || fill > shape.maxFill) continue;
     if (stripesAcross(ink, label, width, minX, maxX, minY, maxY) < shape.minStripes) continue;
