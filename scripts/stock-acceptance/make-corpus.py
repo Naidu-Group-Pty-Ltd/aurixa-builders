@@ -2933,6 +2933,47 @@ def _u21(c):
     c.showPage()
 
 
+# --- u22. A TOWNHOUSE, ITS UNIT OVER ITS STREET NUMBER ----------------------
+#
+# IMPORTED NOTHING. `5/12 Kestrel Street, Box Hill NSW 2765` is how an
+# Australian unit or townhouse address is written, and a street number had to
+# be one figure, so the line naming the property was read by nothing.
+@fixture('heldout-townhouse-unit-over-street-number',
+         'TOWNHOUSE 5 - KESTREL - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(unit_number='5', street_name='5/12 Kestrel Street',
+                        suburb='Box Hill', state='NSW', postcode='2765',
+                        building_size_sqm=164, price=689000)]))
+def _u22(c):
+    pt(c, 43, 800, '5/12 Kestrel Street, Box Hill NSW 2765', 18, True)
+    pt(c, 43, 760, 'House Size 164m²', 12)
+    pt(c, 43, 740, 'Price $689,000', 12, True)
+    c.showPage()
+
+
+# --- u23. A STREET WITH A DIRECTION, AND A PRICE WITH ITS GST ---------------
+#
+# IMPORTED NOTHING, then lost its price and land. `Lot 118 Main Road East,
+# Riverstone NSW 2765` ends its street in a direction, not a type, so the
+# address line was read by nothing; `Price $812,000 inc GST` and `Land Size
+# 450 m2.` each set their figure aside over the words after it.
+@fixture('heldout-street-with-a-direction-and-a-price-with-its-gst',
+         'LOT 118 - ROSELLA 26 - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='118', street_name='Main Road East',
+                        suburb='Riverstone', state='NSW', postcode='2765',
+                        land_size_sqm=450, price=812000)]))
+def _u23(c):
+    pt(c, 43, 800, 'Lot 118 Main Road East, Riverstone NSW 2765', 18, True)
+    pt(c, 43, 760, 'Land Size 450 m2.', 12)
+    pt(c, 43, 740, 'Price $812,000 inc GST', 12, True)
+    c.showPage()
+
+
 def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     manifest = []
