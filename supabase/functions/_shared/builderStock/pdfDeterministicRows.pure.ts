@@ -803,6 +803,8 @@ type ClaimSource =
   | 'beside'
   | 'below'
   | 'caption'
+  | 'figure_caption'
+  | 'caption_on_page'
   | 'filename'
   | 'icon_row'
   | 'area_schedule';
@@ -2074,6 +2076,160 @@ function readContinuedAddress(
 }
 
 /**
+ * `Lot 326 Dapple Avenue` / `Palomino Estate,` / `Armstrong Creek` — THE
+ * LOT'S STREET, ITS ESTATE AND ITS SUBURB, ONE LINE EACH IN ONE COLUMN.
+ *
+ * MEASURED 24 SEPTEMBER 2026 on `LOT 326 - NEX 20 - BROCHURE.pdf` and the
+ * same template's `LOT 324 - NEX 20 - V002.pdf`: that is the whole of where
+ * the property is, drawn in 22-point type at the page's left edge, and the
+ * card showed the lot and the estate and neither the street nor the suburb.
+ * The street line has no locality under it (the estate sits there), and
+ * `readContinuedAddress` reads a bare suburb only after a street line that
+ * ENDS in a comma — here the comma closes the estate, one line lower.
+ *
+ * THE LOT IS REQUIRED, and it is what makes a bare suburb safe to read. A
+ * builder's own office is a street with a NUMBER, never a lot, so a block
+ * that opens `Lot 326` is the property's and nothing else's. Then:
+ *
+ *   • the street is a street of the closed `STREET_TYPE` set — and never one
+ *     of the words an ESTATE is also named with (`Wollert Rise` is an estate,
+ *     `Kestrel Grove` may be), because there the tail is a place as easily as
+ *     a street and this reads neither;
+ *   • directly under it, in the same column, EITHER a development that names
+ *     itself (`… Estate`, with or without the comma that says the address goes
+ *     on) and then the locality under THAT, OR the locality directly;
+ *   • the locality is a full one with its state, or a place's name and
+ *     nothing else (`readBarePlaceName`, every guard it has) — in which case
+ *     the state and the postcode stay unread, as `readContinuedAddress` leaves
+ *     them: `Armstrong Creek` is in Victoria only because a person knows so.
+ *
+ * It joins the SAME list as every other address block, so a document drawing
+ * two addresses still claims neither.
+ */
+const ESTATE_WORDS_THAT_ARE_ALSO_STREETS = new Set([
+  'rise', 'grove', 'gr', 'gardens', 'green', 'view', 'vista', 'chase', 'glade', 'walk',
+]);
+
+type LotAddressBlock =
+  LocalityLine & { street: string; lot: string; development: string | null; lines: string[] };
+
+function readLotAddressBlock(
+  line: string,
+  index: number,
+  units: readonly BrochureUnit[],
+  consumed: ReadonlySet<number>,
+  organisation: readonly string[],
+  below: (at: number) => number | null,
+): LotAddressBlock | null {
+  const trimmed = String(line ?? '').trim().replace(/[.,]+$/, '');
+  const lotMatch = trimmed.match(LEADING_LOT);
+  if (!lotMatch) return null;
+  const street = readStreetLine(trimmed);
+  /*
+   * `Lot 4544 Riverwalk Estate` — NO STREET, AND THE DEVELOPMENT NAMES ITSELF.
+   * The lot's own line then says everything the page says about where it is
+   * except the suburb, and the suburb is the next line of the frame.
+   */
+  let named: string | null = null;
+  if (street) {
+    const type = street.split(/\s+/).pop()?.toLowerCase() ?? '';
+    if (ESTATE_WORDS_THAT_ARE_ALSO_STREETS.has(type)) return null;
+  } else {
+    const development = trimmed.slice(lotMatch[0].length).trim().match(NAMED_DEVELOPMENT);
+    if (!development) return null;
+    named = `${development[1]} ${development[2]}`;
+  }
+  const under = below(index);
+  if (under === null || consumed.has(under)) return null;
+
+  const second = units[under].text;
+  const localityOf = (text: string) => {
+    const full = readComposedLocality(text);
+    if (full) return full;
+    const place = readBarePlaceName(text, organisation);
+    return place ? { suburb: place, state: '', postcode: '' } : null;
+  };
+  // After an ESTATE, a place ending in a street word is a street as easily as
+  // a suburb — the same refusal `readContinuedAddress` makes. And a place that
+  // only repeats the estate's own words (`Aurora` under `Lot 12 Aurora
+  // Estate`) is the estate again, not a suburb.
+  const afterEstate = (place: string, estate: string) => {
+    const last = place.split(/\s+/).pop()?.toLowerCase() ?? '';
+    if (STREET_TYPE.has(last)) return false;
+    return !corroboratedBy(place, [nameTokens(estate)]);
+  };
+
+  if (named) {
+    const locality = localityOf(second);
+    if (!locality || !afterEstate(locality.suburb, named)) return null;
+    return { street: '', lot: lotMatch[1], development: named, ...locality, lines: [line, second] };
+  }
+
+  const secondBare = second.trim().replace(/[\s,]+$/, '');
+  const development = secondBare.match(NAMED_DEVELOPMENT);
+  if (development) {
+    const estate = `${development[1]} ${development[2]}`;
+    const beneath = below(under);
+    if (beneath === null || consumed.has(beneath)) return null;
+    const third = units[beneath].text;
+    const locality = localityOf(third);
+    if (!locality || !afterEstate(locality.suburb, estate)) return null;
+    return {
+      street: street ?? '', lot: lotMatch[1], development: estate,
+      ...locality, lines: [line, second, third],
+    };
+  }
+
+  const locality = localityOf(second);
+  if (!locality) return null;
+  return {
+    street: street ?? '', lot: lotMatch[1], development: null, ...locality, lines: [line, second],
+  };
+}
+
+/**
+ * The lot's own block, read with the reach every other pairing uses first and
+ * with the frame's own reach only where that did not complete it. See
+ * `unitBelowInColumn`.
+ *
+ * BOTH ANSWER TO THE FRAME'S LEADING. `unitBelow` counts bands and measures no
+ * distance, so on a page with nothing between them it pairs a line with one
+ * two blank lines lower — the top of the next box, not the next line of this
+ * one. Where the page gave positions, a line further below than
+ * `FRAME_LEADING_REACH` times its own type is not the frame's next line
+ * whichever lookup found it.
+ */
+function readLotAddressBlockEitherReach(
+  line: string,
+  index: number,
+  units: readonly BrochureUnit[],
+  consumed: ReadonlySet<number>,
+  organisation: readonly string[],
+  baselines: readonly number[] | null,
+): LotAddressBlock | null {
+  const inFrame = (from: number, to: number | null) =>
+    to !== null && withinFrameLeading(units, from, to, baselines) ? to : null;
+  return readLotAddressBlock(line, index, units, consumed, organisation,
+    (at) => inFrame(at, unitBelow(units, at)))
+    ?? readLotAddressBlock(line, index, units, consumed, organisation,
+      (at) => unitBelowInColumn(units, at, baselines));
+}
+
+/** Is `to` no further below `from` than its frame's leading? True without positions. */
+function withinFrameLeading(
+  units: readonly BrochureUnit[],
+  from: number,
+  to: number,
+  baselines: readonly number[] | null,
+): boolean {
+  const size = Number(units[from].height);
+  const top = baselines ? baselines[units[from].row] : Number.NaN;
+  const y = baselines ? baselines[units[to].row] : Number.NaN;
+  if (!(size > 0) || !Number.isFinite(top) || !Number.isFinite(y)) return true;
+  return top - y <= size * FRAME_LEADING_REACH;
+}
+
+/**
  * A line that is a place's name and nothing else: `Wyndham Vale`,
  * `Clyde North`, `Mickleham`.
  *
@@ -2185,6 +2341,137 @@ function readCaptionedValue(
   if (CURRENCY_OR_AREA.test(trimmed)) return null;
   if (!readsAsAName(trimmed)) return null;
   return { claim: { field, value: trimmed } };
+}
+
+/**
+ * A FIGURE OVER ITS CAPTION — `$861,700` over `PACKAGE PRICE`.
+ *
+ * MEASURED 24 SEPTEMBER 2026 on `LOT 326 - NEX 20 - BROCHURE.pdf`: the
+ * package price is set in 40-point type and its caption in 10.6-point type
+ * directly under it, in one column. Every pairing rule reads a label OVER its
+ * value, and `readCaptionedValue` above reads a caption under a NAME only, so
+ * the one figure a buyer is quoted was the one the card did not show — and
+ * with no price there was no price page, so the page's area schedule was
+ * never asked either.
+ *
+ * THE CAPTION RESOLVES THE FIELD AND THE FIGURE PROVES IT. Every condition is
+ * a refusal rather than a preference, and each is what keeps this from being
+ * the numeric caption reading `readCaptionedValue` declines:
+ *
+ *   • the caption resolves WHOLLY through the one vocabulary, to the price or
+ *     to one of the two sizes (with the figure's own unit, exactly as
+ *     `readVerticalPair` re-reads `HOUSE` over `210 m²`);
+ *   • the line above it is ONE figure and nothing else — a currency amount
+ *     for the price, an area with its unit for a size — and passes the same
+ *     gate every other reading of that field passes (`acceptFieldValue`), so
+ *     money can never become an area here or an area money;
+ *   • the caption heads NOTHING under it: where the next line in its column
+ *     is itself a figure, the caption is that figure's label, the reading
+ *     downward owns it, and this reads nothing;
+ *   • and a count is never read this way. `A COUNT IS NEVER READ OUT OF A
+ *     POSITION` (`readVerticalPair`) holds here word for word.
+ *
+ * It is tried after the label-over-value reading of the same two lines, so a
+ * column of `LAND / 350 m² / HOUSE / 210 m²` still pairs downwards and nothing
+ * here can reach it: a value a label above has taken is already consumed.
+ *
+ * AND BOTH LINES MUST STAND ALONE ON THEIR ROWS (`standsAloneAsCaption`), which
+ * the first version did not ask and the corpus caught before anything shipped.
+ * `Build - $389,500` over `Package Price - $801,500` is split at its separator
+ * into four units that share their row's x, so `$389,500` sat directly over
+ * `Package Price` in the same "column" and was read as the package price. A
+ * figure with a label drawn before it on its own row is THAT label's figure,
+ * and a caption with a figure after it on its own row is labelling that one.
+ */
+const FOOTNOTE_MARKS = /\s*[*†‡^#]+$/;
+const ONE_AMOUNT = /^[$€£¥]\s?\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?$|^[$€£¥]\s?\d{4,9}(?:\.\d{1,2})?$/;
+const FIGURE_CAPTION_FIELDS = new Set(['price', 'land_size_sqm', 'building_size_sqm']);
+
+/**
+ * ===========================================================================
+ * THE PAGE'S ONE PRICE — A CAPTION THAT SAYS THE PRICE IS HERE, AND ONE FIGURE.
+ * ===========================================================================
+ *
+ * MEASURED 21 SEPTEMBER 2026 on `Lot 37 - Miami 190 - Property Package.pdf`
+ * and its sibling `Lot 52 - Bishop 258` (the import's own record of where
+ * every line it could not read was drawn; the bytes are gone): the package
+ * price is set alone in display type, `$1,327,407` at x 66, three rows under
+ * a tracked caption line that opens at x 43 — `T O T A L  P A C K A G E ·
+ * L A N D + B U I L D · I N C .  G S T` — with the build price and a rental
+ * appraisal in the column to its right in between. Twenty-three points out of
+ * column and two other frames' rows apart, it pairs by no rule, and neither
+ * card showed a price.
+ *
+ * WHAT MAKES IT SAFE IS HOW LITTLE IT ASKS FOR, NOT HOW NEAR IT LOOKS. The page
+ * says in words that it carries the price (`PRICE`, `TOTAL PACKAGE`, `PACKAGE
+ * PRICE` — a closed list, or a heading the vocabulary reads as the price), and
+ * it prints exactly ONE sum of money no label, caption or pairing on the page
+ * accounted for. Nothing is measured and nothing is chosen: a second
+ * unaccounted figure on that page — a land price, a rebate, a price it was
+ * once — is two answers, and the page says nothing. It is asked only where
+ * no other reading found a price, so it can never overrule one.
+ */
+const PACKAGE_PRICE_CAPTION = new RegExp([
+  '^(?:(?:total|full|fixed|turn\\s*key)\\s+)?(?:house\\s*(?:&|and|\\+)\\s*land\\s+)?package(?:\\s+price)?$',
+  '^(?:total|package|full|fixed)\\s+price$',
+  '^price$',
+  '^land\\s*\\+\\s*build$',
+  '^house\\s*(?:&|and|\\+)\\s*land(?:\\s+price)?$',
+].join('|'), 'i');
+/** A house-and-land package costs at least this; a deposit or a fee does not. */
+const MIN_PACKAGE_PRICE = 50_000;
+
+const moneyOf = (amount: string) => Number(amount.replace(/[^0-9.]/g, ''));
+
+function isAFigure(line: string | null | undefined): boolean {
+  const text = String(line ?? '').trim().replace(FOOTNOTE_MARKS, '');
+  return ONE_AMOUNT.test(text) || BARE_MEASUREMENT.test(text);
+}
+
+function readCaptionedFigure(
+  value: string,
+  caption: string | undefined,
+  underCaption: string | null,
+): { claim: Claim } | null {
+  if (caption === undefined) return null;
+  const figure = String(value ?? '').trim().replace(FOOTNOTE_MARKS, '');
+  if (!figure || !HAS_DIGIT.test(figure)) return null;
+  const unit = areaUnitOf(figure);
+  const bare = fieldForHeader(caption);
+  const field = (unit ? fieldForHeader(`${caption} ${unit}`) : null) ?? bare;
+  if (!field || !FIGURE_CAPTION_FIELDS.has(field)) return null;
+  if (field === 'price') {
+    if (!ONE_AMOUNT.test(figure)) return null;
+  } else if (!unit || !BARE_MEASUREMENT.test(figure)) {
+    return null;
+  }
+  // The caption is the label of what sits UNDER it, not over it.
+  if (isAFigure(underCaption)) return null;
+  if (!acceptFieldValue(field, figure, 'label').accepted) return null;
+  return { claim: { field, value: figure } };
+}
+
+/**
+ * Is this figure over this caption a pair the page drew, and not two halves of
+ * two statements that happen to share a column? The figure has no label drawn
+ * before it on its own row, and the caption has no figure drawn after it on
+ * its own row. See `readCaptionedFigure`.
+ */
+function standsAloneAsCaption(
+  units: readonly BrochureUnit[],
+  figureAt: number,
+  captionAt: number,
+): boolean {
+  const row = units[figureAt].row;
+  for (let j = figureAt - 1; j >= 0 && units[j].row === row; j--) {
+    const before = units[j].text.trim().replace(/[\s:|–—-]+$/, '');
+    if (before && fieldForHeader(before)) return false;
+  }
+  const captionRow = units[captionAt].row;
+  for (let j = captionAt + 1; j < units.length && units[j].row === captionRow; j++) {
+    if (HAS_DIGIT.test(units[j].text)) return false;
+  }
+  return true;
 }
 
 export function readsAsProse(line: string): boolean {
@@ -2667,17 +2954,25 @@ function unitsFromPageText(page: string): BrochureUnit[] {
   return units;
 }
 
-function unitsFromLayout(items: readonly PdfTextItem[]): BrochureUnit[] {
+function unitsFromLayout(
+  items: readonly PdfTextItem[],
+  baselines?: number[],
+): BrochureUnit[] {
   /*
    * The cells carry their own set widths, so the phrase rule is measured here
    * rather than guessed: `T O T A L` joins `H O M E` because the gap between
    * them is of the order of the run's own width, and does not join a
    * tracked-out word in the next column.
+   *
+   * And their type size and their row's baseline, which only
+   * `unitBelowInColumn` reads: a unit's `row` survives normalisation, so the
+   * baselines are kept beside the units rather than inside them.
    */
   const raw: RawUnit[] = [];
   layoutLines(items).forEach((line, row) => {
+    if (baselines) baselines[row] = line.y;
     for (const cell of line.cells) {
-      raw.push({ text: cell.text, x: cell.x, row, width: cell.width });
+      raw.push({ text: cell.text, x: cell.x, row, width: cell.width, height: cell.height });
     }
   });
   return timedNormaliseUnits(raw);
@@ -2757,6 +3052,59 @@ function unitBelow(units: readonly BrochureUnit[], index: number): number | null
   return best;
 }
 
+/**
+ * ===========================================================================
+ * THE NEXT LINE OF A FRAME, HOWEVER MANY OTHER COLUMNS' LINES FALL BETWEEN.
+ * ===========================================================================
+ *
+ * `unitBelow` stops after two row bands whatever those bands hold, which is
+ * right for pairing a label with its value and wrong for a frame of text set
+ * BESIDE a table. MEASURED on `LOT 324 - NEX 20 - V002.pdf`: the address frame
+ * sets `Palomino Estate,` at 691.7 and `Armstrong Creek` at 661.0 — the same
+ * 30.7-point leading as the lines above them — while the price table beside it
+ * sets its caption row at 684.5 and its figures at 665.0. Two bands of another
+ * column, so the suburb was out of reach and the card showed none, on a page
+ * whose sibling (`LOT 326`, one band between) read it.
+ *
+ * So here only a line IN THE COLUMN is a step, and the reach is the frame's
+ * own measure: no further below than `FRAME_LEADING_REACH` times the type the
+ * line itself was set in. A line of text is never further from the next line
+ * of its own frame than that; the bottom of one box and the top of the next
+ * are.
+ *
+ * Asked ONLY by the address readers that open on a LOT (`readLotAddressBlock`),
+ * and only after `unitBelow` has been asked and the block did not complete, so
+ * a document the reader already read reads exactly as it did. Without
+ * positions — a flattened page — or without a size, it IS `unitBelow`.
+ */
+const FRAME_LEADING_REACH = 2;
+
+function unitBelowInColumn(
+  units: readonly BrochureUnit[],
+  index: number,
+  baselines: readonly number[] | null,
+): number | null {
+  const from = units[index];
+  const size = Number(from.height);
+  const top = baselines ? baselines[from.row] : Number.NaN;
+  if (!(size > 0) || !Number.isFinite(top)) return unitBelow(units, index);
+  let best: number | null = null;
+  for (let j = index + 1; j < units.length; j++) {
+    const unit = units[j];
+    if (unit.row === from.row) continue;
+    // The nearest line that has anything in this column is the answer.
+    if (best !== null && unit.row !== units[best].row) break;
+    const y = baselines ? baselines[unit.row] : Number.NaN;
+    if (!Number.isFinite(y)) continue;
+    if (top - y > size * FRAME_LEADING_REACH) break;
+    if (Math.abs(unit.x - from.x) > SAME_COLUMN_TOLERANCE) continue;
+    if (best === null || Math.abs(unit.x - from.x) < Math.abs(units[best].x - from.x)) {
+      best = j;
+    }
+  }
+  return best;
+}
+
 /** Tokens of a value, case and punctuation removed. */
 function nameTokens(value: string): string[] {
   return String(value ?? '')
@@ -2819,6 +3167,20 @@ function corroboratedBy(line: string, names: ReadonlyArray<readonly string[]>): 
  */
 /** `8`, `10.5`, `20B` — the size a design name carries after its family. */
 const DESIGN_SIZE = /^\d{1,2}(?:\.\d{1,2})?[A-Za-z]?$/;
+
+/**
+ * The names a filename carries in its segments OTHER than the one naming the
+ * lot — `EMBER` and `FLYER` in `LOT 48 - EMBER - FLYER.pdf`, and never
+ * `Riverwalk Estate` in `LOT 4544 Riverwalk Estate - ENZO 10.5 MODERN.pdf`.
+ * Asked only to REFUSE a reading; a filename never supplies a value here.
+ */
+function filenameNamesBesideTheLot(filename: string | null | undefined): string[][] {
+  const stem = String(filename ?? '').trim().replace(/\.[A-Za-z0-9]{1,5}$/, '');
+  if (!stem) return [];
+  return stem.split(/\s+[-–—]\s+/)
+    .map(nameTokens)
+    .filter((tokens) => tokens.length && fieldForHeader(tokens[0]) !== 'lot_number');
+}
 
 /** An identity a document states about ITSELF, beyond the lot every one has. */
 const FILENAME_CORROBORATION_ANCHORS = [
@@ -3368,6 +3730,10 @@ export function readPdfBrochure(
    * the diagnostics go to the import log.
    */
   const unresolved: string[] = [];
+  /** Pages whose words say they carry the price. See `PACKAGE_PRICE_CAPTION`. */
+  const priceCaptionPages = new Set<number>();
+  /** Sums of money nothing on their page accounted for, with the page. */
+  const loneAmounts: Array<{ page: number; line: string; amount: string }> = [];
   /** Lines POSITIVELY recognised as furniture. Reported, not blocking. */
   let incidental = 0;
   /** Canonical fields the document stated and this reader declines by policy. */
@@ -3429,15 +3795,23 @@ export function readPdfBrochure(
    */
   const recognised = new Set(
     (options.recognisedPages ?? []).map((page) => Number(page)).filter(Number.isFinite));
+  /** Each laid-out page's row baselines; null where the page was read flattened. */
+  const pageBaselines: Array<readonly number[] | null> = [];
   const pages = pageTexts.map((page, index) => {
     const items = recognised.has(index + 1) ? null : positioned.get(index + 1);
-    const laid = items && items.length ? unitsFromLayout(items) : null;
+    const baselines: number[] = [];
+    const laid = items && items.length ? unitsFromLayout(items, baselines) : null;
     /*
      * A layout reading that produced nothing falls back to the flattened
      * one. An empty page is a page the reader could not decode, and reading
      * it as no content at all would let a document complete around it.
      */
-    return laid && laid.length ? laid : unitsFromPageText(page);
+    if (laid && laid.length) {
+      pageBaselines[index] = baselines;
+      return laid;
+    }
+    pageBaselines[index] = null;
+    return unitsFromPageText(page);
   });
   if (positioned.size) diagnostics.mode = 'brochure';
 
@@ -3462,7 +3836,9 @@ export function readPdfBrochure(
   /** Every street-over-locality pair the document draws. See `readLocalityLine`. */
   const addressBlocks: Array<LocalityLine
     & { street: string; lines: string[]; lot?: string | null;
-        development?: string | null; page?: number }> = [];
+        development?: string | null; page?: number;
+        /** Read by `readLotAddressBlock`, the one reader of a BARE place under a lot. */
+        lotFrame?: boolean }> = [];
   /**
    * THE PAGES THAT SAY WHICH PROPERTY THIS IS — where a lot designation was
    * read. Numbers only; asked by the icon-row reading, which may read a row
@@ -3647,6 +4023,22 @@ export function readPdfBrochure(
                     if (caption && below !== null) {
                       found.push(...via('caption', [caption.claim]));
                       consumed.add(below);
+                    } else if (below !== null && !consumed.has(below)) {
+                      /*
+                       * A FIGURE OVER ITS CAPTION, last of all — see
+                       * `readCaptionedFigure`. Asked with what sits under
+                       * the caption, because a caption over a figure of its
+                       * own is that figure's label and reads nothing here.
+                       */
+                      const underCaption = unitBelow(units, below);
+                      const figure = standsAloneAsCaption(units, index, below)
+                        ? readCaptionedFigure(line, units[below].text,
+                          underCaption !== null ? units[underCaption].text : null)
+                        : null;
+                      if (figure) {
+                        found.push(...via('figure_caption', [figure.claim]));
+                        consumed.add(below);
+                      }
                     }
                   }
                 }
@@ -3712,6 +4104,17 @@ export function readPdfBrochure(
               lines: [line, under],
             });
             collected = true;
+          } else {
+            /*
+             * THE LOT'S OWN BLOCK — its street, then its estate and suburb, or
+             * its suburb alone, one line each. See `readLotAddressBlock`.
+             */
+            const block = readLotAddressBlockEitherReach(
+              line, index, units, consumed, organisation, pageBaselines[pageIndex]);
+            if (block) {
+              addressBlocks.push({ ...block, page: pageIndex, lotFrame: true });
+              collected = true;
+            }
           }
         }
         /*
@@ -3761,6 +4164,16 @@ export function readPdfBrochure(
             ? readContinuedAddress(line, under, organisation) : null;
           if (continued && under !== null) {
             addressBlocks.push({ ...continued, lines: [line, under], page: pageIndex });
+          } else if (!street) {
+            /*
+             * `Lot 4544 Riverwalk Estate` over `Wyndham Vale` — the continued
+             * address with no comma to say so. The lot's own line and a
+             * development that names itself are what stand in for it; see
+             * `readLotAddressBlock`.
+             */
+            const block = readLotAddressBlockEitherReach(
+              line, index, units, consumed, organisation, pageBaselines[pageIndex]);
+            if (block) addressBlocks.push({ ...block, page: pageIndex, lotFrame: true });
           }
         }
       }
@@ -3804,6 +4217,16 @@ export function readPdfBrochure(
          * reachable on a real seven-page document.
          */
         const bareLabel = fieldForHeader(line);
+        /*
+         * WHAT THE PAGE'S ONE PRICE IS JUDGED ON, noted before anything below
+         * decides the line was furniture. See `PACKAGE_PRICE_CAPTION`.
+         */
+        const captionWords = line.trim().replace(/[\s,.:;|\u2013\u2014-]+$/, '');
+        if (bareLabel === 'price' || PACKAGE_PRICE_CAPTION.test(captionWords)) {
+          priceCaptionPages.add(pageIndex);
+        }
+        const lone = line.trim().replace(FOOTNOTE_MARKS, '');
+        if (ONE_AMOUNT.test(lone)) loneAmounts.push({ page: pageIndex, line, amount: lone });
         /*
          * ================================================================
          * A LABEL WITH NOTHING THIS READER COULD PAIR TO IT STATES NOTHING.
@@ -4123,6 +4546,29 @@ export function readPdfBrochure(
   }
 
   /*
+   * THE PAGE'S ONE PRICE, where nothing else read one — before the sizes
+   * settle, because the page that states the price is the property's own and
+   * its measurements are the ones that stand. See `PACKAGE_PRICE_CAPTION`.
+   */
+  if (!claimed.has('price')) {
+    for (const page of [...priceCaptionPages].sort((a, b) => a - b)) {
+      const onPage = loneAmounts.filter((entry) => entry.page === page);
+      if (new Set(onPage.map((entry) => moneyOf(entry.amount))).size !== 1) continue;
+      const { amount } = onPage[0];
+      if (!(moneyOf(amount) >= MIN_PACKAGE_PRICE)) continue;
+      if (!acceptFieldValue('price', amount, 'label').accepted) continue;
+      claimed.set('price', amount);
+      readBy.set('price', 'caption_on_page');
+      pricePages.add(page);
+      const accounted = new Set(onPage.map((entry) => entry.line));
+      for (let k = unresolved.length - 1; k >= 0; k--) {
+        if (accounted.has(unresolved[k])) unresolved.splice(k, 1);
+      }
+      break;
+    }
+  }
+
+  /*
    * =====================================================================
    * THE LOT SIZE AND THE BUILD SIZE, NOW THAT EVERY PAGE HAS SPOKEN.
    * =====================================================================
@@ -4234,7 +4680,33 @@ export function readPdfBrochure(
    * nothing to anchor to and the design unread. What the DOCUMENT says is
    * settled first; the filename is a second opinion and speaks second.
    */
-  const addressBlock = addressBlocks.length === 1 ? addressBlocks[0] : null;
+  /*
+   * ONE ADDRESS PRINTED TWICE IS ONE ADDRESS. A cover's address block and the
+   * same street and suburb repeated lower down are the document saying one
+   * thing twice, and counting them as two made the whole-document guard
+   * refuse an address the page states without contradiction. Only blocks
+   * that name the SAME street and the same suburb fold together — the fuller
+   * one is kept — and every other pair of blocks is still two addresses.
+   */
+  const saysMore = (block: (typeof addressBlocks)[number]) =>
+    Number(Boolean(block.state)) + Number(Boolean(block.postcode)) + Number(Boolean(block.lot));
+  const byAddress = new Map<string, (typeof addressBlocks)[number]>();
+  for (const block of addressBlocks) {
+    const where = block.street ? flattenIdentity(block.street) : `lot:${flattenIdentity(block.lot ?? '')}`;
+    const key = `${where}|${flattenIdentity(block.suburb ?? '')}`;
+    const held = byAddress.get(key);
+    if (!held || saysMore(block) > saysMore(held)) byAddress.set(key, block);
+  }
+  const onlyBlock = byAddress.size === 1 ? [...byAddress.values()][0] : null;
+  /*
+   * AND A BLOCK ABOUT ANOTHER LOT IS NOT THIS PROPERTY'S ADDRESS. Where the
+   * document has already said which lot it is and the block's own line names
+   * a different one, the block describes a neighbour, and nothing of it is
+   * read — the lot is identity, and an address may not overrule it.
+   */
+  const heldLot = claimed.get('lot_number');
+  const addressBlock = onlyBlock && onlyBlock.lot && heldLot
+    && flattenIdentity(onlyBlock.lot) !== flattenIdentity(heldLot) ? null : onlyBlock;
   const addressBlockRead = Boolean(addressBlock)
     && !claimed.has('address_line') && !claimed.has('suburb');
   if (addressBlock && addressBlockRead) {
@@ -4289,6 +4761,34 @@ export function readPdfBrochure(
   if (corroborated && !readsAsPromotion(corroborated.claim.value)) {
     claimed.set('house_design', trimSeparators(corroborated.claim).value);
     readBy.set('house_design', 'filename');
+  }
+  /*
+   * A SUBURB THAT IS THE HOUSE'S OWN DESIGN IS NOT A SUBURB. An address block
+   * reads the line under a lot as a place because a bare, capitalised name is
+   * what a suburb looks like — and it is also what `EMBER` looks like, set
+   * under a lot line by a template that puts the design there. So the place is
+   * refused where it is the design the document settled on, or where the
+   * builder's own filename names it anywhere but beside the lot (`LOT 48 -
+   * EMBER - FLYER.pdf`): the filename may not SAY a suburb, and it may always
+   * say that something is not one. Asked once the design is as settled as the
+   * document makes it, and it withdraws the block's locality outright.
+   */
+  const design = claimed.get('house_design');
+  const blockSuburb = readBy.get('suburb') === 'address_block' && addressBlock?.lotFrame
+    ? claimed.get('suburb') : undefined;
+  const namedElsewhere = [
+    ...(design ? [nameTokens(design)] : []),
+    ...filenameNamesBesideTheLot(options.filename),
+  ];
+  if (blockSuburb && corroboratedBy(blockSuburb, namedElsewhere)) {
+    for (const field of ['suburb', 'state', 'postcode']) {
+      if (readBy.get(field) === 'address_block') {
+        claimed.delete(field);
+        readBy.delete(field);
+      }
+    }
+    declined.add('suburb');
+    declinedBecause.set('suburb', 'the_design_is_not_a_place');
   }
   const afterFilename = corroborated
     ? afterAddress.filter((line) => line.trim() !== corroborated.line)
@@ -4864,7 +5364,7 @@ const MAX_HEADER_SCAN = 15;
  * `documentNormalisation` measures a gap against the run before it, and a cell
  * with no width falls back to bare adjacency.
  */
-interface LayoutCell { x: number; text: string; width?: number }
+interface LayoutCell { x: number; text: string; width?: number; height?: number }
 interface LayoutLine { y: number; cells: LayoutCell[] }
 
 /**
@@ -4953,7 +5453,13 @@ export function layoutLines(items: readonly PdfTextItem[]): LayoutLine[] {
       end = Math.max(end, item.x + (Number.isFinite(item.width) ? item.width : 0));
       last = item;
       const current = cells[cells.length - 1];
-      if (current) current.width = Math.max(0, end - current.x);
+      if (current) {
+        current.width = Math.max(0, end - current.x);
+        // The largest type the cell was set in: what `unitBelowInColumn`
+        // measures a frame's leading against.
+        const size = Number.isFinite(item.height) ? Number(item.height) : 0;
+        if (size > (current.height ?? 0)) current.height = size;
+      }
     }
     return { y: group.y, cells };
   });

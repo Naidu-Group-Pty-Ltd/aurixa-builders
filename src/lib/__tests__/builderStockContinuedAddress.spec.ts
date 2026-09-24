@@ -47,6 +47,17 @@ const read = (items: PdfTextItem[], organisationName: string | null = null) => {
   };
 };
 
+const readNamed = (items: PdfTextItem[], filename: string) => {
+  const reading = readPdfBrochure(
+    [items.map((item) => item.text).join('\n')],
+    { positionedPages: [{ page: 1, items }], filename },
+  );
+  return {
+    reading,
+    row: reading.rows.length ? normaliseStockRow(reading.rows[0]) : null,
+  };
+};
+
 describe('the address a comma carries onto the next line', () => {
   it('reads an estate and its suburb', () => {
     const { row, reading } = read(page('Lot 4327 Jubilee Estate,', 'Wyndham Vale'));
@@ -80,19 +91,43 @@ describe('the address a comma carries onto the next line', () => {
   });
 });
 
-describe('what it will not read as a suburb', () => {
-  it('a line that does not continue: no comma, no suburb', () => {
-    const { row } = read(page('Lot 4327 Jubilee Estate', 'Wyndham Vale'));
-    expect(row?.suburb ?? null).toBeNull();
-    /*
-     * The estate is the lot line's OWN statement and never needed the comma:
-     * `Lot 101 Watsons Reach Estate` is the whole of where a production
-     * brochure says its property is (reader version 16, and
-     * `builderStockLot101Geometry.spec.ts`). What the missing comma still
-     * withholds is the NEXT line, which is what this case is about.
-     */
+describe('the lot line that names its estate and closes without a comma', () => {
+  /*
+   * THIS CASE USED TO BE REFUSED, and the refusal was a guess the production
+   * record overturned. `LOT 4544 Riverwalk Estate - ENZO 10.5 MODERN` (24
+   * September 2026) is the same builder's template as `LOT 4327` with the
+   * comma gone, and its import set `Wyndham Vale` aside on page 1, row 6 —
+   * the line under the lot's own. What makes that line safe to read is not
+   * the comma but the LOT: a sales office has a street number, never a lot,
+   * and the development names itself. See `readLotAddressBlock`.
+   */
+  it('reads the suburb on the next line of the frame', () => {
+    const { row, reading } = read(page('Lot 4327 Jubilee Estate', 'Wyndham Vale'));
     expect(row?.development_name).toBe('Jubilee Estate');
+    expect(row?.suburb).toBe('Wyndham Vale');
+    expect(row?.address_line ?? null).toBeNull();
+    expect(reading.diagnostics.readBy ?? []).toContain('suburb:address_block');
   });
+
+  it('still reads nothing after a line that names no lot', () => {
+    const { row } = read(page('Jubilee Estate', 'Wyndham Vale'));
+    expect(row?.suburb ?? null).toBeNull();
+  });
+
+  it("never reads the house's own design as its suburb", () => {
+    const { row, reading } = readNamed(
+      page('Lot 48 Havenwood Estate', 'Ember'), 'LOT 48 - EMBER - FLYER.pdf');
+    expect(row?.suburb ?? null).toBeNull();
+    expect(reading.diagnostics.declinedBecause ?? []).toContain('suburb:the_design_is_not_a_place');
+  });
+
+  it('never reads the estate again as its own suburb', () => {
+    const { row } = read(page('Lot 12 Aurora Estate', 'Aurora'));
+    expect(row?.suburb ?? null).toBeNull();
+  });
+});
+
+describe('what it will not read as a suburb', () => {
 
   it('the tail of a line that names no lot and no street number', () => {
     // `Maple Estate,` over a place is `readNamedPlace`'s shape, which reads the

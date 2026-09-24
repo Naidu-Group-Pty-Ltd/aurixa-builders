@@ -48,6 +48,10 @@ import {
 } from './pdfPrimaryImage.pure.ts';
 import { isolatePhotographBand } from './pdfFlattenedPhoto.pure.ts';
 import { figureCandidatesFrom, type PdfFigure } from './pdfFigures.pure.ts';
+import {
+  MAX_OUTLINE_PAGES, multiplyMatrix, outlineFigureFrom, outlineRegionsFrom, scanFilledPaths,
+  type FilledPath, type PdfOutlineFigure,
+} from './pdfOutlineFigures.pure.ts';
 import type { ScanRasterLocation } from './ocr/scanRaster.pure.ts';
 import { cropRows, encodePng, inflate, sha256Hex } from './rasterPng.ts';
 import { validateSourceImageBytes } from './sourceAssets.pure.ts';
@@ -153,6 +157,45 @@ async function collectDrawnImages(
     out.push(...await collectDrawnImages(bytes, form, text, formBase, depth + 1, budget));
   }
   return out;
+}
+
+/**
+ * Every shape a page FILLS, wherever it is filled from — the page's own
+ * content and the forms it draws, descended exactly as `collectDrawnImages`
+ * descends them and under the same form budget. What they are for, and every
+ * bound they answer to, is `pdfOutlineFigures.pure.ts`. A stream that reached
+ * a bound says so, and the page's shapes are then not read at all.
+ */
+async function collectOutlinePaths(
+  bytes: Uint8Array,
+  scope: PdfScope,
+  content: string,
+  base: Matrix,
+  depth: number,
+  budget = { forms: 0 },
+): Promise<{ paths: FilledPath[]; truncated: boolean }> {
+  const scan = scanFilledPaths(content, base);
+  const paths = scan.paths.slice();
+  let truncated = scan.truncated;
+  if (depth >= 4 || truncated) return { paths, truncated };
+  for (const use of scan.forms) {
+    const form = scope.forms.find((candidate) => candidate.name === use.name);
+    if (!form) continue;
+    if (budget.forms >= MAX_FORMS_PER_PAGE) break;
+    budget.forms += 1;
+    const raw = bytes.slice(form.start, form.end);
+    let text: string;
+    try {
+      text = new TextDecoder('latin1').decode(form.flate ? await inflate(raw) : raw);
+    } catch {
+      continue; // a form we cannot inflate simply contributes nothing
+    }
+    const inner = await collectOutlinePaths(
+      bytes, form, text, multiplyMatrix(form.matrix, use.ctm), depth + 1, budget);
+    paths.push(...inner.paths);
+    if (inner.truncated) { truncated = true; break; }
+  }
+  return { paths, truncated };
 }
 
 export interface RecoveredObjects {
@@ -608,8 +651,16 @@ async function discoverCandidates(
   kept: RawCandidate[];
   pagesDrawnOn: Map<string, number>;
   figures: Array<Omit<PdfFigure, 'sha256'>>;
+  outlines: PdfOutlineFigure[];
 }> {
   const perPage: RawCandidate[] = [];
+  /*
+   * AND THE TYPE A PAGE PAINTS AS SHAPES, from the same content string: a
+   * block of rows the exporter converted to curves, which no text layer and
+   * no picture carries. Only on the first pages, where a property is priced,
+   * and nothing is drawn or recognised here. See `pdfOutlineFigures.pure.ts`.
+   */
+  const outlines: PdfOutlineFigure[] = [];
   const pagesDrawnOn = new Map<string, number>();
   /*
    * AND THE INSETS THAT MAY STATE A FIGURE, from the same drawing
@@ -635,6 +686,20 @@ async function discoverCandidates(
     }
     const drawn = await collectDrawnImages(
       bytes, page, content, IDENTITY, 0, { forms: 0 }, page.widgets);
+
+    if (index < MAX_OUTLINE_PAGES) {
+      try {
+        const shapes = await collectOutlinePaths(bytes, page, content, IDENTITY, 0);
+        if (!shapes.truncated) {
+          for (const region of outlineRegionsFrom(shapes.paths)) {
+            const figure = outlineFigureFrom(region, index + 1);
+            if (figure) outlines.push(figure);
+          }
+        }
+      } catch {
+        /* shapes that cannot be read contribute nothing */
+      }
+    }
 
     /*
      * Can a rectangle from this page's content stream be compared with a run
@@ -693,7 +758,7 @@ async function discoverCandidates(
   const figures = figuresPerPage
     .filter((figure) => figure.placements <= 1 && (figurePages.get(figure.key) ?? 0) <= 1)
     .map(({ key: _key, placements: _placements, ...figure }) => figure);
-  return { kept, pagesDrawnOn, figures };
+  return { kept, pagesDrawnOn, figures, outlines };
 }
 
 /**
@@ -1053,6 +1118,12 @@ export interface PdfSourceDiscovery {
    * known (`figuresToRead`). See `pdfFigures.pure.ts`.
    */
   figures: PdfFigure[];
+  /**
+   * Blocks of type the pages paint as shapes, as polygons — never drawn or
+   * recognised here. Which of them are ever read is decided with the figures
+   * (`outlinesToRead`). See `pdfOutlineFigures.pure.ts`.
+   */
+  outlines: PdfOutlineFigure[];
 }
 
 /**
@@ -1096,7 +1167,8 @@ async function discoverPdfSourceAssetsHoldingSlot(
   const recovered = await recoverCompressedObjects(bytes);
   const authoritative = pageOrderIsAuthoritative(bytes, recovered.objects);
   const limit = Math.max(1, Math.min(options.maxPages ?? MAX_PAGES_SEARCHED, MAX_PAGES_SEARCHED));
-  const { kept, figures: figureOffsets } = await discoverCandidates(bytes, recovered.objects, limit);
+  const { kept, figures: figureOffsets, outlines } =
+    await discoverCandidates(bytes, recovered.objects, limit);
   const only = options.pages?.length ? new Set(options.pages) : null;
 
   const assets: PdfSourceAsset[] = [];
@@ -1180,5 +1252,6 @@ async function discoverPdfSourceAssetsHoldingSlot(
     pageOrderAuthoritative: authoritative,
     objectStreamsUnread: recovered.unreadStreams,
     figures,
+    outlines,
   };
 }

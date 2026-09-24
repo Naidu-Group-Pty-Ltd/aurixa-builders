@@ -41,6 +41,10 @@ deno run --allow-all --import-map scripts/stock-acceptance/import-map.json \
   scripts/stock-acceptance/harness.ts /var/tmp/corpus
 ```
 
+The corpus is drawn with `reportlab` and `pillow`, and one fixture
+(`heldout-schedule-painted-as-outlines`) converts its type to curves with
+`fontTools`: `pip install reportlab pillow fonttools`.
+
 ## The held-out set is the point of the corpus
 
 A fixture written to make a rule pass proves the rule was written. A fixture

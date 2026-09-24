@@ -186,7 +186,7 @@ import { sweepHandedOnThisParse } from './readerSweepAttempt.pure.ts';
  * Every document already imported is read again, because a document whose
  * headings were unreadable was read without them.
  */
-export const DETERMINISTIC_READER_VERSION = 18;
+export const DETERMINISTIC_READER_VERSION = 19;
 
 /*
  * VERSION 11 — A PHRASE'S OWN WORDS ARE HEADINGS TOO.
@@ -403,6 +403,35 @@ export const DETERMINISTIC_READER_VERSION = 18;
  *
  * The one stored document whose reading this changes is the one version 17
  * could not finish; every other document reads byte-identically.
+ *
+ * VERSION 19 — WHAT FOUR BROCHURES PRINT IN LARGE TYPE AND NO READER TOOK.
+ *
+ * MEASURED 24 SEPTEMBER 2026 from each import's own record of the lines it set
+ * aside, and on the stored bytes of the two that still exist:
+ *
+ *   • `LOT 326 - NEX 20` sets its package price ABOVE its caption (`$861,700`
+ *     over `PACKAGE PRICE`), so no price was read, the page was not the
+ *     property's own, and the picture of the area schedule on it — which the
+ *     figure reader reads as `178.23`, proved by its parts — was never asked.
+ *     The price is read now (`readCaptionedFigure`), and the size follows.
+ *   • The same brochure prints its address as a frame of three lines — the lot
+ *     and street, the estate, the suburb — and `LOT 324` sets the price table
+ *     between two of them (`readLotAddressBlock`, `unitBelowInColumn`).
+ *   • `LOT 4544 Riverwalk Estate` closes its lot line without the comma its
+ *     sibling `LOT 4327` carries, and its suburb was set aside.
+ *   • `Lot 37 - Miami 190` prints its package price alone, far from the caption
+ *     that names it; a page that says it carries the price and prints exactly
+ *     one unaccounted sum of money now states it (`PACKAGE_PRICE_CAPTION`).
+ *
+ * And a schedule an exporter converted to CURVES is drawn and recognised under
+ * the picture's own proofs (`pdfOutlineFigures.pure.ts`) — no production
+ * document is known to need it yet, and none reads differently for it.
+ *
+ * Every stored document is read again, because each of these is a row that
+ * only a re-read corrects. A document none of them describes reads
+ * byte-identically to reader 18: 37 of the corpus's 42 documents and all 8
+ * of the stress corpus's do, and the five that change are the five fixtures
+ * that describe these layouts.
  */
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */

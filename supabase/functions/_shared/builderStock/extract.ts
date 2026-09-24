@@ -55,6 +55,7 @@ import {
 import type { PdfPhotoProvenance } from './pdfSourcePhoto.ts';
 import type { PdfMediaPlacement } from './pdfPrimaryImage.pure.ts';
 import type { PdfFigure } from './pdfFigures.pure.ts';
+import type { PdfOutlineFigure } from './pdfOutlineFigures.pure.ts';
 import type {
   PdfDeterministicReading, PdfTextLayoutPage,
 } from './pdfDeterministicRows.pure.ts';
@@ -211,6 +212,12 @@ export interface StockExtraction {
    * property is known. See `pdfFigures.pure.ts`. Absent for every other format.
    */
   pdfFigures?: PdfFigure[];
+  /**
+   * Blocks of type a PDF paints as shapes — rows the exporter converted to
+   * curves — as polygons, never drawn or recognised here. Read, where they
+   * are, under the same rules as `pdfFigures`. See `pdfOutlineFigures.pure.ts`.
+   */
+  pdfOutlines?: PdfOutlineFigure[];
   /**
    * The record the deterministic reader HAD when it stood down.
    *
@@ -1279,6 +1286,7 @@ export async function extractStockFile(
       });
       result.pageOrderAuthoritative = found.pageOrderAuthoritative;
       result.pdfFigures = found.figures;
+      result.pdfOutlines = found.outlines;
       let pdfSkipped = 0;
       let pdfCapped = false;
       let pdfTotalBytes = 0;

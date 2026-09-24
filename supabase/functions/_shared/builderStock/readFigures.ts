@@ -21,6 +21,13 @@
  * and recognition that cannot run is `unavailable` rather than a refusal —
  * because "the engine was not there" is a statement about this deployment and
  * never about the document.
+ *
+ * AND THE TYPE A PAGE PAINTS AS SHAPES is read in the same pass, by the same
+ * engine and the same schedule reader. A block arrives as the polygons the
+ * reading isolate collected (`pdfOutlineFigures.pure.ts`); nothing is sliced
+ * or decoded for it, because there is no picture — it is drawn here, black on
+ * white, and recognised like one. Every figure and every block is read before
+ * any is believed, so a block and a picture that disagree say nothing.
  */
 import { pictureFromStream } from './pdfSourcePhoto.ts';
 import { decodeFullRaster } from './sourceImageRaster.ts';
@@ -29,6 +36,7 @@ import { prepareForRecognition } from './figureRaster.pure.ts';
 import { readPictureSchedule } from './areaSchedulePicture.pure.ts';
 import { recogniseFigures } from './ocr/recogniseScan.ts';
 import type { FigureVerdict, PdfFigure } from './pdfFigures.pure.ts';
+import { rasteriseOutlines, type PdfOutlineFigure } from './pdfOutlineFigures.pure.ts';
 
 export interface FiguresRead {
   verdict: FigureVerdict;
@@ -37,14 +45,18 @@ export interface FiguresRead {
   ms: number;
 }
 
-/** Read the figures handed over, in order, and say what they came to. */
+/** Read the figures and blocks handed over, in order, and say what they came to. */
 export async function readFigures(
   documentBytes: Uint8Array,
   figures: readonly PdfFigure[],
+  outlines: readonly PdfOutlineFigure[] = [],
   options: { deadlineAt?: number } = {},
 ): Promise<FiguresRead> {
   const startedAt = Date.now();
-  const reasons: string[] = figures.map(() => 'unread');
+  // One index space: the pictures first, then the blocks, as reasons are listed.
+  const reasons: string[] = [...figures, ...outlines].map(() => 'unread');
+  const pageOf = (index: number) => (index < figures.length
+    ? figures[index].page : outlines[index - figures.length].page);
   const prepared: Array<{ index: number; png: Uint8Array }> = [];
 
   for (let index = 0; index < figures.length; index++) {
@@ -72,6 +84,21 @@ export async function readFigures(
       prepared.push({ index, png });
     } catch {
       reasons[index] = 'undecodable';
+    }
+  }
+
+  for (let at = 0; at < outlines.length; at++) {
+    const index = figures.length + at;
+    try {
+      const drawing = rasteriseOutlines(outlines[at]);
+      if (!drawing) { reasons[index] = 'undrawable'; continue; }
+      const png = await encodePng(drawing.pixels, {
+        width: drawing.width, height: drawing.height, components: 1,
+      });
+      if (!png) { reasons[index] = 'unencodable'; continue; }
+      prepared.push({ index, png });
+    } catch {
+      reasons[index] = 'undrawable';
     }
   }
 
@@ -118,7 +145,7 @@ export async function readFigures(
       state: 'read',
       buildingSizeSqm: first.value,
       provedBy,
-      page: figures[first.index].page,
+      page: pageOf(first.index),
     },
     recognised: recognition.text.size,
     ms,

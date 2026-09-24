@@ -1983,6 +1983,441 @@ def _p1(c):
     specification_page(c)
 
 
+# --- the dual-key template: a price over its caption, a three-line address and
+# --- a schedule drawn as the curves of its glyphs --------------------------
+#
+# MEASURED 24 SEPTEMBER 2026 on `LOT 326 - NEX 20 - BROCHURE.pdf` (and the same
+# template as `LOT 324 - NEX 20 - V002.pdf`), traced at reader 18. Page 1 states
+# the property plainly and the reader took five of its facts:
+#
+#   * the price is set ABOVE its caption — `$861,700` over `PACKAGE PRICE` —
+#     and every pairing rule reads a label over its value;
+#   * the address is three lines in one column — `Lot 326 Dapple Avenue`,
+#     `Palomino Estate,`, `Armstrong Creek` — with no state and no postcode,
+#     and a bare suburb was read only after a comma-ended street line;
+#   * the area schedule is a picture carrying only its heading, with every
+#     row drawn over it as the OUTLINES of its glyphs: filled curves, no text
+#     object, invisible to the text layer AND to the picture's own pixels. A
+#     page rendering shows `TOTAL: 178.23m² 19.19sq`, and 151.22 + 23.93 +
+#     3.08 is 178.23.
+#
+# The template states no bedroom, bathroom or car count anywhere — the floor
+# plan's room names are the only place those rooms appear, and a plan's labels
+# may not become the property's counts on their own. The values below are the
+# same SHAPE as the production page and none of its facts.
+
+VERA = os.path.join(os.path.dirname(__import__('reportlab').__file__), 'fonts', 'Vera.ttf')
+
+
+def outlined(c, x, y, s, size=8):
+    """`s` drawn as the filled outlines of its glyphs and nothing else — what
+    an exporter's `convert text to curves` leaves on a page. One path per
+    word, filled even-odd, exactly as the production page draws them."""
+    from fontTools.ttLib import TTFont
+    from fontTools.pens.basePen import BasePen
+    from reportlab.pdfgen.canvas import FILL_EVEN_ODD
+
+    font = TTFont(VERA)
+    glyphs = font.getGlyphSet()
+    cmap = font.getBestCmap()
+    scale = size / font['head'].unitsPerEm
+
+    class Pen(BasePen):
+        def __init__(self, path, dx):
+            super().__init__(glyphs)
+            self.path, self.dx = path, dx
+
+        def at(self, p):
+            return (self.dx + p[0] * scale, y + p[1] * scale)
+
+        def _moveTo(self, p):
+            self.path.moveTo(*self.at(p))
+
+        def _lineTo(self, p):
+            self.path.lineTo(*self.at(p))
+
+        def _curveToOne(self, p1, p2, p3):
+            self.path.curveTo(*self.at(p1), *self.at(p2), *self.at(p3))
+
+        def _closePath(self):
+            self.path.close()
+
+    dx = x
+    for word in s.split(' '):
+        path = c.beginPath()
+        for ch in word:
+            name = cmap.get(ord(ch))
+            if name is None:
+                continue
+            glyphs[name].draw(Pen(path, dx))
+            dx += font['hmtx'][name][0] * scale
+        c.drawPath(path, stroke=0, fill=1, fillMode=FILL_EVEN_ODD)
+        dx += font['hmtx'][cmap[ord(' ')]][0] * scale
+    return dx
+
+
+def schedule_frame_picture(rows=None, w=690, h=440):
+    """The schedule's picture as the production page embeds it: the frame, its
+    heading and its rows — MEASURED 24 SEPTEMBER 2026 on `LOT 326` and `LOT 324`
+    with the product's own decoder, which reads all four rows out of the
+    690 x 440 raster. With `rows=None` it is the heading alone, the shape of a
+    page that paints its rows as curves over the picture instead."""
+    from PIL import ImageDraw, ImageFont
+    img = Image.new('RGB', (w, h), (255, 255, 255))
+    dr = ImageDraw.Draw(img)
+    face = next((p for p in SCAN_FONTS if os.path.exists(p)), None)
+    bold = face.replace('Regular', 'Bold') if face and 'Regular' in face else face
+    title = ImageFont.truetype(bold or face, 44) if face else None
+    body = ImageFont.truetype(face, 34) if face else None
+    dr.rectangle([4, 4, w - 5, h - 5], outline=(70, 70, 74), width=4)
+    dr.text((150, 22), 'AREA SCHEDULE', fill=(24, 24, 28), font=title)
+    dr.line([(4, 92), (w - 5, 92)], fill=(70, 70, 74), width=3)
+    for i, (label, area, squares) in enumerate(rows or ()):
+        y = 120 + i * 72
+        dr.text((22, y), label, fill=(24, 24, 28), font=body)
+        dr.text((230, y), area, fill=(24, 24, 28), font=body)
+        dr.text((480, y), squares, fill=(24, 24, 28), font=body)
+    buf = io.BytesIO(); img.save(buf, format='PNG'); buf.seek(0)
+    return buf
+
+
+def labelled_floorplan(labels, w=1199, h=751):
+    """A floor plan whose room names are part of the picture, as the
+    production template's is. Nothing here states a count."""
+    from PIL import ImageDraw, ImageFont
+    img = Image.new('RGB', (w, h), (252, 252, 250))
+    dr = ImageDraw.Draw(img)
+    face = next((p for p in SCAN_FONTS if os.path.exists(p)), None)
+    font = ImageFont.truetype(face, 22) if face else None
+    dr.rectangle([30, 30, w - 30, h - 30], outline=(24, 24, 28), width=6)
+    for x in (330, 620, 900):
+        dr.line([(x, 30), (x, h - 30)], fill=(24, 24, 28), width=5)
+    dr.line([(30, h // 2), (w - 30, h // 2)], fill=(24, 24, 28), width=5)
+    for (label, (lx, ly)) in labels:
+        dr.text((lx, ly), label, fill=(24, 24, 28), font=font)
+    buf = io.BytesIO(); img.save(buf, format='JPEG', quality=90); buf.seek(0)
+    return buf
+
+
+def banner_picture(text, w=1653, h=252):
+    from PIL import ImageDraw, ImageFont
+    img = Image.new('RGB', (w, h), (28, 30, 34))
+    dr = ImageDraw.Draw(img)
+    face = next((p for p in SCAN_FONTS if os.path.exists(p)), None)
+    font = ImageFont.truetype(face, 96) if face else None
+    dr.text((60, 70), text, fill=(236, 232, 224), font=font)
+    buf = io.BytesIO(); img.save(buf, format='JPEG', quality=88); buf.seek(0)
+    return buf
+
+
+def disclaimer_picture(w=1673, h=219):
+    from PIL import ImageDraw, ImageFont
+    img = Image.new('RGB', (w, h), (255, 255, 255))
+    dr = ImageDraw.Draw(img)
+    face = next((p for p in SCAN_FONTS if os.path.exists(p)), None)
+    font = ImageFont.truetype(face, 22) if face else None
+    for i, line in enumerate([
+            '*Price based on standard inclusions and facade. Image depicts upgrade items '
+            'not included in the price.',
+            'This plan is intended to give an indication of the proposed layout only and may '
+            'vary without notice. It is not the actual lot for sale.']):
+        dr.text((20, 40 + i * 44), line, fill=(40, 40, 44), font=font)
+    buf = io.BytesIO(); img.save(buf, format='JPEG', quality=88); buf.seek(0)
+    return buf
+
+
+DUAL_KEY_PLAN = (('GARAGE', (70, 80)), ('MASTER', (70, 420)), ('ENS 1', (360, 80)),
+                 ('WIR', (360, 200)), ('BED 2', (650, 80)), ('BED 3', (650, 420)),
+                 ('BATH 1', (930, 80)), ('KITCHEN 1', (360, 420)), ('BED 1', (930, 420)),
+                 ('ENS 2', (930, 560)), ('KITCHEN 2', (650, 560)),
+                 ('LIVING/MEALS', (360, 600)))
+
+# Parts and total as a builder prints them, and every figure proves the others:
+# 146.18 + 22.40 + 4.02 is 172.60, and each area over 9.290304 is its squares.
+OUTLINED_SCHEDULE = (('LIVING:', '146.18m²', '15.73sq'), ('GARAGE:', '22.40m²', '2.41sq'),
+                     ('PORCH:', '4.02m²', '0.43sq'), ('TOTAL:', '172.60m²', '18.58sq'))
+
+
+# The two arrangements the production template has been measured in, in points
+# from the bottom-left. `LOT 326` draws its schedule on the left, over the plan,
+# and its address lines each on a row of their own. `LOT 324` draws the
+# schedule on the right, sets the lot line on the same baseline as the price's
+# caption, and drops the suburb 4 points BELOW the price table's figures — so
+# two rows of the other column fall between the estate and the suburb.
+DUAL_KEY_GEOMETRY = {
+    'lot326': dict(star=(469.3, 762.5), lot=731.2, caption=722.0, estate=700.5,
+                   suburb=669.8, titles=639.0, schedule=(60.2, 531.5)),
+    'lot324': dict(star=(476.1, 762.0), lot=722.5, caption=723.2, estate=691.7,
+                   suburb=661.0, titles=630.2, schedule=(305.6, 559.0)),
+}
+
+
+def dual_key_page(c, design, package, prices, lot_size, lot_line, estate_line, suburb,
+                  titles, schedule, seed, geometry='lot326', schedule_as='picture'):
+    """Page 1 as the production dual-key template lays it out, in points.
+
+    `schedule_as='picture'` is the production page: the schedule's rows are in
+    the picture. `'outlines'` paints them as curves over a picture of the
+    heading alone, which is what an exporter's `convert text to curves` does."""
+    g = DUAL_KEY_GEOMETRY[geometry]
+    c.drawImage(ImageReader(banner_picture('ALTO')), -0.6, 750.6, width=595.2, height=91.0,
+                preserveAspectRatio=False, mask=None)
+    c.drawImage(ImageReader(disclaimer_picture()), 0.0, 1.0, width=602.6, height=79.0,
+                preserveAspectRatio=False, mask=None)
+    c.drawImage(ImageReader(facade(seed)), -21.9, 54.2, width=345.0, height=205.9,
+                preserveAspectRatio=False, mask=None)
+    c.drawImage(ImageReader(labelled_floorplan(DUAL_KEY_PLAN)), 58.9, 260.9, width=471.6,
+                height=295.5, preserveAspectRatio=False, mask=None)
+    frame_x, frame_y = g['schedule']
+    in_picture = schedule if schedule_as == 'picture' else None
+    c.drawImage(ImageReader(schedule_frame_picture(in_picture)), frame_x, frame_y, width=145.9,
+                height=93.1, preserveAspectRatio=False, mask=None)
+    if schedule_as == 'outlines':
+        # The rows of the schedule: curves, drawn over the picture's frame.
+        for (label, area, squares), y in zip(schedule, (64.5, 50.5, 36.5, 22.5)):
+            outlined(c, frame_x + 3.8, frame_y + y, label, 7.5)
+            outlined(c, frame_x + 47.8, frame_y + y, area, 7.5)
+            outlined(c, frame_x + 97.8, frame_y + y, squares, 7.5)
+
+    c.setFillColorRGB(0, 0, 0)
+    pt(c, 299.9, 782.0, design, 40, True)
+    pt(c, *g['star'], '*', 26)
+    pt(c, 299.9, 743.0, package, 40, True)
+    # The exporter's own break: the lot line's first letter is a run of its own.
+    end = pt(c, 27.7, g['lot'], lot_line[:1], 22)
+    pt(c, end, g['lot'], lot_line[1:], 22)
+    pt(c, 299.9, g['caption'], 'PACKAGE PRICE', 10.6)
+    pt(c, 27.7, g['estate'], estate_line, 22)
+    pt(c, 311.2, 684.5, 'Build', 10.6)
+    pt(c, 396.8, 684.5, 'Land', 10.6)
+    pt(c, 482.5, 684.5, 'Lot Size', 10.6)
+    pt(c, 27.7, g['suburb'], suburb, 22)
+    build, land = prices
+    pt(c, 313.2, 664.9, build, 10.6)
+    pt(c, 396.9, 665.0, land, 10.6)
+    end = pt(c, 482.5, 664.9, lot_size, 10.6)
+    pt(c, end + 0.5, 664.9, '²', 10.6)
+    pt(c, 27.7, g['titles'], titles, 22)
+    pt(c, 297.5, 218.9, 'FULL TURNKEY INCLUSIONS', 12, True)
+    left = ['Front & rear landscaping,', '20mm Stone benchtops', 'Architecturally designed',
+            'LED downlights']
+    right = ['Colour Concrete', '2590 ceilings throughout', 'Remote control garage',
+             'European appliances', 'Tile Splash back', 'Alarm System']
+    for i, item in enumerate(left):
+        pt(c, 297.5, 198.9 - i * 27.0, '√', 10.6)
+        pt(c, 310.3, 198.9 - i * 27.0, item, 10.6)
+    for i, item in enumerate(right):
+        pt(c, 430.8, 198.9 - i * 15.0, '√', 10.6)
+        pt(c, 443.5, 198.9 - i * 15.0, item, 10.6)
+    c.showPage()
+
+
+def dual_key_description_page(c):
+    lines = [
+        'This layout offers a flexible, modern, and comfortable living environment suited to',
+        'diverse needs, with thoughtful upgrades to enhance functionality, comfort, and privacy.',
+        'Enhanced Dual Key House Layout for Greater Flexibility',
+        'This innovative design features a dual key layout that creates two separate,',
+        'self-contained living spaces within one home. Ideal for multigenerational families,',
+        'tenants, or hosting guests, the setup offers increased privacy and independence.',
+        '• Separate Living Spaces: The secondary dwelling includes its own kitchen, bathroom,',
+        'and living area, providing complete independence from the main residence.',
+    ]
+    for i, line in enumerate(lines):
+        pt(c, 57, 760 - i * 18, line, 10)
+    c.showPage()
+
+
+@fixture('heldout-dual-key-price-caption-schedule-picture',
+         'LOT 612 - VEGA 20 - BROCHURE.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='612',
+                        # THE ADDRESS IS THREE LINES IN ONE COLUMN: the lot and
+                        # its street, the estate closed by a comma, the suburb.
+                        street_name='Marlow Avenue', suburb='Mount Duneed',
+                        # NOTHING IS INVENTED. The page names no state and no
+                        # postcode, and a suburb is not a state.
+                        state=None, postcode=None,
+                        estate='Brindle Estate',
+                        design='VEGA 20',
+                        # The package price, set ABOVE its caption — and the
+                        # build and land prices under their headings sum to it.
+                        price=812400,
+                        land_size_sqm=344,
+                        # The house's total, printed only in a picture of the
+                        # schedule on the page the price makes the property's
+                        # own — so it is read only once the price is.
+                        build_size_sqm=172.6,
+                        # The template states no count anywhere. The floor plan
+                        # names its rooms and its names are not counts.
+                        bedrooms=None, bathrooms=None, car_spaces=None)],
+             image='facade_page_1'))
+def _k1(c):
+    dual_key_page(c, 'VEGA 20', '$812,400', ('$458,400', '$354,000'), '344',
+                  'Lot 612 Marlow Avenue', 'Brindle Estate,', 'Mount Duneed',
+                  'Titles: Mar 2027 - Apr 2027', OUTLINED_SCHEDULE, 41)
+    specification_page(c)
+    dual_key_description_page(c)
+
+
+# The same house as `LOT 612`, so the same schedule proves the same total.
+@fixture('heldout-dual-key-address-across-columns',
+         'LOT 705 - VEGA 20 - BROCHURE V002.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='705',
+                        # THE SUBURB IS THE ESTATE LINE'S NEXT LINE IN ITS OWN
+                        # COLUMN, with the price table's two rows set between
+                        # them in the other column. Those rows are not a gap in
+                        # the address; they are a different frame.
+                        street_name='Keel Avenue', suburb='Bannockburn',
+                        state=None, postcode=None,
+                        estate='Tallow Estate',
+                        design='VEGA 20',
+                        # The caption shares its baseline with the lot line.
+                        price=826100,
+                        land_size_sqm=318,
+                        build_size_sqm=172.6,
+                        bedrooms=None, bathrooms=None, car_spaces=None)],
+             image='facade_page_1'))
+def _k2(c):
+    dual_key_page(c, 'VEGA 20', '$826,100', ('$463,100', '$363,000'), '318',
+                  'Lot 705 Keel Avenue', 'Tallow Estate,', 'Bannockburn',
+                  'Titles: Dec 2026 - Jan 2027', OUTLINED_SCHEDULE, 43, geometry='lot324')
+    specification_page(c)
+    dual_key_description_page(c)
+
+
+# NO PRODUCTION DOCUMENT HAS BEEN SEEN IN THIS SHAPE, and it is labelled as the
+# class it is: an exporter's `convert text to curves` leaves a schedule's rows
+# as filled paths that no text layer and no picture carries. The same page as
+# `LOT 612`, with the rows painted as curves over a picture of the heading alone.
+@fixture('heldout-schedule-painted-as-outlines',
+         'LOT 918 - VEGA 20 - BROCHURE.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='918', street_name='Corella Avenue', suburb='Mount Duneed',
+                        state=None, postcode=None, estate='Brindle Estate', design='VEGA 20',
+                        price=815900, land_size_sqm=346,
+                        # Drawn only as glyph outlines, and proved by its parts
+                        # and its squares exactly as a picture's total is.
+                        build_size_sqm=172.6,
+                        bedrooms=None, bathrooms=None, car_spaces=None)],
+             image='facade_page_1'))
+def _k3(c):
+    dual_key_page(c, 'VEGA 20', '$815,900', ('$459,900', '$356,000'), '346',
+                  'Lot 918 Corella Avenue', 'Brindle Estate,', 'Mount Duneed',
+                  'Titles: Mar 2027 - Apr 2027', OUTLINED_SCHEDULE, 45, schedule_as='outlines')
+    specification_page(c)
+    dual_key_description_page(c)
+
+
+@fixture('heldout-icon-row-estate-no-comma-locality',
+         'LOT 2716 Silverbrook Estate - ORION 11.5 MODERN - BROCHURE V002 - Copy.pdf',
+         held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='2716', estate='Silverbrook Estate',
+                        # THE LOT LINE CLOSES WITHOUT A COMMA, and the suburb is
+                        # still the next line down in its column. The lot is what
+                        # makes a bare place name safe to read: a builder's own
+                        # office has a street number, never a lot.
+                        suburb='Point Cook',
+                        # The page names no street, no state and no postcode.
+                        state=None, postcode=None, street_name=None,
+                        design='Orion 11.5',
+                        bedrooms=3, bathrooms=2, car_spaces=2,
+                        land_size_sqm=271,
+                        build_size_sqm=133.4,
+                        price=702350)],
+             image='facade_page_1'))
+def _i4(c):
+    package_top(c, 'Orion 11.5', ('3', '2', '2'), '$351,000', '$351,350', '$702,350',
+                'Lot 2716 Silverbrook Estate', 'Point Cook', 'Titles - Titled Land')
+    # A facade the overlay check measures as clean: this fixture is about the
+    # address, and seed 47's flat blocks read as an annotated tile (§ office
+    # address's named limit), which would fail it for a reason it is not about.
+    c.drawImage(ImageReader(facade(57)), 300, 470, width=270, height=170,
+                preserveAspectRatio=True, mask=None)
+    c.drawImage(ImageReader(floorplan()), 300, 150, width=270, height=190,
+                preserveAspectRatio=True, mask=None)
+    pt(c, 27.3, 181.2, 'Lot Size', 14)
+    area_pt(c, 27.3, 157.2, '271m')
+    pt(c, 27.5, 128.7, 'House Specifications', 14)
+    pt(c, 29.5, 109.7, 'Enclosed:'); area_pt(c, 101.5, 109.7, '92.30m')
+    pt(c, 29.5, 96.7, 'Garage:'); area_pt(c, 101.5, 96.7, '38.10m')
+    pt(c, 29.5, 83.7, 'Porch:'); area_pt(c, 101.5, 83.7, '3m')
+    pt(c, 29.5, 70.7, 'Total:'); area_pt(c, 101.5, 70.7, '133.4m')
+    package_foot(c)
+    c.showPage()
+    specification_page(c)
+
+
+def tracked_pt(c, x, y, s, size=8, space=2.4, bold=True):
+    """`tracked`, placed in points from the bottom-left like `pt`."""
+    obj = c.beginText(x, y)
+    obj.setFont('Helvetica-Bold' if bold else 'Helvetica', size)
+    obj.setCharSpace(space)
+    obj.textOut(s)
+    obj.setCharSpace(0)
+    c.drawText(obj)
+    c._charSpace = 0
+
+
+# THE PROPERTY PACKAGE'S OWN PAGE, reconstructed from what its import recorded.
+# `Lot 37 - Miami 190 - Property Package.pdf` (21 September 2026) was deleted
+# with its bytes before anything could trace it again, but the import kept
+# where every line it could not read was drawn — row and x — and those rows
+# name the layout: the package price `$1,327,407` set alone in display type at
+# x 66, three rows under a tracked caption line (`T O T A L  P A C K A G E ·
+# L A N D + B U I L D · I N C .  G S T`) that starts at x 43, with the build
+# price and a rental appraisal in the column to its right between them. No
+# pairing reads a caption and a figure that far apart and that far out of
+# column, and the card showed no price. Positions, sizes and every figure
+# below are this corpus's own, not the document's.
+@fixture('heldout-package-price-apart-from-its-caption',
+         'Lot 64 - Coral 205 - Property Package.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             rows=[dict(lot_number='64',
+                        # The one figure on the page no label claims, on the
+                        # page the caption says carries the price.
+                        price=1204880,
+                        design='Coral 205')],
+             # The build price and the rental appraisal are figures too, and
+             # neither may become the price.
+             forbid=dict(price_not_in=[512880, 692000, 1150, 1200])))
+def _p1(c):
+    pt(c, 43, 806, 'PROPLAUNCH', 9, True)
+    pt(c, 454, 806, '·', 9)
+    tracked_pt(c, 43, 784, 'LOT 64', 8)
+    tracked_pt(c, 107, 784, 'PRICE,', 8)
+    pt(c, 43, 752, 'Four bedroom home, 205 m².', 20, True)
+    pt(c, 43, 728, 'Fixed price. Fully turnkey.', 20, True)
+    pt(c, 43, 704, 'Coral 205, Harbour façade · 588 m² lot, registering Q2 2027', 10)
+    pt(c, 43, 690, 'Four bedrooms, two bathrooms, study, walk-in pantry, under-', 10)
+    pt(c, 43, 676, 'roof alfresco and a double garage. Full turnkey specification listed in the accompanying', 10)
+    pt(c, 43, 662, 'Wattlebird Estate Inclusions · Single Dwelling document.', 10)
+    tracked_pt(c, 43, 624, 'TOTAL PACKAGE', 7)
+    pt(c, 148, 624, '·', 7)
+    tracked_pt(c, 156, 624, 'LAND', 7)
+    pt(c, 180, 624, '+', 7)
+    tracked_pt(c, 192, 624, 'BUILD', 7)
+    pt(c, 226, 624, '·', 7)
+    tracked_pt(c, 234, 624, 'INC. GST', 7)
+    pt(c, 460, 610, 'Build $512,880', 9)
+    pt(c, 361, 596, 'Rental appraisal $1,150–$1,200 /wk', 9)
+    pt(c, 66, 578, '$1,204,880', 30, True)
+    pt(c, 376, 578, 'Fixed price site costs included', 9)
+    pt(c, 43, 520, 'Lot 64, Wattlebird Estate, Kingscliff NSW', 10)
+    pt(c, 228, 505, 'Q2 2027', 12)
+    pt(c, 398, 505, 'Coral 205 · Harbour', 12)
+    tracked_pt(c, 514, 40, '0 1', 7)
+    tracked_pt(c, 541, 40, '0 7', 7)
+    c.showPage()
+
+
 def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     manifest = []

@@ -15,6 +15,9 @@
  *                                 and recognised by the product's engine — the
  *                                 text printed, and what the schedule reader
  *                                 made of it
+ *   the blocks of type a page     `discoverPdfSourceAssets` → `outlines`, chosen
+ *   paints as shapes              by `outlinesToRead`, drawn by
+ *                                 `rasteriseOutlines` and recognised the same way
  *   the verdict                   `readFigures`, exactly as the successor calls it
  *
  * WRITES NOTHING, and the document's bytes and pixels never leave the process:
@@ -28,6 +31,9 @@ import { encodePng } from '../../supabase/functions/_shared/builderStock/rasterP
 import { recogniseFigures } from '../../supabase/functions/_shared/builderStock/ocr/recogniseScan.ts';
 import { readPictureSchedule } from '../../supabase/functions/_shared/builderStock/areaSchedulePicture.pure.ts';
 import { readFigures } from '../../supabase/functions/_shared/builderStock/readFigures.ts';
+import {
+  outlinesToRead, outlinesWithinRecognitionBudget, rasteriseOutlines,
+} from '../../supabase/functions/_shared/builderStock/pdfOutlineFigures.pure.ts';
 
 /**
  * The product's language model and engine, from this checkout, where the
@@ -87,7 +93,38 @@ export async function traceFigures(
       console.log(`        ${result.reading ? `READ ${result.reading.value} proved by ${result.reading.provedBy.join('+')}` : `refused: ${result.refusal}`}`);
     }
 
-    const verdict = await readFigures(bytes, chosen);
+    console.log(`    blocks of type painted as shapes: ${found.outlines.length}`);
+    for (const outline of found.outlines) {
+      const points = outline.paths.reduce((sum, path) =>
+        sum + path.rings.reduce((inner, ring) => inner + ring.length / 2, 0), 0);
+      console.log(`      page ${outline.page} · drawn ${outline.drawn.width.toFixed(1)}x${outline.drawn.height.toFixed(1)}pt`
+        + ` at ${outline.drawn.x.toFixed(1)},${outline.drawn.y.toFixed(1)} · rows of ${outline.rowHeight}pt`
+        + ` · ${outline.paths.length} shapes · ${points} points`);
+    }
+    const blocks = outlinesWithinRecognitionBudget(chosen.length, outlinesToRead({
+      outlines: found.outlines,
+      rows: reading.rows,
+      pricePages: reading.diagnostics.pricePages ?? [],
+      disputedFields: reading.diagnostics.disputedFields ?? [],
+    }));
+    console.log(`    blocks chosen ${blocks.length}`);
+    for (const [at, outline] of blocks.entries()) {
+      const index = chosen.length + at;
+      const drawing = rasteriseOutlines(outline);
+      if (!drawing) { console.log(`    [${index}] undrawable`); continue; }
+      const png = await encodePng(drawing.pixels, { width: drawing.width, height: drawing.height, components: 1 });
+      if (!png) { console.log(`    [${index}] unencodable`); continue; }
+      const recognised = await recogniseFigures([{ index, png }]);
+      const text = recognised.text.get(index) ?? '';
+      const result = readPictureSchedule(text);
+      console.log(`    [${index}] block drawn ${drawing.width}x${drawing.height}`
+        + ` · recognition ${recognised.available ? `${recognised.ms} ms` : 'UNAVAILABLE'}`);
+      for (const line of text.split('\n').filter((l) => l.trim())) console.log(`        | ${line}`);
+      console.log(`        rows ${JSON.stringify(result.rows.map((row) => [row.label, row.written, row.squares]))}`);
+      console.log(`        ${result.reading ? `READ ${result.reading.value} proved by ${result.reading.provedBy.join('+')}` : `refused: ${result.refusal}`}`);
+    }
+
+    const verdict = await readFigures(bytes, chosen, blocks);
     console.log(`    verdict ${JSON.stringify(verdict.verdict)} · recognised ${verdict.recognised} · ${verdict.ms} ms`);
   } catch (error) {
     console.log(`    figure trace failed: ${String((error as Error)?.message ?? error).slice(0, 200)}`);

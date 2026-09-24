@@ -1254,3 +1254,133 @@ sparse pages took 776–2,297 ms each, engine opening included, across both
 runs. A dense page has not been measured there. A page whose recognition alone
 exceeds what one hosted invocation may spend will be killed once. It is then
 settled as lost, and the import finishes with every page read before it.
+
+## 19 · Four brochures printed in large type what no reader took (reader 19)
+
+**The defect (case 1 of §0), 24 September 2026.** `LOT 326 - NEX 20 -
+BROCHURE.pdf` imported with its lot, its estate and its land size, and nothing
+else a buyer looks for first. No price, no street, no suburb, no build size.
+The report was "every new PDF", so the whole population was read before any
+code was written. Only three stored brochures still have their bytes, but
+every import keeps its own record of each line it set aside and where it was
+drawn (`error_detail.deterministic_ignored` / `deterministic_placement`). That
+record exists even for uploads whose files were deleted. Read across all
+sixteen templates this builder has uploaded, it names four layouts that still
+dropped a printed fact at reader 18:
+
+| brochure | printed, and set aside | why no rule read it |
+|---|---|---|
+| `LOT 326`, `LOT 324` (NEX 20) | `$861,700` over `PACKAGE PRICE` | every pairing reads a label *over* its value |
+| the same | `Lot 326 Dapple Avenue` / `Palomino Estate,` / `Armstrong Creek` | a street line with no locality directly under it read nothing |
+| `LOT 324` | the same frame, with the price table's two rows between the estate and the suburb | `unitBelow` stops after two row bands, whatever column they are in |
+| `LOT 4544 Riverwalk Estate` (ENZO 10.5) | `Wyndham Vale`, page 1, row 6 | its lot line has no trailing comma, and the comma was the only evidence `readContinuedAddress` accepted |
+| `Lot 37 - Miami 190` (PROPLAUNCH) | `$1,327,407`, x 66, three rows under its tracked caption at x 43 | out of column, and other columns' rows between |
+
+**The build size was never out of reach, and that is the finding worth
+keeping.** The reading trace of `LOT 326` showed its area schedule as a
+picture that "says, at its own pixels: AREA SCHEDULE", with its rows apparently
+drawn beside it. The first plan was to render them. Traced with the product's
+*own* decoder (`pictureFromStream` → `decodeFullRaster`), the same 690 × 440
+picture reads all four rows. The total, `178.23`, is proved by its parts
+(151.22 + 23.93 + 3.08). The figure reader (§16) was simply never asked: it
+reads only on a page that states the price, and this page's price was the one
+fact the reader missed. Reading the price is what makes the size readable. **A
+trace of a picture through a decoder the product does not use is evidence
+about that decoder.**
+
+**What reads them now.** Each rule is a refusal unless every condition holds,
+and each is asked only where the existing readers found nothing:
+
+- **A figure over its caption** (`readCaptionedFigure`). A lone figure (a
+  currency amount for the price, an area with its unit for a size) sits
+  directly over a caption that resolves wholly to price, land or build.
+  `standsAloneAsCaption` refuses a figure with a label before it on its own
+  row, and a caption with a figure after it on its own row. That guard was
+  added after the first version, run over the corpus before anything shipped,
+  read `$389,500` as the package price on three ENZO-style pages. There,
+  `Build - $389,500` over `Package Price - $801,500` splits at its separators
+  into units that share their row's x.
+- **The lot's own frame** (`readLotAddressBlock`). A line opening with a lot,
+  then either a street (never one of the words an estate is also named with)
+  or a development that names itself (`… Estate`). Directly under it comes the
+  estate and then the locality, or the locality alone. The lot is what makes a
+  bare suburb safe to read, because a sales office has a street number and
+  never a lot. The place is refused where it repeats the estate, the settled
+  design, or a filename segment other than the lot's (`LOT 48 - EMBER - FLYER`).
+- **The frame's next line** (`unitBelowInColumn`). The next line *in the same
+  column*, however many other columns' rows fall between, within twice the
+  frame's own type size. It is asked only after `unitBelow` and only by the
+  frame reader. Layout cells now carry their type size, and every laid-out
+  page keeps its row baselines beside its units.
+- **The page's one price** (`PACKAGE_PRICE_CAPTION`). A page whose words say it
+  carries the price, and which prints exactly one sum of money that no label,
+  caption or pairing accounted for, of at least $50,000. A second unaccounted
+  figure on that page means the page names no price.
+- **Type painted as shapes** (`pdfOutlineFigures.pure.ts`). An exporter's
+  "convert text to curves" leaves a schedule's rows as filled paths. The parse
+  isolate notes blocks of letter-sized filled shapes, set in at least two rows,
+  on the first three pages. It carries them as quantised polygons in the
+  hand-off; nothing is drawn there. The figure successor draws them black on
+  white with a supersampled scanline fill, then recognises them with the same
+  engine and the same schedule proofs as a picture. No production document is
+  known to need this yet. It is here because the class exists, and it costs
+  the parse about 0.3 ms a document on the corpus (182 → 197 ms of discovery
+  across 51 documents; worst +8 ms, on the one page that has outlines). A
+  crossing makes at most four recognitions, pictures and blocks together.
+
+**Held out first.** Each layout entered the corpus before its code, and each
+fails against the reader in `main`. The fixtures are:
+`heldout-dual-key-price-caption-schedule-picture`,
+`heldout-dual-key-address-across-columns`,
+`heldout-icon-row-estate-no-comma-locality`,
+`heldout-package-price-apart-from-its-caption` and
+`heldout-schedule-painted-as-outlines`. The package fixture is a
+*reconstruction* from the import's placement record, and says so. Across the
+whole corpus, 37 of 42 documents read identically to `main` (38 of 43 with
+the copy the gate writes for its "read again" case), as do all 8 stress
+documents. The five that change are those fixtures. One existing
+expectation was replaced rather than kept: `builderStockContinuedAddress`'s
+"no comma, no suburb". The `LOT 4544` record is the counter-example, and its
+twins that still refuse (no lot, an estate's own word, the design) are
+asserted in its place.
+
+**On the real bytes, before shipping.** Traced from this branch over the stored
+documents (production-rollout runs 35950895655 and 35951615593, read-only):
+
+- `LOT 326` reads price `$861,700`, street `Dapple Avenue`, suburb
+  `Armstrong Creek` and estate `Palomino Estate`. Its schedule reads `178.23`,
+  proved by parts.
+- `LOT 324` reads the same frame past the price table, price `$863,850`, and
+  the same `178.23`.
+- `LOT 717` reads byte-identically to reader 18.
+
+**The gate found one more thing, and it was not this change.** The first two
+acceptance runs of this branch failed one invariant: *the decode that settles
+picture roles is priced before it begins*. The step that attaches
+`stress-multi-property`'s eight pictures spent 3,001 ms, then 3,162 ms,
+against a ceiling of 3,000. Unmodified `main`, on the same machine, failed the
+same invariant at 3,034 ms. The day before, on a faster machine, the step had
+cost 1,826-2,019 ms. Instrumented, the step stores each picture in about
+10 ms, and its three display judgements cost 750-1,000 ms each. Those were
+bounded by a count (`DECODES_PER_INVOCATION`) that does not know how long a
+decode takes. Each judgement is now priced from the picture's header before it
+begins and must fit inside the ceiling, the rule the role decode already
+answers to (`mayJudgeEligibility`, doc 54 §11.6). No limit was raised. With
+that, the gate reads **42 documents, 0 failures**, the same 8 named limits as
+`main`, 0 generative-model calls attempted and 0 workers requested, and the
+step's worst is 2,177 ms. The settler's outcomes match `main`'s run for run.
+The CPU profile of the eight stress documents, on the same machine, three runs
+each, matches `main` within noise: the document class 35.3 s against 35.1 s,
+the raster class 16.4 s against 17.0 s, and the multi-property sheet's
+attaching step 2,699 ms against 2,904 ms. No invocation parsed a document and
+decoded or recognised anything, and none asked for a worker. The one
+invocation past the ceiling is a scanned page's recognition, about 6.6 s on
+this machine on both. That is the known step the ceiling allows one of, and
+this change does not touch it.
+
+**What it does not do.** The NEX 20 template prints no bedroom, bathroom or
+car count anywhere: it is a dual-key home, and its plan's room names are not
+counts. It prints no state and no postcode either. Those stay empty, and the
+builder can state them on the card (§§ on stated figures and stated address).
+Nothing here infers a state from a suburb: a place's name alone does not say
+which state it is in, and a guess on a client's card is worse than a blank.

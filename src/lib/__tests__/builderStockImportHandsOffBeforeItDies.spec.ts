@@ -15,9 +15,12 @@ import { resolve } from 'node:path';
 
 import {
   EXPENSIVE_SPEND_CEILING_MS, OCR_PAGE_MS, RASTER_STEP_MS, ROLE_DECODE_MS_PER_MEGAPIXEL,
-  expensiveSpendMs, mayDecideRoles, mayRecognisePage, mayStoreImage, remainingExpensiveMs,
-  roleDecodeMs,
+  expensiveSpendMs, mayDecideRoles, mayJudgeEligibility, mayRecognisePage, mayStoreImage,
+  remainingExpensiveMs, roleDecodeMs,
 } from '../../../supabase/functions/_shared/builderStock/importResumeBudget.pure.ts';
+import {
+  eligibilityDecodePixels,
+} from '../../../supabase/functions/_shared/builderStock/assessSourceImage.ts';
 import {
   MAX_CHECKPOINT_PAGE_CHARS, MAX_CHECKPOINT_TOTAL_CHARS, MAX_IMPORT_CONTINUATIONS,
   checkpointPages, checkpointSettledPages, mayContinue, openCheckpoint,
@@ -441,6 +444,88 @@ describe('the decode that settles picture roles is priced before it begins', () 
     const runImport = read('supabase/functions/_shared/builderStock/runImport.ts');
     expect(runImport).toContain("classSpendMs(ledger, 'raster') - rasterBeforeRecords");
     expect(runImport).not.toContain('- imageStoreMs');
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('a display judgement in the attaching isolate is priced before it begins', () => {
+  /**
+   * The isolate that attaches a document's pictures judged up to three of them
+   * for display (`DECODES_PER_INVOCATION`), and a count does not know how long
+   * a decode takes. Measured 24 September 2026 on `stress-multi-property`: the
+   * eight pictures stored at about 10 ms each, the three judgements cost
+   * 750-1,000 ms each, and the step read 2,700-3,160 ms on a slower machine.
+   * Unmodified `main` failed the acceptance gate there at 3,034 ms.
+   */
+  const MP = 1_000_000;
+  // `stress-multi-property`'s two sizes of hero.
+  const WIDE = 2_200 * 1_375;
+  const NARROW = 2_000 * 1_250;
+  /** A JPEG that states its frame size in a baseline SOF and nothing else. */
+  const jpegOf = (width: number, height: number) => new Uint8Array([
+    0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08,
+    height >> 8, height & 0xff, width >> 8, width & 0xff,
+    0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xff, 0xd9,
+  ]);
+
+  it('is the same inequality as the role decode, for every ledger and size', () => {
+    for (const spentMs of [0, 500, 1_200, 1_800, 2_600, 2_999, 3_000, 4_000]) {
+      for (const pixels of [0, 0.5 * MP, NARROW, WIDE, 4 * MP, 9 * MP]) {
+        const ledger = { image_store_ms: spentMs };
+        expect(mayJudgeEligibility(ledger, pixels)).toBe(mayDecideRoles(ledger, pixels));
+      }
+    }
+  });
+
+  it('a judgement that fits is made exactly as before', () => {
+    // A single-property brochure's hero, in an isolate that has spent nothing.
+    expect(mayJudgeEligibility({}, NARROW)).toBe(true);
+    // The third of three on a machine where three fit, as on 23 September.
+    expect(mayJudgeEligibility({ image_store_ms: 1_200 }, WIDE)).toBe(true);
+  });
+
+  it('one that would not fit inside the ceiling is left to the settler', () => {
+    // The third on this machine: two judgements had already cost 1,800 ms.
+    expect(mayJudgeEligibility({ image_store_ms: 1_800 }, WIDE)).toBe(false);
+    // Inside, not one step past: a known step may still begin here.
+    const spent = { image_store_ms: EXPENSIVE_SPEND_CEILING_MS - 1_000 };
+    expect(mayStoreImage(spent)).toBe(true);
+    expect(mayJudgeEligibility(spent, NARROW)).toBe(false);
+  });
+
+  it('a caller with no ledger judges exactly as it always did', () => {
+    expect(mayJudgeEligibility(null, 4 * MP)).toBe(true);
+    expect(mayJudgeEligibility(undefined, 4 * MP)).toBe(true);
+  });
+
+  it('prices the pixels the judgement decodes, read from the header, and none it does not', () => {
+    expect(eligibilityDecodePixels(jpegOf(2_200, 1_375), 'primary_property')).toBe(WIDE);
+    // Not the card's picture: never judged, so never priced.
+    expect(eligibilityDecodePixels(jpegOf(2_200, 1_375), 'gallery')).toBe(0);
+    // Too large to judge inline: the settler's work already, so priced at nothing here.
+    expect(eligibilityDecodePixels(jpegOf(5_200, 3_300), 'primary_property')).toBe(0);
+    // A header that states no size is priced as the largest picture judged inline.
+    expect(eligibilityDecodePixels(new Uint8Array([0xff, 0xd8, 0xff, 0xd9, 0x00, 0x00]),
+      'primary_property')).toBe(4 * MP);
+  });
+
+  it('the importer asks after the count and before the decode, and only where the count is in force', () => {
+    const attach = read('supabase/functions/_shared/builderStock/importStock.ts');
+    const body = attach.slice(attach.indexOf('export async function attachDocumentMedia('));
+    const inForce = body.indexOf('if (eligibilityDecodesLeft !== null) {');
+    const count = body.indexOf('if (eligibilityDecodesLeft <= 0) return {};');
+    const priced = body.indexOf('if (!mayJudgeEligibility(input.ledger,');
+    const spent = body.indexOf('eligibilityDecodesLeft -= 1;');
+    const decode = body.indexOf('return await eligibilityDetailFor(media.bytes, roles[index].role);', spent);
+    expect(inForce).toBeGreaterThan(-1);
+    expect(count).toBeGreaterThan(inForce);
+    expect(priced).toBeGreaterThan(count);
+    // A judgement priced out does not use up one of the three.
+    expect(spent).toBeGreaterThan(priced);
+    expect(decode).toBeGreaterThan(spent);
+    expect(body).toContain('eligibilityDecodePixels(media.bytes, roles[index].role))) {');
+    // And it says so where an operator looks.
+    expect(body).toContain("phase: 'eligibility_priced_out',");
   });
 });
 
