@@ -417,7 +417,38 @@ async function overlayReport(bytes: Uint8Array): Promise<void> {
       + ` y ${pct(b.top, view.height)}–${pct(b.bottom, view.height)}`);
   }
   const lines = overlayTextBoxes(view);
-  const full = lines.length ? await decodeFullRaster(bytes) : null;
+  const full = lines.length || blocks.length ? await decodeFullRaster(bytes) : null;
+  /*
+   * A PICTURE THE GATE REFUSED IS SHOWN, for a property a person named.
+   *
+   * Only where the run was asked about specific items and only for a picture
+   * the gate convicted or doubted: a verdict about type on a photograph is
+   * settled by looking at the photograph, and the builder's render is the one
+   * thing the log could not otherwise carry. Bounded to 480 pixels wide, as a
+   * PNG the reader can decode.
+   */
+  if (full && itemFilter && (verdict.annotated || verdict.uncertain)) {
+    const scale = Math.min(1, 480 / full.width);
+    const width = Math.max(1, Math.round(full.width * scale));
+    const height = Math.max(1, Math.round(full.height * scale));
+    const small = new Uint8Array(width * height * 3);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const sx = Math.min(full.width - 1, Math.floor(x / scale));
+        const sy = Math.min(full.height - 1, Math.floor(y / scale));
+        small.set(full.pixels.subarray((sy * full.width + sx) * 3, (sy * full.width + sx) * 3 + 3),
+          (y * width + x) * 3);
+      }
+    }
+    const png = await encodePng(small, { width, height, components: 3 });
+    if (png) {
+      let binary = '';
+      for (const byte of png) binary += String.fromCharCode(byte);
+      console.log(`      picture ${width}x${height} png base64 BEGIN`);
+      console.log(btoa(binary));
+      console.log('      picture END');
+    }
+  }
   let index = 0;
   for (const line of lines.slice(0, 6)) {
     index += 1;
