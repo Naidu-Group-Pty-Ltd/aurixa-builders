@@ -252,6 +252,62 @@ export function reReadHoldsSameProperty(
   return !unitBefore || !unitAfter;
 }
 
+/**
+ * ===========================================================================
+ * THE KEY A RE-READ FINDS ITS OWN ROW BY, WHERE THE ANCHOR CANNOT.
+ * ===========================================================================
+ *
+ * Scoped by the caller to ONE upload being read again, so it names a row of
+ * one document and never a property across documents. The anchor answers
+ * first; this is the rung for a record the anchor cannot reach, which is every
+ * record a PDF read without a picture beside it, and every row of a schedule
+ * after the first.
+ *
+ * THE LOT FIRST, EXACTLY AS IT ALWAYS WAS: `12`, or `12//3` where the row also
+ * states a unit. Nothing about a row that states a lot changes here.
+ *
+ * AND WHERE THERE IS NO LOT, THE UNIT AT ITS STREET, OR THE STREET ALONE.
+ * MEASURED 24 SEPTEMBER 2026 on the acceptance gate: a townhouse flyer —
+ * `TOWNHOUSE 3` over `18 Swift Street`, no picture, no estate, no lot — read
+ * one property, and reading the same bytes again INSERTED A SECOND. It had no
+ * anchor (a PDF record is anchored to a page only through a picture), no
+ * reference, no estate for the development key and no lot for this one, so
+ * nothing could find the row it already was. The reader sweep reads every
+ * stored upload again at every reader version, so each upgrade would have
+ * added one more copy of every such property.
+ *
+ * The unit is keyed WITH its street, because two townhouse developments in one
+ * list can each have a unit 3. The street alone is the last resort, for a
+ * house the document names by nothing else — and for that key alone the caller
+ * also refuses a row whose stated suburb disagrees (`suburbsDisagree`),
+ * because two streets of one name are ordinary and nothing else on the row
+ * tells them apart.
+ */
+export function ownRowKey(
+  row: { lot_number?: unknown; unit_number?: unknown; address_line?: unknown },
+): string | null {
+  const lot = String(row?.lot_number ?? '').trim().toLowerCase();
+  const unit = String(row?.unit_number ?? '').trim().toLowerCase();
+  if (lot) return unit ? `${lot}//${unit}` : lot;
+  const street = String(row?.address_line ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (unit) return street ? `//${unit}@${street}` : `//${unit}`;
+  return street ? `@${street}` : null;
+}
+
+/** Does this key stand on a lot, or only on what the row says around one? */
+export function ownRowKeyHasLot(key: string): boolean {
+  return !key.startsWith('//') && !key.startsWith('@');
+}
+
+/** Both rows state a suburb, and not the same one. Absence is not a difference. */
+export function suburbsDisagree(
+  before: { suburb?: string | null }, after: { suburb?: string | null },
+): boolean {
+  const a = String(before?.suburb ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const b = String(after?.suburb ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+  return !!a && !!b && a !== b;
+}
+
 /** The same question, straight from the two sets of fields. */
 export function sameProperty(
   before: PropertyIdentityFields,

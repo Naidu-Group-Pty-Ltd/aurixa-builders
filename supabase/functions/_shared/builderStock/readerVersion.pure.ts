@@ -186,7 +186,7 @@ import { sweepHandedOnThisParse } from './readerSweepAttempt.pure.ts';
  * Every document already imported is read again, because a document whose
  * headings were unreadable was read without them.
  */
-export const DETERMINISTIC_READER_VERSION = 20;
+export const DETERMINISTIC_READER_VERSION = 21;
 
 /*
  * VERSION 11 — A PHRASE'S OWN WORDS ARE HEADINGS TOO.
@@ -458,6 +458,69 @@ export const DETERMINISTIC_READER_VERSION = 20;
  * Against reader 19, 51 of the 55 corpus and stress documents read
  * identically, and the four that change are the four fixtures that describe
  * this.
+ */
+
+/*
+ * VERSION 21 — THE WAYS A BROCHURE PHRASES A FACT, FOUND BEFORE A CUSTOMER
+ * FOUND THEM.
+ *
+ * 24 September 2026, by putting 130 phrasings through the reader instead of
+ * waiting for documents to show them one at a time. FOUR ADDRESS LAYOUTS
+ * IMPORTED NOTHING, because the one line naming the property was the line
+ * nobody read: the locality set apart by commas (`LOT 214 Kingfisher Road,
+ * Clyde North, VIC, 3978`), the parts set apart by rules (`Lot 58 | Wren
+ * Street | Box Hill NSW 2765`), no comma at all (`Lot 903 Fairwater Drive
+ * Tarneit VIC 3029`) and a bracketed street number with the state spelled out
+ * (`Lot 7 (No. 15) Banksia Way` over `Baldivis Western Australia 6171`).
+ *
+ * TWO PRICES WERE WRONG ON EVERY SOURCE: `$829k` was stored as $829 and
+ * `$1.15M` as $1.15, because the digits were read and the multiplier dropped.
+ * `coerceMoney` reads the multiplier by definition, a space as a thousands
+ * separator, and refuses a figure no property is sold for. No stored price
+ * carries either, so no card reads differently for this.
+ *
+ * AND THE STRESS CORPUS HELD A WRONG DESIGN ON SIX OF ITS COVERS: the
+ * locality line over a `Home Design` row was read upwards as the design
+ * (`Officer VIC 3809`), spending the heading, so the design printed beside it
+ * was never read. It asserts lot numbers only, so nothing reported it. A
+ * caption with a value beside it on its own row is that value's label now, and
+ * a locality is never a design or an estate (`a_locality_is_not_a_name`). No
+ * stored design or estate is shaped like a locality.
+ *
+ * The rest lost one printed fact while the reading reported itself complete:
+ * a count line naming a study, a living area or a double garage; `Allotment`,
+ * `Lot Area` and `Dwelling Size`; `approx.` beside a figure; a component price
+ * beside the total; a stage designation.
+ *
+ * AND A LANDSCAPE PAGE STORED ROTATED READ NOTHING: a portrait page with
+ * `/Rotate 90` draws its text turned, the positioned layout took it as drawn
+ * and put every line on one row, merged into one cell. A page whose text is
+ * mostly not upright contributes no positioned runs now (`pdfTextLayout.ts`),
+ * so it is read as the flattened lines it already had.
+ *
+ * A TOWNHOUSE WAS ADDRESSED BY NOTHING. `5/12 Kestrel Street`, `Unit 5, 12
+ * Kestrel Street` and `Townhouse 5/12 Kestrel Street` are how a unit is
+ * written, and a street number had to be one figure, so the line naming the
+ * property imported nothing; the unit is read from each now, and so is a
+ * range (`12-14`) and a street ending in a direction (`Main Road East`). A
+ * `TOWNHOUSE 3` heading over its street was stored as the DESIGN because the
+ * filename named the same words; it is the unit now, taken only where the
+ * document names one unit beside a street, and never over a unit the document
+ * already holds. And a re-read of such a property no longer inserts a second
+ * one: a row with no lot is found within its own upload by its unit at its
+ * street, or its street (`ownRowKey`), where before nothing could find it.
+ *
+ * AND A BLOCK GIVEN AS ITS FRONTAGE BY ITS DEPTH WAS STORED AS ITS FRONTAGE:
+ * `Land Size: 12.5m x 36m` read 12.5 m². Two lengths state a shape and no
+ * area, so no land size is stored from them, on any source; an area printed
+ * beside its dimensions is still that area. `Price $812,000 inc GST` and
+ * `Land Size 450 m2.` each set their figure aside over the words after it,
+ * and are read.
+ *
+ * Against reader 20, 48 of the 75 corpus and stress documents read
+ * identically, and the 27 that change are the twenty held-out fixtures, the
+ * two-column page (two properties where there were none) and the six stress
+ * covers above.
  */
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */

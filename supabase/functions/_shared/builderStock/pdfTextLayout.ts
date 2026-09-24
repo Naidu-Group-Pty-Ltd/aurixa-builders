@@ -114,6 +114,26 @@ async function itemsOnPage(
     const content = await page.getTextContent();
     const raw = Array.isArray(content?.items) ? content.items : [];
 
+    /*
+     * A PAGE WHOSE TEXT IS NOT UPRIGHT HAS NO LAYOUT THIS READER CAN USE.
+     *
+     * MEASURED 24 SEPTEMBER 2026: a landscape brochure is often stored as a
+     * PORTRAIT page with `/Rotate 90`, its text drawn turned a quarter so the
+     * page reads upright once a viewer applies the rotation. Taken as drawn,
+     * every line of such a page shares one x and steps along it, so the rows
+     * below became ONE row and the reader merged the page into a single cell
+     * with no spaces in it — `LOT 64 Currawong StreetBox Hill NSW 2765…` —
+     * and read nothing at all from a page whose flattened text is perfect.
+     *
+     * So a page whose text is mostly not upright contributes no runs, and the
+     * brochure reader reads it as the flattened lines it already has, which is
+     * exactly what it does for a page this module could not read. A page of
+     * upright text is untouched, byte for byte, and so is an upright page that
+     * also sets a label sideways: only where most of the page's characters run
+     * some other way is the layout withheld.
+     */
+    if (!mostlyUpright(raw.slice(0, MAX_LAYOUT_ITEMS_PER_PAGE))) return [];
+
     const items: PdfTextItem[] = [];
     for (const entry of raw.slice(0, MAX_LAYOUT_ITEMS_PER_PAGE)) {
       const item = entry as { str?: unknown; width?: unknown; transform?: unknown };
@@ -150,6 +170,31 @@ async function itemsOnPage(
   } catch {
     return [];
   }
+}
+
+/**
+ * Does most of this page's text run left to right along the page?
+ *
+ * A run is upright when its baseline points along +x: the transform's first
+ * term is positive and its second is negligible beside it. Skew (italic) is
+ * the third term and is not asked. Characters, not runs, are counted, so one
+ * long sideways caption outweighs a scatter of short upright page numbers and
+ * the reverse.
+ */
+export function mostlyUpright(raw: readonly unknown[]): boolean {
+  let upright = 0;
+  let total = 0;
+  for (const entry of raw) {
+    const item = entry as { str?: unknown; transform?: unknown };
+    if (typeof item?.str !== 'string' || !Array.isArray(item.transform)) continue;
+    const length = item.str.trim().length;
+    if (!length) continue;
+    const a = Number(item.transform[0]);
+    const b = Number(item.transform[1]);
+    total += length;
+    if (Number.isFinite(a) && Number.isFinite(b) && a > 0 && Math.abs(b) <= a * 0.05) upright += length;
+  }
+  return total === 0 || upright * 2 >= total;
 }
 
 function short(error: unknown): string {

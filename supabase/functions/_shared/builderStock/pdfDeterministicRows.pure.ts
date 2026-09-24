@@ -120,6 +120,7 @@ import {
 } from './documentNormalisation.pure.ts';
 import { acceptFieldValue, readsAsACount } from './fieldTypes.pure.ts';
 import {
+  coerceMoney,
   coerceNumber,
   coercePrice,
   fieldForHeader,
@@ -808,7 +809,10 @@ type ClaimSource =
   | 'caption_on_page'
   | 'filename'
   | 'icon_row'
-  | 'area_schedule';
+  | 'area_schedule'
+  | 'price_sum'
+  | 'figure_noun'
+  | 'unit_heading';
 
 /** Stamp a reader's name on what it produced, without rewriting the reader. */
 function via(source: ClaimSource, claims: readonly Claim[]): Claim[] {
@@ -893,6 +897,39 @@ function labelAtWithValueMarker(
 }
 
 /**
+ * A label of any length, composed with the marker on the value straight
+ * after it. The two retries above look one and two words ahead, and a label
+ * longer than that never met its value: `House & Land Package $899,500` is
+ * four words before its `$`, so the price was lost. Asked only where they
+ * found no numeric field, so it adds readings and changes none.
+ */
+function labelBeforeMarkedValue(
+  tokens: string[], start: number,
+): { field: string; length: number } | null {
+  /*
+   * SIX WORDS, where every other label is four: `Fixed Price House & Land`
+   * and `House and Land Package Price` are five before their `$`. The marker
+   * on the value is what makes a longer reach safe — only a heading followed
+   * straight by a figure carrying one is asked at all — and the heading may
+   * be one the vocabulary spells with the marker or one it spells without,
+   * because the figure has already said it is money or an area.
+   */
+  const available = Math.min(MAX_MARKED_LABEL_WORDS, tokens.length - start - 1);
+  for (let length = available; length >= 1; length--) {
+    const marker = markerOf(tokens[start + length] ?? '');
+    if (!marker) continue;
+    const heading = tokens.slice(start, start + length).join(' ');
+    const field = fieldForHeader(`${heading} ${marker}`)
+      ?? (length > MAX_LABEL_WORDS ? fieldForHeader(heading) : null);
+    if (field && NUMERIC_VALUE_FIELDS.has(field)) return { field, length };
+  }
+  return null;
+}
+
+/** See `labelBeforeMarkedValue`. */
+const MAX_MARKED_LABEL_WORDS = 6;
+
+/**
  * The fields whose label is also the name of a ROOM.
  *
  * Named here because `readLabelledNumbers` must refuse them and nothing else
@@ -925,7 +962,7 @@ function isPlural(labelTokens: readonly string[]): boolean {
 }
 
 /** `m2`, `m²`, `sqm`, `sq`, `m` — a unit belongs to the number before it. */
-const UNIT_TOKEN = /^(?:m2|m²|sqm|sq|m|sqm\.|m\.)$/i;
+const UNIT_TOKEN = /^(?:m2|m²|sqm|sq|m)\.?$/i;
 /**
  * AND THE UNITS A BUILDER WRITES THAT ARE NOT SQUARE METRES — `21.5 squares`,
  * `0.5 ha`, `1.2 acres`, `2,000 sq ft`. A line naming one was refused whole,
@@ -937,6 +974,8 @@ const UNIT_TOKEN = /^(?:m2|m²|sqm|sq|m|sqm\.|m\.)$/i;
  * alone, `2000 feet` is a length and never an area.
  */
 const CONVERTING_UNIT_TOKEN = /^(?:sq\.|sqs|squares?|ha|hectares?|acres?|ac|ft²|ft2)$/i;
+/** `sq.m`, `sq.mt`, `sq.mtrs.` — square metres with a stop in them, which `Land 512 sq.m` lost. */
+const SQUARE_METRE_SPELLING = /^sq\.m(?:t|tr|trs)?\.?$/i;
 const SECOND_UNIT_TOKEN = /^(?:ft|feet|foot|metres?|meters?|mtrs?)\.?$/i;
 const FIRST_OF_TWO_UNIT_TOKEN = /^(?:sq\.?|square)$/i;
 const HAS_DIGIT = /\d/;
@@ -951,13 +990,25 @@ const HAS_DIGIT = /\d/;
  * is consumed entirely, "Land sizes from 350 m2 are available now" is not, and
  * the second yields nothing rather than yielding a land size.
  */
-function readLabelledNumbers(line: string): Claim[] | null {
-  const tokens = line.split(/\s+/).filter(Boolean);
+function readLabelledNumbers(line: string, components = true): Claim[] | null {
+  const tokens = joinDetachedMoney(line.split(/\s+/).filter(Boolean));
   if (!tokens.length) return null;
   const claims: Claim[] = [];
+  let spentOnComponents = false;
   let index = 0;
 
   while (index < tokens.length) {
+    /*
+     * A RULE OR A BULLET BETWEEN TWO STATEMENTS SEPARATES THEM — `Land Size
+     * 448m² | Build Size 212m²` — exactly as it does between two `Label:
+     * value` pairs (`readLabelledPairs`). It was a word this reader could not
+     * account for, so the whole line was refused. Only a separator standing
+     * alone is stepped over; one attached to a figure is that figure's.
+     */
+    if (/^[|•·;/]$/.test(tokens[index])) {
+      index += 1;
+      continue;
+    }
     /*
      * A FRONTAGE IS STATED, NOT STORED, and it may not cost the land beside
      * it: `Land Size 512m²  Frontage 16m  Depth 32m` was refused whole, the
@@ -973,15 +1024,42 @@ function readLabelledNumbers(line: string): Claim[] | null {
       continue;
     }
     /*
+     * A COMPONENT OF THE PRICE IS STATED, NOT STORED, and it may not cost the
+     * total beside it: `Land Price $415,000  House Price $402,900  Total
+     * $817,900` was refused whole, so the one figure a buyer is quoted was
+     * lost with the two it is made of. A component claims nothing — `LAND $`
+     * and `HOUSE $` are the breakdown and never the price, which is the
+     * normaliser's own rule — and a line of nothing but components is read
+     * exactly as it was before this reader knew the word (see the end).
+     */
+    if (components) {
+      const component = componentMoneyAt(tokens, index);
+      if (component) {
+        index += component;
+        spentOnComponents = true;
+        continue;
+      }
+    }
+    /*
      * The value this label would take, looked at BEFORE the label is
      * resolved, because the marker it carries is part of the label. See
      * `labelAtWithValueMarker`.
+     *
+     * AND A LABEL WITH NO FIGURE AFTER IT MAY BE THE START OF A LONGER ONE.
+     * `Fixed Price House & Land $829k` opens with `Fixed Price`, which is a
+     * heading of its own, and stopping there found `House` where the figure
+     * should be and refused the line. Where the bare label's value slot holds
+     * no figure, the longer headings its line composes with a marker are asked
+     * first, and the bare label is what is left if none of them resolves.
      */
     const bare = labelAt(tokens, index);
-    const label = bare && NUMERIC_VALUE_FIELDS.has(bare.field)
+    const bareHasItsFigure = bare !== null
+      && HAS_DIGIT.test(tokens[valueStartAfter(tokens, index + bare.length, bare.field)] ?? '');
+    const label = bare && NUMERIC_VALUE_FIELDS.has(bare.field) && bareHasItsFigure
       ? bare
       : (labelAtWithValueMarker(tokens, index, tokens[index + 1] ?? '')
         ?? labelAtWithValueMarker(tokens, index, tokens[index + 2] ?? '')
+        ?? labelBeforeMarkedValue(tokens, index)
         ?? bare);
     if (!label || !NUMERIC_VALUE_FIELDS.has(label.field)) return null;
     /*
@@ -1004,27 +1082,228 @@ function readLabelledNumbers(line: string): Claim[] | null {
      * first, read by `readInlineCounts`), `Bedrooms: 3` (the document's own
      * colon) and a label paired with the cell beside or beneath it.
      */
-    if (COUNT_FIELDS.has(label.field)
-      && !isPlural(tokens.slice(index, index + label.length))) {
-      return null;
-    }
-    index += label.length;
+    /*
+     * AND IT CLAIMS NOTHING, BUT IT DOES NOT COST THE LINE. Refusing the pair
+     * used to refuse the whole line, so `Bedrooms 4 Bathrooms 2 Garage 2` lost
+     * the two counts it states in the plural along with the one it does not.
+     * A line of nothing but singulars — a plan's `Bed 3 Bath 2` — still claims
+     * nothing and reads as nothing, exactly as before.
+     */
+    const roomName = COUNT_FIELDS.has(label.field)
+      && !isPlural(tokens.slice(index, index + label.length));
+    index = valueStartAfter(tokens, index + label.length, label.field);
 
     // The value: one token carrying a digit, plus any bare unit after it.
     if (index >= tokens.length || !HAS_DIGIT.test(tokens[index])) return null;
     const parts = [tokens[index]];
     index += 1;
     while (index < tokens.length && (UNIT_TOKEN.test(tokens[index])
+      || SQUARE_METRE_SPELLING.test(tokens[index])
       || CONVERTING_UNIT_TOKEN.test(tokens[index])
       || (SECOND_UNIT_TOKEN.test(tokens[index])
         && FIRST_OF_TWO_UNIT_TOKEN.test(parts[parts.length - 1])))) {
       parts.push(tokens[index]);
       index += 1;
     }
-    claims.push({ field: label.field, value: parts.join(' ') });
+    // `(approx)`, `approx.`, `*` after the figure qualify it and are not it.
+    while (index < tokens.length && TRAILING_QUALIFIER.test(tokens[index])) index += 1;
+    if (/^[$€£¥]/.test(parts[0])) index = afterMoneyAsides(tokens, index);
+    if (!roomName) claims.push({ field: label.field, value: parts.join(' ') });
   }
 
+  /*
+   * A LINE OF NOTHING BUT COMPONENTS reads exactly as it did before this
+   * reader knew what a component is — `Land $350,000` still meets the typed
+   * gate as a land size and is declined there, with its reason — so a line
+   * that states no total gains and loses nothing here.
+   */
+  if (!claims.length && spentOnComponents) return readLabelledNumbers(line, false);
   return claims.length ? claims : null;
+}
+
+/**
+ * WORDS THAT QUALIFY A FIGURE AND ARE NOT IT. `Land Size approx. 450m²` and
+ * `Land Size 450m² (approx)` each set the land aside whole, because the reader
+ * met a word where it wanted the figure or its unit. A qualifier says the
+ * figure is approximate, which it is and which the card cannot say anyway:
+ * the figure is the document's statement either way.
+ */
+const LEADING_QUALIFIER = /^(?:approx\.?|approximately|circa|ca\.|c\.|~|about|around)$/i;
+const TRAILING_QUALIFIER =
+  /^(?:\(?approx\.?\)?|\(?approximately\)?|\(?est\.?\)?|\(?estimated\)?|\*+|\(\*\))$/i;
+
+/**
+ * `$812,000 inc GST`, `$812,000 (fixed price)`, `$812,000 Fixed` — WHAT A
+ * PRICE SAYS ABOUT ITSELF, AFTER IT.
+ *
+ * Each set its price aside, because the reader met a word where the next label
+ * should have been and refused the line: the price was lost on a brochure
+ * stating it plainly. The aside is stepped over, never read. A bracket is an
+ * aside only up to four words and only where it carries no figure, so
+ * `$812,000 (was $850,000)` is still a line nobody can settle.
+ */
+function afterMoneyAsides(tokens: readonly string[], start: number): number {
+  let at = start;
+  while (at < tokens.length) {
+    const token = tokens[at];
+    if (token.startsWith('(')) {
+      let end = at;
+      while (end < tokens.length && end - at < 4 && !HAS_DIGIT.test(tokens[end])
+        && !tokens[end].endsWith(')')) end += 1;
+      if (end < tokens.length && tokens[end].endsWith(')') && !HAS_DIGIT.test(tokens[end])) {
+        at = end + 1;
+        continue;
+      }
+      return at;
+    }
+    if (/^(?:inc|incl|including|inclusive|ex|excl|excluding)\.?$/i.test(token)
+      && /^gst[.,]?$/i.test(tokens[at + 1] ?? '')) {
+      at += 2;
+      continue;
+    }
+    if (/^(?:gst|fixed|only)[.,]?$/i.test(token)) {
+      at += 1;
+      continue;
+    }
+    return at;
+  }
+  return at;
+}
+
+/**
+ * Where a label's figure begins: past any word that qualifies it, and past the
+ * `x` a count is sometimes set with (`Bedrooms x 4`).
+ */
+function valueStartAfter(tokens: readonly string[], start: number, field: string): number {
+  let index = start;
+  while (index < tokens.length && LEADING_QUALIFIER.test(tokens[index])) index += 1;
+  if (COUNT_FIELDS.has(field) && /^[x×]$/i.test(tokens[index] ?? '')) index += 1;
+  return index;
+}
+
+/**
+ * `$ 799,000` and `$799 000` — ONE AMOUNT, SET WITH A SPACE IN IT.
+ *
+ * A currency symbol set apart from its figure, and a space used as the
+ * thousands separator, each split one amount into tokens this reader took one
+ * at a time, so `Price $799 000` read `$799` and then met `000` as a word it
+ * could not account for. The pieces are joined back, and only these two
+ * shapes: a lone symbol before a figure, and groups of exactly three digits
+ * after an amount of one to three.
+ */
+function joinDetachedMoney(tokens: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index];
+    const next = tokens[index + 1] ?? '';
+    if (/^[$€£¥]$/.test(token) && /^\d/.test(next)) {
+      out.push(`${token}${next}`);
+      index += 1;
+      continue;
+    }
+    out.push(token);
+  }
+  for (let index = 0; index < out.length; index++) {
+    if (!/^[$€£¥]\d{1,3}$/.test(out[index])) continue;
+    let joined = out[index];
+    let reach = index + 1;
+    while (reach < out.length && /^\d{3}(?:\.\d{1,2})?$/.test(out[reach])) {
+      joined += `,${out[reach]}`;
+      reach += 1;
+    }
+    if (reach > index + 1) out.splice(index, reach - index, joined);
+  }
+  return out;
+}
+
+/**
+ * The words a component of a package's price is headed with, and the money
+ * figures stated beside a price that are not it. Closed, like every other
+ * vocabulary here: a word this list does not carry is not a component.
+ */
+const COMPONENT_HEAD = /^(?:land|house|home|build|building|construction|dwelling)$/i;
+const COMPONENT_TAIL = /^(?:price|cost|component|value|portion)$/i;
+
+/** How many tokens a component and its amount take here, or 0. */
+function componentMoneyAt(tokens: readonly string[], index: number): number {
+  const word = (at: number) => String(tokens[at] ?? '').replace(/[:–—-]+$/, '');
+  let length = 0;
+  if (COMPONENT_HEAD.test(word(index))) length = COMPONENT_TAIL.test(word(index + 1)) ? 2 : 1;
+  else if (/^site$/i.test(word(index)) && /^(?:costs?|works)$/i.test(word(index + 1))) length = 2;
+  else if (/^(?:stamp|transfer)$/i.test(word(index)) && /^duty$/i.test(word(index + 1))) length = 2;
+  else if (/^(?:deposit|rebate|discount|saving|savings|save|bonus|grant)$/i.test(word(index))) length = 1;
+  else return 0;
+  // A separator set between the heading and its amount belongs to the heading.
+  while (/^[:–—-]$/.test(tokens[index + length] ?? '')) length += 1;
+  return /^[$€£¥]\d/.test(tokens[index + length] ?? '') ? length + 1 : 0;
+}
+
+/** A line stating components of a price and nothing else. See the ladder. */
+function statesOnlyComponents(line: string): boolean {
+  const tokens = joinDetachedMoney(line.split(/\s+/).filter(Boolean));
+  let index = 0;
+  let found = 0;
+  while (index < tokens.length) {
+    if (/^[|•·,;/+&]$/.test(tokens[index])) { index += 1; continue; }
+    const component = componentMoneyAt(tokens, index);
+    if (!component) return false;
+    index += component;
+    found += 1;
+  }
+  return found > 0;
+}
+
+/**
+ * `450m² Lot`, `512sqm Block`, `231m² Home` — THE FIGURE, THEN WHAT IT
+ * MEASURES.
+ *
+ * The figure-first form of a size, as `4 Bed` is the figure-first form of a
+ * count: the unit says it is an area and the noun after it says of what. The
+ * line must be exactly that — a figure with a square-metre unit and one noun
+ * from a closed list — so `450m² of living` or `Lots from 450m²` read nothing.
+ * `Living` is deliberately not a noun here, for the reason the vocabulary
+ * records: a living area is not the house.
+ */
+const FIGURE_THEN_NOUN = new RegExp(
+  '^(\\d[\\d,]*(?:\\.\\d+)?\\s*(?:m2|m²|sqm|sq\\.?\\s?m|sq\\.m))\\s+'
+  + '(lot|block|allotment|land|site|homesite|home\\s*site|home|house|dwelling)'
+  + '(?:\\s+(?:size|area))?$', 'i');
+
+function readFigureThenNoun(line: string): Claim | null {
+  const match = line.trim().replace(TRAILING_QUALIFIER_TEXT, '').match(FIGURE_THEN_NOUN);
+  if (!match) return null;
+  const land = /^(?:lot|block|allotment|land|site|homesite|home\s*site)$/i.test(match[2]);
+  return { field: land ? 'land_size_sqm' : 'building_size_sqm', value: match[1] };
+}
+const TRAILING_QUALIFIER_TEXT = /\s*(?:\(?approx\.?\)?|\(?approximately\)?|\*+)\s*$/i;
+
+/**
+ * ===========================================================================
+ * `Land $350,000 + House $449,000 = $799,000` — A TOTAL PROVED BY ITS PARTS.
+ * ===========================================================================
+ *
+ * The package price written as its own sum, which every reader here refused:
+ * no heading names the total, so nothing said which of three figures was the
+ * price. The arithmetic does. The figure after `=` is taken as the price ONLY
+ * where the figures before it add up to it, to the dollar — a line whose sum
+ * does not hold says nothing here, because a figure the page itself contradicts
+ * is not a price anybody can quote.
+ */
+const MONEY_TERM =
+  /^\s*(?:[A-Za-z&'’][A-Za-z&'’ ]{0,40}?)?\s*[:–—-]?\s*([$€£¥]\s?\d[\d,]*(?:\.\d{1,2})?)\s*$/;
+
+function readPriceSum(line: string): Claim | null {
+  const sides = line.split('=');
+  if (sides.length !== 2) return null;
+  const terms = sides[0].split('+');
+  if (terms.length < 2) return null;
+  const parts = terms.map((term) => term.match(MONEY_TERM));
+  const total = sides[1].match(MONEY_TERM);
+  if (!total || parts.some((part) => !part)) return null;
+  const sum = parts.reduce((acc, part) => acc + (coerceMoney(part![1]) ?? Number.NaN), 0);
+  const stated = coerceMoney(total[1]);
+  if (!Number.isFinite(sum) || stated === null || Math.abs(sum - stated) > 1) return null;
+  return { field: 'price', value: total[1].trim() };
 }
 
 /**
@@ -1193,21 +1472,88 @@ const LABELLED_VALUE = /^([^:–—]{1,60}?)\s*(?::|–|—|\s-\s)\s*(.*)$/;
  * The whole line must be counts. "3 bedroom homes from $600,000" is a
  * sentence, and it is refused because `$600,000` is not a count.
  */
-const INLINE_COUNTS =
-  /^(?:\d{1,2}(?:\.\d)?\s*(?:bed(?:room)?s?|bath(?:room)?s?|cars?|carports?)\b[\s,/|·+-]*)+$/i;
+/**
+ * The words a count is named with, figure first. `br`, `ba` and `bdrm` are the
+ * abbreviations listings print (`4 BR 2 BA 2 CAR`), and `x` may sit between a
+ * figure and its word (`4 x Bedrooms`).
+ */
+const COUNT_WORD_SOURCE = 'bed(?:room)?s?|br|bdrm?s?|bath(?:room)?s?|ba|bths?'
+  + '|car\\s+(?:garage|spaces?|parks?|ports?)|carspaces?|garages?|cars?|carports?';
 
 /** Each count and the word that names it, in the order the line writes them. */
-const COUNT_GROUP = /(\d{1,2}(?:\.\d)?)\s*(bed(?:room)?s?|bath(?:room)?s?|cars?|carports?)\b/gi;
+const COUNT_GROUP = new RegExp(`(\\d{1,2}(?:\\.\\d)?)\\s*(?:[x×]\\s*)?(${COUNT_WORD_SOURCE})\\b`, 'gi');
 
-/** The canonical field each count word names. The vocabulary is the existing one. */
+/**
+ * The canonical field each count word names. The vocabulary is the existing
+ * one, and `garage` is in it: it has always been this vocabulary's heading for
+ * the car spaces, and `2 Garage` or `2 Car Garage` in a count line was the one
+ * word that line reader did not count with, so `3 Bedrooms | 2 Bathrooms |
+ * 2 Garage` lost all three. Measured 24 September 2026.
+ */
 const COUNT_FIELD: ReadonlyArray<[RegExp, string]> = [
-  [/^bed/i, 'bedrooms'],
-  [/^bath/i, 'bathrooms'],
+  [/^b(?:ed|r|d)/i, 'bedrooms'],
+  [/^b(?:a|th)/i, 'bathrooms'],
   [/^car/i, 'car_spaces'],
+  [/^garage/i, 'car_spaces'],
 ];
 
 /**
- * A line that is nothing but counts.
+ * ===========================================================================
+ * WHAT ELSE A COUNT LINE STATES, THAT THIS PRODUCT DOES NOT STORE.
+ * ===========================================================================
+ *
+ * The line reader took a line only if EVERY word on it was a count, so a
+ * count line that also named a room this product has no column for was
+ * refused whole — `4 Bed + Study | 2 Bath | 2 Living | Double Garage` lost
+ * all three counts it states because of a study and a living area. Found 24
+ * September 2026 by probing, in eleven phrasings.
+ *
+ * Each piece below is RECOGNISED, not skipped: the line is still read only if
+ * every word is accounted for, and at least one piece must be a count. So a
+ * sentence (`4 bedroom homes from $600,000`) is still refused, and a line of
+ * nothing but rooms (`2 Living`, `Double Storey Home`) still states no count.
+ *
+ *   • a room counted and not stored — living areas, a study, a media room;
+ *   • `+ Study` — a room named beside a count;
+ *   • `Double Garage` — two car spaces by definition, as `Single` is one and
+ *     `Triple` three, and read only on a line that also states a figure
+ *     count: alone on a line, a garage label is as often a floor plan's room
+ *     name as a statement, and a dual-key home has two;
+ *   • `Double Storey`, and a closing noun (`4 Bedroom Home`);
+ *   • a size with its unit, which says what it measures only with a label and
+ *     is left unread here rather than guessed as the land or the house.
+ *
+ * `Ensuite` is deliberately NOT a room here: a count line naming one states
+ * the bathrooms in two parts, and summing them is a reading this line does
+ * not make. That line is left exactly as it was.
+ */
+const ROOM_WORD_SOURCE = 'living(?:\\s+(?:areas?|rooms?|zones?))?|lounges?(?:\\s+rooms?)?'
+  + '|stud(?:y|ies)|media(?:\\s+rooms?)?|theatres?(?:\\s+rooms?)?|rumpus(?:\\s+rooms?)?'
+  + '|alfresco|dining(?:\\s+rooms?)?|family(?:\\s+rooms?)?|games(?:\\s+rooms?)?'
+  + '|activity(?:\\s+rooms?)?|retreats?|(?:home\\s+)?offices?|powder(?:\\s+rooms?)?|wcs?'
+  + '|toilets?|storeys?|stor(?:y|ies)|levels?|kitchens?';
+const PLUS_ROOM_SOURCE = 'study|media(?:\\s+room)?|theatre(?:\\s+room)?|rumpus(?:\\s+room)?'
+  + '|home\\s+office|office|retreat|living(?:\\s+room)?|alfresco|games(?:\\s+room)?'
+  + '|activity(?:\\s+room)?|family(?:\\s+room)?|dining|powder(?:\\s+room)?|lounge|sitting\\s+room'
+  + '|nursery|guest\\s+room';
+const GARAGE_SIZE_SOURCE = '(?:single|one|double|twin|two|triple|three)[- ]?(?:car\\s+)?'
+  + '(?:lock[- ]?up\\s+)?(?:garage|carport)';
+const STOREY_SOURCE = '(?:single|double|two|one|split|dual|three|triple)[- ]?(?:storey|story|level)s?';
+
+const COUNT_LINE_PIECE = new RegExp([
+  `(\\d{1,2}(?:\\.\\d)?)\\s*(?:[x×]\\s*)?(${COUNT_WORD_SOURCE})\\b`,
+  `\\d{1,2}(?:\\.\\d)?\\s*(?:[x×]\\s*)?(?:${ROOM_WORD_SOURCE})\\b`,
+  `\\s*\\+\\s*(?:${PLUS_ROOM_SOURCE})\\b`,
+  `(${GARAGE_SIZE_SOURCE})\\b`,
+  `${STOREY_SOURCE}\\b`,
+  '\\d[\\d,]*(?:\\.\\d+)?\\s*(?:m2|m²|sqm|sq\\.?\\s?m|squares?|sq)(?![a-z0-9])',
+  '(?:family\\s+)?(?:home|house|residence|dwelling|design)\\b',
+  '[\\s,/|·•+–—-]+',
+].map((piece) => `(?:${piece})`).join('|'), 'iy');
+
+/**
+ * A line that is nothing but counts, and the pieces a count line carries
+ * besides them (see `COUNT_LINE_PIECE`).
  *
  * TWO SHAPES, AND THE DIFFERENCE IS WHY THIS RETURNS A LIST.
  *
@@ -1232,17 +1578,30 @@ const COUNT_FIELD: ReadonlyArray<[RegExp, string]> = [
  * exactly as before, because `parseBedBathCar` in `normalise.pure.ts` already
  * knows that cell's dual-occupancy form, its doubled slash and its eleven
  * other spellings, and a second opinion about it here is the last thing this
- * module should hold.
+ * module should hold. It knows every piece this line reader admits, and
+ * ignores the pieces that are not counts.
  */
 function readInlineCounts(line: string): Claim[] | null {
   const trimmed = line.trim();
-  if (!INLINE_COUNTS.test(trimmed)) return null;
-  const groups = [...trimmed.matchAll(COUNT_GROUP)];
-  if (!groups.length) return null;
+  if (!trimmed) return null;
+  let at = 0;
+  let figures = 0;
+  const words: string[] = [];
+  let garages = 0;
+  while (at < trimmed.length) {
+    COUNT_LINE_PIECE.lastIndex = at;
+    const piece = COUNT_LINE_PIECE.exec(trimmed);
+    if (!piece || piece[0].length === 0) return null;
+    if (piece[2]) { figures += 1; words.push(piece[2]); }
+    if (piece[3]) garages += 1;
+    at += piece[0].length;
+  }
+  if (!figures) return null;
 
-  const fields = new Set(groups.map(([, , word]) =>
+  const groups = [...trimmed.matchAll(COUNT_GROUP)];
+  const fields = new Set(words.map((word) =>
     COUNT_FIELD.find(([pattern]) => pattern.test(word))?.[1] ?? ''));
-  if (fields.size !== 1 || fields.has('')) {
+  if (garages || fields.size !== 1 || fields.has('')) {
     return [{ field: 'bed_bath_car', value: trimmed }];
   }
   /*
@@ -1546,6 +1905,27 @@ function declinedHeadings(line: string): string[] | null {
   return found.size ? [...found] : null;
 }
 
+/** `Stage 3`, `Release 12`, `Stage 2, Release 4` — a release of an estate. See the ladder. */
+const STAGE_DESIGNATION =
+  /^(?:stage|release|precinct|phase)\s*[:.]?\s*[0-9]{1,3}[A-Za-z]?(?:\s*[,&/|]?\s*(?:stage|release|precinct|phase)\s*[:.]?\s*[0-9]{1,3}[A-Za-z]?)?$/i;
+
+/**
+ * `TOWNHOUSE 3`, `Unit 5`, `Apartment 305`, `Apt. 12` — a line that is a unit
+ * designation and nothing else. The terms it is taken on are the document's,
+ * not the line's, and are set out where it is read (`unitHeadings`).
+ *
+ * `Villa` and `Residence` are left out on purpose: both are words builders
+ * name their designs with, and a design called `Villa 18` read as unit 18
+ * would put a wrong value in the one field that says which dwelling this is.
+ */
+const UNIT_HEADING =
+  /^(?:unit|townhouse|townhome|apartment|apt)\s*[:.#]?\s*(?:no\.?\s*|number\s+)?([0-9]{1,5}[A-Za-z]?)[,.]?$/i;
+
+function readUnitHeading(line: string): string | null {
+  const match = line.trim().match(UNIT_HEADING);
+  return match ? match[1] : null;
+}
+
 /**
  * THE MOST WORDS A PROPER NAME IS SET IN.
  *
@@ -1797,6 +2177,32 @@ const TRAILING_POSTCODE = /^(.*\S)\s*\((\d{4})\)$/;
  */
 function splitAddress(claim: Claim): Claim[] {
   if (claim.field !== 'address_line') return [claim];
+  /*
+   * `Address: Lot 33 Ridgeline Crescent, Ripley QLD 4306` — A WHOLE ADDRESS
+   * UNDER ONE LABEL IS STILL ITS PARTS.
+   *
+   * The value was stored whole as the STREET, so the card read `Lot 33
+   * Ridgeline Crescent, Ripley QLD 4306` where a street belongs and carried
+   * no lot, no suburb, no state and no postcode. It is the line
+   * `readComposedAddressLine` already reads when the page sets it with no
+   * label, so it is read that way here, and each part is its own field. A
+   * value that reader cannot read whole is kept exactly as before.
+   */
+  const composed = readComposedAddressLine(claim.value);
+  if (composed && (composed.street || composed.lot) && composed.suburb) {
+    const parts: Claim[] = [];
+    const part = (field: string, value: string | null) => {
+      if (value) parts.push({ field, value, via: claim.via });
+    };
+    part('address_line', composed.street);
+    part('lot_number', composed.lot);
+    part('unit_number', composed.unit ?? null);
+    part('development_name', composed.development);
+    part('suburb', composed.suburb);
+    part('state', composed.state);
+    part('postcode', composed.postcode);
+    return parts;
+  }
   const lot = readLotHeading(claim.value);
   // A part split out of a value was read the way the whole was.
   return lot ? [claim, { ...lot, via: claim.via }] : [claim];
@@ -1886,7 +2292,76 @@ function trimSeparators(claim: Claim): Claim {
  * module does not choose between two readings — two blocks claim nothing and
  * the document reads exactly as it does today.
  */
-const AU_STATE = /^(?:VIC|NSW|QLD|SA|WA|TAS|NT|ACT)$/i;
+/** A state from the closed set of eight, as a page prints it: `Vic.` keeps its stop. */
+const AU_STATE_TOKEN = /^(?:VIC|NSW|QLD|SA|WA|TAS|NT|ACT)\.?$/i;
+
+/**
+ * ===========================================================================
+ * A STATE SPELLED OUT IS THE STATE, WHERE ITS POSTCODE AGREES.
+ * ===========================================================================
+ *
+ * `Baldivis Western Australia 6171` and `Clyde North Victoria 3978` were
+ * unread, and on a flyer whose only statement of the property is its address
+ * that is the whole property: nothing was imported. The abbreviations were
+ * the only spelling this reader knew.
+ *
+ * A spelled-out name is taken ONLY with a postcode that falls in that state's
+ * own range, because a name is also a place: `Mount Victoria` is in New South
+ * Wales and `Port Victoria` in South Australia, and `Mount Victoria 2786` read
+ * as a suburb called `Mount` in Victoria would be a wrong address rather than
+ * a missing one. The ranges are Australia Post's allocation. Where they
+ * disagree the state is simply not read — absent, never guessed.
+ */
+const STATE_NAMES: ReadonlyArray<readonly [readonly string[], string]> = [
+  [['australian', 'capital', 'territory'], 'ACT'],
+  [['new', 'south', 'wales'], 'NSW'],
+  [['northern', 'territory'], 'NT'],
+  [['south', 'australia'], 'SA'],
+  [['western', 'australia'], 'WA'],
+  [['victoria'], 'VIC'],
+  [['queensland'], 'QLD'],
+  [['tasmania'], 'TAS'],
+];
+
+const POSTCODE_RANGES: Readonly<Record<string, ReadonlyArray<readonly [number, number]>>> = {
+  NSW: [[1000, 2599], [2619, 2899], [2921, 2999]],
+  ACT: [[200, 299], [2600, 2618], [2900, 2920]],
+  VIC: [[3000, 3999], [8000, 8999]],
+  QLD: [[4000, 4999], [9000, 9999]],
+  SA: [[5000, 5999]],
+  WA: [[6000, 6999]],
+  TAS: [[7000, 7999]],
+  NT: [[800, 999]],
+};
+
+function postcodeIsIn(state: string, postcode: string): boolean {
+  const code = Number(postcode);
+  return (POSTCODE_RANGES[state] ?? []).some(([low, high]) => code >= low && code <= high);
+}
+
+/**
+ * The state a run of words ENDS in, and how many words it took.
+ *
+ * An abbreviation is taken as the page prints it, exactly as before. A name
+ * spelled out needs the postcode to agree, and a word must be left before it
+ * for the suburb.
+ */
+function stateAtEnd(
+  tokens: readonly string[],
+  postcode: string | null,
+): { state: string; length: number } | null {
+  const last = tokens[tokens.length - 1] ?? '';
+  if (AU_STATE_TOKEN.test(last)) return { state: last.replace(/\.$/, '').toUpperCase(), length: 1 };
+  if (!postcode) return null;
+  for (const [words, state] of STATE_NAMES) {
+    if (tokens.length <= words.length) continue;
+    const tail = tokens.slice(tokens.length - words.length).map((token) => token.toLowerCase());
+    if (tail.every((word, index) => word === words[index]) && postcodeIsIn(state, postcode)) {
+      return { state, length: words.length };
+    }
+  }
+  return null;
+}
 
 /** Closed, and deliberately so: a word this list does not carry is not a street. */
 const STREET_TYPE = new Set([
@@ -1904,18 +2379,30 @@ interface LocalityLine {
   postcode: string;
 }
 
+/**
+ * The words of a locality. A comma BETWEEN its parts — `Bungendore, NSW 2621`,
+ * `Clyde North, VIC, 3978` — is the document's punctuation and never part of
+ * a name: it reached the card as the suburb `Bungendore,`, and set between the
+ * state and the postcode it hid the locality from this reader altogether.
+ */
+function localityTokens(line: string): string[] {
+  return String(line ?? '').trim().replace(/[.,;]+$/, '')
+    .replace(/\s*,\s*/g, ' ')
+    .split(/\s+/).filter(Boolean);
+}
+
 /** `Mernda VIC 3754` — a locality, its state and its postcode, in that order. */
 function readLocalityLine(line: string): LocalityLine | null {
-  const tokens = String(line ?? '').trim().replace(/[.,]+$/, '').split(/\s+/).filter(Boolean);
+  const tokens = localityTokens(line);
   if (tokens.length < 3) return null;
   const postcode = tokens[tokens.length - 1];
-  const state = tokens[tokens.length - 2];
   if (!/^\d{4}$/.test(postcode)) return null;
-  if (!AU_STATE.test(state)) return null;
-  const suburb = tokens.slice(0, tokens.length - 2).join(' ');
+  const state = stateAtEnd(tokens.slice(0, -1), postcode);
+  if (!state) return null;
+  const suburb = tokens.slice(0, tokens.length - 1 - state.length).join(' ');
   // A suburb is words. Anything carrying a digit is a measurement or a price.
   if (!suburb.length || !/^[A-Za-z]/.test(suburb) || HAS_DIGIT.test(suburb)) return null;
-  return { suburb, state: state.toUpperCase(), postcode };
+  return { suburb, state: state.state, postcode };
 }
 
 /**
@@ -1937,24 +2424,146 @@ function readLocalityLine(line: string): LocalityLine | null {
  */
 function readStreetLine(line: string): string | null {
   const trimmed = String(line ?? '').trim().replace(/[.,]+$/, '');
+  /*
+   * `Unit 5, 12 Kestrel Street`, `Townhouse 5/12 Kestrel Street` — THE UNIT A
+   * STREET LINE NAMES BEFORE ITS NUMBER. The unit is the line's to report
+   * (`unitOfStreetLine`); the street is what follows it, and it must be a
+   * NUMBERED street — a unit word before a bare name (`Villa 3 Smith Street`)
+   * is not an address this reads, exactly as before.
+   */
+  const unitLed = trimmed.match(UNIT_PREFIX) ?? trimmed.match(UNIT_WORD_BEFORE_UNIT_NUMBER);
+  if (unitLed) {
+    const rest = trimmed.slice(unitLed[0].length).trim();
+    if (!STREET_NUMBER.test(rest.split(/\s+/)[0] ?? '')) return null;
+    return readStreetLine(rest);
+  }
+  /*
+   * `Lot 7 (No. 15) Banksia Way` — THE LOT, AND THE STREET NUMBER IN
+   * BRACKETS AFTER IT. The number is the street's and travels with it; the
+   * lot is the lot's and is read by the lot's own readers.
+   */
+  const numbered = trimmed.match(LOT_WITH_STREET_NUMBER);
+  if (numbered) {
+    const name = readStreetName(trimmed.slice(numbered[0].length));
+    return name ? `${numbered[2]} ${name}` : null;
+  }
   let tokens = trimmed.split(/\s+/).filter(Boolean);
-  if (tokens.length >= 4 && /^lots?$/i.test(tokens[0])
-    && LOT_DESIGNATION.test(tokens[1])) {
+  if (tokens.length >= 4 && /^lots?[:.]?$/i.test(tokens[0])
+    && LOT_DESIGNATION.test(tokens[1].replace(DESIGNATION_PUNCTUATION, ''))) {
     tokens = tokens.slice(2);
   } else {
     // A number, optionally with a unit letter — never `20mm`, which is a size.
     if (tokens.length < 3) return null;
-    if (!/^\d{1,6}[A-Za-z]?$/.test(tokens[0])) return null;
+    if (!STREET_NUMBER.test(tokens[0])) return null;
     tokens = tokens.slice(1);
     tokens.unshift('');
   }
   if (tokens.length < 2) return null;
-  if (!STREET_TYPE.has(tokens[tokens.length - 1].toLowerCase())) return null;
   const name = tokens.filter(Boolean);
+  if (!endsAsAStreet(name)) return null;
   if (name.length < 2) return null;
   // The name is words; a digit in it is a specification, not a street.
   if (name.some((token) => HAS_DIGIT.test(token))) return null;
   return tokens[0] === '' ? trimmed : name.join(' ');
+}
+
+/**
+ * `Lot 12, Wattle Grove Road` — A LOT DESIGNATION IS NOT ITS PUNCTUATION.
+ *
+ * A comma or colon set straight after the designation belongs to the line.
+ * Read as part of it, `12,` was no designation at all, so the lot and the
+ * street on that line were both unread — and on a flyer whose address that
+ * is, no property was imported.
+ */
+const DESIGNATION_PUNCTUATION = /[,;:]+$/;
+
+/**
+ * `Lot 7 (No. 15)`, `Lot 7 (15)`, `Lot 7 (#15)` — the lot, then the street
+ * number the builder brackets beside it. Anchored at the start of the line,
+ * and the bracket must hold a street number and nothing else.
+ */
+const LOT_WITH_STREET_NUMBER =
+  /^lots?\s*[:.]?\s*(\d{1,5}[A-Za-z]?)[,:]?\s*\((?:no\.?\s*|number\s+|#\s*)?(\d{1,5}[A-Za-z]?)\)\s+/i;
+
+/**
+ * `The Promenade`, `The Esplanade`, `The Strand` — A STREET WHOSE NAME IS ITS
+ * TYPE.
+ *
+ * `Lot 16 The Promenade, Shell Cove NSW 2529` was read as nothing: a street
+ * must end in a type from the closed `STREET_TYPE` set, and `The Promenade`
+ * has no name in front of its type because the article IS its name. Taken
+ * only as `The` and ONE word from this closed list, which is what stops a
+ * design called `The Hampton` or `The Aurora` being read as a street.
+ */
+const THE_STREET_WORDS: ReadonlySet<string> = new Set([
+  'promenade', 'esplanade', 'boulevard', 'boulevarde', 'strand', 'parade',
+  'crescent', 'avenue', 'terrace', 'grange', 'corso', 'mall', 'circle', 'circuit',
+  'glade', 'rise', 'ridge', 'outlook', 'crest', 'meander', 'mews', 'grove',
+  'close', 'chase', 'nook', 'vista', 'cove', 'summit', 'knoll', 'anchorage',
+  'causeway', 'concourse', 'boardwalk', 'broadway', 'quay', 'row', 'walk',
+  'green', 'loop', 'link', 'bend', 'crossing', 'gardens', 'retreat', 'ramble',
+  'reach', 'heights', 'fairway', 'avenues', 'square', 'lane', 'way', 'drive',
+  'court', 'place', 'highway',
+]);
+
+/**
+ * `12`, `12A`, and the two ways a number is written with another beside it:
+ * `12-14`, a range, and `5/12`, unit 5 at number 12 — the ordinary way a unit
+ * or a townhouse is addressed. `5/12 Kestrel Street, Box Hill NSW 2765` was
+ * read by nothing, because a street number had to be one figure, and the
+ * flyer it headed imported no property at all.
+ */
+const STREET_NUMBER =
+  /^\d{1,6}[A-Za-z]?(?:[-–]\d{1,6}[A-Za-z]?)?$|^\d{1,5}[A-Za-z]?\/\d{1,6}[A-Za-z]?$/;
+
+/**
+ * `Main Road East`, `Smith Street North` — a direction after the type is part
+ * of the street's name, and a street ending in one was no street at all here:
+ * `Lot 118 Main Road East, Riverstone NSW 2765` imported nothing.
+ */
+const STREET_DIRECTION = /^(?:north|south|east|west|nth|sth|upper|lower|extension|ext)\.?$/i;
+
+/** Does this run of words end the way a street's name ends? */
+function endsAsAStreet(words: readonly string[]): boolean {
+  const last = String(words[words.length - 1] ?? '').toLowerCase();
+  if (STREET_TYPE.has(last)) return true;
+  if (words.length >= 3 && STREET_DIRECTION.test(last)
+    && STREET_TYPE.has(String(words[words.length - 2] ?? '').toLowerCase())) return true;
+  return namesATheStreet(words);
+}
+
+/** The unit a `5/12` street number names, or null. */
+function unitOfStreet(street: string): string | null {
+  return String(street ?? '').trim().match(/^(\d{1,5}[A-Za-z]?)\/\d/)?.[1] ?? null;
+}
+
+/**
+ * `Unit 5, 12 Smith Street`, `Townhouse 5 - 12 Smith Street` — the unit named
+ * before the street, which a builder of townhouses writes as often as `5/12`.
+ */
+const UNIT_PREFIX =
+  /^(?:unit|townhouse|townhome|apartment|apt|villa|residence)\s*[:.#]?\s*(\d{1,5}[A-Za-z]?)[\s,.\-–]+/i;
+
+/**
+ * `Townhouse 5/12 Kestrel Street` — the word that says what kind of dwelling,
+ * set before an address already written unit-over-number. The word is dropped
+ * and the number keeps both halves, so the unit is read from `5/12` exactly as
+ * it is on `5/12 Kestrel Street` without the word.
+ */
+const UNIT_WORD_BEFORE_UNIT_NUMBER =
+  /^(?:unit|townhouse|townhome|apartment|apt|villa|residence)\.?\s*[:#]?\s*(?=\d{1,5}[A-Za-z]?\/\d)/i;
+
+/**
+ * The unit a street line names: before its number (`Unit 5, 12 Kestrel
+ * Street`), or through it (`5/12 Kestrel Street`).
+ */
+function unitOfStreetLine(line: string, street: string): string | null {
+  return String(line ?? '').trim().match(UNIT_PREFIX)?.[1] ?? unitOfStreet(street);
+}
+
+function namesATheStreet(words: readonly string[]): boolean {
+  return words.length === 2 && /^the$/i.test(words[0])
+    && THE_STREET_WORDS.has(words[1].toLowerCase());
 }
 
 /**
@@ -2035,7 +2644,7 @@ function readStreetName(segment: string): string | null {
   const trimmed = String(segment ?? '').trim().replace(/^[,\s]+|[.,\s]+$/g, '');
   const tokens = trimmed.split(/\s+/).filter(Boolean);
   if (tokens.length < 2) return null;
-  if (!STREET_TYPE.has(tokens[tokens.length - 1].toLowerCase())) return null;
+  if (!endsAsAStreet(tokens)) return null;
   if (tokens.some((token) => HAS_DIGIT.test(token))) return null;
   return trimmed;
 }
@@ -2054,6 +2663,8 @@ const NAMED_DEVELOPMENT = /^(.*\S)\s+(estate|rise|park|grove|gardens|village|wat
 interface ComposedAddress extends LocalityLine {
   street: string;
   lot: string | null;
+  /** `Unit 5, 12 Smith Street` and `5/12 Smith Street` name unit 5. */
+  unit?: string | null;
   /** The segment between the lot and the locality that named a place, if any. */
   development: string | null;
 }
@@ -2084,13 +2695,62 @@ interface ComposedAddress extends LocalityLine {
 function readComposedLocality(segment: string): LocalityLine | null {
   const exact = readLocalityLine(segment);
   if (exact) return exact;
-  const tokens = String(segment ?? '').trim().replace(/[.,]+$/, '').split(/\s+/).filter(Boolean);
+  const tokens = localityTokens(segment);
   if (tokens.length < 2) return null;
+  // A state spelled out needs its postcode to agree (`stateAtEnd`), and here
+  // there is none: only the abbreviation stands on its own.
   const state = tokens[tokens.length - 1];
-  if (!AU_STATE.test(state)) return null;
+  if (!AU_STATE_TOKEN.test(state)) return null;
   const suburb = tokens.slice(0, tokens.length - 1).join(' ');
   if (!suburb.length || !/^[A-Za-z]/.test(suburb) || HAS_DIGIT.test(suburb)) return null;
-  return { suburb, state: state.toUpperCase(), postcode: '' };
+  return { suburb, state: state.replace(/\.$/, '').toUpperCase(), postcode: '' };
+}
+
+/**
+ * `Lot 58 | Wren Street | Box Hill NSW 2765` — THE PARTS OF AN ADDRESS ARE
+ * SET APART BY MORE THAN A COMMA.
+ *
+ * A rule or a bullet between the lot, the street and the locality is the same
+ * punctuation doing the same job, and the line was read as one unbroken
+ * segment ending in `Wren Street | Box Hill`, which is no locality: no property
+ * was imported from a flyer that states all of it. The middle dot and a
+ * spaced dash are split upstream (`splitOnFieldSeparators`); these are the
+ * ones that reach an address line whole.
+ */
+const ADDRESS_SEGMENT_SEPARATOR = /\s*[,|•]\s*/;
+
+/**
+ * `Clyde North, VIC, 3978` — A LOCALITY WHOSE PARTS ARE SET APART BY COMMAS
+ * IS STILL ONE LOCALITY.
+ *
+ * The last segment was asked to be the whole locality, and here it is only
+ * the postcode, so `LOT 214 Kingfisher Road, Clyde North, VIC, 3978` was read
+ * as nothing and imported nothing. The postcode is folded back onto the state
+ * it follows, and the state onto the place before it — the place only where
+ * it IS a place (words, no figure, not ending in a street type), and only
+ * while something is left in front of it to be the street or the lot.
+ */
+function foldLocalitySegments(segments: readonly string[]): string[] {
+  const out = [...segments];
+  const isState = (text: string) => {
+    const tokens = localityTokens(text);
+    return tokens.length === 1 && AU_STATE_TOKEN.test(tokens[0]);
+  };
+  if (out.length >= 3 && /^\d{4}$/.test(out[out.length - 1]) && isState(out[out.length - 2])) {
+    out.splice(out.length - 2, 2, `${out[out.length - 2]} ${out[out.length - 1]}`);
+  }
+  const last = localityTokens(out[out.length - 1] ?? '');
+  const stateLast = last.length === 2 && AU_STATE_TOKEN.test(last[0]) && /^\d{4}$/.test(last[1]);
+  const stateOnly = last.length === 1 && AU_STATE_TOKEN.test(last[0]);
+  const place = out[out.length - 2] ?? '';
+  const placeWords = place.split(/\s+/).filter(Boolean);
+  if (out.length >= 3 && (stateLast || stateOnly)
+    && placeWords.length >= 1 && placeWords.length <= MAX_PLACE_WORDS
+    && placeWords.every((word) => PLACE_WORD.test(word))
+    && !STREET_TYPE.has(placeWords[placeWords.length - 1].toLowerCase())) {
+    out.splice(out.length - 2, 2, `${place} ${out[out.length - 1]}`);
+  }
+  return out;
 }
 
 /**
@@ -2106,18 +2766,32 @@ export function readComposedAddressLine(line: string): ComposedAddress | null {
   // The publisher's own premises are never a property's address.
   if (PUBLISHER_PREMISES.test(raw)) return null;
 
-  const segments = raw.split(',').map((s) => s.trim()).filter(Boolean);
-  if (segments.length < 2) return null;
+  const segments = foldLocalitySegments(
+    raw.split(ADDRESS_SEGMENT_SEPARATOR).map((s) => s.trim()).filter(Boolean));
+  if (segments.length < 2) return readUnpunctuatedAddress(raw);
 
   const locality = readComposedLocality(segments[segments.length - 1]);
   if (!locality) return null;
 
   let head = segments.slice(0, -1).join(', ').trim();
   let lot: string | null = null;
+  const numbered = head.match(LOT_WITH_STREET_NUMBER);
+  if (numbered) {
+    const name = readStreetName(head.slice(numbered[0].length));
+    return name
+      ? { street: `${numbered[2]} ${name}`, lot: numbered[1], development: null, ...locality }
+      : null;
+  }
   const lotMatch = head.match(LEADING_LOT);
   if (lotMatch) {
     lot = lotMatch[1];
     head = head.slice(lotMatch[0].length).trim();
+  }
+  let unit: string | null = null;
+  const unitMatch = head.match(UNIT_PREFIX);
+  if (unitMatch) {
+    unit = unitMatch[1];
+    head = head.slice(unitMatch[0].length).trim();
   }
   if (!head) return null;
 
@@ -2140,7 +2814,93 @@ export function readComposedAddressLine(line: string): ComposedAddress | null {
   const street = readStreetLine(head) ?? readStreetName(head);
   if (!street) return null;
 
-  return { street, lot, development: null, ...locality };
+  return { street, lot, unit: unit ?? unitOfStreet(street), development: null, ...locality };
+}
+
+/**
+ * ===========================================================================
+ * `Lot 903 Fairwater Drive Tarneit VIC 3029` — AN ADDRESS WITH NO COMMA.
+ * ===========================================================================
+ *
+ * The one-line reader splits at commas, and a builder who prints none left it
+ * one segment: the lot, the street, the suburb, the state and the postcode
+ * were all on the page and no property was imported.
+ *
+ * WHERE THE STREET ENDS IS THE WHOLE QUESTION, and it is answered only where
+ * the page leaves one answer. The street ends at its LAST type word that is
+ * unambiguously a street type (`Road`, `Drive`, `Court` — never `Grove`,
+ * `Glen` or `St`, which also begin and name suburbs: `Glen Waverley`,
+ * `St Albans`), the street must hold exactly one such word, and what follows
+ * it — the suburb — must be one to four capitalised words carrying no street
+ * type at all. `Smith Street Glen Waverley` ends its street at `Street`, and
+ * `Smith Street Lane Cove` is refused, because `Street Lane` is two answers.
+ *
+ * WHERE THE PAGE LEAVES TWO ANSWERS, the lot, the state and the postcode are
+ * still read and the street and the suburb are not: a thinner record, never a
+ * wrong one, and a lot the builder can see on the card rather than a document
+ * that imported nothing.
+ */
+const UNAMBIGUOUS_STREET_TYPE: ReadonlySet<string> = new Set([
+  'rd', 'road', 'street', 'ave', 'avenue', 'dr', 'drive', 'ct', 'court',
+  'cres', 'crescent', 'pl', 'place', 'bvd', 'blvd', 'boulevard', 'boulevarde',
+  'pde', 'parade', 'cct', 'circuit', 'cl', 'close', 'tce', 'terrace', 'lane',
+  'ln', 'esp', 'esplanade', 'hwy', 'highway', 'way',
+]);
+
+function readUnpunctuatedAddress(raw: string): ComposedAddress | null {
+  const tokens = raw.replace(/[.,;]+$/, '').split(/\s+/).filter(Boolean);
+  const postcode = tokens[tokens.length - 1] ?? '';
+  if (!/^\d{4}$/.test(postcode)) return null;
+  const state = stateAtEnd(tokens.slice(0, -1), postcode);
+  if (!state) return null;
+  const body = tokens.slice(0, tokens.length - 1 - state.length);
+
+  // It opens with the lot, or with a street number.
+  let lot: string | null = null;
+  let number: string | null = null;
+  let words: string[];
+  if (body.length >= 3 && /^lots?[:.]?$/i.test(body[0])
+    && LOT_DESIGNATION.test(body[1].replace(DESIGNATION_PUNCTUATION, ''))) {
+    lot = body[1].replace(DESIGNATION_PUNCTUATION, '');
+    words = body.slice(2);
+  } else if (body.length >= 3 && STREET_NUMBER.test(body[0])) {
+    number = body[0];
+    words = body.slice(1);
+  } else {
+    return null;
+  }
+  if (words.some((word) => HAS_DIGIT.test(word))) return null;
+
+  const lotOnly = (): ComposedAddress | null => lot
+    ? { street: '', lot, development: null, suburb: '', state: state.state, postcode }
+    : null;
+  let split = -1;
+  for (let index = words.length - 2; index >= 1; index--) {
+    if (UNAMBIGUOUS_STREET_TYPE.has(words[index].toLowerCase())) { split = index; break; }
+  }
+  if (split < 1) return lotOnly();
+  // `Main Road East Maitland`: a direction after the type ends the street or
+  // begins the suburb (`East Maitland`), and nothing on the line says which.
+  if (STREET_DIRECTION.test(words[split + 1] ?? '')) return lotOnly();
+  const streetWords = words.slice(0, split + 1);
+  const suburbWords = words.slice(split + 1);
+  const typesInStreet = streetWords
+    .filter((word) => UNAMBIGUOUS_STREET_TYPE.has(word.toLowerCase())).length;
+  if (typesInStreet !== 1) return lotOnly();
+  if (suburbWords.length < 1 || suburbWords.length > MAX_PLACE_WORDS) return lotOnly();
+  if (!suburbWords.every((word) => PLACE_WORD.test(word))) return lotOnly();
+  if (suburbWords.some((word) => STREET_TYPE.has(word.toLowerCase()))) return lotOnly();
+
+  const streetName = streetWords.join(' ');
+  return {
+    street: number ? `${number} ${streetName}` : streetName,
+    lot,
+    unit: number ? unitOfStreet(number) : null,
+    development: null,
+    suburb: suburbWords.join(' '),
+    state: state.state,
+    postcode,
+  };
 }
 
 /**
@@ -2213,6 +2973,8 @@ function readContinuedAddress(
 
   const full = readComposedLocality(under);
   if (full) return { street, lot, development, ...full };
+  const coded = readPostcodedPlace(under, organisation);
+  if (coded) return { street, lot, development, ...coded };
 
   const place = readBarePlaceName(under, organisation);
   if (!place) return null;
@@ -2272,7 +3034,13 @@ function readLotAddressBlock(
   const trimmed = String(line ?? '').trim().replace(/[.,]+$/, '');
   const lotMatch = trimmed.match(LEADING_LOT);
   if (!lotMatch) return null;
-  const street = readStreetLine(trimmed);
+  /*
+   * `LOT 47` AND NOTHING ELSE — the lot set as a heading of its own, with its
+   * street, its estate and its locality one line each beneath it. The lot's
+   * line names no place, so every place is asked of the lines under it.
+   */
+  const bareLot = !trimmed.slice(lotMatch[0].length).trim();
+  const street = bareLot ? null : readStreetLine(trimmed);
   /*
    * `Lot 4544 Riverwalk Estate` — NO STREET, AND THE DEVELOPMENT NAMES ITSELF.
    * The lot's own line then says everything the page says about where it is
@@ -2282,7 +3050,7 @@ function readLotAddressBlock(
   if (street) {
     const type = street.split(/\s+/).pop()?.toLowerCase() ?? '';
     if (ESTATE_WORDS_THAT_ARE_ALSO_STREETS.has(type)) return null;
-  } else {
+  } else if (!bareLot) {
     const development = trimmed.slice(lotMatch[0].length).trim().match(NAMED_DEVELOPMENT);
     if (!development) return null;
     named = `${development[1]} ${development[2]}`;
@@ -2294,6 +3062,8 @@ function readLotAddressBlock(
   const localityOf = (text: string) => {
     const full = readComposedLocality(text);
     if (full) return full;
+    const coded = readPostcodedPlace(text, organisation);
+    if (coded) return coded;
     const place = readBarePlaceName(text, organisation);
     return place ? { suburb: place, state: '', postcode: '' } : null;
   };
@@ -2314,6 +3084,67 @@ function readLotAddressBlock(
   }
 
   const secondBare = second.trim().replace(/[\s,]+$/, '');
+  if (bareLot) {
+    /*
+     * `LOT 47` / `Heron Court` / `Mount Barker SA 5251`. The street is a street
+     * of the closed type set, numbered or not, and it is what makes the line
+     * under it safe to read as the locality, exactly as the lot's own street
+     * does on the one-line heading above. An estate may sit between them.
+     */
+    const lotStreet = readStreetLine(secondBare) ?? readStreetName(secondBare);
+    if (lotStreet) {
+      const type = lotStreet.split(/\s+/).pop()?.toLowerCase() ?? '';
+      if (ESTATE_WORDS_THAT_ARE_ALSO_STREETS.has(type)) return null;
+      const beneath = below(under);
+      if (beneath === null || consumed.has(beneath)) return null;
+      const third = units[beneath].text;
+      const estateUnder = third.trim().replace(/[\s,]+$/, '').match(NAMED_DEVELOPMENT);
+      if (estateUnder) {
+        const estate = `${estateUnder[1]} ${estateUnder[2]}`;
+        const last = below(beneath);
+        if (last === null || consumed.has(last)) return null;
+        const fourth = units[last].text;
+        const locality = localityOf(fourth);
+        if (!locality || !afterEstate(locality.suburb, estate)) return null;
+        return {
+          street: lotStreet, lot: lotMatch[1], development: estate,
+          ...locality, lines: [line, second, third, fourth],
+        };
+      }
+      const locality = localityOf(third);
+      if (!locality) return null;
+      return {
+        street: lotStreet, lot: lotMatch[1], development: null,
+        ...locality, lines: [line, second, third],
+      };
+    }
+    /*
+     * With no street and no estate between them, only a FULL locality — a
+     * state from the closed set of eight — may stand under a bare lot. A bare
+     * capitalised name there is as often the design (`LOT 47` over `HARLOW`)
+     * as a suburb, and nothing on the page says which.
+     */
+    if (!secondBare.match(NAMED_DEVELOPMENT)) {
+      const full = readComposedLocality(second);
+      if (full) return { street: '', lot: lotMatch[1], development: null, ...full, lines: [line, second] };
+      /*
+       * `Lot 402` / `Marlo 23` / `Wollert VIC 3750` — the design between the
+       * lot and its locality. The line between is left exactly as it was (a
+       * bare name is not read as anything here), and only a FULL locality,
+       * with its state, is taken from the line under it: a state from the
+       * closed set of eight is what makes the frame's third line a locality
+       * and not another name.
+       */
+      if (PUBLISHER_PREMISES.test(second)) return null;
+      const beneath = below(under);
+      if (beneath === null || consumed.has(beneath)) return null;
+      const third = units[beneath].text;
+      const locality = readComposedLocality(third);
+      return locality
+        ? { street: '', lot: lotMatch[1], development: null, ...locality, lines: [line, third] }
+        : null;
+    }
+  }
   const development = secondBare.match(NAMED_DEVELOPMENT);
   if (development) {
     const estate = `${development[1]} ${development[2]}`;
@@ -2402,8 +3233,61 @@ function readBarePlaceName(line: string, organisation: readonly string[]): strin
   return trimmed;
 }
 
+/**
+ * `Clyde North 3978` — A PLACE AND ITS POSTCODE, WITH NO STATE BETWEEN THEM.
+ *
+ * Victorian brochures print the locality this way as often as not, and under
+ * a street line it was read as nothing: a locality needed a state. The state
+ * is left unread — four digits are not a state, and the cross-border
+ * postcodes mean no range can say which one for certain — and the place and
+ * its postcode are what the page states.
+ *
+ * ASKED ONLY WHERE `readBarePlaceName` IS: under a line that has already
+ * proved itself an address (a street, a lot's frame). Every guard that reader
+ * has applies to the words. A line that labels something (`Phone 9876`,
+ * `Licence 1234`) is not a place anywhere in it, and a line that only DATES
+ * something (`March 2026`, `Spring 2026`, `Late 2026`) is not a place either,
+ * because a year is four digits too — while `Spring Farm 2570` and
+ * `West End 4101` are real places whose names merely begin with such a word.
+ */
+const LABEL_WORD = new RegExp('^(?:'
+  + 'phone|ph|tel|telephone|call|fax|mobile|mob|office|sales|contact|enquiries'
+  + '|licence|license|lic|abn|acn|reg|rbn|dbn|builder|ref|id|code|pin|level|suite'
+  + '|shop|po|gpo|page|version|rev|issue|edition|quarter|q[1-4]|est'
+  + ')$', 'i');
+const TEMPORAL_WORD = new RegExp('^(?:'
+  + 'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?'
+  + '|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?'
+  + '|spring|summer|autumn|fall|winter|early|mid|late|end|year'
+  + ')$', 'i');
+
+function readPostcodedPlace(line: string, organisation: readonly string[]): LocalityLine | null {
+  const tokens = localityTokens(line);
+  if (tokens.length < 2) return null;
+  const postcode = tokens[tokens.length - 1];
+  if (!/^\d{4}$/.test(postcode)) return null;
+  const words = tokens.slice(0, -1);
+  if (words.some((word) => LABEL_WORD.test(word))) return null;
+  if (words.every((word) => TEMPORAL_WORD.test(word))) return null;
+  const place = readBarePlaceName(words.join(' '), organisation);
+  return place ? { suburb: place, state: '', postcode } : null;
+}
+
 function splitLocality(claim: Claim): Claim[] {
   if (claim.field !== 'suburb') return [claim];
+  /*
+   * `Location: Bungendore NSW 2621` — A LABELLED LOCALITY IS STILL A
+   * LOCALITY. The whole of it reached the card as the suburb; it is the
+   * suburb, the state and the postcode, and each is its own field.
+   */
+  const whole = readLocalityLine(claim.value);
+  if (whole) {
+    return [
+      { field: 'suburb', value: whole.suburb, via: claim.via },
+      { field: 'state', value: whole.state, via: claim.via },
+      { field: 'postcode', value: whole.postcode, via: claim.via },
+    ];
+  }
   const match = claim.value.trim().match(TRAILING_POSTCODE);
   if (!match) return [claim];
   return [
@@ -2605,6 +3489,15 @@ function readCaptionedFigure(
  * before it on its own row, and the caption has no figure drawn after it on
  * its own row. See `readCaptionedFigure`.
  */
+/** Is anything drawn after this unit on its own row? Then the unit labels that. */
+function labelsItsOwnRow(units: readonly BrochureUnit[], at: number): boolean {
+  const row = units[at].row;
+  for (let j = at + 1; j < units.length && units[j].row === row; j++) {
+    if (/[\p{L}\p{N}]/u.test(units[j].text)) return true;
+  }
+  return false;
+}
+
 function standsAloneAsCaption(
   units: readonly BrochureUnit[],
   figureAt: number,
@@ -2848,9 +3741,20 @@ export function isIncidentalContent(line: string): boolean {
  * anything.
  */
 function readLotHeading(line: string): Claim | null {
-  const tokens = line.trim().split(/\s+/);
+  /*
+   * `Lot 7 (No. 15) Banksia Way` — the street number the builder brackets
+   * beside the lot is the street's, not a figure in the tail. It is set aside
+   * here and read with the street (`LOT_WITH_STREET_NUMBER`).
+   */
+  const numbered = line.trim().match(LOT_WITH_STREET_NUMBER);
+  const source = numbered
+    ? `${line.trim().split(/\s+/)[0]} ${numbered[1]} ${line.trim().slice(numbered[0].length)}`
+    : line;
+  const tokens = source.trim().split(/\s+/);
   if (tokens.length < 2) return null;
   if (fieldForHeader(tokens[0]) !== 'lot_number') return null;
+  // `Lot 12,` — the comma is the line's, not the designation's.
+  tokens[1] = tokens[1].replace(DESIGNATION_PUNCTUATION, '');
   if (!LOT_DESIGNATION.test(tokens[1])) return null;
   /*
    * `LOT 315 CENTRAL BOULEVARD` — the lot AND the street it is on.
@@ -3983,7 +4887,7 @@ export function readPdfBrochure(
   const placedAt = new Map<string, string>();
   /** Every street-over-locality pair the document draws. See `readLocalityLine`. */
   const addressBlocks: Array<LocalityLine
-    & { street: string; lines: string[]; lot?: string | null;
+    & { street: string; lines: string[]; lot?: string | null; unit?: string | null;
         development?: string | null; page?: number;
         /** Read by `readLotAddressBlock`, the one reader of a BARE place under a lot. */
         lotFrame?: boolean }> = [];
@@ -4128,7 +5032,11 @@ export function readPdfBrochure(
         if (numbers) found.push(...via('labelled_numbers', numbers));
         else {
           const counts = readInlineCounts(line);
+          const sum = counts ? null : readPriceSum(line);
+          const figure = counts || sum ? null : readFigureThenNoun(line);
           if (counts) found.push(...via('inline_counts', counts));
+          else if (sum) found.push(...via('price_sum', [sum]));
+          else if (figure) found.push(...via('figure_noun', [figure]));
           else {
             const lot = readLotHeading(line);
             if (lot) {
@@ -4179,7 +5087,18 @@ export function readPdfBrochure(
                     found.push(...via('below', [under.claim]));
                     consumed.add(below);
                   } else {
+                    /*
+                     * A CAPTION WITH A VALUE BESIDE IT IS THAT VALUE'S LABEL.
+                     * The stress corpus's cover sets `Home Design` with
+                     * `Aspire 24 Grande` beside it, under `Clyde North VIC
+                     * 3978`: read upwards, the locality became the design and
+                     * the label was spent, so the design the row states was
+                     * never read. `standsAloneAsCaption` already asks this of
+                     * a figure over its caption; a name over its caption is
+                     * asked the same.
+                     */
                     const caption = below !== null && !consumed.has(below)
+                      && !labelsItsOwnRow(units, below)
                       ? readCaptionedValue(line, units[below].text) : null;
                     if (caption && below !== null) {
                       found.push(...via('caption', [caption.claim]));
@@ -4257,11 +5176,20 @@ export function readPdfBrochure(
                 state: composedUnder.state,
                 postcode: composedUnder.postcode,
               }
-            : (under ? readLocalityLine(under) : null);
+            : (under ? (readLocalityLine(under) ?? readPostcodedPlace(under, organisation)) : null);
           if (locality && under !== null) {
             addressBlocks.push({
               street, ...locality,
               development: composedUnder?.development ?? null,
+              /*
+               * The lot the street line opens with, where it names one. The lot
+               * heading reads it too, except where the line also carries the
+               * street number in brackets (`Lot 7 (No. 15) Banksia Way`), which
+               * no heading may read — so the block carries it, and the conflict
+               * rule decides as it does for every other pair of statements.
+               */
+              lot: line.trim().match(LEADING_LOT)?.[1] ?? null,
+              unit: unitOfStreetLine(line, street),
               lines: [line, under],
             });
             collected = true;
@@ -4305,6 +5233,7 @@ export function readPdfBrochure(
             state: composed.state,
             postcode: composed.postcode,
             lot: composed.lot,
+            unit: composed.unit ?? null,
             development: composed.development,
             lines: [line],
           });
@@ -4413,6 +5342,32 @@ export function readPdfBrochure(
         const declinedHere = declinedHeadings(line);
         if (declinedHere) {
           for (const field of declinedHere) declined.add(field);
+          incidental += 1;
+          continue;
+        }
+        /*
+         * `Stage 3`, `Release 12`, `Stage 2 Release 4` — WHICH RELEASE OF THE
+         * ESTATE, AND NOT A FACT THIS PRODUCT READS OFF A PAGE.
+         *
+         * `Seabreeze Estate - Stage 3` splits at its spaced hyphen, the estate
+         * is read, and `Stage 3` was left standing the whole document down as
+         * a statement of `project_name` nobody took. It is deliberately not
+         * taken now either: a project name is material, a stage number beside a
+         * labelled project would contradict it and refuse the document, and a
+         * release designation says which sales release this is rather than
+         * which property. It is recognised, and it costs the document nothing.
+         */
+        if (STAGE_DESIGNATION.test(line.trim())) {
+          incidental += 1;
+          continue;
+        }
+        /*
+         * `House $449,000`, `Build Price $402,900` on a line of their own — the
+         * breakdown of a package price, stated beside it and never the price
+         * itself. Such a line used to stand the document down as a design or
+         * a size nobody took. It states no fact this product stores.
+         */
+        if (statesOnlyComponents(line)) {
           incidental += 1;
           continue;
         }
@@ -4873,6 +5828,9 @@ export function readPdfBrochure(
   if (addressBlock && addressBlockRead) {
     if (addressBlock.street) claimed.set('address_line', addressBlock.street);
     claimed.set('suburb', addressBlock.suburb);
+    // An unpunctuated line the reader could not split names its lot, state
+    // and postcode and leaves the suburb unread — see `readUnpunctuatedAddress`.
+    if (!addressBlock.suburb) claimed.delete('suburb');
     claimed.set('state', addressBlock.state);
     claimed.set('postcode', addressBlock.postcode);
     if (!addressBlock.postcode) claimed.delete('postcode');
@@ -4901,6 +5859,12 @@ export function readPdfBrochure(
       claimed.set('lot_number', addressBlock.lot);
       readBy.set('lot_number', 'address_block');
     }
+    // And the unit a townhouse's address names (`5/12`, `Unit 5, 12 …`), on
+    // the same terms: only where the document has not already said which.
+    if (addressBlock.unit && !claimed.has('unit_number')) {
+      claimed.set('unit_number', addressBlock.unit);
+      readBy.set('unit_number', 'address_block');
+    }
     if (addressBlock.lot && addressBlock.page !== undefined) lotPages.add(addressBlock.page);
   }
   const afterAddress = addressBlock && addressBlockRead
@@ -4908,11 +5872,67 @@ export function readPdfBrochure(
     : repeats;
 
   /*
+   * ======================================================================
+   * `TOWNHOUSE 3` OVER ITS STREET — THE UNIT A PROPERTY IS HEADED BY.
+   * ======================================================================
+   *
+   * MEASURED 24 SEPTEMBER 2026 on the held-out `TOWNHOUSE 3 - SWIFT -
+   * FLYER.pdf`. A townhouse flyer heads its page with the unit and sets the
+   * street under it, and the heading was read by nothing — then the filename,
+   * which names the same words, corroborated it as the house DESIGN. The card
+   * read `TOWNHOUSE 3` for a design and carried no unit, so every townhouse at
+   * number 18 would have held the same address with nothing to tell them
+   * apart. `Unit 5` and `Apartment 305` fared worse: `Unit` is a label, a
+   * figure stands beside it, and the line stood the whole document down as a
+   * canonical fact left unread.
+   *
+   * A unit heading is a designation, and it is read the way this module reads
+   * every designation — never by picking one:
+   *
+   *  - ONLY WHERE THE DOCUMENT NAMES ONE UNIT. A site plan labelling every
+   *    townhouse in the development names eight, and eight headings claim
+   *    nothing and answer to the ordinary unread-line rule exactly as before.
+   *  - ONLY BESIDE A STREET. A unit says which dwelling AT an address; on a
+   *    page that states no street it identifies nothing, and a bare
+   *    `Townhouse 28` there is as likely the name of a design.
+   *  - AND NEVER OVER A UNIT THE DOCUMENT ALREADY HOLDS. `Unit: 5` labelled,
+   *    or `5/12 Kestrel Street`, under `TOWNHOUSE 3` — the heading is read
+   *    from its shape alone, and a shape never overrules what the document
+   *    said in words or in its own address. It is not taken, its line answers
+   *    to the unread-line rule exactly as it did before, and the unit the
+   *    document already held stands as it already did: nothing here chooses
+   *    between the two, and nothing that imported stops importing.
+   *
+   * Whether or not it is taken, a unit heading is never a candidate for a
+   * design: it is a designation, and the filename naming the same words
+   * makes it no more a name than it was.
+   */
+  const unitHeadings = afterAddress
+    .map((line) => ({ line, unit: readUnitHeading(line) }))
+    .filter((heading): heading is { line: string; unit: string } => heading.unit !== null);
+  const unitHeadingLines = new Set(unitHeadings.map((heading) => heading.line));
+  const headedUnits = new Set(unitHeadings.map((heading) => flattenIdentity(heading.unit)));
+  let afterUnit = afterAddress;
+  if (headedUnits.size === 1 && claimed.has('address_line')) {
+    const unit = unitHeadings[0].unit;
+    const held = claimed.get('unit_number');
+    if (held === undefined || flattenIdentity(held) === flattenIdentity(unit)) {
+      if (held === undefined) {
+        claimed.set('unit_number', unit);
+        readBy.set('unit_number', 'unit_heading');
+      }
+      afterUnit = afterAddress.filter((line) => !unitHeadingLines.has(line));
+    }
+  }
+
+  /*
    * THE FILENAME'S ONE JOB, taken after every page has been read so the
    * estate is as settled as the document is going to make it.
    */
   const corroborated = corroborateDesignFromFilename({
-    filename: options.filename, unresolved: afterAddress, claimed,
+    filename: options.filename,
+    unresolved: afterUnit.filter((line) => !unitHeadingLines.has(line)),
+    claimed,
   });
   if (corroborated === 'lot_mismatch') {
     diagnostics.conflictField = 'lot_number';
@@ -4952,8 +5972,8 @@ export function readPdfBrochure(
     declinedBecause.set('suburb', 'the_design_is_not_a_place');
   }
   const afterFilename = corroborated
-    ? afterAddress.filter((line) => line.trim() !== corroborated.line)
-    : afterAddress;
+    ? afterUnit.filter((line) => line.trim() !== corroborated.line)
+    : afterUnit;
 
   /*
    * THE ESTATE THE DOCUMENT NAMES WITHOUT THE WORD, confirmed by the

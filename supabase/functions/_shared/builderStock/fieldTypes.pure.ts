@@ -91,7 +91,8 @@ export type DeclineReason =
   | 'no_alphanumeric_content'
   | 'not_a_designation'
   | 'a_section_heading_is_not_a_name'
-  | 'a_measurement_is_not_a_name';
+  | 'a_measurement_is_not_a_name'
+  | 'a_locality_is_not_a_name';
 
 /**
  * WHAT THE DOCUMENT'S STRUCTURE PROVES ABOUT WHERE THIS VALUE CAME FROM.
@@ -127,8 +128,19 @@ const AREA_UNIT = /(?:m²|m2|sqm|sq\s?m|square\s+met(?:re|er)s?)\s*$/i;
 const MEASUREMENT_OR_SUM = new RegExp('^\\s*(?:[$£€¥]\\s*\\d[\\d,]*(?:\\.\\d+)?'
   + '|\\d[\\d.,\\s]*(?:m2|m²|sqm|sq\\.?\\s?m|sq\\.?|sqs|squares?|ha|hectares?|acres?'
   + '|sq\\.?\\s?ft|sqft|ft²|ft2|square\\s+(?:feet|foot|met(?:re|er)s?)))\\s*$', 'i');
-/** A room dimension: two measurements multiplied. Never a count, never an area. */
-const ROOM_DIMENSION = /^\s*\d+(?:\.\d+)?\s*[x×]\s*\d+(?:\.\d+)?\s*$/i;
+/** `Clyde North VIC 3978` — place words, a state from the eight, and a postcode. */
+const LOCALITY_LINE =
+  /^[A-Za-z][A-Za-z'’.\-]*(?:\s+[A-Za-z][A-Za-z'’.\-]*)*\s*,?\s+(?:VIC|NSW|QLD|SA|WA|TAS|NT|ACT)\.?\s*,?\s+\d{4}$/i;
+/**
+ * A room dimension: two measurements multiplied. Never a count, never an area.
+ *
+ * WITH OR WITHOUT THEIR LENGTH UNITS. `Land Size: 12.5m x 36m` is the block's
+ * frontage and depth, and it passed as an area because the units kept it from
+ * this shape: its first figure was stored as a 12.5 m² block. The page states
+ * two lengths and no area, and multiplying them is a reading nobody printed.
+ */
+const ROOM_DIMENSION =
+  /^\s*\d+(?:\.\d+)?\s*(?:m|mm|metres?|meters?|mtrs?)?\.?\s*[x×]\s*\d+(?:\.\d+)?\s*(?:m|mm|metres?|meters?|mtrs?)?\.?\s*$/i;
 const HAS_DIGIT = /\d/;
 
 /**
@@ -156,6 +168,14 @@ const numeric = (value: string): number | null => {
   const cleaned = value.replace(/[^\d.]/g, '');
   if (!cleaned || !/\d/.test(cleaned)) return null;
   const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+};
+
+/** The first figure written in the value, thousands separators removed. */
+const firstFigure = (value: string): number | null => {
+  const match = value.replace(/,/g, '').match(/\d+(?:\.\d+)?/);
+  if (!match) return null;
+  const n = Number(match[0]);
   return Number.isFinite(n) ? n : null;
 };
 
@@ -227,7 +247,14 @@ export function acceptFieldValue(
         }
         return { accepted: true, value };
       }
-      const n = numeric(value);
+      /*
+       * THE NUMBER THE NORMALISER WILL STORE, AND NOT EVERY DIGIT IN THE VALUE.
+       * `numeric` keeps every digit and every stop, so `approx. 450m²` was
+       * judged as 0.45 and refused as smaller than a square metre, and `450m2`
+       * as 4,502. The first figure is what `areaInSquareMetres` stores, so it
+       * is what is judged.
+       */
+      const n = firstFigure(value);
       if (n === null) return { accepted: false, reason: 'not_a_number' };
       if (!(n >= MIN_AREA && n <= MAX_AREA)) {
         return { accepted: false, reason: 'area_out_of_range' };
@@ -324,6 +351,17 @@ export function acceptFieldValue(
       if ((kind === 'design_name' || kind === 'place_name' || kind === 'locality'
         || kind === 'address') && MEASUREMENT_OR_SUM.test(value)) {
         return { accepted: false, reason: 'a_measurement_is_not_a_name' };
+      }
+      /*
+       * AND A LOCALITY IS NEVER A DESIGN OR AN ESTATE. `Clyde North VIC 3978`
+       * is a suburb, one of eight states and a postcode, and a design or an
+       * estate is never named with all three: the stress corpus's cover had it
+       * read upwards over a `Home Design` caption and published as the design.
+       * The postcode is required, so a name that merely ends in two capitals
+       * is never refused for them.
+       */
+      if ((kind === 'design_name' || kind === 'place_name') && LOCALITY_LINE.test(value)) {
+        return { accepted: false, reason: 'a_locality_is_not_a_name' };
       }
       if (kind === 'area' as FieldKind && !HAS_DIGIT.test(value)) {
         return { accepted: false, reason: 'not_a_number' };

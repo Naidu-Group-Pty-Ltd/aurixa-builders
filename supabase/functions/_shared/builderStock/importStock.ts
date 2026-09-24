@@ -34,8 +34,8 @@ import {
   mayDecideRoles, mayJudgeEligibility, mayStoreImage, roleDecodeMs, expensiveSpendMs,
 } from './importResumeBudget.pure.ts';
 import {
-  describeIdentityChange, identityDifferences, reReadHoldsSameProperty,
-  stockPropertyIdentity,
+  describeIdentityChange, identityDifferences, ownRowKey, ownRowKeyHasLot,
+  reReadHoldsSameProperty, stockPropertyIdentity, suburbsDisagree,
   type PropertyIdentityFields, type StockPropertyIdentity,
 } from './stockIdentity.pure.ts';
 import {
@@ -220,22 +220,18 @@ interface OwnAnchoredProperty extends AnchoredProperty {
  * field. Verified against the live REST endpoint.
  */
 /**
- * A row's lot, as a key, or null where it has none.
+ * A row's own key within its upload, or null where it states nothing to key.
  *
- * Deliberately the DESIGNATION alone — the lot and, where there is one, the
- * unit — because that is what a schedule identifies a row by and the caller
- * has already scoped the key to one upload. Nothing else is folded in: adding
- * the suburb or the design would make a corrected suburb or a design read
- * from the filename look like a different property, which is the exact
- * failure `reReadHoldsSameProperty` was written to stop, and that guard is
- * what runs on the row this key finds.
+ * Deliberately the DESIGNATION where there is one — the lot and, where there
+ * is one, the unit — because that is what a schedule identifies a row by and
+ * the caller has already scoped the key to one upload. Nothing else is folded
+ * in beside a lot: adding the suburb or the design would make a corrected
+ * suburb or a design read from the filename look like a different property,
+ * which is the exact failure `reReadHoldsSameProperty` was written to stop,
+ * and that guard is what runs on the row this key finds. A row with no lot is
+ * keyed by its unit at its street, or its street — see `ownRowKey`.
  */
-function ownLotKey(item: { lot_number?: unknown; unit_number?: unknown }): string | null {
-  const lot = String(item?.lot_number ?? '').trim().toLowerCase();
-  if (!lot) return null;
-  const unit = String(item?.unit_number ?? '').trim().toLowerCase();
-  return unit ? `${lot}//${unit}` : lot;
-}
+const ownLotKey = ownRowKey;
 
 const EXISTING_ITEM_SELECT = 'id, external_reference, development_name, project_name, '
   + 'unit_number, lot_number, address_line, suburb, building_size_sqm, '
@@ -1031,7 +1027,10 @@ export async function importStockRecords(
        * plainly a different property is not corrected, it falls through.
        */
       const ownLotTaken = Boolean(ownLotRow)
-        && reReadHoldsSameProperty(ownLotRow!.fields, record);
+        && reReadHoldsSameProperty(ownLotRow!.fields, record)
+        // A key that stands on no lot names a unit or a street, and two
+        // streets of one name in two suburbs are two properties.
+        && (ownRowKeyHasLot(lotKey as string) || !suburbsDisagree(ownLotRow!.fields, record));
       if (ownLotTaken) claimedOwnLots.add(lotKey as string);
 
       const existingId = (ownAnchorTaken ? ownAnchored!.id : undefined)
