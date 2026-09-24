@@ -2615,6 +2615,239 @@ def _u7(c):
     c.showPage()
 
 
+# ===========================================================================
+# THE WAYS AN ADDRESS IS SET, AND THE WAYS A PRICE, A SIZE AND A COUNT ARE
+# HEADED, THAT A BROCHURE PRINTS AND THIS READER DID NOT READ.
+# ===========================================================================
+#
+# Found 24 September 2026 by putting 130 phrasings through the reader rather
+# than waiting for a customer's document to show them. Six of the address
+# layouts below imported NOTHING: the one line naming the property was the
+# line nobody read, so no property was found at all. The rest lost a fact
+# while the reading reported itself complete. Each is held out here before
+# the code, and each is asserted to read COMPLETELY (`parse_strategy`): a
+# property recovered only as a partial reading has still lost something.
+
+
+# --- u8. THE LOCALITY SET APART BY COMMAS -----------------------------------
+@fixture('heldout-address-locality-set-apart-by-commas',
+         'LOT 214 - LINDEN 24 - BROCHURE.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='214', street_name='Kingfisher Road',
+                        suburb='Clyde North', state='VIC', postcode='3978',
+                        design='Linden 24', land_size_sqm=400, price=712500)]))
+def _u8(c):
+    pt(c, 43, 800, 'LOT 214 Kingfisher Road, Clyde North, VIC, 3978', 18, True)
+    pt(c, 43, 750, 'Home Design: Linden 24', 12)
+    pt(c, 43, 730, 'Land Size 400m²', 12)
+    pt(c, 43, 710, 'Price $712,500', 12, True)
+    c.showPage()
+
+
+# --- u9. THE ADDRESS SET APART BY RULES -------------------------------------
+@fixture('heldout-address-set-apart-by-rules',
+         'LOT 58 - WREN 21 - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='58', street_name='Wren Street',
+                        suburb='Box Hill', state='NSW', postcode='2765',
+                        land_size_sqm=375, price=889000)]))
+def _u9(c):
+    pt(c, 43, 800, 'Lot 58 | Wren Street | Box Hill NSW 2765', 18, True)
+    pt(c, 43, 750, 'Land Size 375m²', 12)
+    pt(c, 43, 730, 'Price $889,000', 12, True)
+    c.showPage()
+
+
+# --- u10. THE ADDRESS WITH NO COMMA AT ALL ----------------------------------
+#
+# The street ends at its type (`Drive`) and the suburb follows it; a state
+# and a postcode close the line. Where a street type could also begin the
+# suburb (`Glen Waverley`) the reader must not guess, and this fixture does
+# not ask it to.
+@fixture('heldout-address-with-no-comma',
+         'LOT 903 - CASSIA 27 - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='903', street_name='Fairwater Drive',
+                        suburb='Tarneit', state='VIC', postcode='3029',
+                        land_size_sqm=448, price=668000)]))
+def _u10(c):
+    pt(c, 43, 800, 'Lot 903 Fairwater Drive Tarneit VIC 3029', 18, True)
+    pt(c, 43, 750, 'Land Size 448m²', 12)
+    pt(c, 43, 730, 'Price $668,000', 12, True)
+    c.showPage()
+
+
+# --- u11. THE LOT, ITS STREET AND ITS LOCALITY, ONE LINE EACH ---------------
+@fixture('heldout-address-lot-street-locality-on-three-lines',
+         'LOT 47 - SORREL 22 - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='47', street_name='Heron Court',
+                        suburb='Mount Barker', state='SA', postcode='5251',
+                        land_size_sqm=510, price=615000)]))
+def _u11(c):
+    pt(c, 43, 800, 'LOT 47', 22, True)
+    pt(c, 43, 776, 'Heron Court', 14)
+    pt(c, 43, 758, 'Mount Barker SA 5251', 12)
+    pt(c, 43, 720, 'Land Size 510m²', 12)
+    pt(c, 43, 700, 'Price $615,000', 12, True)
+    c.showPage()
+
+
+# --- u12. THE STATE SPELLED OUT, AND THE STREET NUMBER IN BRACKETS ----------
+@fixture('heldout-address-state-spelled-out-and-number-bracketed',
+         'LOT 7 - BANKSIA 20 - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='7', street_name='15 Banksia Way',
+                        suburb='Baldivis', state='WA', postcode='6171',
+                        land_size_sqm=420, price=598000)]))
+def _u12(c):
+    pt(c, 43, 800, 'Lot 7 (No. 15) Banksia Way', 20, True)
+    pt(c, 43, 778, 'Baldivis Western Australia 6171', 12)
+    pt(c, 43, 740, 'Land Size 420m²', 12)
+    pt(c, 43, 720, 'Price $598,000', 12, True)
+    c.showPage()
+
+
+# --- u13. THE WHOLE ADDRESS UNDER ITS OWN LABEL -----------------------------
+#
+# `Address: Lot 33 Ridgeline Crescent, Ripley QLD 4306` was stored whole as
+# the STREET, lot and locality inside it, and the card showed no lot, no
+# suburb, no state and no postcode.
+@fixture('heldout-address-under-its-own-label',
+         'LOT 33 - SEAVIEW 26 - BROCHURE.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='33', street_name='Ridgeline Crescent',
+                        suburb='Ripley', state='QLD', postcode='4306',
+                        design='Seaview 26', land_size_sqm=450, price=739000)],
+             forbid=dict(no_street=['Ripley QLD'])))
+def _u13(c):
+    pt(c, 43, 800, 'Home Design: Seaview 26', 18, True)
+    pt(c, 43, 770, 'Address: Lot 33 Ridgeline Crescent, Ripley QLD 4306', 12)
+    pt(c, 43, 740, 'Land Size 450m²', 12)
+    pt(c, 43, 720, 'Price $739,000', 12, True)
+    c.showPage()
+
+
+# --- u14. A STREET CALLED `THE …`, AND AN ESTATE WITH ITS STAGE -------------
+@fixture('heldout-street-named-the-promenade-and-a-staged-estate',
+         'LOT 16 - CORAL 30 - BROCHURE.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='16', street_name='The Promenade',
+                        suburb='Shell Cove', state='NSW', postcode='2529',
+                        estate='Seabreeze Estate',
+                        land_size_sqm=390, price=1095000)]))
+def _u14(c):
+    pt(c, 43, 800, 'Seabreeze Estate - Stage 3', 12)
+    pt(c, 43, 776, 'Lot 16 The Promenade, Shell Cove NSW 2529', 18, True)
+    pt(c, 43, 740, 'Land Size 390m²', 12)
+    pt(c, 43, 720, 'Price $1,095,000', 12, True)
+    c.showPage()
+
+
+# --- u15. A PRICE IN THOUSANDS, UNDER A FIXED-PRICE HEADING -----------------
+#
+# `$829k` was stored as a price of EIGHT HUNDRED AND TWENTY-NINE DOLLARS, on
+# every source: the normaliser read the digits and dropped the `k`. A wrong
+# figure, where every other case here is a missing one.
+@fixture('heldout-price-in-thousands-under-a-fixed-price-heading',
+         'LOT 18 - GALAH 23 - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='18', street_name='Galah Street',
+                        suburb='Leppington', state='NSW', postcode='2179',
+                        land_size_sqm=400, price=829000)],
+             forbid=dict(price_not_in=[829])))
+def _u15(c):
+    pt(c, 43, 800, 'LOT 18 Galah Street', 20, True)
+    pt(c, 43, 778, 'Leppington NSW 2179', 12)
+    pt(c, 43, 740, 'Land Size 400m²', 12)
+    pt(c, 43, 720, 'Fixed Price House & Land $829k', 12, True)
+    c.showPage()
+
+
+# --- u16. THE LAND AND THE HOUSE PRICED BESIDE THE TOTAL --------------------
+#
+# A component is not the price, and it may not cost the total beside it: the
+# line was refused whole, so the one figure a buyer is quoted was lost.
+@fixture('heldout-component-prices-beside-the-total',
+         'LOT 22 - MYRTLE 25 - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='22', street_name='Myrtle Avenue',
+                        suburb='Oran Park', state='NSW', postcode='2570',
+                        land_size_sqm=375, price=817900)],
+             forbid=dict(price_not_in=[415000, 402900])))
+def _u16(c):
+    pt(c, 43, 800, 'LOT 22 Myrtle Avenue', 20, True)
+    pt(c, 43, 778, 'Oran Park NSW 2570', 12)
+    pt(c, 43, 740, 'Land Size 375m²', 12)
+    pt(c, 43, 720, 'Land Price $415,000  House Price $402,900  Total $817,900', 12, True)
+    c.showPage()
+
+
+# --- u17. COUNTS BESIDE ROOMS THIS PRODUCT DOES NOT STORE -------------------
+#
+# `+ Study`, `2 Living` and `Double Garage` are stated on the same line as the
+# counts, and the line was refused whole. A study and a living area are rooms
+# with no column here; a double garage is two car spaces by definition.
+@fixture('heldout-counts-beside-rooms-not-stored',
+         'LOT 61 - WAGTAIL 28 - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='61', street_name='Wagtail Way',
+                        suburb='Donnybrook', state='VIC', postcode='3064',
+                        bedrooms=4, bathrooms=2, car_spaces=2,
+                        land_size_sqm=448, price=742000)]))
+def _u17(c):
+    pt(c, 43, 800, 'LOT 61 Wagtail Way', 20, True)
+    pt(c, 43, 778, 'Donnybrook VIC 3064', 12)
+    pt(c, 43, 740, '4 Bed + Study | 2 Bath | 2 Living | Double Garage', 12)
+    pt(c, 43, 720, 'Land Size 448m²', 12)
+    pt(c, 43, 700, 'Price $742,000', 12, True)
+    c.showPage()
+
+
+# --- u18. SIZES UNDER OTHER HEADINGS, AND A PRICE IN MILLIONS ---------------
+#
+# `Allotment 512m² (approx)` and `Dwelling Size 231m²` were set aside with the
+# reading still complete, and `$1.15M` was stored as a price of one dollar
+# fifteen.
+@fixture('heldout-sizes-under-other-headings-and-a-price-in-millions',
+         'LOT 8 - COCKATOO 29 - BROCHURE.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='8', street_name='Cockatoo Close',
+                        suburb='Mount Barker', state='SA', postcode='5251',
+                        land_size_sqm=512, build_size_sqm=231,
+                        price=1150000)],
+             forbid=dict(price_not_in=[1.15])))
+def _u18(c):
+    pt(c, 43, 800, 'LOT 8 Cockatoo Close', 20, True)
+    pt(c, 43, 778, 'Mount Barker SA 5251', 12)
+    pt(c, 43, 740, 'Allotment 512m² (approx)', 12)
+    pt(c, 43, 720, 'Dwelling Size 231m²', 12)
+    pt(c, 43, 700, 'Turnkey Package $1.15M', 12, True)
+    c.showPage()
+
+
 def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     manifest = []
