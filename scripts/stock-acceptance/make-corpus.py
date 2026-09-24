@@ -3011,6 +3011,95 @@ def _u24(c):
     c.showPage()
 
 
+# --- h1. THE LOT AS A HEADING OVER ITS STREET AND LOCALITY -------------------
+#
+# A REGRESSION AT READER 21, and the most ordinary flyer there is: `LOT 572`
+# as a heading, and under it `Egret Street, Marsden Park NSW 2765`. Reader 20
+# read the lot, the street, the suburb, the state and the postcode. Reader 21
+# reads the lot and nothing of where it is: the heading now pairs itself with
+# the line beneath it, and a locality whose commas had become punctuation read
+# that line as ONE suburb, `Egret Street Marsden Park` — a second address the
+# whole-document guard then refused together with the real one.
+@fixture('heldout-lot-heading-over-a-street-and-its-locality',
+         'LOT 572 - EGRET - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='572', street_name='Egret Street',
+                        suburb='Marsden Park', state='NSW', postcode='2765',
+                        land_size_sqm=412, price=689000)]))
+def _h1(c):
+    pt(c, 43, 800, 'LOT 572', 22, True)
+    pt(c, 43, 776, 'Egret Street, Marsden Park NSW 2765', 12)
+    pt(c, 43, 740, 'Land Size 412m²', 12)
+    pt(c, 43, 720, 'Price $689,000', 12, True)
+    c.showPage()
+
+
+# --- h2. THE LOT AND ITS ADDRESS SET APART BY A DASH -------------------------
+#
+# The same regression on one line: `LOT 681 - Heron Avenue, Box Hill NSW 2765`.
+# A spaced dash is split before the reader sees the line, which makes it the
+# heading-over-address shape above, and reader 21 lost the whole address
+# reader 20 read.
+@fixture('heldout-lot-and-address-set-apart-by-a-dash',
+         'LOT 681 - HERON - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='681', street_name='Heron Avenue',
+                        suburb='Box Hill', state='NSW', postcode='2765',
+                        land_size_sqm=400, price=712000)]))
+def _h2(c):
+    pt(c, 43, 800, 'LOT 681 - Heron Avenue, Box Hill NSW 2765', 16, True)
+    pt(c, 43, 760, 'Land Size 400m²', 12)
+    pt(c, 43, 740, 'Price $712,000', 12, True)
+    c.showPage()
+
+
+# --- h3. THE LOT AS A HEADING OVER AN UNPUNCTUATED ADDRESS -------------------
+#
+# A WRONG VALUE AT READER 21: `LOT 745` over `Wren Street Riverstone NSW 2765`
+# stores the suburb `Wren Street Riverstone`. Reader 20 read no address at
+# all. The same words on one line (`LOT 745 Wren Street Riverstone NSW 2765`)
+# are split where the street's type word ends it, and so is this.
+@fixture('heldout-lot-heading-over-an-unpunctuated-address',
+         'LOT 745 - WREN - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='745', street_name='Wren Street',
+                        suburb='Riverstone', state='NSW', postcode='2765',
+                        land_size_sqm=375, price=655000)]))
+def _h3(c):
+    pt(c, 43, 800, 'LOT 745', 22, True)
+    pt(c, 43, 776, 'Wren Street Riverstone NSW 2765', 12)
+    pt(c, 43, 740, 'Land Size 375m²', 12)
+    pt(c, 43, 720, 'Price $655,000', 12, True)
+    c.showPage()
+
+
+# --- h4. THE LOT AS A HEADING OVER ITS ESTATE AND LOCALITY -------------------
+#
+# A WRONG VALUE AT READER 21: `Lot 318` over `Sandpiper Estate, Oran Park NSW
+# 2570` stores the suburb `Sandpiper Estate Oran Park`. Reader 20 read the
+# estate and no locality. The estate is the estate and the suburb is Oran Park.
+@fixture('heldout-lot-heading-over-an-estate-and-its-locality',
+         'LOT 318 - SANDPIPER - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='318', estate='Sandpiper Estate',
+                        suburb='Oran Park', state='NSW', postcode='2570',
+                        land_size_sqm=420, price=699000)]))
+def _h4(c):
+    pt(c, 43, 800, 'Lot 318', 22, True)
+    pt(c, 43, 776, 'Sandpiper Estate, Oran Park NSW 2570', 12)
+    pt(c, 43, 740, 'Land Size 420m²', 12)
+    pt(c, 43, 720, 'Price $699,000', 12, True)
+    c.showPage()
+
+
 def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     manifest = []
