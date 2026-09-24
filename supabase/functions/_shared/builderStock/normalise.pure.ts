@@ -91,6 +91,7 @@ export interface NormalisedStockRecord {
 
 /** Canonical field names a header can map onto. */
 import { quantifiedFieldForLabel } from './labelSemantics.pure.ts';
+import { areaInSquareMetres, type AreaField } from './areaUnits.pure.ts';
 
 type FieldKey =
   | 'external_reference' | 'development_name' | 'project_name' | 'address_line'
@@ -451,6 +452,21 @@ export function coerceNumber(value: unknown): number | null {
 }
 
 /**
+ * A land or building size in square metres, from whatever the source printed.
+ *
+ * THE UNIT PRINTED BESIDE IT IS PART OF IT: `21.5 squares` is a 199.74 m²
+ * house and `1.2 acres` a 4,856 m² block, never 21.5 m² and 1.2 m². The rule
+ * and its measurements are `areaUnits.pure.ts`, which the brochure reader's
+ * typed gate asks too. A size with no unit reads exactly as `coerceNumber`.
+ */
+export function coerceArea(value: unknown, field: AreaField): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const raw = text(value, 60);
+  if (raw === null) return null;
+  return areaInSquareMetres(raw, field);
+}
+
+/**
  * Price, plus what the file literally said.
  *
  * The display string is kept whenever the cell was not a bare number, because
@@ -644,10 +660,10 @@ export function normaliseStockRow(
       case 'property_type': record.property_type = coercePropertyType(value); break;
       case 'house_design': record.house_design = text(value, 120); break;
       case 'land_size_sqm':
-        record.land_size_sqm = clampMeasurement(coerceNumber(value), MAX_LAND_SQM);
+        record.land_size_sqm = clampMeasurement(coerceArea(value, 'land_size_sqm'), MAX_LAND_SQM);
         break;
       case 'building_size_sqm':
-        record.building_size_sqm = clampMeasurement(coerceNumber(value), MAX_BUILDING_SQM);
+        record.building_size_sqm = clampMeasurement(coerceArea(value, 'building_size_sqm'), MAX_BUILDING_SQM);
         break;
       case 'price': {
         const priced = coercePrice(value);

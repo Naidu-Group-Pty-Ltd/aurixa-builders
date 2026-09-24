@@ -1384,3 +1384,95 @@ counts. It prints no state and no postcode either. Those stay empty, and the
 builder can state them on the card (§§ on stated figures and stated address).
 Nothing here infers a state from a suburb: a place's name alone does not say
 which state it is in, and a guess on a client's card is worse than a blank.
+
+**In production.** Merged as #101 and deployed at 04:36 UTC on 24 September
+2026 (`builder-portal-stock` v653, `builder-stock-image-settler` v655, both
+with new bundle digests). The 04:45 sweep heartbeat re-read `LOT 326` by
+itself in four ticks, each in its own isolate. The parse spent 1,046 ms and
+handed on, the figure successor recognised the schedule picture in 1,839 ms,
+the picture kinds were learned, and the attach updated the property. Every
+invocation answered 200, and the upload settled `complete` at 04:46:07. The
+card now reads `$861,700`, `Dapple Avenue`, `Armstrong Creek`, `Palomino
+Estate`, 350 m² of land and a 178.23 m² house, and it is stamped reader 19.
+
+## 20 · A size printed in another unit is that size, or it is absent (reader 20)
+
+**Found by probing, not by a customer's document.** Once the four layouts above
+were read, the question was what else a new brochure could print that this
+reader would get wrong. The answer was the unit. `coerceNumber` takes the first
+number in a cell and nothing else, so:
+
+| printed | became | is |
+|---|---|---|
+| `House Size` over `21.5 squares` | a 21.5 m² house | 199.74 m² |
+| `Land Size` over `1.2 acres` | a 1.2 m² block | 4,856.23 m² |
+| `Land Size` over `0.5 acres` | nothing (refused as under 1 m²) | 2,023.43 m² |
+| `House Size 28.6 squares`, on one line | nothing, with no record | 265.70 m² |
+| `HOUSE` over `24.6 sq` | the house's DESIGN, then a design conflict that refused the whole brochure | 228.54 m² |
+
+No stored size in production carries a unit (every one is a bare number), so
+no existing card was wrong. The next brochure written in squares would have
+been.
+
+**One rule, asked in three places** (`areaUnits.pure.ts`):
+
+- **Every conversion is a definition.** A square is 100 square feet, a square
+  foot is 0.09290304 m², a hectare 10,000 m² and an acre 4,046.8564224 m².
+- **Where the unit and the field cannot both be true, the size is absent.** A
+  house in hectares or acres, a block in squares, or "squares" of 100 or more
+  (929 m², not a dwelling) is refused by name
+  (`area_unit_does_not_measure_this`), never guessed.
+- **`sq` alone is squares on a house and square metres on land.** `21.5 sq` is
+  the Australian building convention. Land is not sold in squares, and a
+  trailing `sq` there is `sqm` cut short, which is how it was always read.
+
+The normaliser converts with it, so every source (a brochure, a sheet, a
+Notion page, a web page) stores square metres. The typed gate judges a
+converting unit by what it measures, so half an acre is a block. Every other
+value takes exactly the path it always did. The inline reader knows the unit
+words, taking `ft`, `feet` and `metres` only after `sq` or `square`, because
+`2000 feet` alone is a length and never an area. And a heading over a figure
+in any area unit is composed as an area heading, so a measurement is never a
+name.
+
+**And the ways a brochure sets a specification line.** The same probing,
+with the forms builders use, found four more lines that lost a printed fact.
+In each case the reading still reported `complete`:
+
+| printed | became | now |
+|---|---|---|
+| `Beds: 4 Baths: 2 Cars: 2` | one pair, a bedroom count of "4 Baths: 2 Cars: 2", declined, so all three were lost | 4, 2, 2 |
+| `Land: 448m² \| Frontage: 14m` | the same, so the land was lost | 448 m² |
+| `Land Size 512m²  Frontage 16m  Depth 32m` | refused whole, because a frontage is not stored | 512 m² |
+| `Home 24.6 sq` | unread (the heading was the design) | 228.54 m² |
+| `House: 220m²` | the DESIGN "220m²"; beside `Home Design: Aurora 25`, a conflict that refused the whole brochure | 220 m², and the design stands |
+
+- **Several pairs on one line are each read** (`readLabelledPairs`). Every
+  colon must end a label this vocabulary knows, found as the longest run of
+  words before it, and the value between two labels is what is left, less a
+  separator. A single pair stays `readLabelledValue`'s, and a line where a
+  colon ends no label (a time, a web address, a ratio) is not read here at
+  all.
+- **A frontage is stated and not stored.** `Frontage`, `Depth`, `Width` and
+  `Length` pairs are consumed and claim nothing, so the land beside them is
+  read. A line of nothing else still reads as nothing.
+- **A heading over a measurement is composed with its unit** in the labelled
+  reader too, as the pairing readers always did. A figure in squares, square
+  feet, hectares or acres composes it just as `m²` does. A bare `m` never
+  does, because it is also a length.
+- **A figure with its unit or its currency is never a name**
+  (`a_measurement_is_not_a_name`), asked at the one gate every claim passes
+  through, for a design, an estate, a suburb and a street.
+
+Three phrasings stay unread on purpose, by rules other modules already made:
+`from $799,000` (a from-price is not the package price), `Living 220m2`
+(`living` is a room count on some sheets) and `Total Area` (the total area
+of what?).
+
+**Held out first.** Four fixtures describe these:
+`heldout-sizes-in-squares-and-acres`, `heldout-house-heading-over-squares`,
+`heldout-spec-pairs-on-one-line` and `heldout-frontage-beside-the-land`.
+Each fails against reader 19. Two lost their sizes, and two were refused
+whole as `conflicting_values:house_design`. Against reader 19's reader and
+normaliser together, 51 of the 55 corpus and stress documents read
+identically, and the four that change are these.

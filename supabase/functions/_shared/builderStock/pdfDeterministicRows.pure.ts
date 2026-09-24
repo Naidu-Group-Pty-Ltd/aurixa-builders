@@ -130,6 +130,7 @@ import {
   bedroomsFromPlan, bindCountRow, countRoomsNamed, type PlanRoomCounts,
 } from './floorPlanCounts.pure.ts';
 import { readAreaScheduleTotal } from './areaSchedule.pure.ts';
+import { statesAreaInAnotherUnit } from './areaUnits.pure.ts';
 import {
   MEASURED_FIELDS, settleMeasurement, type MeasurementStatement,
 } from './measurementAuthority.pure.ts';
@@ -863,8 +864,18 @@ function markerOf(value: string): string | null {
   const text = String(value ?? '');
   if (text.includes('$')) return '$';
   const unit = text.match(/(m2|m²|sqm)\s*$/i);
-  return unit ? unit[1].toLowerCase() : null;
+  if (unit) return unit[1].toLowerCase();
+  /*
+   * AND AN AREA IN ANOTHER UNIT MARKS THE SAME HEADING. `Home 24.6 sq` is the
+   * house in squares exactly as `Home 220m2` is the house in square metres:
+   * the heading is composed as an area heading, and the figure keeps its own
+   * unit for the typed gate and the normaliser to convert by definition.
+   */
+  return AREA_UNIT_WORD.test(text.trim()) || statesAreaInAnotherUnit(text) ? 'm2' : null;
 }
+
+/** A unit word that is an area but not square metres, standing alone. */
+const AREA_UNIT_WORD = /^(?:sq|sq\.|sqs|squares?|ha|hectares?|acres?|ac)$/i;
 
 /** `labelAt`, retried with the marker the value beside it carries. */
 function labelAtWithValueMarker(
@@ -915,6 +926,19 @@ function isPlural(labelTokens: readonly string[]): boolean {
 
 /** `m2`, `m²`, `sqm`, `sq`, `m` — a unit belongs to the number before it. */
 const UNIT_TOKEN = /^(?:m2|m²|sqm|sq|m|sqm\.|m\.)$/i;
+/**
+ * AND THE UNITS A BUILDER WRITES THAT ARE NOT SQUARE METRES — `21.5 squares`,
+ * `0.5 ha`, `1.2 acres`, `2,000 sq ft`. A line naming one was refused whole,
+ * because its last word was not a unit this reader knew, and nothing else
+ * read it either: the fact was set aside with no record. What each measures
+ * is `areaUnits.pure.ts`'s, asked by the typed gate and the normaliser, so a
+ * figure in one of these reaches the card converted by definition or not at
+ * all. `ft`, `feet` and `metres` are units only after `sq` or `square`:
+ * alone, `2000 feet` is a length and never an area.
+ */
+const CONVERTING_UNIT_TOKEN = /^(?:sq\.|sqs|squares?|ha|hectares?|acres?|ac|ft²|ft2)$/i;
+const SECOND_UNIT_TOKEN = /^(?:ft|feet|foot|metres?|meters?|mtrs?)\.?$/i;
+const FIRST_OF_TWO_UNIT_TOKEN = /^(?:sq\.?|square)$/i;
 const HAS_DIGIT = /\d/;
 
 /**
@@ -934,6 +958,20 @@ function readLabelledNumbers(line: string): Claim[] | null {
   let index = 0;
 
   while (index < tokens.length) {
+    /*
+     * A FRONTAGE IS STATED, NOT STORED, and it may not cost the land beside
+     * it: `Land Size 512m²  Frontage 16m  Depth 32m` was refused whole, the
+     * land size with it. The pair is consumed and claims nothing, so a line
+     * of nothing else still reads as nothing.
+     */
+    const linear = linearLabelAt(tokens, index);
+    if (linear) {
+      index += linear;
+      if (index >= tokens.length || !HAS_DIGIT.test(tokens[index])) return null;
+      index += 1;
+      while (index < tokens.length && LINEAR_UNIT_TOKEN.test(tokens[index])) index += 1;
+      continue;
+    }
     /*
      * The value this label would take, looked at BEFORE the label is
      * resolved, because the marker it carries is part of the label. See
@@ -976,7 +1014,10 @@ function readLabelledNumbers(line: string): Claim[] | null {
     if (index >= tokens.length || !HAS_DIGIT.test(tokens[index])) return null;
     const parts = [tokens[index]];
     index += 1;
-    while (index < tokens.length && UNIT_TOKEN.test(tokens[index])) {
+    while (index < tokens.length && (UNIT_TOKEN.test(tokens[index])
+      || CONVERTING_UNIT_TOKEN.test(tokens[index])
+      || (SECOND_UNIT_TOKEN.test(tokens[index])
+        && FIRST_OF_TWO_UNIT_TOKEN.test(parts[parts.length - 1])))) {
       parts.push(tokens[index]);
       index += 1;
     }
@@ -1016,11 +1057,101 @@ function readLabelledValue(line: string): Claim | null {
    * label: nothing new is admitted, because a phrase the vocabulary does not
    * spell still resolves to nothing, and `Land - $238,500` stays unread.
    */
-  const field = fieldForHeader(match[1])
-    ?? labelAtWithValueMarker([match[1].trim()], 0, value)?.field
-    ?? null;
+  const field = labelledField(match[1], value);
   if (!field) return null;
   return { field, value };
+}
+
+/**
+ * The field a `Label: value` pair names.
+ *
+ * THE VALUE'S UNIT COMPOSES THE LABEL FIRST, as it always has in the pairing
+ * readers (`HOUSE` over `220 m²` is `house m2`). This reader did not, so
+ * `House: 220m²` wrote "220m²" into the DESIGN — and on a page that also
+ * printed `Home Design: Aurora 25` the two designs conflicted and the WHOLE
+ * brochure was refused. Measured 24 September 2026 against the reader then
+ * in production. A label no unit composes resolves exactly as before.
+ */
+function labelledField(label: string, value: string): string | null {
+  const unit = headingUnitOf(value);
+  return (unit ? fieldForHeader(`${label.trim()} ${unit}`) : null)
+    ?? fieldForHeader(label)
+    ?? labelAtWithValueMarker([label.trim()], 0, value)?.field
+    ?? null;
+}
+
+/**
+ * A measurement this product does not store, stated beside one it does:
+ * `Frontage 16m`, `Depth 32m`, `Lot Width 12.5 m`. Consumed without a claim,
+ * so the land size on the same line is not lost with it.
+ */
+const LINEAR_LABEL = /^(?:(?:street|lot|block|site)\s+)?(?:frontage|depth|width|length)$/i;
+const LINEAR_UNIT_TOKEN = /^(?:m|m\.|mtrs?|metres?|meters?)$/i;
+
+/** How many tokens from `start` spell a linear label, or 0. */
+function linearLabelAt(tokens: readonly string[], start: number): number {
+  for (const length of [2, 1]) {
+    if (start + length > tokens.length) continue;
+    if (LINEAR_LABEL.test(tokens.slice(start, start + length).join(' '))) return length;
+  }
+  return 0;
+}
+
+/**
+ * ============================================================================
+ * SEVERAL `Label: value` PAIRS ON ONE LINE.
+ * ============================================================================
+ *
+ * `Beds: 4 Baths: 2 Cars: 2` and `Land: 448m² | Frontage: 14m` are one line
+ * each, and `readLabelledValue` splits only at the FIRST separator: the
+ * bedroom count became "4 Baths: 2 Cars: 2", the typed gate declined it, and
+ * all three counts were lost. Measured 24 September 2026, with the land size
+ * the same way.
+ *
+ * THE WHOLE LINE OR NOTHING, as for every specification-line reader. Every
+ * colon must end a label this vocabulary knows (or a measurement it states
+ * and does not store, `Frontage`), found as the longest run of words before
+ * the colon. The value between two labels is what is left, less a separator
+ * (`|`, `•`, `·`, `,`, `;`, `/`). One colon is `readLabelledValue`'s line and
+ * is left to it, and a line any colon of which is not a label's (a time, a
+ * web address, a ratio) is not read here at all.
+ */
+const PAIR_SEPARATOR_EDGE = /^[\s|•·,;/]+|[\s|•·,;/]+$/g;
+
+function readLabelledPairs(line: string): Claim[] | null {
+  const segments = line.split(':');
+  if (segments.length < 3) return null;
+  const resolves = (words: string) => fieldForHeader(words) !== null || LINEAR_LABEL.test(words);
+  let label = segments[0].replace(PAIR_SEPARATOR_EDGE, '');
+  if (!label || !resolves(label)) return null;
+  const claims: Claim[] = [];
+  for (let at = 1; at < segments.length; at++) {
+    const words = segments[at].trim().split(/\s+/).filter(Boolean);
+    let next: string | null = null;
+    let valueWords = words;
+    if (at < segments.length - 1) {
+      let taken = 0;
+      for (let take = Math.min(MAX_LABEL_WORDS, words.length - 1); take >= 1; take--) {
+        if (resolves(words.slice(words.length - take).join(' '))) { taken = take; break; }
+      }
+      if (!taken) return null;
+      next = words.slice(words.length - taken).join(' ');
+      valueWords = words.slice(0, words.length - taken);
+    }
+    const value = valueWords.join(' ').replace(PAIR_SEPARATOR_EDGE, '');
+    if (!value) return null;
+    if (LINEAR_LABEL.test(label)) {
+      // Stated and not stored — but it is still a measurement, or the line is not a specification.
+      if (!HAS_DIGIT.test(value)) return null;
+    } else {
+      const field = labelledField(label, value);
+      if (!field) return null;
+      if (NUMERIC_VALUE_FIELDS.has(field) && !HAS_DIGIT.test(value)) return null;
+      claims.push({ field, value });
+    }
+    if (next !== null) label = next;
+  }
+  return claims.length ? claims : null;
 }
 
 /**
@@ -1125,10 +1256,11 @@ function readInlineCounts(line: string): Claim[] | null {
 
 /**
  * A value that is a measurement or a sum and carries no words of its own —
- * `350 m²`, `$863,850`, `210`. Used to tell a descriptive field's value from a
- * figure that has been set under it.
+ * `350 m²`, `$863,850`, `210`, and since reader version 20 `24.6 sq`,
+ * `0.5 acres` and `2,000 sq ft` too (`areaUnits.pure.ts`). Used to tell a
+ * descriptive field's value from a figure that has been set under it.
  */
-const BARE_MEASUREMENT = /^[$€£¥]?\s*\d[\d.,\s]*(?:m2|m²|sqm|sq\s?m|ha|hectares?|acres?)?$/i;
+const BARE_MEASUREMENT = /^[$€£¥]?\s*\d[\d.,\s]*(?:m2|m²|sqm|sq\s?m|ha|hectares?|acres?|ac|sq\.?|sqs|squares?|sq\.?\s?ft|sqft|ft²|ft2|square\s+(?:feet|foot|met(?:re|er)s?))?$/i;
 
 /**
  * The area unit a value carries, in the spelling the alias table knows.
@@ -1140,6 +1272,22 @@ const BARE_MEASUREMENT = /^[$€£¥]?\s*\d[\d.,\s]*(?:m2|m²|sqm|sq\s?m|ha|hect
 function areaUnitOf(value: string): string | null {
   const match = value.match(/(?:\d|\s)(m2|m²|sqm|sq\s?m)\.?\s*$/i);
   return match ? match[1].replace(/\s+/g, ' ') : null;
+}
+
+/**
+ * THE UNIT A HEADING IS COMPOSED WITH, which is not always the one printed.
+ *
+ * A heading over a figure is read WITH the figure's unit (`HOUSE` over
+ * `210 m²` is `house m2`, the building size), and the alias table spells
+ * that unit in square metres only. A figure in squares, square feet,
+ * hectares or acres states an area just as plainly, so its heading is
+ * composed as an area heading too. The figure keeps its own unit: the typed
+ * gate and the normaliser convert it by definition, or refuse it, in
+ * `areaUnits.pure.ts`. Without this `HOUSE` over `24.6 sq` stayed `house`,
+ * the DESIGN, and a measurement became a house's name.
+ */
+function headingUnitOf(value: string): string | null {
+  return areaUnitOf(value) ?? (statesAreaInAnotherUnit(value) ? 'm2' : null);
 }
 
 /**
@@ -1207,7 +1355,7 @@ function readVerticalPair(
    */
   if (statesItsOwnLabel(value)) return null;
 
-  const unit = areaUnitOf(value);
+  const unit = headingUnitOf(value);
   const resolved = (unit ? fieldForHeader(`${label} ${unit}`) : null) ?? bare;
   if (!BROCHURE_CLAIMABLE_FIELDS.has(resolved)) return null;
 
@@ -2436,7 +2584,7 @@ function readCaptionedFigure(
   if (caption === undefined) return null;
   const figure = String(value ?? '').trim().replace(FOOTNOTE_MARKS, '');
   if (!figure || !HAS_DIGIT.test(figure)) return null;
-  const unit = areaUnitOf(figure);
+  const unit = headingUnitOf(figure);
   const bare = fieldForHeader(caption);
   const field = (unit ? fieldForHeader(`${caption} ${unit}`) : null) ?? bare;
   if (!field || !FIGURE_CAPTION_FIELDS.has(field)) return null;
@@ -3910,7 +4058,8 @@ export function readPdfBrochure(
        * value. So the heading and its total are one statement and are
        * consumed together.
        */
-      const labelled = readLabelledValue(line);
+      const pairs = readLabelledPairs(line);
+      const labelled = pairs ? null : readLabelledValue(line);
       /*
        * A LABEL WHOSE VALUE IS IN THE NEXT CELL IS NOT A LABEL WITH NO
        * VALUE. The production brochure draws `Garage:` and `22.59m²` as two
@@ -3939,7 +4088,19 @@ export function readPdfBrochure(
        * claimed `development_name` — and page 2's empty `Estate:` box threw
        * the lot, the street, the design and the price away with it.
        */
-      if (labelled && labelled.value) {
+      if (pairs) {
+        /*
+         * Several pairs on one line, each judged as `labelled` below would
+         * judge it alone: a label we know and deliberately do not take is
+         * declared, never read.
+         */
+        const taken = pairs.filter((claim) => BROCHURE_CLAIMABLE_FIELDS.has(claim.field));
+        for (const claim of pairs) {
+          if (!BROCHURE_CLAIMABLE_FIELDS.has(claim.field)) declined.add(claim.field);
+        }
+        if (taken.length) found.push(...via('labelled', taken));
+        else incidental += 1;
+      } else if (labelled && labelled.value) {
         if (!BROCHURE_CLAIMABLE_FIELDS.has(labelled.field)) {
           /*
            * A LABEL WE KNOW AND DELIBERATELY DO NOT TAKE — `Status: Selling`,

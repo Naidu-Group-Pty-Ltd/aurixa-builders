@@ -32,6 +32,10 @@
  * empty with no account of why.
  */
 
+import {
+  areaInSquareMetres, unitConvertsArea, type AreaField,
+} from './areaUnits.pure.ts';
+
 /** The kinds of thing this product stores. One entry per stored field. */
 export type FieldKind =
   | 'identifier'      // external_reference
@@ -80,12 +84,14 @@ export type DeclineReason =
   | 'count_out_of_range'
   | 'not_a_number'
   | 'area_out_of_range'
+  | 'area_unit_does_not_measure_this'
   | 'no_currency_marker'
   | 'not_a_state'
   | 'not_a_postcode'
   | 'no_alphanumeric_content'
   | 'not_a_designation'
-  | 'a_section_heading_is_not_a_name';
+  | 'a_section_heading_is_not_a_name'
+  | 'a_measurement_is_not_a_name';
 
 /**
  * WHAT THE DOCUMENT'S STRUCTURE PROVES ABOUT WHERE THIS VALUE CAME FROM.
@@ -114,6 +120,13 @@ const AU_STATE = /^(?:VIC|NSW|QLD|SA|WA|TAS|NT|ACT)$/i;
 const CURRENCY = /[$£€¥]|\b(?:AUD|USD|NZD)\b/i;
 /** An area unit at the end of the value, which is where a document puts it. */
 const AREA_UNIT = /(?:m²|m2|sqm|sq\s?m|square\s+met(?:re|er)s?)\s*$/i;
+/**
+ * A figure with its unit or its currency and nothing else: `220m²`, `24.6 sq`,
+ * `0.5 acres`, `$799,000`. Never a name.
+ */
+const MEASUREMENT_OR_SUM = new RegExp('^\\s*(?:[$£€¥]\\s*\\d[\\d,]*(?:\\.\\d+)?'
+  + '|\\d[\\d.,\\s]*(?:m2|m²|sqm|sq\\.?\\s?m|sq\\.?|sqs|squares?|ha|hectares?|acres?'
+  + '|sq\\.?\\s?ft|sqft|ft²|ft2|square\\s+(?:feet|foot|met(?:re|er)s?)))\\s*$', 'i');
 /** A room dimension: two measurements multiplied. Never a count, never an area. */
 const ROOM_DIMENSION = /^\s*\d+(?:\.\d+)?\s*[x×]\s*\d+(?:\.\d+)?\s*$/i;
 const HAS_DIGIT = /\d/;
@@ -196,6 +209,24 @@ export function acceptFieldValue(
        */
       if (money) return { accepted: false, reason: 'money_is_not_an_area' };
       if (dimension) return { accepted: false, reason: 'a_measurement_is_not_a_count' };
+      /*
+       * A UNIT THAT IS NOT SQUARE METRES IS JUDGED BY WHAT IT MEASURES.
+       * `0.5 acres` is 2,023 m², not half a square metre, and a house in
+       * hectares is not a house. Only a value written in such a unit takes
+       * this branch; every other value is judged exactly as it always was.
+       * See `areaUnits.pure.ts`, which the normaliser asks too.
+       */
+      const areaField = field as AreaField;
+      if (unitConvertsArea(value, areaField)) {
+        const squareMetres = areaInSquareMetres(value, areaField);
+        if (squareMetres === null) {
+          return { accepted: false, reason: 'area_unit_does_not_measure_this' };
+        }
+        if (!(squareMetres >= MIN_AREA && squareMetres <= MAX_AREA)) {
+          return { accepted: false, reason: 'area_out_of_range' };
+        }
+        return { accepted: true, value };
+      }
       const n = numeric(value);
       if (n === null) return { accepted: false, reason: 'not_a_number' };
       if (!(n >= MIN_AREA && n <= MAX_AREA)) {
@@ -278,6 +309,21 @@ export function acceptFieldValue(
        */
       if ((kind === 'design_name' || kind === 'place_name') && namesOnlyASection(value)) {
         return { accepted: false, reason: 'a_section_heading_is_not_a_name' };
+      }
+      /*
+       * AND A MEASUREMENT OR A SUM OF MONEY IS NEVER A NAME. `House: 220m²`
+       * and `HOUSE` over `24.6 sq` each wrote the figure into the design,
+       * because `house` is this vocabulary's word for the design. The readers
+       * now compose such a heading with the figure's unit and read the
+       * building size instead. This is what holds for every path that does
+       * not: a figure WITH its unit or its currency, and nothing else, names
+       * no design, no estate, no suburb and no street. (A bare number never
+       * could: a name carries a letter, above.) `12 Acres Road` and `Square
+       * One` are names, because they are not a figure and its unit alone.
+       */
+      if ((kind === 'design_name' || kind === 'place_name' || kind === 'locality'
+        || kind === 'address') && MEASUREMENT_OR_SUM.test(value)) {
+        return { accepted: false, reason: 'a_measurement_is_not_a_name' };
       }
       if (kind === 'area' as FieldKind && !HAS_DIGIT.test(value)) {
         return { accepted: false, reason: 'not_a_number' };
