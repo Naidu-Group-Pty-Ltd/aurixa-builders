@@ -2908,6 +2908,31 @@ def _u20(c):
     c.showPage()
 
 
+# --- u21. THE BLOCK GIVEN AS ITS FRONTAGE BY ITS DEPTH ----------------------
+#
+# A WRONG VALUE at reader 20: `Land Size: 12.5m x 36m` stored a 12.5 m² block.
+# The units kept the value from the shape the typed gate refuses as two lengths
+# multiplied, and the normaliser took its first figure. The page states two
+# lengths and no area, so the land is not stated here; the house size and
+# everything else on the page still is.
+@fixture('heldout-land-given-as-frontage-by-depth',
+         'LOT 92 - FINCH 21 - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='92', street_name='Finch Street',
+                        suburb='Leppington', state='NSW', postcode='2179',
+                        land_size_sqm=None, build_size_sqm=198, price=774000)],
+             forbid=dict(land_size_not_in=[12.5, 36])))
+def _u21(c):
+    pt(c, 43, 800, 'LOT 92 Finch Street', 20, True)
+    pt(c, 43, 778, 'Leppington NSW 2179', 12)
+    pt(c, 43, 740, 'Land Size: 12.5m x 36m', 12)
+    pt(c, 43, 720, 'House Size: 198m²', 12)
+    pt(c, 43, 700, 'Price: $774,000', 12, True)
+    c.showPage()
+
+
 def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     manifest = []
