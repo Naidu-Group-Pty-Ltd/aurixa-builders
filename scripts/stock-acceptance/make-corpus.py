@@ -3371,6 +3371,103 @@ sheet_fixture(
         forbid=dict(no_lot_numbers=['210', '211', '214', '221'])))
 
 
+# A ROW'S OWN BROCHURE THAT MISTYPES ITS LOT, AND A ROW THAT LINKS ANOTHER'S.
+#
+# MEASURED 24 SEPTEMBER 2026, one stock list, both shapes, invented names:
+#
+#   A property links its OWN brochure, whose floor plan states the lot and the
+#   design correctly and whose cover prints the lot with two digits swapped.
+#   The cover rule refuses it — a cover stating another lot is how another
+#   house reaches a card — and the builder's confirmation is what lets it
+#   through: the product cannot tell a typo from a sibling's brochure, and the
+#   person holding the sheet can.
+#
+#   A property links a SIBLING'S brochure, which the sibling already shows.
+#   The digits are swapped here too, so a transposition is never evidence;
+#   what settles it is that another listing already uses that brochure's
+#   photograph for the lot it states, and the confirmation is refused.
+def lot_brochure(cover_lot, street, estate, price, land, counts, seed, size,
+                 plan_lot, plan_design, cover_design=None, glued=False):
+    """A two-page package: a cover with the facade, then a floor plan.
+
+    `glued` sets the cover's lot in the same run as the heading before it, as
+    the measured cover's exporter did — its text layer reads
+    `PACKAGE PRICELot 1307 Fuchsia Street,`, so a reading built on words never
+    sees the lot at all and only the reading that found the mismatch does.
+    """
+    def build(c):
+        text(c, 20, 24, estate.upper(), 16, True)
+        if glued:
+            text(c, 20, 34, f'PACKAGE PRICELot {cover_lot} {street},')
+        else:
+            text(c, 20, 31, 'PACKAGE PRICE', 9)
+            text(c, 20, 37, f'Lot {cover_lot} {street},')
+        if cover_design:
+            text(c, 20, 42, cover_design.upper(), 18, True)
+        text(c, 20, 50, 'Wattlebank VIC 3977')
+        text(c, 130, 34, 'House & Land Package')
+        text(c, 130, 42, f'${price:,}')
+        text(c, 130, 50, f'Land Size {land}sqm')
+        text(c, 130, 58, counts)
+        hero(c, facade(seed, *size), top=175, height=105)
+        text(c, 20, 190, 'Artist impression only. Not to scale.', 8)
+        c.showPage()
+        text(c, 20, 24, f'Lot {plan_lot}', 14, True)
+        text(c, 20, 34, plan_design.upper(), 16, True)
+        text(c, 20, 44, f'Land Size - {land}sqm')
+        hero(c, floorplan(), top=175, height=105)
+        c.showPage()
+    return build
+
+
+_SR_HEADER = ['Lot', 'Design', 'Bed', 'Bath', 'Car', 'Land Size', 'Build Size', 'Price',
+              'Suburb', 'State', 'Postcode', 'Brochure URL']
+_SR_OWN = 'SaltbushRiseLot2046BrochureFixture'
+_SR_SHARED = 'SaltbushRiseLot3185BrochureFixture'
+
+sheet_fixture(
+    'heldout-a-row-whose-own-brochure-mistypes-its-lot-and-a-row-that-links-another',
+    'SALTBUSH RISE - STOCK LIST.csv',
+    header=_SR_HEADER,
+    rows=[
+        ['2046', 'Orion 22', '4', '2', '2', '350', '198', '$612,500',
+         'Wattlebank', 'VIC', '3977', drive_link(_SR_OWN)],
+        ['3158', 'Lumen 18', '3', '2', '1', '300', '171', '$574,000',
+         'Wattlebank', 'VIC', '3977', drive_link(_SR_SHARED)],
+        ['3185', 'Halo 24', '4', '2', '2', '375', '224', '$655,000',
+         'Wattlebank', 'VIC', '3977', drive_link(_SR_SHARED)],
+    ],
+    linked={
+        # SEED 2062, NOT 2046. The render at seed 2046 carries three flat
+        # regions (14.5% of the frame), and the unchanged display check refuses
+        # it as an annotated marketing tile — which is right, and is also the
+        # proof that a builder's confirmation is not an exemption from the
+        # display checks. The confirmed case has to be a photograph the checks
+        # accept, so it takes a seed measured clean at every JPEG quality from
+        # 80 to 95. Only the pixels moved; the page, the lot and the size did not.
+        _SR_OWN: ('LOT 2046 - ORION 22 - BROCHURE.pdf', lot_brochure(
+            '2064', 'Heathland Street', 'Saltbush Rise', 612500, 350, '4 Bed 2 Bath 2 Car',
+            2062, (1320, 820), plan_lot='2046', plan_design='Orion 22', glued=True)),
+        _SR_SHARED: ('LOT 3185 - HALO 24 - BROCHURE.pdf', lot_brochure(
+            '3185', 'Heathland Street', 'Saltbush Rise', 655000, 375, '4 Bed 2 Bath 2 Car',
+            3185, (1200, 760), plan_lot='3185', plan_design='Halo 24',
+            cover_design='Halo 24')),
+    },
+    expect=dict(
+        properties=3,
+        rows=[dict(lot_number='2046'), dict(lot_number='3158'),
+              dict(lot_number='3185', image_size='1200x760')],
+        confirmation=dict(
+            # The builder's own brochure: confirmed, it leads the card with
+            # its OWN facade (the size proves which), and undone, it leaves.
+            confirms=[dict(lot_number='2046', states='Lot 2064', image_size='1320x820')],
+            # A sibling's brochure the sibling already shows: refused, and
+            # the refusal names the listing it belongs to.
+            refuses=[dict(lot_number='3158', states='Lot 3185',
+                          in_use_by='Lot 3185 · Halo 24')],
+        )))
+
+
 def write_sheets(outdir, manifest):
     import csv
     for f in SHEETS:

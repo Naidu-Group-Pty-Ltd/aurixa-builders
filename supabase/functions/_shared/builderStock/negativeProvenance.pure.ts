@@ -114,8 +114,28 @@ export interface NegativeProvenanceResult {
    */
   finding?: DocumentFinding;
   finding_evidence?: DocumentFindingEvidence;
+  /**
+   * The confirmation this answer was reached under, where a builder had made
+   * one. Absent on every other answer. See `identityConfirmationHolds`.
+   */
+  identity_confirmation?: IdentityConfirmationRef;
   checked_at: string;
 }
+
+/**
+ * A builder's standing confirmation that one brochure is this property's.
+ *
+ * Recorded in `builder_stock_identity_confirmations` and read by the settler;
+ * here it is only what a stored answer is compared against — which
+ * confirmation, and the lot it lets the brochure designate.
+ */
+export interface IdentityConfirmationRef {
+  id: string;
+  lot: string;
+}
+
+/** Where a stored answer records the confirmation it was reached under. */
+export const IDENTITY_CONFIRMATION_KEY = 'identity_confirmation' as const;
 
 /** What the caller knows about the question it is currently asking. */
 export interface ProvenanceQuestion {
@@ -128,6 +148,53 @@ export interface ProvenanceQuestion {
    * reopen an answer a document gave. See `runtimeVersion.pure.ts`.
    */
   runtimeVersion?: number;
+  /**
+   * The confirmation that holds for this branch NOW, if the builder has made
+   * one. Absent everywhere a confirmation does not reach, which is every
+   * branch but one a builder confirmed — so every existing answer is read
+   * exactly as it always was. See `identityConfirmationHolds`.
+   */
+  identityConfirmation?: IdentityConfirmationRef | null;
+}
+
+/**
+ * DOES A STORED ANSWER STILL ANSWER, GIVEN THE CONFIRMATION THAT HOLDS NOW?
+ *
+ * A confirmation changes the question a branch is asked, so it can reopen an
+ * answer in exactly two ways and no others:
+ *
+ *   AN ANSWER REACHED UNDER A CONFIRMATION stands only while THAT
+ *   confirmation does. The builder undoing it, or replacing it, means the
+ *   answer was about a question nobody is asking any more — so the picture it
+ *   delivered, or the refusal it recorded, is read again under whatever holds
+ *   now.
+ *
+ *   THE REFUSAL THE BUILDER CONFIRMED AGAINST — the identity mismatch whose
+ *   stated lot is the confirmed one — is reopened, because the builder has
+ *   just answered the one thing it could not.
+ *
+ * Every other answer stands exactly as it did: a refusal that was never about
+ * identity, a mismatch stating some OTHER lot, our own failures, and every
+ * answer on every branch nobody confirmed. Absent evidence never reopens
+ * anything; the stamp is compared as written.
+ */
+export function identityConfirmationHolds(
+  stored: unknown,
+  active: IdentityConfirmationRef | null | undefined,
+): boolean {
+  if (!stored || typeof stored !== 'object') return true;
+  const record = stored as Record<string, unknown>;
+  const stamp = record[IDENTITY_CONFIRMATION_KEY] as { id?: unknown } | null | undefined;
+  if (stamp && typeof stamp === 'object') {
+    return !!active && String(stamp.id ?? '') === active.id;
+  }
+  if (!active) return true;
+  if (record.result !== NO_DETERMINISTIC_IMAGE || record.exhaustion !== 'inspected') return true;
+  if (!isDocumentFinding(record.finding)) return true;
+  const states = String(
+    (record.finding_evidence as { states?: unknown } | undefined)?.states ?? '').trim();
+  const match = /^lot\s+(\d{1,5})$/i.exec(states);
+  return !(match && match[1] === active.lot);
 }
 
 /**
@@ -165,7 +232,20 @@ export function recordNoDeterministicImage(
       quote: String(finding.evidence?.quote ?? '').slice(0, 200),
     };
   }
-  return record;
+  return withIdentityConfirmation(record, question.identityConfirmation);
+}
+
+/**
+ * STAMP THE CONFIRMATION AN ANSWER WAS REACHED UNDER, and only where there
+ * was one — every other answer is written byte for byte as before. The stamp
+ * is what lets an undo reopen exactly the answers the confirmation produced.
+ */
+export function withIdentityConfirmation<T extends object>(
+  record: T,
+  confirmation: IdentityConfirmationRef | null | undefined,
+): T {
+  if (!confirmation) return record;
+  return { ...record, [IDENTITY_CONFIRMATION_KEY]: { id: confirmation.id, lot: confirmation.lot } };
 }
 
 /**
@@ -234,6 +314,10 @@ export function negativeProvenanceStillStands(
   // anchor — so they must compare equal to a question that also names none.
   const storedAnchor = record.source_anchor ?? null;
   if (storedAnchor !== question.sourceAnchor) return false;
+
+  // And whether the builder has since answered what this refusal could not,
+  // or withdrawn the answer it was reached under. See the function above.
+  if (!identityConfirmationHolds(record, question.identityConfirmation)) return false;
 
   return true;
 }

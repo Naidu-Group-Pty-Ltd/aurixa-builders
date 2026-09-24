@@ -59,6 +59,9 @@ import {
   type SuppliedEvidenceReading,
 } from './suppliedEvidence.pure.ts';
 import { TELEMETRY_PREFIX, itemTelemetry } from './importTelemetry.pure.ts';
+import {
+  confirmationsByItem, confirmationsForItem, keepStanding, readStandingConfirmations,
+} from './brochureConfirmation.ts';
 import { sourceWorkUploadId } from './stockLifecycle.pure.ts';
 import { PROVENANCE_VERSION } from './provenanceVersion.pure.ts';
 import type { ClaimedItem, ItemWorkStage } from './itemWorkClaim.ts';
@@ -621,11 +624,25 @@ async function readItemSuppliedEvidence(
   try {
     const { data, error } = await db
       .from('builder_stock_items')
-      .select('id, source_row, source_provenance_result, primary_image_id')
+      .select('id, organisation_id, source_row, source_provenance_result, primary_image_id')
       .eq('id', itemId)
       .maybeSingle();
     if (error || !data) return null;
     const row = data as Record<string, unknown>;
+    /*
+     * AND THE BUILDER'S CONFIRMATIONS, read the way the source stage reads
+     * them. A refusal the builder has confirmed against is OPEN to the source
+     * stage, so reading it here as a finished answer would route the property
+     * to `failed` while the source stage still owes it a read — and an answer
+     * reached under a confirmation reads as open to anything that ignores the
+     * confirmation, which would send a finished property back to `source`
+     * for ever. A read that failed is a reading that failed.
+     */
+    const confirmations = await readStandingConfirmations(db, {
+      organisationId: String(row.organisation_id ?? ''), stockItemIds: [itemId],
+    });
+    if (!confirmations.ok) return null;
+    const standingIds = new Set(confirmations.rows.map((confirmation) => confirmation.id));
     /*
      * A SUCCESS CLEARS ITS BRANCH RECORD, so the accepted picture — not the
      * provenance column — is what says this property is finished. Without
@@ -659,8 +676,15 @@ async function readItemSuppliedEvidence(
        * predicate now; the stage, verification and processing status stay in
        * the query above where each caller establishes them differently.
        */
-      builderImageAccepted = !suppliedError && Array.isArray(supplied)
-        && supplied.some((row: any) => servableStoredImage(row));
+      /*
+       * An image reached under a confirmation the builder has since undone is
+       * not the builder's picture any more, whatever state it was left in.
+       */
+      const standing = !suppliedError && Array.isArray(supplied)
+        ? keepStanding(supplied as Array<{ source_detail?: unknown }>, standingIds)
+        : null;
+      builderImageAccepted = !!standing
+        && standing.some((row: any) => servableStoredImage(row));
       /*
        * AND THE PICTURES THIS ROW'S OWN DOCUMENT SUPPLIED THAT ARE NOT
        * SERVABLE YET. A directly uploaded PDF names no branch, so without
@@ -674,8 +698,8 @@ async function readItemSuppliedEvidence(
        * becomes one, so counting it would hide a property that genuinely
        * needs a person — which is what `no_evidence` is for.
        */
-      heldSourceImages = !suppliedError && Array.isArray(supplied)
-        ? supplied.filter((row: any) =>
+      heldSourceImages = standing
+        ? standing.filter((row: any) =>
           isPrimaryRole(readStoredRole(row?.source_detail))
           && !servableStoredImage(row)).length
         : 0;
@@ -693,6 +717,8 @@ async function readItemSuppliedEvidence(
       runtimeVersion: RUNTIME_VERSION,
       builderImageAccepted,
       heldSourceImages,
+      identityConfirmations: confirmationsForItem(
+        confirmationsByItem(confirmations.rows), itemId),
     });
   } catch {
     return null;

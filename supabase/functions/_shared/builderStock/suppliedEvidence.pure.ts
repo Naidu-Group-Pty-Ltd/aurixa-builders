@@ -68,7 +68,7 @@
  * Pure: no IO, no clock, no network.
  */
 import {
-  NO_DETERMINISTIC_IMAGE, negativeProvenanceStillStands,
+  NO_DETERMINISTIC_IMAGE, identityConfirmationHolds, negativeProvenanceStillStands,
   type ProvenanceQuestion,
 } from './negativeProvenance.pure.ts';
 import {
@@ -76,7 +76,7 @@ import {
 } from './packageAttempt.pure.ts';
 import {
   branchQuestion, branchRecord, isTraversableBranch, rowSourceBranches,
-  unmappedWithRecoveredLinks, type RowSourceBranch,
+  unmappedWithRecoveredLinks, type IdentityConfirmationsByBranch, type RowSourceBranch,
   BRANCH_IMAGE_RECOVERED,
 } from './sourceBranches.pure.ts';
 
@@ -251,6 +251,14 @@ export interface SuppliedEvidenceInput {
   heldSourceImages?: number;
   /** What the import managed to see of this row's link layer. */
   linkDiscovery?: RowLinkDiscovery | null;
+  /**
+   * The confirmations a builder has made on this row's branches. The settler
+   * reads them when it decides what is open, so this reader has to as well,
+   * or the two disagree about a property the builder has just confirmed:
+   * the settler would re-read the brochure while this said the row was
+   * exhausted. See `identityConfirmationHolds`.
+   */
+  identityConfirmations?: IdentityConfirmationsByBranch | null;
 }
 
 /**
@@ -289,7 +297,12 @@ export function classifyBranchRecord(
    * re-fetched the same file every lap; reading it as operational would
    * withhold verdicts a fault never caused.
    */
-  if (record.result === BRANCH_IMAGE_RECOVERED) return 'inspected';
+  if (record.result === BRANCH_IMAGE_RECOVERED) {
+    // Unless it was delivered under a confirmation the builder has undone:
+    // then it answered a question nobody is asking, and the settler reads
+    // the branch again. Both readers delegate to the same rule.
+    return identityConfirmationHolds(record, question.identityConfirmation) ? 'inspected' : 'open';
+  }
 
   if (record.result === NO_DETERMINISTIC_IMAGE) {
     /*
@@ -425,7 +438,8 @@ export function readSuppliedEvidence(
 
   for (const branch of branches) {
     const question = branchQuestion(
-      branch, input.provenanceVersion, input.sourceAnchor, input.runtimeVersion);
+      branch, input.provenanceVersion, input.sourceAnchor, input.runtimeVersion,
+      input.identityConfirmations);
     const verdict = classifyBranchRecord(input.stored, branch, question);
     if (verdict === 'inspected') {
       inspected += 1;
@@ -543,6 +557,8 @@ export function readStoredRowEvidence(input: {
   builderImageAccepted?: boolean;
   /** See the `held` state. */
   heldSourceImages?: number;
+  /** See `SuppliedEvidenceInput.identityConfirmations`. */
+  identityConfirmations?: IdentityConfirmationsByBranch | null;
 }): SuppliedEvidenceReading {
   const row = (input.sourceRow ?? null) as Record<string, unknown> | null;
   const unmapped = (row?.unmapped ?? null) as Record<string, string> | null;
@@ -557,5 +573,6 @@ export function readStoredRowEvidence(input: {
     builderImageAccepted: input.builderImageAccepted,
     heldSourceImages: input.heldSourceImages,
     linkDiscovery: readLinkDiscovery(row),
+    identityConfirmations: input.identityConfirmations,
   });
 }

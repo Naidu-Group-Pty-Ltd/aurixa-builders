@@ -25,7 +25,7 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import {
-  ELECTION_CONTEXT_HEADER, MAX_DOCUMENT_BYTES, PDF_ELECTION_PROTOCOL,
+  ELECTION_CONTEXT_HEADER, MAX_DOCUMENT_BYTES,
   bytesToBase64, decodeElectionContext,
 } from '../../../supabase/functions/_shared/builderStock/pdfElectionBoundary.pure.ts';
 import { electFromPdfBytes } from '../../../supabase/functions/_shared/builderStock/pdfElection.ts';
@@ -109,12 +109,20 @@ export class PdfElection extends DurableObject {
         identifiedBy: context.identifiedBy,
         design: context.design,
         identityHints: context.identityHints,
+        confirmedLots: context.confirmedLots,
         documentName: context.documentName,
         url: context.url,
       });
+      /*
+       * IN THE PROTOCOL IT WAS ASKED IN, never simply the newest this worker
+       * speaks. A settler built before protocol 3 asks under 2 and believes
+       * only an answer in 2 — so answering in 3 would turn every election in
+       * the deploy gap into a retry. See `electionProtocolFor`.
+       */
+      const protocol = context.protocol;
       if (outcome.status === 'recovered') {
         return json({
-          protocol: PDF_ELECTION_PROTOCOL,
+          protocol,
           status: 'recovered',
           image: {
             bytes: bytesToBase64(outcome.image.bytes),
@@ -140,7 +148,7 @@ export class PdfElection extends DurableObject {
        * what makes it safe for the budget to trust.
        */
       return json({
-        protocol: PDF_ELECTION_PROTOCOL,
+        protocol,
         status: outcome.status,
         reason: 'reason' in outcome ? outcome.reason : undefined,
         /*

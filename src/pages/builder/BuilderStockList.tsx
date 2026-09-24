@@ -36,6 +36,9 @@ import {
 } from '@/components/builder-portal/BuilderPropertyImage';
 import { StockPicture } from '@/components/stock/StockPicture';
 import { BuilderStockFiguresButton } from '@/components/builder-portal/BuilderStockFigures';
+import {
+  BrochureConfirmations, BrochureImageChoice,
+} from '@/components/builder-portal/BrochureConfirmation';
 import { AU_LOCALE } from '@/lib/aml/displayDate';
 import { BuilderSchedule } from '@/components/builder-portal/ui/BuilderSchedule';
 import { useDebounce } from '@/hooks/useDebounce';
@@ -1911,6 +1914,18 @@ function ImageSources({ item, showLabels = false }: { item: BuilderStockItem; sh
                   </dl>
                   <p className="mt-1">{STOCK_DOCUMENT_MISMATCH_COPY.action}</p>
                   <p className="mt-1 text-muted-foreground/80">{note.document}</p>
+                  {/*
+                    AND THE ONE CHOICE THE BUILDER HAS BEYOND FIXING THE
+                    SHEET: this brochure IS theirs, whatever its cover says.
+                    Offered only where the server allows it, behind a
+                    confirmation naming both identities — see
+                    `BrochureConfirmation.tsx`.
+                  */}
+                  <BrochureImageChoice
+                    item={item}
+                    note={note}
+                    listingIdentity={listingIdentity}
+                  />
                 </div>
               ) : (
                 <>
@@ -1923,6 +1938,13 @@ function ImageSources({ item, showLabels = false }: { item: BuilderStockItem; sh
           ))}
         </ul>
       ) : null}
+
+      {/*
+        The brochures the builder confirmed are theirs, with the undo. Drawn
+        whether or not the card has a picture, because a confirmed brochure is
+        usually what gave it one.
+      */}
+      {showLabels ? <BrochureConfirmations item={item} /> : null}
 
       {/*
         Whatever else went wrong, somebody can fix this one card. The picture a

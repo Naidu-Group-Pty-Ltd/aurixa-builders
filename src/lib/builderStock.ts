@@ -131,6 +131,34 @@ export interface BuilderStockImage {
   created_at: string;
 }
 
+/** Another listing in the builder's own stock list, as their screen names it. */
+export interface StockListingReference {
+  stock_item_id: string;
+  identity: string;
+}
+
+/** What became of a builder's "this brochure is mine". */
+export type StockBrochureConfirmationState =
+  | 'pending' | 'applied' | 'not_applied' | 'unreadable' | 'unlinked';
+
+/** A builder's standing confirmation that a brochure is this property's. */
+export interface StockBrochureConfirmation {
+  id: string;
+  /** The document, as a person would name it. */
+  document: string;
+  /** The link exactly as the row carries it. */
+  document_key: string;
+  /** The digits of the lot the brochure's image page states. */
+  lot: string;
+  /** The same lot as the mismatch said it, e.g. `Lot 1307`. */
+  states: string;
+  confirmed_by: string;
+  confirmed_at: string;
+  state: StockBrochureConfirmationState;
+  /** Why the image still could not be used, for `not_applied` alone. */
+  detail?: string;
+}
+
 export interface BuilderStockItem {
   id: string;
   organisation_id: string;
@@ -292,7 +320,29 @@ export interface BuilderStockItem {
     states?: string;
     /** The page's own most identifying lines, verbatim. May be empty. */
     quote?: string;
+    /**
+     * The link this mismatch is about, exactly as the row carries it — sent
+     * back, unchanged, when the builder confirms the brochure is theirs. A
+     * lookup key: the server re-reads the stored finding under it.
+     */
+    document_key?: string;
+    /**
+     * Whether "Use brochure image" is offered. Decided by the server: false
+     * where the link is not one document, or where another listing already
+     * uses this brochure's photograph (`in_use_by`).
+     */
+    confirmable?: boolean;
+    /** The listing that already uses this brochure's photograph. */
+    in_use_by?: StockListingReference;
+    /** A listing in the same estate or suburb with the lot the brochure states. */
+    stated_lot_listing?: StockListingReference;
   }>;
+  /**
+   * The brochures the builder confirmed are this property's although their
+   * image page states another lot, with what became of each. Drawn in place of
+   * the mismatch it answers, with the one act that reverses it.
+   */
+  brochure_confirmations?: StockBrochureConfirmation[];
   builder_organisation?: { id: string; legal_name: string; trading_name: string | null } | null;
   selection_count?: number;
   latest_selection?: {

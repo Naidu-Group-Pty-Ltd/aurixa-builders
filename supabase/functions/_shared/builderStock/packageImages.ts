@@ -282,6 +282,14 @@ async function recoverPackageImageInner(
      * only it can see them.
      */
     linkSharedWithOtherRows?: boolean;
+    /**
+     * THE LOT A BUILDER CONFIRMED THIS LINK'S BROCHURE MAY STATE FOR THIS
+     * PROPERTY, where they confirmed one. Handed to the cover rule only where
+     * the link IS one document: inside a folder, which file is read is chosen
+     * by the lot the LISTING states, so a confirmation about "the brochure"
+     * there would be about a file nobody looked at. See `pageStatesIdentity`.
+     */
+    confirmedLots?: readonly string[] | null;
   },
   deps: {
     fetchPackage?: PackageFetcher;
@@ -379,7 +387,8 @@ async function recoverPackageImageInner(
         fetchPackage, readPageTexts, sharedLinkFileUrl(input.packageUrl),
         documentNameFromUrl(input.packageUrl), input.label, 'direct_link', design,
         input.identityHints,
-        { ...linkedImage, driveId: null, fileName: documentNameFromUrl(input.packageUrl) });
+        { ...linkedImage, driveId: null, fileName: documentNameFromUrl(input.packageUrl) },
+        input.confirmedLots);
     }
     return { status: 'not_identified', detail: 'That package is not on a source we can read.' };
   }
@@ -390,7 +399,8 @@ async function recoverPackageImageInner(
     return await extractFromDocument(
       fetchPackage, readPageTexts, driveDownloadUrl(directFileId), 'the linked document',
       input.label, 'direct_link', design, input.identityHints,
-      { ...linkedImage, driveId: directFileId, fileName: documentNameFromUrl(input.packageUrl) });
+      { ...linkedImage, driveId: directFileId, fileName: documentNameFromUrl(input.packageUrl) },
+      input.confirmedLots);
   }
 
   const rootId = driveFolderId(input.packageUrl);
@@ -811,6 +821,12 @@ async function extractFromDocument(
     accept: boolean; sharedAcrossRows: boolean;
     driveId?: string | null; fileName?: string;
   },
+  /**
+   * The lot a builder confirmed this document may state for the property.
+   * Passed ONLY by the two paths where the row linked this one document. See
+   * `recoverPackageImage`'s `confirmedLots`.
+   */
+  confirmedLots?: readonly string[] | null,
 ): Promise<PackageOutcome> {
   let bytes: Uint8Array;
   try {
@@ -920,5 +936,8 @@ async function extractFromDocument(
    */
   return await runElection(bytes, readPageTexts, {
     label, identifiedBy, design, identityHints, documentName, url,
+    // Only where there is one, so an unconfirmed election's context — and the
+    // wire protocol it is asked in — is byte for byte what it was.
+    ...(confirmedLots?.length ? { confirmedLots: [...confirmedLots] } : {}),
   });
 }

@@ -78,6 +78,7 @@ import { settleClaimedItem } from '../../supabase/functions/_shared/builderStock
 import { repairSourceImagesForUpload } from '../../supabase/functions/_shared/builderStock/repairSourceImages.ts';
 import type { PackageFetcher } from '../../supabase/functions/_shared/builderStock/packageImages.ts';
 import { driveFileId } from '../../supabase/functions/_shared/builderStock/drivePackage.pure.ts';
+import { stockDocumentNotes } from '../../supabase/functions/_shared/builderStock/imageProgress.pure.ts';
 import { readPdfPageTextResult } from '../../supabase/functions/_shared/builderStock/pdfText.ts';
 import {
   readOutstandingUploads, runSettlementTick, settleUploadSourceImages,
@@ -223,6 +224,16 @@ interface Expect {
    * document the linked route reads less of by design. See 6b.
    */
   linked_limit?: string;
+  /**
+   * A builder's confirmation that a brochure is theirs, exercised after the
+   * imagery settles: the lots it must put the brochure's own photograph on
+   * (and take it off again when undone), and the lots it must refuse because
+   * another listing already uses that brochure. See 6e1b.
+   */
+  confirmation?: {
+    confirms?: Array<{ lot_number: string; states: string; image_size: string }>;
+    refuses?: Array<{ lot_number: string; states: string; in_use_by: string }>;
+  };
 }
 interface Entry {
   name: string; org: string; filename: string; path: string;
@@ -876,6 +887,136 @@ async function itemsFor(uploadId: string) {
     String(a.lot_number ?? a.id).localeCompare(String(b.lot_number ?? b.id)));
 }
 
+/**
+ * The confirmation, end to end, for one fixture. See 6e1b.
+ *
+ * The module is IMPORTED AT RUN TIME so a build that does not have it reports
+ * a failed fixture rather than failing to load the whole gate: that is what
+ * makes this fixture a held-out test of the product rather than of the harness.
+ */
+async function exerciseConfirmation(entry: any, uploadId: string, items: any[]) {
+  const out: any = { confirms: [], refuses: [] };
+  const module: any = await import(
+    '../../supabase/functions/_shared/builderStock/brochureConfirmation.ts').catch(() => null);
+  if (!module?.confirmBrochureImage || !module?.undoBrochureImage) {
+    fail(entry, 'the product cannot record a builder\'s confirmation that a brochure is theirs');
+    return out;
+  }
+  const org = orgs[entry.org];
+  const actor = { id: org.userId, name: 'Acceptance Builder' };
+  const item = (lot: string) => items.find((i: any) => String(i.lot_number) === lot);
+  const reread = async (id: string) => {
+    const { data } = await db.from('builder_stock_items').select('*').eq('id', id).maybeSingle();
+    return data as any;
+  };
+  const mismatch = (row: any) => stockDocumentNotes(row?.source_provenance_result)
+    .find((note: any) => note.finding === 'identity_mismatch') as any ?? null;
+
+  for (const ask of entry.expect.confirmation.refuses ?? []) {
+    const target = item(ask.lot_number);
+    if (!target) { fail(entry, `no property for lot ${ask.lot_number}`); continue; }
+    const before = await reread(target.id);
+    const note = mismatch(before);
+    if (note?.states !== ask.states) {
+      fail(entry, `lot ${ask.lot_number} does not read as a mismatch stating ${ask.states}: `
+        + JSON.stringify(note));
+      continue;
+    }
+    const answer = await module.confirmBrochureImage(db, {
+      organisationId: org.id, stockItemId: target.id,
+      documentReference: note.document_key, states: note.states, actor,
+    });
+    out.refuses.push({ lot: ask.lot_number, answer });
+    if (answer?.ok || answer?.code !== 'brochure_in_use') {
+      fail(entry, `a sibling's brochure was not refused for lot ${ask.lot_number}: `
+        + JSON.stringify(answer));
+    } else if (answer?.in_use_by?.identity !== ask.in_use_by) {
+      fail(entry, `the refusal named ${JSON.stringify(answer?.in_use_by)} rather than ${ask.in_use_by}`);
+    }
+    const after = await reread(target.id);
+    if (after.image_work_stage !== before.image_work_stage || after.primary_image_id) {
+      fail(entry, `a refused confirmation moved lot ${ask.lot_number}: `
+        + `${before.image_work_stage} -> ${after.image_work_stage}, primary ${after.primary_image_id}`);
+    }
+    const { count } = await db.from('builder_stock_identity_confirmations')
+      .select('id', { count: 'exact', head: true }).eq('stock_item_id', target.id);
+    if (count) fail(entry, `a refused confirmation was recorded for lot ${ask.lot_number}`);
+  }
+
+  for (const ask of entry.expect.confirmation.confirms ?? []) {
+    const target = item(ask.lot_number);
+    if (!target) { fail(entry, `no property for lot ${ask.lot_number}`); continue; }
+    const note = mismatch(await reread(target.id));
+    if (note?.states !== ask.states) {
+      fail(entry, `lot ${ask.lot_number} does not read as a mismatch stating ${ask.states}: `
+        + JSON.stringify(note));
+      continue;
+    }
+    const answer = await module.confirmBrochureImage(db, {
+      organisationId: org.id, stockItemId: target.id,
+      documentReference: note.document_key, states: note.states, actor,
+    });
+    const step: any = { lot: ask.lot_number, confirmed: answer };
+    out.confirms.push(step);
+    if (!answer?.ok) {
+      fail(entry, `the builder's confirmation was refused: ${JSON.stringify(answer)}`);
+      continue;
+    }
+    step.imagery = await settleImagery(org.id, uploadId);
+    const confirmedRow = await reread(target.id);
+    if (!confirmedRow.primary_image_id) {
+      fail(entry, `the confirmed brochure put no photograph on lot ${ask.lot_number}`);
+    } else {
+      const { data: image } = await db.from('builder_stock_item_images')
+        .select('*').eq('id', confirmedRow.primary_image_id).maybeSingle();
+      if (image?.source_detail?.identity_confirmation?.id !== answer.id) {
+        fail(entry, `the photograph does not say which confirmation put it there: `
+          + JSON.stringify(image?.source_detail?.identity_confirmation ?? null));
+      }
+      const served = await serveStockImage(db, {
+        imageId: confirmedRow.primary_image_id, organisationId: org.id,
+      });
+      if (!served.ok) {
+        fail(entry, `the confirmed photograph could not be served: ${served.reason}`);
+      } else {
+        const res = await realFetch(served.url.startsWith('http') ? served.url : `${GATEWAY}${served.url}`);
+        const decoded = res.ok ? decodeImage(new Uint8Array(await res.arrayBuffer())) : null;
+        step.served = decoded ? `${decoded.width}x${decoded.height}` : `HTTP ${res.status}`;
+        if (step.served !== ask.image_size) {
+          fail(entry, `lot ${ask.lot_number} was given another brochure's photograph: `
+            + `expected ${ask.image_size}, served ${step.served}`);
+        }
+      }
+    }
+
+    const undone = await module.undoBrochureImage(db, {
+      organisationId: org.id, stockItemId: target.id, confirmationId: answer.id, actor,
+    });
+    step.undone = undone;
+    if (!undone?.ok) {
+      fail(entry, `the builder could not undo their confirmation: ${JSON.stringify(undone)}`);
+      continue;
+    }
+    step.imageryAfterUndo = await settleImagery(org.id, uploadId);
+    const undoneRow = await reread(target.id);
+    if (undoneRow.primary_image_id) {
+      fail(entry, `undoing the confirmation left a photograph on lot ${ask.lot_number}`);
+    }
+    const { data: ready } = await db.from('builder_stock_item_images')
+      .select('id, source_detail').eq('stock_item_id', target.id).eq('processing_status', 'ready');
+    const stillReady = (ready ?? []).filter((r: any) => r.source_detail?.identity_confirmation);
+    if (stillReady.length) {
+      fail(entry, `undoing the confirmation left its photograph displayable: ${stillReady.length} row(s)`);
+    }
+    const again = mismatch(undoneRow);
+    if (again?.states !== ask.states) {
+      fail(entry, `after the undo, lot ${ask.lot_number} no longer reads as the mismatch it was: `
+        + JSON.stringify(again));
+    }
+  }
+  return out;
+}
+
 const fails: string[] = [];
 /*
  * A GAP THIS CORPUS HAS NAMED AND NOT CLOSED.
@@ -1457,6 +1598,29 @@ for (const entry of manifest) {
     }
   }
 
+  // --- 6e1b. A BUILDER'S CONFIRMATION, AND ITS UNDO ------------------------
+  /*
+   * "BROCHURE DETAILS DON'T MATCH THIS PROPERTY" IS SOMETIMES WRONG ABOUT THE
+   * BUILDER'S OWN BROCHURE, and the builder may say so.
+   *
+   * Driven through the product's own module — the one `builder-portal-stock`
+   * calls — and then through the settler, exactly as the portal's button and
+   * the next cron tick would: nothing here writes a row the product would not
+   * write. Two halves, and the second matters as much as the first:
+   *
+   *   CONFIRMED, the builder's own brochure leads the card with its OWN
+   *   facade (the fixture draws it at a size nothing else uses), the stored
+   *   picture says which confirmation put it there, and UNDONE it leaves the
+   *   card again and the brochure reads as a mismatch once more.
+   *
+   *   REFUSED, where another listing in the same stock list already shows
+   *   that brochure's photograph for the lot the brochure states. Nothing may
+   *   move: no confirmation, no reopened property, no picture.
+   */
+  if (a.result.ok && entry.expect.confirmation) {
+    row.confirmation = await exerciseConfirmation(entry, a.uploadId, itemsA);
+  }
+
   // --- 6e2. REPEAT PROCESSING IS SAFE -------------------------------------
   /*
    * Two different acts, and the product answers them differently on purpose.
@@ -1531,6 +1695,17 @@ for (const entry of manifest) {
     fail(entry, `the two routes handed the pipeline different byte counts: ${a.transferred} vs ${b.transferred}`);
   }
   report.push(row);
+}
+
+/*
+ * A FOCUSED RUN STOPS HERE. The sections below judge the subsystem and are
+ * written against the whole corpus — the fault matrix takes documents by
+ * position — so a run over a hand-picked subset reports what it judged and
+ * leaves the rest to the full gate. `run.sh` never sets this.
+ */
+if (Deno.env.get('ACCEPTANCE_DOCUMENTS_ONLY') === '1') {
+  console.log(JSON.stringify({ documentsOnly: true, report, fails, limits }, null, 1));
+  Deno.exit(fails.length ? 1 : 0);
 }
 
 // ===========================================================================

@@ -28,7 +28,7 @@ import { electFromPdfBytes, type ElectionContext } from './pdfElection.ts';
 import { electionRoute, type ElectionRoute } from './pdfElectionRoute.pure.ts';
 import {
   ELECTION_CONTEXT_HEADER, ELECTION_TIMEOUT_MS, MAX_DOCUMENT_BYTES,
-  PDF_ELECTION_PROTOCOL, base64ToBytes, encodeElectionContext,
+  base64ToBytes, electionProtocolFor, encodeElectionContext,
   isElectionRefusalReason,
 } from './pdfElectionBoundary.pure.ts';
 import type { PackageOutcome } from './packageImages.ts';
@@ -270,9 +270,19 @@ async function electViaWorker(
   } catch {
     return unreachable('The document reader returned something that was not a result.');
   }
-  if (Number(body.protocol) !== PDF_ELECTION_PROTOCOL) {
+  /*
+   * AN ANSWER TO THE QUESTION THIS SIDE ASKED, OR NONE.
+   *
+   * A worker answers in the protocol it was asked in — see
+   * `electionProtocolFor`. A confirmed election is asked under protocol 3,
+   * and an answer in protocol 2 comes from a worker that read the context as
+   * the UNCONFIRMED question: its refusal is an answer to something else, and
+   * filing it as this one's would bank "no image" over a brochure the builder
+   * said is theirs. So any other protocol is `unreachable`: a retry.
+   */
+  if (Number(body.protocol) !== electionProtocolFor(context)) {
     return unreachable('The document reader answered a protocol this deployment '
-      + 'does not speak.');
+      + 'did not ask in.');
   }
 
   /*

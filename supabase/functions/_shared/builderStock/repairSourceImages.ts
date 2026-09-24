@@ -47,7 +47,7 @@ import {
 } from './sourceAssets.pure.ts';
 import { roleDetail, roleFromExplicitField } from './sourceImageRole.pure.ts';
 import {
-  negativeProvenanceStillStands, recordNoDeterministicImage,
+  negativeProvenanceStillStands, recordNoDeterministicImage, withIdentityConfirmation,
 } from './negativeProvenance.pure.ts';
 import {
   attemptsSoFar, MAX_UNREACHABLE_ATTEMPTS, packageAttemptsExhausted,
@@ -70,6 +70,10 @@ import {
 import {
   DriveListingCache, recoverPackageImage, type PackageFetcher, type PackageOutcome,
 } from './packageImages.ts';
+import {
+  confirmationsByItem, confirmationsForItem, readStandingConfirmations,
+  withdrawImagesOfLapsedConfirmations,
+} from './brochureConfirmation.ts';
 import { attachDocumentMedia, regionPageViews } from './importStock.ts';
 import { designOfRecordOrRow } from './builderSuppliedImage.pure.ts';
 import {
@@ -898,6 +902,41 @@ export async function repairSourceImagesForUpload(
   }
   const existingRows = existingPage.rows;
 
+  /*
+   * THE BUILDER'S CONFIRMATIONS, read once for the properties this run works.
+   *
+   * A builder who confirmed "that brochure is mine" changed the question the
+   * brochure is asked: the refusal they confirmed against is open again, and
+   * the cover rule counts the lot the page states as this listing's. Every
+   * branch decision below reads these, and so does every other reader of the
+   * same answers (`readStoredRowEvidence`), so the stages cannot disagree
+   * about a confirmed property.
+   *
+   * A READ THAT FAILED IS NOT A PROPERTY NOBODY CONFIRMED — "none" would
+   * reopen every answer a confirmation produced and take its picture down —
+   * so it stops the run exactly as a failed read of the stock above does.
+   */
+  const confirmationsRead = await readStandingConfirmations(db, {
+    organisationId: input.organisationId,
+    stockItemIds: input.onlyItemId ? [input.onlyItemId] : null,
+  });
+  if (!confirmationsRead.ok) {
+    throw new Error(`Brochure confirmations could not be read: ${confirmationsRead.error}`);
+  }
+  const standingConfirmations = confirmationsByItem(confirmationsRead.rows);
+  /*
+   * AND WHAT A LAPSED ONE LEFT BEHIND COMES DOWN FIRST — before anything
+   * below asks whether a property already holds a picture, because an image
+   * reached under an undone confirmation must not answer that question.
+   * Undo does this in its own transaction; this is for the image a slower
+   * worker stored after it. See `withdrawImagesOfLapsedConfirmations`.
+   */
+  const lapsed = await withdrawImagesOfLapsedConfirmations(db, {
+    organisationId: input.organisationId,
+    stockItemIds: input.onlyItemId ? [input.onlyItemId] : null,
+    standing: standingConfirmations,
+  });
+
   const byReference = new Map<string, string>();
   const byDevelopmentUnit = new Map<string, string>();
   /**
@@ -976,6 +1015,8 @@ export async function repairSourceImagesForUpload(
   /** Rows the DOCUMENT stated, matched or not — see `documentRowCount`. */
   let documentRows = 0;
   const touched = new Set<string>();
+  // A card whose picture a lapsed confirmation supplied is re-chosen below.
+  for (const itemId of lapsed.withdrawnFrom) touched.add(itemId);
   /**
    * What this run could PROVE about each property: the source references it
    * re-derived from the builder's own source. Anything else already sitting on
@@ -1313,7 +1354,15 @@ export async function repairSourceImagesForUpload(
     // Only on the no-assets path: where the row's own assets fell through as
     // convicted-only, "already holds a ready image" is precisely the fact that
     // must not end the search — the ready image IS the convicted tile.
-    if (!all.length && await hasReadySourceImage(db, itemId, PROVENANCE_VERSION)) continue;
+    /*
+     * EXCEPT WHERE THE BUILDER HAS CONFIRMED ONE OF ITS BROCHURES. They asked
+     * for that brochure's picture by name, so holding another picture is not
+     * an answer to what they asked — and a confirmed branch that has already
+     * answered is terminal below, so nothing is read twice.
+     */
+    const itemConfirmations = confirmationsForItem(standingConfirmations, itemId);
+    if (!all.length && !itemConfirmations.size
+      && await hasReadySourceImage(db, itemId, PROVENANCE_VERSION)) continue;
 
     /**
      * ALREADY ANSWERED. A previous run read this exact package at this exact
@@ -1342,7 +1391,8 @@ export async function repairSourceImagesForUpload(
      * part-finished run has always used.
      */
     const openNow = openBranches(
-      negativeBefore.get(itemId), branches, PROVENANCE_VERSION, anchor ?? null);
+      negativeBefore.get(itemId), branches, PROVENANCE_VERSION, anchor ?? null,
+      RUNTIME_VERSION, itemConfirmations);
     if (!openNow.length) {
       // Every applicable branch has answered. THAT is when stage 1 is finished
       // — not when one of them failed.
@@ -1382,6 +1432,14 @@ export async function repairSourceImagesForUpload(
       runtimeVersion: RUNTIME_VERSION,
       packageReference: packageUrl,
       sourceAnchor: anchor ?? null,
+      /*
+       * The builder's confirmation for THIS link, if they made one. Every
+       * answer written for it below is stamped with it, which is what lets an
+       * undo reopen exactly the answers it produced. Absent on every branch
+       * nobody confirmed, so those records are written byte for byte as
+       * before.
+       */
+      identityConfirmation: itemConfirmations.get(packageUrl) ?? null,
     };
     // More than one left means this property is not done, whatever this branch
     // answers, so the run must not report itself finished on its behalf.
@@ -1657,6 +1715,12 @@ export async function repairSourceImagesForUpload(
            * houses.
            */
           linkSharedWithOtherRows: linkSharedWithOtherRows(branchLinkRows, packageUrl),
+          /*
+           * The lot the builder confirmed this link's brochure may state for
+           * this property. Read only where the link IS one document —
+           * `recoverPackageImage` never hands it to a file chosen from a folder.
+           */
+          confirmedLots: question.identityConfirmation ? [question.identityConfirmation.lot] : [],
         },
         { fetchPackage: deps.fetchPackage, cache, readPageTexts: deps.readPageTexts },
       );
@@ -1774,6 +1838,7 @@ export async function repairSourceImagesForUpload(
           source_branch_kind: branch.kind,
           folder_path: photo.folderPath,
           extraction_method: 'filed_as_is',
+          ...withIdentityConfirmation({}, question.identityConfirmation),
         },
       });
       if (storedPhoto) {
@@ -1889,6 +1954,9 @@ export async function repairSourceImagesForUpload(
         crop: recovered.image.provenance.crop,
         page_area_share: recovered.image.provenance.pageAreaShare,
         transformation: recovered.image.provenance.transformation,
+        // Taken under the builder's confirmation, where there was one: an
+        // undo takes down exactly the images it stamps.
+        ...withIdentityConfirmation({}, question.identityConfirmation),
       },
     });
     if (written) {

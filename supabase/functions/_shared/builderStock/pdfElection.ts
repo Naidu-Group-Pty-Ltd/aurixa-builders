@@ -66,6 +66,17 @@ export interface ElectionContext {
   design?: string | null;
   /** The row's other identity names, for the cover rule's corroboration test. */
   identityHints?: readonly string[] | null;
+  /**
+   * THE LOT A BUILDER CONFIRMED THIS DOCUMENT MAY DESIGNATE FOR THIS PROPERTY.
+   *
+   * Present only where the builder looked at "Brochure details don't match
+   * this property", saw the lot this document's image page states beside
+   * their own listing's, and confirmed the brochure is theirs. The cover rule
+   * then counts that lot as the listing's and keeps every other test it has —
+   * see `pageStatesIdentity`. A lot, never an identifier: it names nothing the
+   * worker could act on.
+   */
+  confirmedLots?: readonly string[] | null;
   /** Used only to build the elected image's reference string. */
   documentName: string;
   /** Recorded on the result as the document's own address. */
@@ -85,6 +96,7 @@ export async function electFromPdfBytes(
   context: ElectionContext,
 ): Promise<PackageOutcome> {
   const { label, identifiedBy, design, identityHints, documentName, url } = context;
+  const confirmedLots = context.confirmedLots ?? [];
   /*
    * THE WHOLE HEAVY PATH, INSIDE ONE SLOT.
    *
@@ -157,6 +169,7 @@ export async function electFromPdfBytes(
     label,
     design,
     identityHints: identityHints ?? [],
+    confirmedLots,
     pageTexts,
     // Supplied ONLY when the builder's folder already named this document for
     // this one property and the document itself can say nothing. See
@@ -346,7 +359,7 @@ export async function electFromPdfBytes(
      * COMPUTED AFTER THE DECISION, AND READ BY NOTHING THAT DECIDES. The
      * refusal above is already final at this line; this only describes it.
      */
-    const statesInstead = statedOtherLotDesignation(pageTexts[0], context.label);
+    const statesInstead = statedOtherLotDesignation(pageTexts[0], context.label, confirmedLots);
     return {
       status: 'not_identified',
       detail: 'That document does not present a page as this property\'s package cover, '

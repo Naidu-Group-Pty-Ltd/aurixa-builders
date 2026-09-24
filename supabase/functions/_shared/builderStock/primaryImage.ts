@@ -42,6 +42,9 @@ import {
 } from './columnDeclaration.pure.ts';
 import { PROCESSED_LIFECYCLE } from './stockLifecycle.pure.ts';
 import { readAllRows } from './pagedRead.ts';
+import {
+  imageConfirmationStamp, keepStanding, readStandingConfirmations, standingUnderConfirmations,
+} from './brochureConfirmation.ts';
 
 /** The stage whose provenance is the builder's own document. */
 export const SOURCE_SUPPLIED_STAGE = 'uploaded_document';
@@ -298,7 +301,24 @@ export async function chooseAndStorePrimaryImage(
    * needs the source rules; the two would otherwise import each other.
    */
   const { chooseCardImage, nextImageStage } = await import('./imagePriority.pure.ts');
-  const rows = (images ?? []) as DisplayableImage[];
+  /*
+   * AN IMAGE A BUILDER'S CONFIRMATION PRODUCED STANDS ONLY WHILE IT DOES.
+   *
+   * Undo takes such an image down in its own transaction, and this is the
+   * guarantee behind it for the one image undo cannot see: a slower worker's,
+   * stored after the undo under the confirmation that worker read before it.
+   * Every image nobody confirmed passes untouched and costs no query. Where
+   * the check itself could not be made, the card is left exactly as it is.
+   * See `standingUnderConfirmations`.
+   */
+  const standing = await standingUnderConfirmations(
+    db, stockItemId, (images ?? []) as DisplayableImage[]);
+  if (standing.unknown) {
+    const { data: current } = await db.from('builder_stock_items')
+      .select('primary_image_id').eq('id', stockItemId).maybeSingle();
+    return (current?.primary_image_id as string | null | undefined) ?? null;
+  }
+  const rows = standing.rows;
   const primary = chooseCardImage(rows);
 
   const patch: Record<string, unknown> = { primary_image_id: primary?.image.id ?? null };
@@ -498,9 +518,29 @@ export async function enforceStrictPrimaryImages(
     byItem.set(image.stock_item_id, bucket);
   }
 
+  /*
+   * The confirmations that stand, read once and only where an image carries a
+   * stamp — for every organisation nobody has confirmed a brochure in, this
+   * costs nothing. Null means they could not be read, and a property whose
+   * card depends on one is then left exactly as it is, like one whose evidence
+   * is not in yet. See `standingUnderConfirmations`.
+   */
+  let standingIds: Set<string> | null = new Set();
+  if (images.some((image) => imageConfirmationStamp(image.source_detail))) {
+    const read = await readStandingConfirmations(db, { organisationId });
+    standingIds = read.ok ? new Set(read.rows.map((row) => row.id)) : null;
+  }
+
   for (const item of items) {
     outcome.inspected += 1;
-    const candidates = byItem.get(item.id) ?? [];
+    let candidates = byItem.get(item.id) ?? [];
+    if (candidates.some((image) => imageConfirmationStamp(image.source_detail))) {
+      if (!standingIds) {
+        outcome.skipped += 1;
+        continue;
+      }
+      candidates = keepStanding(candidates, standingIds);
+    }
 
     // The evidence is not all in. Leave the pointer exactly as it is — right or
     // wrong — because clearing it now would lose a picture the backfill is

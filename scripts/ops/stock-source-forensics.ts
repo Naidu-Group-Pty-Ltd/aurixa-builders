@@ -22,6 +22,13 @@
  *   as-licensed     the same bytes elected under `folder_structure` evidence —
  *                   what a row-EXCLUSIVE document link would license — so the
  *                   extraction fix this audit informs is measured, not argued.
+ *   as-confirmed    for a link whose stored answer is "Brochure details don't
+ *                   match this property": whether the builder may confirm it
+ *                   (`brochureInUseByAnotherProperty`, over the organisation's
+ *                   own live listings) and what the settler elects once they
+ *                   have — the same `recoverPackageImage` with the lot the
+ *                   page states confirmed, and the display check's reading of
+ *                   what it took. Nothing is confirmed; this only asks.
  *
  * Every PDF also gets a page-level census (pipeline page readers: page count,
  * rasters/forms/widgets per page, `extractPdfPagePhoto` per page, and whether
@@ -65,6 +72,10 @@ import {
   stockIdentityHints, stockRecordLabel,
 } from '../../supabase/functions/_shared/builderStock/normalise.pure.ts';
 import { designOfRecordOrRow } from '../../supabase/functions/_shared/builderStock/builderSuppliedImage.pure.ts';
+import {
+  brochureInUseByAnotherProperty, confirmedLotOf, isConfirmableBranch,
+  type StockRowForConfirmation,
+} from '../../supabase/functions/_shared/builderStock/brochureConfirmation.pure.ts';
 
 type RowSourceBranch = ReturnType<typeof rowSourceBranchCandidates>[number];
 
@@ -584,6 +595,7 @@ const where = filterIds.length
 const items = await sql('affected items', `
   SELECT i.id, i.upload_id, i.organisation_id, i.lifecycle_status, i.image_work_stage,
          i.image_work_failures, i.primary_image_id, i.external_reference, i.source_row,
+         i.source_provenance_result,
          u.original_filename, u.image_invariant, u.source_manifest_state
     FROM public.builder_stock_items i
     JOIN public.builder_stock_uploads u ON u.id = i.upload_id
@@ -612,6 +624,23 @@ for (const row of uploadRows) {
   }
 }
 console.log(`shared-link counts computed over ${uploadRows.length} row(s) of ${uploadIds.length} upload(s)\n`);
+
+/*
+ * The organisations' own live listings, for the as-confirmed pass: whether
+ * another one already uses a brochure's photograph is the one fact that makes
+ * a confirmation wrong, and it is judged over the whole organisation exactly
+ * as the portal judges it.
+ */
+const organisationIds = [...new Set(items.map((item) => String(item.organisation_id)))]
+  .filter((id) => UUID.test(id));
+const liveListings = (organisationIds.length ? await sql('live listings for the as-confirmed pass', `
+  SELECT i.id, i.organisation_id, i.lot_number, i.unit_number, i.lifecycle_status, i.suburb,
+         i.development_name, i.source_row->>'house_design' AS house_design,
+         i.source_provenance_result
+    FROM public.builder_stock_items i
+   WHERE i.organisation_id IN (${organisationIds.map((id) => `'${id}'`).join(',')})
+     AND i.lifecycle_status IN ('active','staged')`) : []) as Array<
+  StockRowForConfirmation & { organisation_id?: unknown }>;
 
 const manifest = await sql('manifest rows', `
   SELECT stock_item_id, kind, reference, state, state_detail
@@ -758,6 +787,46 @@ for (const item of items) {
       if (!shared && licensed.startsWith('RECOVERED')) {
         verdict.recoverable.push(`${branch.column}: ${licensed}`);
       }
+    }
+
+    // ---- pass 4: as the builder would confirm it ----
+    const stored = ((item.source_provenance_result as { branches?: Record<string, unknown> } | null)
+      ?.branches ?? {})[branch.url] as {
+        result?: unknown; exhaustion?: unknown; finding?: unknown;
+        finding_evidence?: { states?: unknown };
+      } | undefined;
+    const statedLot = stored?.result === 'no_deterministic_image' && stored.exhaustion === 'inspected'
+      && stored.finding === 'identity_mismatch'
+      ? confirmedLotOf(stored.finding_evidence?.states)
+      : null;
+    if (statedLot) {
+      const inUse = brochureInUseByAnotherProperty(
+        liveListings.filter((row) => String(row.organisation_id) === String(item.organisation_id)),
+        { stockItemId: String(item.id), documentReference: branch.url, statedLot });
+      const offered = isConfirmableBranch(branch.url) && !inUse;
+      console.log(`    confirmable   : ${offered ? 'yes' : 'NO'} — the image page states Lot ${statedLot}`
+        + (inUse ? `; ${inUse.identity} already uses this brochure's photograph` : '')
+        + (isConfirmableBranch(branch.url) ? '' : '; the link is not one document'));
+      let confirmed: string;
+      try {
+        const outcome = await recoverPackageImage({ ...input, confirmedLots: [statedLot] }, {
+          fetchPackage: forensicPackageFetch,
+          cache: new DriveListingCache(forensicPackageFetch),
+          readPageTexts: async (bytes: Uint8Array) => {
+            const result = await readPdfPageTextResult(bytes);
+            if (!result.ok) throw new Error(`text read failed: ${result.reason}`);
+            return result.pages;
+          },
+        });
+        confirmed = describeOutcome(outcome);
+        const recovered = outcome as { status?: string; image?: { bytes?: Uint8Array } };
+        if (recovered.status === 'recovered' && recovered.image?.bytes) {
+          await overlayReport(recovered.image.bytes);
+        }
+      } catch (error) {
+        confirmed = `threw: ${String((error as { message?: string })?.message ?? error).slice(0, 200)}`;
+      }
+      console.log(`    as-confirmed  : ${confirmed}${offered ? '' : '  [NOT offered to the builder]'}`);
     }
 
     if (fullRead.startsWith('RECOVERED')) {

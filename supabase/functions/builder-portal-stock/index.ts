@@ -20,6 +20,7 @@
  *   list_uploads | get_upload
  *   list_stock | get_stock_item | set_availability | set_manual_stats
  *   archive_stock_item
+ *   confirm_brochure_image | undo_brochure_image
  *   image_url
  *   list_selections | acknowledge_selection
  */
@@ -27,7 +28,13 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0';
 import {
   stockDocumentNotes, unreadDocumentCount,
   stockPackageDocuments, MAX_STOCK_DOCUMENT_NOTES,
+  brochureConfirmationViews, withConfirmationChoices,
 } from '../_shared/builderStock/imageProgress.pure.ts';
+import { confirmedLotOf } from '../_shared/builderStock/brochureConfirmation.pure.ts';
+import {
+  confirmBrochureImage, readListingsWithLots, readStandingConfirmations, undoBrochureImage,
+  type StandingConfirmation,
+} from '../_shared/builderStock/brochureConfirmation.ts';
 import { createCorsHeaders } from '../_shared/auth.ts';
 import { enforceCsrf, csrfDenied } from '../_shared/csrfGuard.ts';
 import { DEFAULT_MAX_BODY_BYTES } from '../_shared/validate.ts';
@@ -72,7 +79,7 @@ import {
   importFailureColumns, importOutcomeColumns,
 } from '../_shared/builderStock/recordImportOutcome.ts';
 import {
-  isTraversableBranch, rowSourceBranches,
+  isTraversableBranch, rowSourceBranches, unmappedWithRecoveredLinks,
 } from '../_shared/builderStock/sourceBranches.pure.ts';
 import {
   designOfStoredRow, isBuilderSuppliedPath, propertyImageStoragePath,
@@ -2092,6 +2099,86 @@ Deno.serve(async (req) => {
       return json({ success: true, record: decorated });
     }
 
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * "USE BROCHURE IMAGE" — A BUILDER SAYS A BROCHURE IS THEIRS
+     * ═══════════════════════════════════════════════════════════════════════
+     *
+     * The page sends the link and the lot it showed the builder, and both are
+     * lookup keys: the act re-reads the stored refusal under that link and
+     * refuses unless it is still the mismatch stating that lot, and re-reads
+     * the organisation's listings to refuse a brochure another listing
+     * already uses the photograph of. Editing stock is the permission, the
+     * same one "Add picture" asks for. See `brochureConfirmation.ts`.
+     */
+    if (operation === 'confirm_brochure_image' || operation === 'undo_brochure_image') {
+      if (!await can('edit')) {
+        return json({ error: 'You do not have permission to manage stock', code: 'permission_denied' }, 403);
+      }
+      const item = await loadItem(cleanText(body.stock_item_id, 64));
+      if (!item) return notFoundHere('That property');
+      const actor = { id: me.id ?? null, name: cleanText(me.name || me.email, 160) };
+
+      const outcome = operation === 'confirm_brochure_image'
+        ? await confirmBrochureImage(supabase, {
+          organisationId: activeOrganisationId,
+          stockItemId: item.id,
+          // Never cleaned: it is compared, byte for byte, with the key its
+          // stored answer lives under, and a link has no whitespace to lose.
+          documentReference: typeof body.document_key === 'string'
+            ? body.document_key.slice(0, 2048) : '',
+          states: cleanText(body.states, 40),
+          actor,
+        })
+        : await undoBrochureImage(supabase, {
+          organisationId: activeOrganisationId,
+          stockItemId: item.id,
+          confirmationId: cleanText(body.confirmation_id, 64),
+          actor,
+        });
+      if (!outcome.ok) {
+        if (outcome.code === 'not_found') return notFoundHere('That brochure confirmation');
+        const status = outcome.code === 'invalid' || outcome.code === 'not_confirmable' ? 400
+          : outcome.code === 'unavailable' ? 503
+            : 409;
+        return json({
+          error: outcome.message,
+          code: outcome.code,
+          ...('in_use_by' in outcome && outcome.in_use_by ? { in_use_by: outcome.in_use_by } : {}),
+        }, status);
+      }
+
+      await logBuilderProjectActivity(supabase, req, {
+        builderUserId: me.id, organisationId: activeOrganisationId,
+        action: operation === 'confirm_brochure_image'
+          ? 'builder_stock_brochure_image_confirmed'
+          : 'builder_stock_brochure_image_confirmation_undone',
+        entityType: 'stock_item', entityId: item.id,
+        metadata: operation === 'confirm_brochure_image'
+          ? {
+            confirmation_id: outcome.id,
+            document: typeof body.document_key === 'string' ? body.document_key.slice(0, 400) : null,
+            states: cleanText(body.states, 40),
+            already_confirmed: 'already' in outcome ? outcome.already : false,
+          }
+          : {
+            confirmation_id: outcome.id,
+            images_withdrawn: 'imagesWithdrawn' in outcome ? outcome.imagesWithdrawn : 0,
+          },
+      });
+
+      const { data: fresh } = await supabase
+        .from('builder_stock_items')
+        .select(STOCK_ITEM_SELECT)
+        .eq('id', item.id)
+        .eq('organisation_id', activeOrganisationId)
+        .maybeSingle();
+      const [decorated] = fresh
+        ? await decorateItems(supabase, [fresh], activeOrganisationId)
+        : [null];
+      return json({ success: true, confirmation_id: outcome.id, record: decorated });
+    }
+
     if (operation === 'archive_stock_item') {
       if (!await can('delete')) {
         return json({ error: 'You do not have permission to remove stock', code: 'permission_denied' }, 403);
@@ -2607,8 +2694,17 @@ async function decorateItems(
   const documentsByItem = new Map<string, number>();
   const unreadByItem = new Map<string, { unprocessed: number; unreachable: number }>();
   const documentProvenanceByItem = new Map<string, unknown>();
+  /*
+   * The links each row carries NOW, derived exactly as the settler derives
+   * its branches — so a confirmation about a link the row no longer has says
+   * so, rather than reading "pending" about a brochure nothing will read.
+   */
+  const linkedByItem = new Map<string, Set<string>>();
   for (const row of rows ?? []) {
     const unmapped = (row?.source_row as { unmapped?: Record<string, string> } | null)?.unmapped;
+    linkedByItem.set(String(row.id), new Set(rowSourceBranches(
+      unmappedWithRecoveredLinks(unmapped, row?.source_row as Record<string, unknown> | null))
+      .map((branch) => branch.url)));
     documentsByItem.set(
       String(row.id),
       rowSourceBranches(unmapped).filter(isTraversableBranch).length,
@@ -2618,6 +2714,53 @@ async function decorateItems(
     unreadByItem.set(String(row.id), unreadDocumentCount(storedProvenance));
     documentProvenanceByItem.set(String(row.id), storedProvenance);
   }
+
+  /*
+   * THE BUILDER'S OWN CONFIRMATIONS, AND WHAT BECAME OF EACH.
+   *
+   * A mismatch the builder has confirmed against is drawn as that
+   * confirmation — who made it, what became of it, and the undo — rather than
+   * as the mismatch again (`stockDocumentNotes`). A read that failed shows
+   * the page as it was before any confirmation: the choice is offered again,
+   * and making it again answers with the confirmation that stands.
+   */
+  const confirmationsRead = await readStandingConfirmations(supabase, {
+    organisationId, stockItemIds: ids,
+  });
+  if (!confirmationsRead.ok) {
+    console.warn('[builder-portal-stock] brochure confirmations could not be read', {
+      phase: 'brochure_confirmations', detail: confirmationsRead.error,
+    });
+  }
+  const confirmationsByItem = new Map<string, StandingConfirmation[]>();
+  for (const row of confirmationsRead.ok ? confirmationsRead.rows : []) {
+    const list = confirmationsByItem.get(row.stock_item_id) ?? [];
+    list.push(row);
+    confirmationsByItem.set(row.stock_item_id, list);
+  }
+  const confirmationInputs = (itemId: string) => (confirmationsByItem.get(itemId) ?? [])
+    .map((row) => ({
+      id: row.id, document: row.document_reference, lot: row.confirmed_lot,
+      confirmed_by: row.confirmed_by_name, confirmed_at: row.confirmed_at,
+    }));
+  const notesByItem = new Map<string, ReturnType<typeof stockDocumentNotes>>();
+  for (const item of items) {
+    notesByItem.set(String(item.id), stockDocumentNotes(
+      documentProvenanceByItem.get(String(item.id)) ?? null, MAX_STOCK_DOCUMENT_NOTES,
+      { confirmations: confirmationInputs(String(item.id)) }));
+  }
+  /*
+   * AND, FOR EACH MISMATCH, WHETHER ANOTHER LISTING ALREADY USES THAT
+   * BROCHURE'S PHOTOGRAPH — read once for the page, from the organisation's
+   * own listings, and only where a mismatch exists to ask about.
+   */
+  const statedLots = [...notesByItem.values()].flat()
+    .filter((note) => note.finding === 'identity_mismatch' && note.document_key)
+    .map((note) => confirmedLotOf(note.states))
+    .filter((lot): lot is string => !!lot);
+  const listings = statedLots.length
+    ? await readListingsWithLots(supabase, { organisationId, lots: statedLots })
+    : [];
 
   return items.map((item) => ({
     ...item,
@@ -2669,7 +2812,12 @@ async function decorateItems(
      * this side.
      */
     source_document_notes: [
-      ...stockDocumentNotes(documentProvenanceByItem.get(String(item.id)) ?? null),
+      ...withConfirmationChoices(notesByItem.get(String(item.id)) ?? [], {
+        stockItemId: String(item.id),
+        suburb: item.suburb,
+        developmentName: item.development_name,
+        listings,
+      }),
       /*
        * The same finding for an uploaded package. It is recorded in a
        * different place — `selection_reason` on the image rows rather than a
@@ -2678,6 +2826,14 @@ async function decorateItems(
        */
       ...(packagesByItem.get(String(item.id))?.notes ?? []),
     ].slice(0, MAX_STOCK_DOCUMENT_NOTES),
+    /*
+     * The brochures the builder confirmed are theirs, each with who confirmed
+     * it and what became of it. See `brochureConfirmationViews`.
+     */
+    brochure_confirmations: brochureConfirmationViews(
+      documentProvenanceByItem.get(String(item.id)) ?? null,
+      confirmationInputs(String(item.id)),
+      { linkedDocuments: linkedByItem.get(String(item.id)) ?? null }),
     // The builder's activation signal: how many workspace selection
     // announcements this property carries, and where the most recent one is
     // up to. `announced_at` is the announcement row's created_at — when the
