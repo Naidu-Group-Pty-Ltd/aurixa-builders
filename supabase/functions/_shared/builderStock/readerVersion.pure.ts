@@ -186,7 +186,7 @@ import { sweepHandedOnThisParse } from './readerSweepAttempt.pure.ts';
  * Every document already imported is read again, because a document whose
  * headings were unreadable was read without them.
  */
-export const DETERMINISTIC_READER_VERSION = 21;
+export const DETERMINISTIC_READER_VERSION = 22;
 
 /*
  * VERSION 11 — A PHRASE'S OWN WORDS ARE HEADINGS TOO.
@@ -521,6 +521,44 @@ export const DETERMINISTIC_READER_VERSION = 21;
  * identically, and the 27 that change are the twenty held-out fixtures, the
  * two-column page (two properties where there were none) and the six stress
  * covers above.
+ */
+
+/*
+ * VERSION 22 — A LOT, ITS STREET AND ITS LOCALITY, HOWEVER THEY ARE SET OUT.
+ *
+ * A REGRESSION AT READER 21, and the most ordinary flyer there is: `LOT 572`
+ * as a heading over `Egret Street, Marsden Park NSW 2765`. Reader 20 read the
+ * street, the suburb, the state and the postcode; reader 21 read none of
+ * them. Its comma-tolerant locality took `Egret Street Marsden Park` for one
+ * suburb, a second address, and the whole-document guard refused both. The
+ * same fault stored the suburbs `Wren Street Riverstone` and `Sandpiper
+ * Estate Oran Park`. Swept against the values the page means, 528 lot-heading
+ * layouts read 45 wrong and lost 63 at reader 21, and read 0 and 0 now. A
+ * locality under a lot is a place, never a street or an estate run into one
+ * (`runsOnFromAStreet`), and the line under a bare lot is read as the rest of
+ * one address.
+ *
+ * AND SEVEN MORE SHAPES, FOUR OF THEM WRONG OR LOST AT EVERY READER, FOUND BY
+ * SWEEPING A LOT OR A STREET OVER EVERY WAY A LOCALITY IS SET UNDER IT (1,116
+ * layouts). An estate run into its suburb (`Kingfisher Estate Clyde North VIC
+ * 3978`, stored whole as the suburb) and after a comma with no state (`Jacana
+ * Estate, Wyndham Vale`, lost) are the estate and the suburb
+ * (`readEstateAndLocality`, split at the word ESTATE and nowhere else).
+ * `LOT 537 | Magpie Crescent` stored the street `| Magpie Crescent`. `Lot
+ * 906, 14 Heath Street` over its locality imported NOTHING at every reader,
+ * because a street number after a lot was no street. A bare `LOT 692` over
+ * `Tern Street` and `Osprey Estate Point Cook VIC 3030` imported nothing at
+ * reader 20 and a wrong suburb at 21. A dashed `LOT 463 - Plover Avenue` split
+ * its street onto the lot's own row, where the line under the lot skipped it
+ * (`streetBesideLot`). And `NSW 2765` under a street is the state and the
+ * postcode (`readStateAndPostcode`), never the suburb `NSW`.
+ *
+ * Against reader 21, 76 of the 85 corpus and stress documents read
+ * identically, and the 9 that change are the held-out fixtures. In the
+ * sweeps nothing reads wrong but one shape the page cannot settle (`Marsden
+ * Park, Sydney NSW 2765`, an estate and its suburb to the one-line reader
+ * since it was written), and nothing reader 20 or reader 21 read exactly
+ * reads less.
  */
 
 /** Where the marker lives. Named once; two spellings is how two ends drift. */
