@@ -125,6 +125,18 @@ name: Production rollout
 #            every row and object it made. `scan_expect: observe` reports;
 #            `read` also requires every page recognised once and the document's
 #            property read field for field.
+#   stock-confirmation-proof
+#            proves "Use brochure image" on the live product with the gate's own
+#            SALTBUSH RISE brochures (`scripts/ops/fixtures/saltbush-lot-*.pdf`,
+#            digests pinned in the script, nothing in them any customer's),
+#            served from this project's storage under signed links, in an
+#            organisation of the run's own that is detached from the network in
+#            the transaction that creates it. Through the portal, as a builder's
+#            browser: a row whose own brochure mistypes its lot is offered the
+#            choice, a row linking a sibling's brochure is refused naming the
+#            listing that uses it, confirming puts the brochure's own photograph
+#            on the card stamped with the confirmation, and undoing takes it down
+#            and brings the notice back. Deletes every row and object it made.
 #   network-connection-remap
 #            points the live connection at the builder organisation named in
 #            `organisation_id` and backfills its active stock. It refuses
@@ -147,11 +159,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-overlay-audit'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-overlay-audit'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-overlay-audit]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-overlay-audit]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1)'
         required: false
@@ -256,5 +268,6 @@ jobs:
             stock-import-proof)   node scripts/ops/stock-import-proof.mjs ;;
             stock-reading-trace)  deno run -A --config supabase/functions/deno.json scripts/ops/stock-reading-trace.ts ;;
             stock-scan-proof)     node scripts/ops/stock-scan-proof.mjs ;;
+            stock-confirmation-proof) node scripts/ops/stock-confirmation-proof.mjs ;;
             stock-overlay-audit)  deno run -A --config supabase/functions/deno.json scripts/ops/stock-overlay-audit.ts ;;
           esac
