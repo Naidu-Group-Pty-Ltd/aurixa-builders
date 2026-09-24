@@ -24,7 +24,7 @@
  * pipeline's own classifier.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -51,7 +51,11 @@ import {
  * built inside the factory. Only the DATA is replaced: the page, its layout,
  * its copy and every rule it draws are the real ones.
  */
-const state = vi.hoisted(() => ({ held: [] as unknown[] }));
+const state = vi.hoisted(() => ({
+  held: [] as unknown[],
+  confirmCalls: [] as unknown[],
+  undoCalls: [] as unknown[],
+}));
 
 vi.mock('@/lib/builderStockQueries', () => {
   const noop = () => {};
@@ -91,6 +95,20 @@ vi.mock('@/lib/builderStockQueries', () => {
     useSetBuilderStockAvailability: mutation,
     useSetBuilderStockManualStats: mutation,
     useSupplyBuilderStockImage: mutation,
+    useConfirmBrochureImage: () => ({
+      ...idle,
+      mutate: (vars: unknown, options?: { onSuccess?: () => void }) => {
+        state.confirmCalls.push(vars);
+        options?.onSuccess?.();
+      },
+    }),
+    useUndoBrochureImage: () => ({
+      ...idle,
+      mutate: (vars: unknown, options?: { onSuccess?: () => void }) => {
+        state.undoCalls.push(vars);
+        options?.onSuccess?.();
+      },
+    }),
     importBuilderStockUrl: noop,
     uploadBuilderStockFile: noop,
     builderStockImageUrl: () => null,
@@ -394,5 +412,144 @@ describe('the listing states its own identity from its own row', () => {
     expect(stockItemIdentity({
       unit_number: null, lot_number: null, address_line: 'Wollert Rise', house_design: null,
     } as never)).toBe('');
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// "USE BROCHURE IMAGE" — THE BUILDER MAY CONFIRM, AND MAY UNDO
+// ---------------------------------------------------------------------------
+/*
+ * HELD OUT: written before the change. The refusal above is right to refuse —
+ * a cover that states another lot is how another house reaches a client's
+ * card — and it is also sometimes wrong about the builder's own brochure: Lot
+ * 1037 · Vanta 20's brochure states "Lot 1037" and "Vanta 20" on page 2 and
+ * mistypes the lot on its cover. So the builder is offered one professional
+ * choice, beside the explanation rather than instead of it, behind a
+ * confirmation that names both identities; and it is NOT offered where the
+ * product knows the brochure is another listing's own.
+ */
+
+describe('the builder may use the brochure image, deliberately', () => {
+  const URL = 'https://drive.google.com/file/d/brochure-1037/view?usp=drive_link';
+  const confirmable: Note = {
+    document: 'A document on drive.google.com',
+    detail: 'That document does not present a page as this property’s package cover, '
+      + 'so it names no image for it. Its first page reads “PACKAGE PRICELot 1307 '
+      + 'Fuchsia Street,”.',
+    finding: 'identity_mismatch',
+    states: 'Lot 1307',
+    quote: 'PACKAGE PRICELot 1307 Fuchsia Street,',
+    document_key: URL,
+    confirmable: true,
+  } as Note;
+
+  const button = () => screen.queryByRole('button', { name: 'Use brochure image' });
+
+  it('offers "Use brochure image" on a brochure whose details do not match', () => {
+    state.confirmCalls = [];
+    draw([lot1037([confirmable])]);
+    expect(button()).not.toBeNull();
+    // Beside the explanation, never instead of it.
+    expect(pageText()).toContain(STOCK_DOCUMENT_MISMATCH_COPY.heading);
+    expect(pageText()).toContain(STOCK_DOCUMENT_MISMATCH_COPY.action);
+  });
+
+  it('GUARD — offers nothing on any other refusal', () => {
+    draw([lot1037([{ document: 'Their-brochure.pdf', detail: 'no photograph in it' }])]);
+    expect(button()).toBeNull();
+  });
+
+  it('does not offer it where the brochure is another listing\'s own', () => {
+    draw([lot1037([{
+      ...confirmable, confirmable: false, in_use_by: { identity: 'Lot 1307 · Nex 20' },
+    } as Note])]);
+    expect(button()).toBeNull();
+    const text = pageText();
+    expect(text).toContain('Lot 1307 · Nex 20');
+    expect(text).toContain('already uses');
+  });
+
+  it('asks first, naming both identities', () => {
+    draw([lot1037([confirmable])]);
+    fireEvent.click(button()!);
+    const dialog = screen.getByRole('alertdialog');
+    const text = (dialog.textContent ?? '').replace(/\s+/g, ' ');
+    expect(text).toContain('Use the image from this brochure?');
+    expect(text).toContain('Lot 1037 · VANTA 20');
+    expect(text).toContain('Lot 1307');
+    // The two numbers share their digits: said as a possibility, never as a
+    // conclusion, because a transposition is also how a sibling's brochure
+    // comes to be linked on the wrong row.
+    expect(text).toMatch(/same digits in a different order/);
+    expect(text).toMatch(/can undo/i);
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeTruthy();
+  });
+
+  it('says so where another listing has the lot the brochure states', () => {
+    draw([lot1037([{ ...confirmable, stated_lot_listing: { identity: 'Lot 1307 · Nex 20' } } as Note])]);
+    fireEvent.click(button()!);
+    const text = (screen.getByRole('alertdialog').textContent ?? '').replace(/\s+/g, ' ');
+    expect(text).toContain('Lot 1307 · Nex 20');
+    expect(text).toMatch(/also in your stock list/);
+  });
+
+  it('confirms exactly the brochure and the lot the builder was shown', () => {
+    state.confirmCalls = [];
+    draw([lot1037([confirmable])]);
+    fireEvent.click(button()!);
+    fireEvent.click(within(screen.getByRole('alertdialog'))
+      .getByRole('button', { name: 'Confirm and use image' }));
+    expect(state.confirmCalls).toEqual([{
+      stockItemId: 'item-1037', documentKey: URL, states: 'Lot 1307',
+    }]);
+  });
+
+  it('nothing is confirmed by cancelling', () => {
+    state.confirmCalls = [];
+    draw([lot1037([confirmable])]);
+    fireEvent.click(button()!);
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }));
+    expect(state.confirmCalls).toEqual([]);
+  });
+});
+
+describe('a confirmed brochure says who confirmed it, and can be undone', () => {
+  const URL = 'https://drive.google.com/file/d/brochure-1037/view?usp=drive_link';
+  const withConfirmation = (over: Record<string, unknown>) => ({
+    ...lot1037([]),
+    brochure_confirmations: [{
+      id: 'conf-1', document: 'A document on drive.google.com', document_key: URL,
+      lot: '1307', states: 'Lot 1307', confirmed_by: 'Alex Builder',
+      confirmed_at: '2026-09-24T09:30:00.000Z', state: 'pending', ...over,
+    }],
+  } as unknown as BuilderStockItem);
+
+  it('names who confirmed it, and no longer shows the mismatch', () => {
+    draw([withConfirmation({})]);
+    const text = pageText();
+    expect(text).toContain('Brochure image confirmed by Alex Builder');
+    expect(text).not.toContain(STOCK_DOCUMENT_MISMATCH_COPY.heading);
+    expect(screen.queryByRole('button', { name: 'Use brochure image' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeTruthy();
+  });
+
+  it('says why, where the confirmed brochure\'s image still could not be used', () => {
+    draw([withConfirmation({
+      state: 'not_applied',
+      detail: 'Every picture on the property cover is a plan or a graphic.',
+    })]);
+    expect(pageText()).toContain('Every picture on the property cover is a plan or a graphic.');
+  });
+
+  it('undoes only after asking, and undoes exactly that confirmation', () => {
+    state.undoCalls = [];
+    draw([withConfirmation({ state: 'applied' })]);
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    const dialog = screen.getByRole('alertdialog');
+    expect((dialog.textContent ?? '')).toContain('Undo brochure confirmation?');
+    expect(state.undoCalls).toEqual([]);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Undo confirmation' }));
+    expect(state.undoCalls).toEqual([{ stockItemId: 'item-1037', confirmationId: 'conf-1' }]);
   });
 });
