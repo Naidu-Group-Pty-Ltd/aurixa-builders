@@ -40,8 +40,9 @@
  */
 import { driveFileId, driveFolderId } from './drivePackage.pure.ts';
 import {
-  NO_DETERMINISTIC_IMAGE, negativeProvenanceStillStands,
-  type ProvenanceQuestion,
+  NO_DETERMINISTIC_IMAGE, identityConfirmationHolds, negativeProvenanceStillStands,
+  withIdentityConfirmation,
+  type IdentityConfirmationRef, type ProvenanceQuestion,
 } from './negativeProvenance.pure.ts';
 
 /**
@@ -63,14 +64,14 @@ export function recordImageRecovered(
   reference: string,
   now: () => Date = () => new Date(),
 ) {
-  return {
+  return withIdentityConfirmation({
     result: BRANCH_IMAGE_RECOVERED,
     provenance_version: question.provenanceVersion,
     package_reference: question.packageReference,
     source_anchor: question.sourceAnchor,
     stored_reference: String(reference ?? '').slice(0, 200),
     checked_at: now().toISOString(),
-  };
+  }, question.identityConfirmation);
 }
 import {
   PACKAGE_RECOVERY_ATTEMPT, packageAttemptsExhausted,
@@ -332,15 +333,27 @@ export function branchRecord(stored: unknown, url: string): unknown {
   return readBranchState(stored)[url] ?? null;
 }
 
+/**
+ * The confirmations that hold for one property, by the branch they are about.
+ *
+ * Keyed by the branch URL exactly as the row carries it — the same key its
+ * stored answer lives under — because a confirmation is about ONE link on ONE
+ * row, and a different link to the same file is a different question.
+ */
+export type IdentityConfirmationsByBranch = ReadonlyMap<string, IdentityConfirmationRef>;
+
 /** The question asked of one branch. Its URL is the reference. */
 export function branchQuestion(
   branch: RowSourceBranch,
   provenanceVersion: number,
   sourceAnchor: string | null,
   runtimeVersion: number = RUNTIME_VERSION,
+  /** See `IdentityConfirmationsByBranch`. Absent: nobody confirmed anything. */
+  confirmations?: IdentityConfirmationsByBranch | null,
 ): ProvenanceQuestion {
   return {
     provenanceVersion, packageReference: branch.url, sourceAnchor, runtimeVersion,
+    identityConfirmation: confirmations?.get(branch.url) ?? null,
   };
 }
 
@@ -385,9 +398,12 @@ export function branchTerminal(
     return packageAttemptsExhausted(record, question);
   }
   // A branch that delivered its photograph is finished. Version/anchor were
-  // already compared above; an older success reopens like any other answer.
+  // already compared above; an older success reopens like any other answer —
+  // and so does one delivered under a confirmation the builder has since
+  // undone, because the photograph was the answer to THAT question.
   if (record.result === BRANCH_IMAGE_RECOVERED) {
-    return Number(record.provenance_version) >= question.provenanceVersion;
+    return Number(record.provenance_version) >= question.provenanceVersion
+      && identityConfirmationHolds(record, question.identityConfirmation);
   }
   return false;
 }
@@ -407,10 +423,11 @@ export function openBranches(
   provenanceVersion: number,
   sourceAnchor: string | null,
   runtimeVersion: number = RUNTIME_VERSION,
+  confirmations?: IdentityConfirmationsByBranch | null,
 ): RowSourceBranch[] {
   return branches.filter((branch) => !branchTerminal(
     stored, branch,
-    branchQuestion(branch, provenanceVersion, sourceAnchor, runtimeVersion)));
+    branchQuestion(branch, provenanceVersion, sourceAnchor, runtimeVersion, confirmations)));
 }
 
 /**
@@ -457,7 +474,9 @@ export function allBranchesTerminal(
   provenanceVersion: number,
   sourceAnchor: string | null,
   runtimeVersion: number = RUNTIME_VERSION,
+  confirmations?: IdentityConfirmationsByBranch | null,
 ): boolean {
   return openBranches(
-    stored, branches, provenanceVersion, sourceAnchor, runtimeVersion).length === 0;
+    stored, branches, provenanceVersion, sourceAnchor, runtimeVersion, confirmations,
+  ).length === 0;
 }

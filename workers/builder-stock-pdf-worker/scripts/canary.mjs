@@ -222,6 +222,51 @@ const auth = { authorization: `Bearer ${tokenArg}` };
   console.log(`\nelection wall-clock: ${elapsed} ms`);
 }
 
+// ---- 3b. the protocol a request is asked in -------------------------------
+/*
+ * A REQUEST IS ANSWERED IN THE PROTOCOL IT WAS ASKED IN, and that is what lets
+ * the two lanes deploy in either order. The settler asks an election nobody
+ * confirmed anything about under the OLDEST protocol it speaks — byte for byte
+ * what every earlier worker reads — and only a builder-confirmed one under the
+ * newest. So this worker must still elect an oldest-protocol request and answer
+ * it in that protocol, carry a confirmation under the newest and answer in the
+ * newest, and refuse a confirmation it cannot vouch for rather than electing
+ * the unconfirmed question and having it filed as the confirmed one's answer.
+ */
+{
+  const OLDEST = sourceConstant(
+    'supabase/functions/_shared/builderStock/pdfElectionBoundary.pure.ts',
+    'OLDEST_PDF_ELECTION_PROTOCOL');
+  const lot = /Lot\s+(\d{1,5})/.exec(CONTEXT.label)?.[1] ?? '717';
+  const askedIn = async (fields) => {
+    const header = Buffer.from(JSON.stringify({ ...CONTEXT, ...fields }), 'utf8')
+      .toString('base64');
+    const res = await call('/v1/elect', {
+      method: 'POST',
+      body: PDF,
+      headers: { ...auth, 'content-type': 'application/pdf', 'x-election-context': header },
+    });
+    return { status: res.status, body: await res.json().catch(() => ({})) };
+  };
+
+  const unconfirmed = await askedIn({ protocol: OLDEST });
+  check(`a protocol-${OLDEST} request is still elected`, unconfirmed.body.status === 'recovered',
+    `status ${unconfirmed.status} ${String(unconfirmed.body.status)}`);
+  check(`and answered in protocol ${OLDEST}, the one it was asked in`,
+    unconfirmed.body.protocol === OLDEST, String(unconfirmed.body.protocol));
+
+  const confirmed = await askedIn({ protocol: PROTOCOL, confirmedLots: [lot] });
+  check('a request carrying a builder\'s confirmation is elected',
+    confirmed.body.status === 'recovered',
+    `status ${confirmed.status} ${String(confirmed.body.status)}`);
+  check(`and answered in protocol ${PROTOCOL}`, confirmed.body.protocol === PROTOCOL,
+    String(confirmed.body.protocol));
+
+  const unvouched = await askedIn({ protocol: PROTOCOL, confirmedLots: [`Lot ${lot}`] });
+  check('a confirmation it cannot vouch for is refused 400, never elected without it',
+    unvouched.status === 400, `status ${unvouched.status}`);
+}
+
 // ---- 4. a document the size of the ones the edge could not finish ---------
 /*
  * WHY THIS IS OPTIONAL AND GENERATED. The whole reason this worker exists is a

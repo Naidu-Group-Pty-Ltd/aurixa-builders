@@ -33,8 +33,13 @@
  */
 import { isPrimaryRole, readStoredRole } from './sourceImageRole.pure.ts';
 import {
-  DOCUMENT_IDENTITY_MISMATCH, isDocumentFinding, type DocumentFinding,
+  DOCUMENT_IDENTITY_MISMATCH, IDENTITY_CONFIRMATION_KEY, NO_DETERMINISTIC_IMAGE,
+  isDocumentFinding, type DocumentFinding,
 } from './negativeProvenance.pure.ts';
+import {
+  brochureInUseByAnotherProperty, confirmedLotOf, isConfirmableBranch, sameDocument,
+  statedLotListing, type ListingReference, type StockRowForConfirmation,
+} from './brochureConfirmation.pure.ts';
 
 /** The ladder's last rung. Everything before it is work outstanding. */
 export const FAILED_WORK_STAGE = 'failed';
@@ -390,6 +395,37 @@ export interface StockDocumentNote {
   states?: string;
   /** The page's own most identifying lines, verbatim. May be empty. */
   quote?: string;
+  /**
+   * THE LINK A MISMATCH IS ABOUT, exactly as the builder's own row carries it
+   * — on a mismatch and nowhere else, because it is what "Use brochure image"
+   * names when it asks the server to record a confirmation. The server treats
+   * it as a lookup key and re-reads the stored finding under it; it is never
+   * authority. It is the builder's own link, shown to the builder.
+   */
+  document_key?: string;
+  /**
+   * WHETHER "USE BROCHURE IMAGE" IS OFFERED. On a mismatch alone, and false
+   * wherever the product knows the answer already: the link is not one
+   * document, or another listing already uses this brochure's photograph for
+   * the lot it states (`in_use_by`). See `withConfirmationChoices`.
+   */
+  confirmable?: boolean;
+  /** The listing that already uses this brochure's photograph. Refuses the choice. */
+  in_use_by?: ListingReference;
+  /** A listing whose lot is the one the brochure states. Cautions, never refuses. */
+  stated_lot_listing?: ListingReference;
+}
+
+/**
+ * A builder's confirmation, as the notes and the screen read it.
+ *
+ * `document` is the branch key the confirmation was recorded against, and
+ * `lot` the digits of the lot the brochure's image page states.
+ */
+export interface StockBrochureConfirmationInput {
+  id: string;
+  document: string;
+  lot: string;
 }
 
 /**
@@ -412,6 +448,47 @@ export const STOCK_DOCUMENT_MISMATCH_COPY = {
   action: 'Check the brochure linked to this property, or add the correct property image.',
 } as const;
 
+/**
+ * THE WORDS FOR "USE BROCHURE IMAGE", IN ONE PLACE — for the reason the
+ * mismatch copy above is here. The server's refusals and the portal's dialog
+ * both read them, so a builder is told the same thing wherever they are told.
+ */
+export const STOCK_BROCHURE_CONFIRMATION_COPY = {
+  action: 'Use brochure image',
+  dialogTitle: 'Use the image from this brochure?',
+  dialogBody: (states: string, listing: string) =>
+    `The brochure\u2019s image page identifies ${states}, but this listing is `
+    + `${listing}. Only continue if this brochure is for this property.`,
+  transposed: 'The two lot numbers use the same digits in a different order. That is '
+    + 'often a typing error in the brochure or in the stock list, so check which one '
+    + 'is right before you continue.',
+  statedLotListing: (identity: string) => `${identity} is also in your stock list.`,
+  checks: 'The image still has to pass the usual photo checks before it is shown, '
+    + 'and you can undo this at any time.',
+  cancel: 'Cancel',
+  confirm: 'Confirm and use image',
+  confirmedToastTitle: 'Brochure image confirmed',
+  confirmedToastBody: (listing: string) =>
+    `The image from this brochure will be added to ${listing} shortly.`,
+  inUse: (identity: string) => `This brochure belongs to ${identity} in your stock list, `
+    + 'which already uses its image, so it can\u2019t be used for this property as well.',
+  confirmedBy: (name: string, date: string) =>
+    `Brochure image confirmed by ${name}${date ? ` on ${date}` : ''}.`,
+  pending: 'Adding the image from the brochure\u2026',
+  notApplied: 'The brochure\u2019s image page still couldn\u2019t be used for this property:',
+  unreadable: 'The brochure couldn\u2019t be read just now, so its image hasn\u2019t been added.',
+  unlinked: 'This brochure is no longer linked to this property in your stock list, so the '
+    + 'confirmation no longer applies.',
+  undo: 'Undo',
+  undoTitle: 'Undo brochure confirmation?',
+  undoBody: 'The image from this brochure will be removed from this listing, and the '
+    + 'brochure will be shown as not matching this property again.',
+  undoKeep: 'Keep it',
+  undoConfirm: 'Undo confirmation',
+  undoneToastTitle: 'Confirmation undone',
+  undoneToastBody: 'The brochure image has been removed from this listing.',
+} as const;
+
 /** Does this row carry a brochure that names somebody else's property? */
 export function hasDocumentIdentityMismatch(
   notes: readonly StockDocumentNote[] | null | undefined,
@@ -425,10 +502,18 @@ export const MAX_STOCK_DOCUMENT_NOTES = 4;
 export function stockDocumentNotes(
   storedProvenance: unknown,
   limit: number = MAX_STOCK_DOCUMENT_NOTES,
+  /**
+   * The confirmations this property holds. A refusal the builder has since
+   * confirmed against, or an answer reached under a confirmation that still
+   * holds, is drawn as that confirmation (`brochureConfirmationStates`) and
+   * not as a note — the same fact twice is how a card says two things.
+   */
+  options: { confirmations?: readonly StockBrochureConfirmationInput[] | null } = {},
 ): StockDocumentNote[] {
   const root = storedProvenance as { branches?: Record<string, unknown> } | null;
   const branches = root && typeof root === 'object' ? root.branches : null;
   if (!branches || typeof branches !== 'object') return [];
+  const confirmations = options.confirmations ?? [];
   const notes: StockDocumentNote[] = [];
   for (const [key, value] of Object.entries(branches)) {
     if (notes.length >= Math.max(0, limit)) break;
@@ -436,10 +521,14 @@ export function stockDocumentNotes(
     const record = value as {
       result?: unknown; exhaustion?: unknown; detail?: unknown;
       finding?: unknown; finding_evidence?: unknown;
+      identity_confirmation?: { id?: unknown } | null;
     };
     if (record.result !== 'no_deterministic_image') continue;
     // The one gate. `operational` is ours and never leaves this side.
     if (record.exhaustion !== 'inspected') continue;
+    // Drawn as the confirmation it was reached under, or confirmed against.
+    const stamp = record.identity_confirmation?.id;
+    if (stamp && confirmations.some((c) => c.id === String(stamp))) continue;
     const detail = typeof record.detail === 'string' ? record.detail.trim() : '';
     if (!detail) continue;
     const note: StockDocumentNote = { document: documentLabel(key), detail };
@@ -453,13 +542,170 @@ export function stockDocumentNotes(
     const evidence = record.finding_evidence as Record<string, unknown> | undefined;
     const states = typeof evidence?.states === 'string' ? evidence.states.trim() : '';
     if (isDocumentFinding(record.finding) && states) {
+      const lot = confirmedLotOf(states);
+      if (!stamp && lot && confirmations.some((c) =>
+        c.lot === lot && sameDocument(c.document, key))) continue;
       note.finding = record.finding;
       note.states = states;
       note.quote = typeof evidence?.quote === 'string' ? evidence.quote.trim() : '';
+      note.document_key = key;
     }
     notes.push(note);
   }
   return notes;
+}
+
+/** What became of a builder's confirmation, as their screen says it. */
+export type StockBrochureConfirmationState =
+  /** The brochure has not been read again under it yet. */
+  | 'pending'
+  /** Read under it, and its image page gave the property its picture. */
+  | 'applied'
+  /** Read under it, and the page still could not be this property's cover. */
+  | 'not_applied'
+  /** We could not read the brochure under it. Ours, never the document's. */
+  | 'unreadable'
+  /**
+   * The row no longer links that brochure — the stock list was re-imported
+   * with another link — so nothing will ever read it under the confirmation.
+   * Said, rather than left reading "pending" for ever.
+   */
+  | 'unlinked';
+
+export interface StockBrochureConfirmationReading extends StockBrochureConfirmationInput {
+  state: StockBrochureConfirmationState;
+  /** The recorded reason, verbatim, for `not_applied` alone. */
+  detail?: string;
+}
+
+/**
+ * WHAT BECAME OF EACH CONFIRMATION, read from the stored answer for its
+ * document and nothing else.
+ *
+ * An answer counts only where it was reached under THIS confirmation — the
+ * stamp — so a picture the brochure gave before, or a refusal recorded under
+ * a confirmation since replaced, says nothing about this one. `unreadable`
+ * carries no reason: an answer about OUR failure never leaves this side, the
+ * same rule `stockDocumentNotes` keeps.
+ */
+export function brochureConfirmationStates(
+  storedProvenance: unknown,
+  confirmations: readonly StockBrochureConfirmationInput[] | null | undefined,
+  options: {
+    /**
+     * The links the row carries NOW, exactly as the settler derives its
+     * branches. Absent: not known, and nothing is said about it.
+     */
+    linkedDocuments?: ReadonlySet<string> | null;
+  } = {},
+): StockBrochureConfirmationReading[] {
+  const root = storedProvenance as { branches?: Record<string, unknown> } | null;
+  const branches = root && typeof root === 'object' && root.branches
+    && typeof root.branches === 'object' ? root.branches : {};
+  return (confirmations ?? []).map((confirmation) => {
+    if (options.linkedDocuments && !options.linkedDocuments.has(confirmation.document)) {
+      return { ...confirmation, state: 'unlinked' as const };
+    }
+    const record = (branches as Record<string, unknown>)[confirmation.document] as {
+      result?: unknown; exhaustion?: unknown; detail?: unknown;
+      [IDENTITY_CONFIRMATION_KEY]?: { id?: unknown } | null;
+    } | undefined;
+    const stamped = !!record
+      && String(record[IDENTITY_CONFIRMATION_KEY]?.id ?? '') === confirmation.id;
+    if (!stamped || !record) return { ...confirmation, state: 'pending' as const };
+    if (record.result === NO_DETERMINISTIC_IMAGE) {
+      if (record.exhaustion !== 'inspected') return { ...confirmation, state: 'unreadable' as const };
+      const detail = typeof record.detail === 'string' ? record.detail.trim() : '';
+      return { ...confirmation, state: 'not_applied' as const, ...(detail ? { detail } : {}) };
+    }
+    if (record.result === 'image_recovered') return { ...confirmation, state: 'applied' as const };
+    return { ...confirmation, state: 'pending' as const };
+  });
+}
+
+/**
+ * WHAT A BUILDER MAY DO ABOUT EACH MISMATCH, decided from the organisation's
+ * own listings and nothing the page sent.
+ *
+ * `listings` are the organisation's live listings whose lot is one a mismatch
+ * states (`readListingsWithLots`). Null means they could not be read: the
+ * choice is still offered where the link allows it, because the act re-reads
+ * them and refuses there — the page cannot confirm anything the server has
+ * not checked — and a caution the product cannot vouch for is left unsaid.
+ */
+export function withConfirmationChoices(
+  notes: readonly StockDocumentNote[],
+  input: {
+    stockItemId: string;
+    suburb?: unknown;
+    developmentName?: unknown;
+    listings: readonly StockRowForConfirmation[] | null;
+  },
+): StockDocumentNote[] {
+  return notes.map((note) => {
+    if (note.finding !== DOCUMENT_IDENTITY_MISMATCH || !note.document_key || !note.states) return note;
+    const lot = confirmedLotOf(note.states);
+    if (!lot) return { ...note, confirmable: false };
+    const inUse = input.listings
+      ? brochureInUseByAnotherProperty(input.listings, {
+        stockItemId: input.stockItemId, documentReference: note.document_key, statedLot: lot,
+      })
+      : null;
+    const stated = input.listings && !inUse
+      ? statedLotListing(input.listings, {
+        stockItemId: input.stockItemId, statedLot: lot,
+        suburb: input.suburb, developmentName: input.developmentName,
+      })
+      : null;
+    return {
+      ...note,
+      confirmable: isConfirmableBranch(note.document_key) && !inUse,
+      ...(inUse ? { in_use_by: inUse } : {}),
+      ...(stated ? { stated_lot_listing: stated } : {}),
+    };
+  });
+}
+
+/** A confirmation as the builder's screen draws it. */
+export interface StockBrochureConfirmationView {
+  id: string;
+  /** The document, as a person would name it. */
+  document: string;
+  /** The link exactly as the row carries it. */
+  document_key: string;
+  lot: string;
+  /** What the brochure's image page states, as the mismatch said it. */
+  states: string;
+  confirmed_by: string;
+  confirmed_at: string;
+  state: StockBrochureConfirmationState;
+  detail?: string;
+}
+
+/**
+ * Each standing confirmation, with what became of it, for the screen. The
+ * reading is `brochureConfirmationStates`; this only names the document the
+ * way every other line on the page names it.
+ */
+export function brochureConfirmationViews(
+  storedProvenance: unknown,
+  confirmations: ReadonlyArray<StockBrochureConfirmationInput & {
+    confirmed_by?: unknown; confirmed_at?: unknown;
+  }> | null | undefined,
+  options: { linkedDocuments?: ReadonlySet<string> | null } = {},
+): StockBrochureConfirmationView[] {
+  const list = confirmations ?? [];
+  return brochureConfirmationStates(storedProvenance, list, options).map((reading, index) => ({
+    id: reading.id,
+    document: documentLabel(reading.document),
+    document_key: reading.document,
+    lot: reading.lot,
+    states: `Lot ${reading.lot}`,
+    confirmed_by: String(list[index]?.confirmed_by ?? '').trim() || 'A builder',
+    confirmed_at: String(list[index]?.confirmed_at ?? ''),
+    state: reading.state,
+    ...(reading.detail ? { detail: reading.detail } : {}),
+  }));
 }
 
 /**

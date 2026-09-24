@@ -19,7 +19,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ELECTION_CONTEXT_HEADER, ELECTION_TIMEOUT_MS, MAX_DOCUMENT_BYTES,
-  PDF_ELECTION_PROTOCOL, base64ToBytes, bytesToBase64,
+  PDF_ELECTION_PROTOCOL, base64ToBytes, bytesToBase64, electionProtocolFor,
   decodeElectionContext, encodeElectionContext,
 } from '../../../supabase/functions/_shared/builderStock/pdfElectionBoundary.pure';
 import {
@@ -54,9 +54,16 @@ const PRODUCTION_READER = readPdfPageTextResult;
 describe('the wire between the settler and the PDF worker', () => {
   it('carries a context through base64 and back unchanged', () => {
     const decoded = decodeElectionContext(encodeElectionContext(CONTEXT));
+    /*
+     * ASKED UNDER THE LOWEST PROTOCOL THAT CAN CARRY IT. A context nobody
+     * confirmed anything about is protocol 2 on the wire, byte for byte what
+     * every deployed worker already reads, and decodes with no confirmed lots.
+     */
     expect(decoded).toEqual({
-      protocol: PDF_ELECTION_PROTOCOL, provenanceVersion: PROVENANCE_VERSION, ...CONTEXT,
+      protocol: electionProtocolFor(CONTEXT), provenanceVersion: PROVENANCE_VERSION, ...CONTEXT,
+      confirmedLots: [],
     });
+    expect(electionProtocolFor(CONTEXT)).toBe(2);
   });
 
   /**
@@ -267,6 +274,8 @@ describe('the client cannot invent a verdict about a builder’s document', () =
     vi.restoreAllMocks();
   });
 
+  /** The protocol this unconfirmed election is asked in, and so answered in. */
+  const ASKED = electionProtocolFor(CONTEXT);
   const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
     status, headers: { 'content-type': 'application/json' },
   });
@@ -274,7 +283,7 @@ describe('the client cannot invent a verdict about a builder’s document', () =
   const run = () => runElectionOnRoute(SOME_PDF, PRODUCTION_READER, CONTEXT, ROUTE);
 
   it('sends the document as the raw body with the context in its header', async () => {
-    fetchMock.mockResolvedValue(reply({ protocol: PDF_ELECTION_PROTOCOL, status: 'not_identified', detail: 'x' }));
+    fetchMock.mockResolvedValue(reply({ protocol: ASKED, status: 'not_identified', detail: 'x' }));
     await run();
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toBe('https://pdf.example.workers.dev/v1/elect');
@@ -298,26 +307,29 @@ describe('the client cannot invent a verdict about a builder’s document', () =
     ['the answer is not JSON', () => fetchMock.mockResolvedValue(new Response('<html>502</html>', { status: 200 }))],
     ['the answer speaks another protocol', () => fetchMock.mockResolvedValue(
       reply({ protocol: PDF_ELECTION_PROTOCOL + 1, status: 'not_identified', detail: 'x' }))],
+    // An answer to the CONFIRMED question, filed against an unconfirmed one.
+    ['the answer speaks a protocol it was not asked in', () => fetchMock.mockResolvedValue(
+      reply({ protocol: PDF_ELECTION_PROTOCOL, status: 'not_identified', detail: 'x' }))],
     ['the answer is an outcome we do not know', () => fetchMock.mockResolvedValue(
-      reply({ protocol: PDF_ELECTION_PROTOCOL, status: 'elected_probably' }))],
+      reply({ protocol: ASKED, status: 'elected_probably' }))],
     ['the answer has no usable image', () => fetchMock.mockResolvedValue(
-      reply({ protocol: PDF_ELECTION_PROTOCOL, status: 'recovered', image: { bytes: 'AA==' } }))],
+      reply({ protocol: ASKED, status: 'recovered', image: { bytes: 'AA==' } }))],
     ['the image will not decode', () => fetchMock.mockResolvedValue(reply({
-      protocol: PDF_ELECTION_PROTOCOL, status: 'recovered',
+      protocol: ASKED, status: 'recovered',
       image: {
         bytes: '!!!not base64!!!', contentType: 'image/png',
         reference: `${CONTEXT.documentName}#page1:Im0`, provenance: { page: 1 }, role: { role: 'primary' },
       },
     }))],
     ['the image is empty', () => fetchMock.mockResolvedValue(reply({
-      protocol: PDF_ELECTION_PROTOCOL, status: 'recovered',
+      protocol: ASKED, status: 'recovered',
       image: {
         bytes: '', contentType: 'image/png',
         reference: `${CONTEXT.documentName}#page1:Im0`, provenance: { page: 1 }, role: { role: 'primary' },
       },
     }))],
     ['the answer is about a different document', () => fetchMock.mockResolvedValue(reply({
-      protocol: PDF_ELECTION_PROTOCOL, status: 'recovered',
+      protocol: ASKED, status: 'recovered',
       image: {
         bytes: bytesToBase64(new Uint8Array([1, 2, 3])), contentType: 'image/png',
         reference: 'SOMEBODY ELSE.pdf#page1:Im0', provenance: { page: 1 }, role: { role: 'primary' },
@@ -331,7 +343,7 @@ describe('the client cannot invent a verdict about a builder’s document', () =
 
   it('relays not_identified only because the worker read the document and said so', async () => {
     fetchMock.mockResolvedValue(reply({
-      protocol: PDF_ELECTION_PROTOCOL,
+      protocol: ASKED,
       status: 'not_identified',
       detail: 'That document does not present a page as this property’s package cover.',
     }));
@@ -343,7 +355,7 @@ describe('the client cannot invent a verdict about a builder’s document', () =
   it('returns the elected image with the provenance the worker proved', async () => {
     const pixels = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 99, 99]);
     fetchMock.mockResolvedValue(reply({
-      protocol: PDF_ELECTION_PROTOCOL,
+      protocol: ASKED,
       status: 'recovered',
       image: {
         bytes: bytesToBase64(pixels),

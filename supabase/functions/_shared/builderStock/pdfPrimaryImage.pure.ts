@@ -304,6 +304,91 @@ function pageLotDesignations(text: string): { singular: LotReading[]; listed: st
 }
 
 /**
+ * A LOT DESIGNATION AS IT IS TYPED, where a builder's confirmation is in play.
+ *
+ * `lotDesignationReadings` reads the TOKEN stream, and a PDF's text layer glues
+ * runs together: the measured cover reads `PACKAGE PRICELot 1307 Fuchsia
+ * Street,`, so the token `lot` never appears and the token readings see no lot
+ * on that page at all. The finding "this brochure states Lot 1307" was reached
+ * by reading that shape — see the function at the foot of this file that names
+ * another lot — and a confirmation is an answer to THAT finding, so it has to
+ * be matched by the reading that made it. One pattern, named once, read by
+ * both.
+ *
+ * No word boundary before `lot`, for the reason above. A stray `ballot 5` reads
+ * as a lot, which under a confirmation can only REFUSE a page (it is nobody's
+ * lot), never admit one.
+ */
+const TYPED_LOT_DESIGNATION = /(?:lot|unit)\s*\.?\s*(\d{1,5})((?:[ \t]+\d{1,5})*)/gi;
+
+/**
+ * Every lot a page designates as typed, strictly and fused, over the page
+ * with its lists taken out — the lot a list names is weighed separately, as
+ * it is for the token readings.
+ */
+function typedLotReadings(text: string): LotReading[] {
+  let rest = String(text ?? '');
+  for (const list of lotListsIn(rest).reverse()) {
+    rest = `${rest.slice(0, list.start)} ${rest.slice(list.end)}`;
+  }
+  return Array.from(rest.matchAll(TYPED_LOT_DESIGNATION), (match) => {
+    let fused = match[1];
+    for (const run of String(match[2] ?? '').trim().split(/[ \t]+/).filter(Boolean)) {
+      if (fused.length + run.length > 5) break;
+      fused += run;
+    }
+    return { strict: match[1], fused };
+  });
+}
+
+/**
+ * THE LOTS A BUILDER HAS CONFIRMED THIS DOCUMENT MAY DESIGNATE FOR THIS
+ * PROPERTY, and nothing a page could echo.
+ *
+ * A confirmation is recorded against one brochure on one property and names
+ * the lot that brochure's image page states — see `brochureConfirmation.pure.ts`.
+ * Here it is only ever digits: a word, an empty string or a malformed number
+ * is dropped rather than compared, so a confirmation can never be read as
+ * "every page that says Kestrel".
+ */
+export function confirmedLotsOf(values: readonly unknown[] | null | undefined): string[] {
+  const lots = (values ?? [])
+    .map((value) => (typeof value === 'string' ? value.trim() : ''))
+    .filter((value) => /^\d{1,5}$/.test(value));
+  return [...new Set(lots)].slice(0, 4);
+}
+
+/**
+ * WHAT A PAGE DESIGNATES, AND WHICH OF IT COUNTS AS THIS PROPERTY'S.
+ *
+ * WITHOUT A CONFIRMATION this is exactly the reading the rule has always
+ * spent: the token readings, the page's lists, and the label's own lots.
+ *
+ * WITH ONE, the builder has said this brochure's image page — which states a
+ * lot other than the listing's — is this property's. So the confirmed lot
+ * counts as ours, and the page is read AS TYPED as well as by tokens, because
+ * that is the reading that found the lot in the first place. Both readings are
+ * then held to rule 2: every lot the page states, however it is typeset, must
+ * be the listing's or the one confirmed. A confirmation relaxes the lot and
+ * nothing else — it can never make a page naming a THIRD lot anybody's.
+ */
+function pageIdentityReadings(
+  pageText: string,
+  labelLots: readonly string[],
+  confirmedLots: readonly unknown[] | null | undefined,
+): { ours: string[]; readings: LotReading[]; listed: string[]; confirmed: string[] } {
+  const confirmed = confirmedLotsOf(confirmedLots);
+  const { singular, listed } = pageLotDesignations(pageText);
+  if (!confirmed.length) return { ours: [...labelLots], readings: singular, listed, confirmed };
+  return {
+    ours: [...labelLots, ...confirmed],
+    readings: [...singular, ...typedLotReadings(pageText)],
+    listed,
+    confirmed,
+  };
+}
+
+/**
  * The design or product a label names in brackets — "[Miami 190]".
  *
  * The SECOND discriminator, and on the live list it is the only one that
@@ -412,6 +497,8 @@ export function coverIdentityRefusal(
   label: string,
   identityHints: readonly string[] = [],
   soleProperty = false,
+  /** Lots the builder confirmed this document may designate. See `pageIdentityReadings`. */
+  confirmedLots: readonly unknown[] = [],
 ): CoverIdentityRefusal | null {
   const labelTokens = tokenise(label);
   if (labelTokens.length < MIN_IDENTITY_TOKENS) return 'too few identity tokens';
@@ -425,13 +512,13 @@ export function coverIdentityRefusal(
       ? null : 'nothing on the page corroborates the lot';
   }
 
-  const { singular, listed } = pageLotDesignations(pageText);
+  const { ours, readings, listed } = pageIdentityReadings(pageText, labelLots, confirmedLots);
   const readsAsOurs = (reading: LotReading) =>
-    labelLots.includes(reading.strict) || labelLots.includes(reading.fused);
-  if (!singular.some(readsAsOurs) && !listed.some((lot) => labelLots.includes(lot))) {
+    ours.includes(reading.strict) || ours.includes(reading.fused);
+  if (!readings.some(readsAsOurs) && !listed.some((lot) => ours.includes(lot))) {
     return 'the page does not state this lot';
   }
-  if (!soleProperty && singular.some((reading) => !readsAsOurs(reading))) {
+  if (!soleProperty && readings.some((reading) => !readsAsOurs(reading))) {
     return 'the page states another lot';
   }
 
@@ -439,14 +526,14 @@ export function coverIdentityRefusal(
   if (design.length && !design.every(states)) return 'the page does not state this design';
 
   const corroborating = labelTokens.filter((token) =>
-    token !== 'lot' && token !== 'unit' && !labelLots.includes(token)
+    token !== 'lot' && token !== 'unit' && !ours.includes(token)
     && !design.includes(token));
   if (!corroborating.length) return null;
   if (corroborating.some(states)) return null;
   return identityHints
     .flatMap((hint) => tokenise(hint))
     .filter((token) =>
-      token !== 'lot' && token !== 'unit' && !labelLots.includes(token)
+      token !== 'lot' && token !== 'unit' && !ours.includes(token)
       && !design.includes(token))
     .some(states)
     ? null : 'nothing on the page corroborates the lot';
@@ -475,6 +562,12 @@ function pageStatesIdentity(
    * `anchorPdfRowsToPages`.
    */
   soleProperty = false,
+  /**
+   * Lots the builder confirmed this document may designate for this property.
+   * Empty — every caller but a confirmed election — and the rule below is
+   * exactly the rule it has always been. See `pageIdentityReadings`.
+   */
+  confirmedLots: readonly unknown[] = [],
 ): boolean {
   const labelTokens = tokenise(label);
   if (labelTokens.length < MIN_IDENTITY_TOKENS) return false;
@@ -490,17 +583,18 @@ function pageStatesIdentity(
 
   // 1 — the lot is stated, as a lot. A number the exporter split into runs
   // is read whole as well as strictly — see `lotDesignationReadings` — and a
-  // lot a LIST names is stated too — see `lotListsIn`.
-  const { singular, listed } = pageLotDesignations(pageText);
+  // lot a LIST names is stated too — see `lotListsIn`. Under a confirmation
+  // the confirmed lot is ours as well, read as typed as well as by token.
+  const { ours, readings, listed } = pageIdentityReadings(pageText, labelLots, confirmedLots);
   const readsAsOurs = (reading: LotReading) =>
-    labelLots.includes(reading.strict) || labelLots.includes(reading.fused);
-  if (!singular.some(readsAsOurs) && !listed.some((lot) => labelLots.includes(lot))) return false;
+    ours.includes(reading.strict) || ours.includes(reading.fused);
+  if (!readings.some(readsAsOurs) && !listed.some((lot) => ours.includes(lot))) return false;
 
   // 2 — and no other lot is the page's own: a run is another lot only when
   // NEITHER of its readings is ours. A list is not weighed here: it names the
   // lots that share something with the subject, never which lot the subject
   // is. Waived for a sole-property document — see the parameter.
-  if (!soleProperty && singular.some((reading) => !readsAsOurs(reading))) return false;
+  if (!soleProperty && readings.some((reading) => !readsAsOurs(reading))) return false;
 
   // 3 — the design, when the label names one.
   const design = designTokens(label);
@@ -517,7 +611,7 @@ function pageStatesIdentity(
    * sparsely described, which is not evidence about the document.
    */
   const corroborating = labelTokens.filter((token) =>
-    token !== 'lot' && token !== 'unit' && !labelLots.includes(token)
+    token !== 'lot' && token !== 'unit' && !ours.includes(token)
     && !design.includes(token));
   if (!corroborating.length) return true;
   if (corroborating.some(states)) return true;
@@ -526,7 +620,7 @@ function pageStatesIdentity(
   return identityHints
     .flatMap((hint) => tokenise(hint))
     .filter((token) =>
-      token !== 'lot' && token !== 'unit' && !labelLots.includes(token)
+      token !== 'lot' && token !== 'unit' && !ours.includes(token)
       && !design.includes(token))
     .some(states);
 }
@@ -557,18 +651,53 @@ export function findPropertyCoverPages(
   identityHints: readonly string[] = [],
   /** See `pageStatesIdentity` — waives the other-lot veto for a lone property. */
   soleProperty = false,
+  /** See `pageStatesIdentity` — lots the builder confirmed this document may designate. */
+  confirmedLots: readonly unknown[] = [],
 ): PropertyCoverEvidence[] {
   const identity = String(label ?? '').trim();
   if (!identity) return [];
 
   const covers: PropertyCoverEvidence[] = [];
   (pageTexts ?? []).forEach((text, index) => {
-    if (!pageStatesIdentity(text ?? '', identity, identityHints, soleProperty)) return;
+    if (!pageStatesIdentity(text ?? '', identity, identityHints, soleProperty, confirmedLots)) {
+      return;
+    }
     const packageFacts = packageFactsOn(text ?? '');
     if (packageFacts.length < MIN_PACKAGE_FACTS) return;
-    covers.push({ page: index + 1, identity, packageFacts });
+    covers.push({
+      page: index + 1,
+      identity: confirmedIdentity(text ?? '', identity, confirmedLots),
+      packageFacts,
+    });
   });
   return covers;
+}
+
+/**
+ * THE IDENTITY A COVER IS RECORDED AS HAVING STATED, and it may not claim a
+ * lot the page does not print.
+ *
+ * The role evidence reads `visible page 1 states "<identity>" …`, and on a
+ * page accepted through a confirmation that sentence would otherwise say the
+ * page states the listing's lot when it states another. So where the listing's
+ * own lot is nowhere on the page and a confirmed one is, the record says what
+ * happened: the lot the page states, and that the builder confirmed it as this
+ * property.
+ */
+function confirmedIdentity(
+  pageText: string,
+  label: string,
+  confirmedLots: readonly unknown[],
+): string {
+  const confirmed = confirmedLotsOf(confirmedLots);
+  if (!confirmed.length) return label;
+  const labelLots = lotDesignations(label);
+  const { readings, listed } = pageIdentityReadings(pageText, labelLots, confirmed);
+  const mentions = (lot: string) => readings.some((r) => r.strict === lot || r.fused === lot)
+    || listed.includes(lot);
+  if (labelLots.some(mentions)) return label;
+  const stated = confirmed.find(mentions);
+  return stated ? `Lot ${stated}, confirmed by the builder as ${label}` : label;
 }
 
 /**
@@ -986,10 +1115,13 @@ export function coverSearchPages(input: {
   structuralCoverPage?: number | null;
   /** The row's other identity names. See `pageStatesIdentity`, test 4. */
   identityHints?: readonly string[] | null;
+  /** Lots the builder confirmed this document may designate. See `pageStatesIdentity`. */
+  confirmedLots?: readonly unknown[] | null;
 }): number[] {
   const pages = new Set<number>();
   for (const cover of findPropertyCoverPages(
-    input.pageTexts ?? [], input.label, input.identityHints ?? [],
+    input.pageTexts ?? [], input.label, input.identityHints ?? [], false,
+    input.confirmedLots ?? [],
   )) {
     pages.add(cover.page);
   }
@@ -1060,11 +1192,16 @@ export function assignPdfMediaRoles(input: {
    * The document produced exactly ONE property. See `pageStatesIdentity`.
    */
   soleProperty?: boolean;
+  /**
+   * Lots the builder confirmed this document may designate for this property.
+   * Absent on every path but a confirmed election. See `pageStatesIdentity`.
+   */
+  confirmedLots?: readonly unknown[] | null;
 }): SourceImageRoleAssignment[] {
   const media = input.media ?? [];
   const covers = input.pageOrderAuthoritative
     ? findPropertyCoverPages(input.pageTexts ?? [], input.label, input.identityHints ?? [],
-      input.soleProperty === true)
+      input.soleProperty === true, input.confirmedLots ?? [])
     : [];
   const structural = input.pageOrderAuthoritative
     && Number.isInteger(input.structuralCoverPage)
@@ -1153,7 +1290,8 @@ export function assignPdfMediaRoles(input: {
               ? 'no page states this property\'s identity together with its package '
                 + 'information'
                 + whyFirstPageRefused(input.pageTexts, input.label,
-                  input.identityHints ?? [], input.soleProperty === true)
+                  input.identityHints ?? [], input.soleProperty === true,
+                  input.confirmedLots ?? [])
                 + coverSays(input.pageTexts)
               : 'the source does not designate a primary image for this property';
 
@@ -1342,8 +1480,15 @@ export function coverIdentityQuote(pageText: string | null | undefined): string 
 export function statedOtherLotDesignation(
   pageText: string | null | undefined,
   label: string | null | undefined,
+  /**
+   * Lots the builder has confirmed this document may designate for this
+   * property. A lot they confirmed is not "another property's" any more, so
+   * the finding is not reported about it; nothing else changes.
+   */
+  confirmedLots: readonly unknown[] = [],
 ): string | null {
   const ours = lotDesignations(String(label ?? ''));
+  const accepted = [...ours, ...confirmedLotsOf(confirmedLots)];
   // Nothing of ours to contradict. A label with no lot is described by its
   // other tokens, and a page that fails on those is not a mismatch claim.
   if (!ours.length) return null;
@@ -1363,16 +1508,13 @@ export function statedOtherLotDesignation(
   for (const list of lotListsIn(text).reverse()) {
     rest = `${rest.slice(0, list.start)} ${rest.slice(list.end)}`;
   }
-  const raw = Array.from(
-    rest.matchAll(/(?:lot|unit)\s*\.?\s*(\d{1,5})/gi),
-    (match) => match[1],
-  );
+  const raw = Array.from(rest.matchAll(TYPED_LOT_DESIGNATION), (match) => match[1]);
   const stated = [...singular.flatMap((reading) => [reading.strict, reading.fused]), ...raw];
   if (!stated.length) {
-    if (!listed.length || listed.some((value) => ours.includes(value))) return null;
+    if (!listed.length || listed.some((value) => accepted.includes(value))) return null;
     return [...new Set(listed)].slice(0, 6).join(', ');
   }
-  if (stated.some((value) => ours.includes(value))) return null;
+  if (stated.some((value) => accepted.includes(value))) return null;
 
   /*
    * The longest reading, which is the whole number wherever the exporter
@@ -1413,10 +1555,12 @@ function whyFirstPageRefused(
   label: string | null | undefined,
   identityHints: readonly string[],
   soleProperty: boolean,
+  confirmedLots: readonly unknown[] = [],
 ): string {
   const page = (pageTexts ?? [])[0];
   if (!page) return '';
-  const refusal = coverIdentityRefusal(page, String(label ?? ''), identityHints, soleProperty);
+  const refusal = coverIdentityRefusal(
+    page, String(label ?? ''), identityHints, soleProperty, confirmedLots);
   if (refusal) return ` (${refusal})`;
   const facts = packageFactsOn(page);
   return facts.length < MIN_PACKAGE_FACTS

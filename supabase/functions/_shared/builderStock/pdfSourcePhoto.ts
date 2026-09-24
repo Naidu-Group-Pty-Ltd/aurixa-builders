@@ -901,6 +901,11 @@ export async function selectPdfPropertyPrimary(
      * cover rule's corroboration test alone. See `pageStatesIdentity`.
      */
     identityHints?: readonly string[] | null;
+    /**
+     * Lots the builder confirmed this document may designate for this
+     * property, for a confirmed election alone. See `pageStatesIdentity`.
+     */
+    confirmedLots?: readonly string[] | null;
   } = {},
 ): Promise<PdfPrimarySelection> {
   /*
@@ -1010,6 +1015,7 @@ export async function selectPdfPropertyPrimaryHoldingSlot(
     structuralCoverPage?: number | null;
     design?: string | null;
     identityHints?: readonly string[] | null;
+    confirmedLots?: readonly string[] | null;
   },
 ): Promise<PdfPrimarySelection> {
   /*
@@ -1029,6 +1035,7 @@ export async function selectPdfPropertyPrimaryHoldingSlot(
     design: options.design ?? null,
     structuralCoverPage: options.structuralCoverPage ?? null,
     identityHints: options.identityHints ?? [],
+    confirmedLots: options.confirmedLots ?? [],
   });
   /*
    * NO CANDIDATE PAGE MEANS NO ELECTION, SO NOTHING IS DECODED.
@@ -1090,6 +1097,7 @@ export async function selectPdfPropertyPrimaryHoldingSlot(
     media: found.assets.map((asset) => asset.placement),
     visualKinds,
     structuralCoverPage: options.structuralCoverPage ?? null,
+    confirmedLots: options.confirmedLots ?? [],
   });
 
   let primary: PdfSourceAsset | null = null;

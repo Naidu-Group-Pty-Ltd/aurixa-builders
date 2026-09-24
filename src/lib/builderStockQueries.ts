@@ -566,6 +566,41 @@ export function useSetBuilderStockManualStats() {
   });
 }
 
+/**
+ * "Use brochure image": the builder confirms the brochure linked on a property
+ * is that property's although its image page states another lot. The link and
+ * the lot are sent exactly as the server showed them — lookup keys, never
+ * authority: the server re-reads the stored finding under them and refuses a
+ * stale one, and refuses a brochure another listing already uses.
+ */
+export function useConfirmBrochureImage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { stockItemId: string; documentKey: string; states: string }) =>
+      invoke<{ record: BuilderStockItem | null; confirmation_id: string }>({
+        operation: 'confirm_brochure_image',
+        stock_item_id: input.stockItemId,
+        document_key: input.documentKey,
+        states: input.states,
+      }),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: builderStockKeys.root() }); },
+  });
+}
+
+/** Undo a builder's confirmation. Its image comes off the card in the same act. */
+export function useUndoBrochureImage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { stockItemId: string; confirmationId: string }) =>
+      invoke<{ record: BuilderStockItem | null; confirmation_id: string }>({
+        operation: 'undo_brochure_image',
+        stock_item_id: input.stockItemId,
+        confirmation_id: input.confirmationId,
+      }),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: builderStockKeys.root() }); },
+  });
+}
+
 export function useArchiveBuilderStockItem() {
   const queryClient = useQueryClient();
   return useMutation({

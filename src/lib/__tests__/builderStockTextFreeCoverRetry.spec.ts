@@ -52,7 +52,8 @@ import {
   classifyBranchRecord,
 } from '../../../supabase/functions/_shared/builderStock/suppliedEvidence.pure';
 import {
-  PDF_ELECTION_PROTOCOL, TEXT_FREE_COVER_NOT_ELECTED, isElectionRefusalReason,
+  PDF_ELECTION_PROTOCOL, TEXT_FREE_COVER_NOT_ELECTED, electionProtocolFor,
+  isElectionRefusalReason,
 } from '../../../supabase/functions/_shared/builderStock/pdfElectionBoundary.pure';
 import {
   coverRastersInspected,
@@ -463,6 +464,8 @@ describe('the code travels on the wire and is never invented on this side', () =
     vi.restoreAllMocks();
   });
 
+  /** The protocol this unconfirmed election is asked in, and so answered in. */
+  const ASKED = electionProtocolFor(CONTEXT);
   const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
     status, headers: { 'content-type': 'application/json' },
   });
@@ -470,7 +473,7 @@ describe('the code travels on the wire and is never invented on this side', () =
 
   it('relays the code when the worker earned it by reading the document', async () => {
     fetchMock.mockResolvedValue(reply({
-      protocol: PDF_ELECTION_PROTOCOL,
+      protocol: ASKED,
       status: 'unreachable',
       reason: TEXT_FREE_COVER_NOT_ELECTED,
       detail: 'That document’s pages carry no extractable text and its first page '
@@ -502,7 +505,7 @@ describe('the code travels on the wire and is never invented on this side', () =
       reason: TEXT_FREE_COVER_NOT_ELECTED, detail: 'x',
     }))],
     ['the answer is an outcome we do not know', () => fetchMock.mockResolvedValue(
-      reply({ protocol: PDF_ELECTION_PROTOCOL, status: 'elected_probably' }))],
+      reply({ protocol: ASKED, status: 'elected_probably' }))],
   ])('carries no code when %s', async (_name, arrange) => {
     arrange();
     const outcome = await run();
@@ -516,7 +519,7 @@ describe('the code travels on the wire and is never invented on this side', () =
    */
   it('ignores a refusal code it does not recognise', async () => {
     fetchMock.mockResolvedValue(reply({
-      protocol: PDF_ELECTION_PROTOCOL, status: 'unreachable',
+      protocol: ASKED, status: 'unreachable',
       reason: 'some_future_reason', detail: 'x',
     }));
     const outcome = await run();
@@ -527,7 +530,7 @@ describe('the code travels on the wire and is never invented on this side', () =
   /** The code belongs to `unreachable`. It may not ride a banked verdict. */
   it('does not attach the code to a not_identified verdict', async () => {
     fetchMock.mockResolvedValue(reply({
-      protocol: PDF_ELECTION_PROTOCOL, status: 'not_identified',
+      protocol: ASKED, status: 'not_identified',
       reason: TEXT_FREE_COVER_NOT_ELECTED, detail: 'names no image',
     }));
     const outcome = await run();

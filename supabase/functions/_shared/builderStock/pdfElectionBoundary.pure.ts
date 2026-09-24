@@ -32,8 +32,40 @@ import { PROVENANCE_VERSION } from './provenanceVersion.pure.ts';
  *   1  first release
  *   2  the context names the extractor version it asks under, and a worker
  *      built at any other version refuses it (see `provenanceVersion` below)
+ *   3  the context may carry the lots a builder confirmed the document may
+ *      designate for this property (see `confirmedLots` below)
+ *
+ * THE NEWEST THIS BUILD SPEAKS, NOT THE ONE EVERY REQUEST USES. The two ends
+ * deploy on separate lanes, and a protocol bump that every request carried
+ * would make every election in the gap between them a refusal. So a request
+ * is asked under the LOWEST protocol that can carry it — see
+ * `electionProtocolFor` — and a worker answers in the protocol it was asked
+ * in. An election with no confirmation is therefore asked exactly as it was
+ * under protocol 2, whichever lane deploys first; only a confirmed one needs
+ * a worker that reads 3, and an older worker refuses it, which is a retry and
+ * never a verdict.
  */
-export const PDF_ELECTION_PROTOCOL = 2;
+export const PDF_ELECTION_PROTOCOL = 3;
+
+/** The oldest protocol this build still speaks. See `PDF_ELECTION_PROTOCOL`. */
+export const OLDEST_PDF_ELECTION_PROTOCOL = 2;
+
+/**
+ * How many confirmed lots one election may carry. A confirmation names one
+ * brochure's one stated lot, so one is the normal case; the bound exists so a
+ * context cannot grow without limit in a header.
+ */
+export const MAX_CONFIRMED_LOTS = 4;
+
+/**
+ * The protocol a context is asked under: the lowest that can carry it. Any
+ * context is accepted — one that names no confirmation is simply asked under
+ * the oldest protocol, which is what makes this safe to call on every one.
+ */
+export function electionProtocolFor(context: object): number {
+  const lots = (context as { confirmedLots?: unknown }).confirmedLots;
+  return Array.isArray(lots) && lots.length ? PDF_ELECTION_PROTOCOL : OLDEST_PDF_ELECTION_PROTOCOL;
+}
 
 export const ELECTION_CONTEXT_HEADER = 'x-election-context';
 
@@ -138,6 +170,15 @@ export interface WireElectionContext {
   identifiedBy: 'folder_structure' | 'direct_link';
   design: string | null;
   identityHints: string[];
+  /**
+   * THE LOTS A BUILDER CONFIRMED, protocol 3 only and empty otherwise. Digits
+   * and nothing else: a confirmation names a lot, never a row, an organisation
+   * or a person, so the worker is still never told which property it is
+   * looking at. A protocol-2 context cannot carry one — whatever it sends in
+   * this field is dropped — because a worker asked under 2 was asked the
+   * unconfirmed question and must answer that one.
+   */
+  confirmedLots: string[];
   documentName: string;
   url: string;
 }
@@ -147,11 +188,14 @@ export function encodeElectionContext(context: {
   identifiedBy: 'folder_structure' | 'direct_link';
   design?: string | null;
   identityHints?: readonly string[] | null;
+  confirmedLots?: readonly string[] | null;
   documentName: string;
   url: string;
 }): string {
-  const wire: WireElectionContext = {
-    protocol: PDF_ELECTION_PROTOCOL,
+  const confirmedLots = [...(context.confirmedLots ?? [])];
+  const protocol = electionProtocolFor({ confirmedLots });
+  const wire: Record<string, unknown> = {
+    protocol,
     provenanceVersion: PROVENANCE_VERSION,
     label: context.label,
     identifiedBy: context.identifiedBy,
@@ -161,6 +205,9 @@ export function encodeElectionContext(context: {
     documentName: context.documentName,
     url: context.url,
   };
+  // Only where there is one: a protocol-2 context is byte-for-byte the
+  // context every deployed worker already reads.
+  if (confirmedLots.length) wire.confirmedLots = confirmedLots;
   // UTF-8 first: a builder's label carries em-dashes and accented names, and
   // `btoa` is Latin-1 only and THROWS on them.
   return bytesToBase64(new TextEncoder().encode(JSON.stringify(wire)));
@@ -184,7 +231,8 @@ export function decodeElectionContext(raw: string | null | undefined): WireElect
   }
   if (!parsed || typeof parsed !== 'object') return null;
   const c = parsed as Record<string, unknown>;
-  if (Number(c.protocol) !== PDF_ELECTION_PROTOCOL) return null;
+  const protocol = Number(c.protocol);
+  if (protocol !== PDF_ELECTION_PROTOCOL && protocol !== OLDEST_PDF_ELECTION_PROTOCOL) return null;
   // Rules of a different version would answer a different question. See
   // `WireElectionContext.provenanceVersion`.
   if (Number(c.provenanceVersion) !== PROVENANCE_VERSION) return null;
@@ -192,8 +240,20 @@ export function decodeElectionContext(raw: string | null | undefined): WireElect
   if (c.identifiedBy !== 'folder_structure' && c.identifiedBy !== 'direct_link') return null;
   if (typeof c.documentName !== 'string') return null;
   if (typeof c.url !== 'string') return null;
+  /*
+   * A CONFIRMATION IS VOUCHED FOR OR THE CONTEXT IS REFUSED — never quietly
+   * dropped under protocol 3. Electing without a confirmation the settler
+   * asked under would answer the unconfirmed question and have it filed as
+   * the confirmed one's answer.
+   */
+  let confirmedLots: string[] = [];
+  if (protocol === PDF_ELECTION_PROTOCOL && c.confirmedLots !== undefined) {
+    if (!Array.isArray(c.confirmedLots) || c.confirmedLots.length > MAX_CONFIRMED_LOTS) return null;
+    if (!c.confirmedLots.every((lot) => typeof lot === 'string' && /^\d{1,5}$/.test(lot))) return null;
+    confirmedLots = c.confirmedLots as string[];
+  }
   return {
-    protocol: PDF_ELECTION_PROTOCOL,
+    protocol,
     provenanceVersion: PROVENANCE_VERSION,
     label: c.label,
     identifiedBy: c.identifiedBy,
@@ -201,6 +261,7 @@ export function decodeElectionContext(raw: string | null | undefined): WireElect
     identityHints: Array.isArray(c.identityHints)
       ? c.identityHints.filter((hint): hint is string => typeof hint === 'string')
       : [],
+    confirmedLots,
     documentName: c.documentName,
     url: c.url,
   };
