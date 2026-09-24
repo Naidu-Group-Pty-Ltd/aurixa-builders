@@ -2848,6 +2848,35 @@ def _u18(c):
     c.showPage()
 
 
+# --- u19. THE DESIGN BESIDE ITS HEADING, UNDER THE LOCALITY -----------------
+#
+# A WRONG VALUE, found in the stress corpus while measuring the others: six of
+# its covers set the locality directly over a `Home Design` row whose design is
+# drawn beside the heading, and every one stored the LOCALITY as the design
+# (`Pakenham VIC 3810`). The caption reading took the locality upwards as the
+# name over its caption and spent the heading, so the design the row states was
+# never read. The stress corpus asserts lot numbers only, so nothing reported
+# it; this fixture asserts the design.
+@fixture('heldout-design-beside-its-heading-under-the-locality',
+         'LOT 29 - ASHFORD 26 - FLYER.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='29', street_name='Pardalote Street',
+                        suburb='Mickleham', state='VIC', postcode='3064',
+                        design='Ashford 26', land_size_sqm=420, price=735000)]))
+def _u19(c):
+    pt(c, 43, 800, 'LOT 29 Pardalote Street', 20, True)
+    pt(c, 43, 778, 'Mickleham VIC 3064', 12)
+    pt(c, 43, 756, 'Home Design', 11)
+    pt(c, 160, 756, 'Ashford 26', 11)
+    pt(c, 43, 738, 'Land Size', 11)
+    pt(c, 160, 738, '420m²', 11)
+    pt(c, 43, 720, 'Price', 11)
+    pt(c, 160, 720, '$735,000', 11)
+    c.showPage()
+
+
 def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     manifest = []
