@@ -41,6 +41,9 @@ import {
 import {
   figuresToRead, withFigureApplied, type FigureVerdict, type PdfFigure,
 } from './pdfFigures.pure.ts';
+import {
+  outlinesToRead, outlinesWithinRecognitionBudget, type PdfOutlineFigure,
+} from './pdfOutlineFigures.pure.ts';
 import { readFigures } from './readFigures.ts';
 import { kindsOutstanding } from './documentRead.pure.ts';
 import { DECODES_PER_INVOCATION } from './workAllowance.pure.ts';
@@ -312,6 +315,8 @@ interface DecidedImport {
   deterministicPlacement: string[] | null;
   /** Insets a successor may read a figure from. See `pdfFigures.pure.ts`. */
   figures: PdfFigure[];
+  /** Blocks of type painted as shapes, read beside them. See `pdfOutlineFigures.pure.ts`. */
+  outlines: PdfOutlineFigure[];
 }
 
 /** The part of a decision that is not the read itself: what the manifest carries. */
@@ -331,6 +336,7 @@ function importDecisionOf(decided: DecidedImport): ImportDecision {
     deterministicIgnored: decided.deterministicIgnored,
     deterministicPlacement: decided.deterministicPlacement,
     figures: decided.figures,
+    outlines: decided.outlines,
   };
 }
 
@@ -393,6 +399,7 @@ function decidedFromHandover(
     deterministicIgnored: decision.deterministicIgnored,
     deterministicPlacement: decision.deterministicPlacement,
     figures: decision.figures ?? [],
+    outlines: decision.outlines ?? [],
   };
 }
 
@@ -1164,11 +1171,13 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
        * asked once per hand-off and applied by whichever isolate finishes.
        */
       const figures = taken.decision.figures ?? [];
-      if (figures.length && !figureVerdictOf(checkpoint) && mayCrossForPictures(checkpoint)) {
+      const outlines = taken.decision.outlines ?? [];
+      if ((figures.length || outlines.length)
+        && !figureVerdictOf(checkpoint) && mayCrossForPictures(checkpoint)) {
         const figuresStartedAt = Date.now();
         // A figure is an enrichment: nothing about reading one may fail the
         // import it rides on. A throw is recorded as recognition unavailable.
-        const read = await readFigures(bytes, figures).catch(() => ({
+        const read = await readFigures(bytes, figures, outlines).catch(() => ({
           verdict: { state: 'unavailable', reason: 'figure_read_failed' } as FigureVerdict,
           recognised: 0,
           ms: Date.now() - figuresStartedAt,
@@ -1184,6 +1193,7 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
             upload_id: upload.id,
             reason: 'pictures_outstanding',
             figures: figures.length,
+            outlines: outlines.length,
             figures_recognised: read.recognised,
             figure_verdict: read.verdict.state,
             figures_ms: read.ms,
@@ -1791,7 +1801,19 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
    * ═══════════════════════════════════════════════════════════════════════
    * THE READING IS DECIDED. WHERE THE TAIL RUNS IS THE LAST QUESTION.
    * ═══════════════════════════════════════════════════════════════════════
+   *
+   * The insets the building size may be read from, where the text stated
+   * none. A stored document's are read on the far side of the hand-off
+   * below; only a linked source, which no successor can reproduce, reads
+   * them here, at the end, inside this isolate's ceiling. See
+   * `pdfFigures.pure.ts`.
    */
+  const figures = figuresToRead({
+    figures: extraction.pdfFigures ?? [],
+    rows,
+    pricePages: extraction.deterministicReading?.diagnostics.pricePages ?? [],
+    disputedFields: extraction.deterministicReading?.diagnostics.disputedFields ?? [],
+  });
   const decided: DecidedImport = {
     strategy,
     rows,
@@ -1818,19 +1840,18 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
     deterministicUnaccounted: extraction.deterministicUnaccounted ?? null,
     deterministicIgnored: extraction.deterministicIgnored ?? null,
     deterministicPlacement: extraction.deterministicPlacement ?? null,
+    figures,
     /*
-     * The insets the building size may be read from, where the text stated
-     * none. A stored document's are read on the far side of the hand-off
-     * below; only a linked source, which no successor can reproduce, reads
-     * them here, at the end, inside this isolate's ceiling. See
-     * `pdfFigures.pure.ts`.
+     * And the blocks of type the same page paints as shapes, under the same
+     * conditions and inside the same crossing's recognition budget. See
+     * `pdfOutlineFigures.pure.ts`.
      */
-    figures: figuresToRead({
-      figures: extraction.pdfFigures ?? [],
+    outlines: outlinesWithinRecognitionBudget(figures.length, outlinesToRead({
+      outlines: extraction.pdfOutlines ?? [],
       rows,
       pricePages: extraction.deterministicReading?.diagnostics.pricePages ?? [],
       disputedFields: extraction.deterministicReading?.diagnostics.disputedFields ?? [],
-    }),
+    })),
   };
 
   /*
@@ -1934,10 +1955,11 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
    * be written finishes without them rather than decode beside its parse.
    */
   let finishing = decided;
-  if (!input.resumableFromStoredBytes && decided.figures.length
-    && mayReadFigures(ledger, decided.figures.length)) {
+  const figuresHere = decided.figures.length + decided.outlines.length;
+  if (!input.resumableFromStoredBytes && figuresHere
+    && mayReadFigures(ledger, figuresHere)) {
     const figuresStartedAt = Date.now();
-    const read = await readFigures(bytes, decided.figures).catch(() => ({
+    const read = await readFigures(bytes, decided.figures, decided.outlines).catch(() => ({
       verdict: { state: 'unavailable', reason: 'figure_read_failed' } as FigureVerdict,
       recognised: 0,
       ms: Date.now() - figuresStartedAt,

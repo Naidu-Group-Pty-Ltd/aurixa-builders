@@ -50,6 +50,7 @@
  */
 import type { RowLinkDiscovery } from './suppliedEvidence.pure.ts';
 import { readPdfFigures, type PdfFigure } from './pdfFigures.pure.ts';
+import { readPdfOutlineFigures, type PdfOutlineFigure } from './pdfOutlineFigures.pure.ts';
 
 /** The shape's own version, so a successor can refuse one it does not know. */
 export const IMPORT_HANDOVER_VERSION = 1;
@@ -93,6 +94,13 @@ export interface ImportDecision {
    * which reads as none.
    */
   figures?: PdfFigure[];
+  /**
+   * Blocks of type the property's own page paints as shapes, as polygons the
+   * successor draws and recognises under the same rules as `figures`. See
+   * `pdfOutlineFigures.pure.ts`. Absent on a hand-off written before this
+   * existed, which reads as none.
+   */
+  outlines?: PdfOutlineFigure[];
 }
 
 /** The whole of what rides in an `import` read's manifest. */
@@ -166,5 +174,6 @@ export function readImportHandover(
     // Absent on a hand-off written before figures existed, and kept absent so
     // it comes back exactly as it went; the reader treats absent as none.
     ...(decision.figures !== undefined ? { figures: readPdfFigures(decision.figures) } : {}),
+    ...(decision.outlines !== undefined ? { outlines: readPdfOutlineFigures(decision.outlines) } : {}),
   };
 }

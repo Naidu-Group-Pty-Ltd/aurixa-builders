@@ -72,9 +72,10 @@ describe('where the figures are read', () => {
   const parse = run.slice(run.indexOf('let extraction;'));
 
   it('in the successor for a stored document, which never parsed it', () => {
-    expect(successor).toContain('const read = await readFigures(bytes, figures).catch(() => ({');
-    // The parse path decides WHICH figures.
-    expect(parse).toContain('figures: figuresToRead({');
+    expect(successor).toContain('const read = await readFigures(bytes, figures, outlines).catch(() => ({');
+    // The parse path decides WHICH figures, and which blocks beside them.
+    expect(parse).toContain('const figures = figuresToRead({');
+    expect(parse).toContain('outlines: outlinesWithinRecognitionBudget(figures.length, outlinesToRead({');
   });
 
   it('in the reading isolate ONLY for a linked source, and only inside its ceiling', () => {
@@ -83,15 +84,17 @@ describe('where the figures are read', () => {
     const reads = parse.split('readFigures(').length - 1;
     expect(reads).toBe(1);
     const inline = parse.slice(parse.indexOf('let finishing = decided;'));
-    expect(inline).toContain(`if (!input.resumableFromStoredBytes && decided.figures.length
-    && mayReadFigures(ledger, decided.figures.length)) {`);
+    expect(inline).toContain('const figuresHere = decided.figures.length + decided.outlines.length;');
+    expect(inline).toContain(`if (!input.resumableFromStoredBytes && figuresHere
+    && mayReadFigures(ledger, figuresHere)) {`);
     expect(inline.indexOf('readFigures(')).toBeGreaterThan(inline.indexOf('mayReadFigures(ledger'));
     expect(inline).toContain('return await finishDecided(finishing);');
   });
 
   it('before the kinds, once per hand-off, and handed on in a crossing of its own', () => {
-    const figures = successor.indexOf('const read = await readFigures(bytes, figures).catch(() => ({');
-    const guard = successor.indexOf('if (figures.length && !figureVerdictOf(checkpoint) && mayCrossForPictures(checkpoint)) {');
+    const figures = successor.indexOf('const read = await readFigures(bytes, figures, outlines).catch(() => ({');
+    const guard = successor.indexOf(`if ((figures.length || outlines.length)
+        && !figureVerdictOf(checkpoint) && mayCrossForPictures(checkpoint)) {`);
     const recorded = successor.indexOf('checkpoint = withFigureVerdict(withPictureCrossing(checkpoint), read.verdict);');
     const handedOn = successor.indexOf("reason: 'pictures_outstanding',", recorded);
     const kinds = successor.indexOf('const learning = await learnOutstandingKinds(supabase, {');
@@ -112,5 +115,11 @@ describe('where the figures are read', () => {
     const reader = read('supabase/functions/_shared/builderStock/readFigures.ts');
     expect(reader).toContain('if (await sha256Hex(raw) !== figure.sha256) {');
     expect(reader).not.toMatch(/readPdfPage|recoverCompressedObjects|discoverPdfSourceAssets|readPdfPageTexts|readPdfTextLayout/);
+  });
+
+  it('and a block of type painted as shapes is DRAWN from what was handed over, never read out of the document', () => {
+    const reader = read('supabase/functions/_shared/builderStock/readFigures.ts');
+    expect(reader).toContain('const drawing = rasteriseOutlines(outlines[at]);');
+    expect(reader).not.toMatch(/scanFilledPaths|outlineRegionsFrom|collectOutlinePaths/);
   });
 });
