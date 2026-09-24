@@ -2877,6 +2877,37 @@ def _u19(c):
     c.showPage()
 
 
+# --- u20. A LANDSCAPE PAGE STORED ROTATED -----------------------------------
+#
+# IMPORTED NOTHING. A landscape brochure is often stored as a PORTRAIT page
+# with `/Rotate 90`, its text drawn turned so the page reads upright once a
+# viewer applies the rotation. The flattened text reads perfectly; the
+# positioned layout took each run's coordinates as drawn, so every line of the
+# page landed on ONE row and merged into one cell with no spaces between them
+# (`LOT 64 Currawong StreetBox Hill NSW 2765Land Size…`), and nothing was read.
+@fixture('heldout-landscape-page-stored-rotated',
+         'LOT 64 - WILLOW 24 - LANDSCAPE.pdf', held_out=True,
+         expect=dict(
+             properties=1,
+             parse_strategy='pdf_deterministic_brochure',
+             rows=[dict(lot_number='64', street_name='Currawong Street',
+                        suburb='Box Hill', state='NSW', postcode='2765',
+                        design='Willow 24', land_size_sqm=400, price=812000)]))
+def _u20(c):
+    c.setPageRotation(90)
+    c.saveState()
+    # Drawn turned a quarter, so the page reads upright once it is rotated.
+    c.translate(W, 0)
+    c.rotate(90)
+    pt(c, 43, W - 60, 'LOT 64 Currawong Street', 20, True)
+    pt(c, 43, W - 84, 'Box Hill NSW 2765', 12)
+    pt(c, 43, W - 110, 'Home Design: Willow 24', 12)
+    pt(c, 43, W - 130, 'Land Size 400m²', 12)
+    pt(c, 43, W - 150, 'Price $812,000', 12, True)
+    c.restoreState()
+    c.showPage()
+
+
 def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     manifest = []
