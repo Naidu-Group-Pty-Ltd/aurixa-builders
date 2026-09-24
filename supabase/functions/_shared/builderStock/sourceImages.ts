@@ -360,6 +360,25 @@ import {
  * `unreadable` retirement banked at 25 for such a branch was a size refusal,
  * and is stale by definition.
  *
+ * 27 READS A LIST OF LOTS AS A LIST, AND A PRICE THE TEXT LAYER SPLIT AS A
+ * PRICE. Measured 24 September 2026 on a Google Sheet stock list whose every
+ * row links that lot's own flyer: twelve of twenty-three properties were told
+ * their flyers present no cover. Each townhouse flyer states its own lot and
+ * then the lots its design is released on — `LOT 28, 29, 30, 36, 37, 40,` —
+ * and the cover rule read that list as ONE designation of its first number,
+ * so the page "stated another lot" for every lot but the one that led the
+ * list. Lot 45's flyer printed `Price - $841, 000`, the thousands split into
+ * a run of their own, so the page carried one package fact against a cover's
+ * two. A list now names a group and never the subject (a lot the page states
+ * on its own still refuses a sibling's flyer), and a price split at its
+ * thousands is a price. Every `not_identified` banked at 26 on such a flyer
+ * was judged under the misreading and is stale by definition.
+ *
+ * The same bump carries the version onto the wire to the PDF worker
+ * (`PDF_ELECTION_PROTOCOL` 2), because the rules run there and the answer is
+ * filed here: a worker still on 26 must not be able to answer a settler on
+ * 27. See `WireElectionContext.provenanceVersion`.
+ *
  * This is the bump doing precisely the job it exists for: `negativeProvenance`
  * compares the stored version against this one, so raising it reopens every
  * banked negative for a reader that can now find what the old one could not.

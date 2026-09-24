@@ -47,10 +47,19 @@ import {
   countPdfPages, pageOrderIsAuthoritative, readPdfPage,
 } from '../../supabase/functions/_shared/builderStock/pdfPageImages.pure.ts';
 import {
-  extractPdfPagePhoto, recoverCompressedObjects,
+  extractPdfPagePhoto, recoverCompressedObjects, selectPdfPropertyPrimary,
 } from '../../supabase/functions/_shared/builderStock/pdfSourcePhoto.ts';
+import {
+  coverIdentityRefusal, packageFactsOn,
+} from '../../supabase/functions/_shared/builderStock/pdfPrimaryImage.pure.ts';
 import { sniffImageContentType } from '../../supabase/functions/_shared/builderStock/sourceAssets.pure.ts';
-import { imageHeaderPixels } from '../../supabase/functions/_shared/builderStock/sourceImageRaster.ts';
+import {
+  decodeFullRaster, decodeThumbnailResult, imageHeaderPixels,
+} from '../../supabase/functions/_shared/builderStock/sourceImageRaster.ts';
+import {
+  measureFlatColourRegions, overlayTextBoxes, readMarketingOverlay,
+} from '../../supabase/functions/_shared/builderStock/marketingOverlay.pure.ts';
+import { encodePng } from '../../supabase/functions/_shared/builderStock/rasterPng.ts';
 import { fetchStockSource } from '../../supabase/functions/_shared/builderStock/fetchSource.ts';
 import {
   stockIdentityHints, stockRecordLabel,
@@ -247,8 +256,37 @@ interface RowIdentity {
   label: string;
   lot: string | null;
   design: string | null;
+  /** The design exactly as the pipeline hands it to the election. */
+  rowDesign: string | null;
   hints: string[];
   street: { number: string; street: string } | null;
+}
+
+/**
+ * A page's text as a log line, with the contact details a flyer prints taken
+ * out. The census exists to show what the READER saw about the property; an
+ * agent's mobile number or email address is not part of that, and a CI log is
+ * no place for it.
+ */
+function redactContacts(text: string): string {
+  return text
+    .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, '[email]')
+    .replace(/\b1[38]00[\s-]?\d{3}[\s-]?\d{3}\b/g, '[phone]')
+    .replace(/(?:\+?61[\s-]?|\b0)[2-478](?:[\s-]?\d){8}\b/g, '[phone]');
+}
+
+/**
+ * Every lot or unit designation a page types, as it typed it — a list and all.
+ * `LOT 28, 29, 30` is one match, which is the point: the cover rule reads each
+ * of these, and whether it reads a list as ONE lot or as several is exactly
+ * the question this line answers.
+ */
+function lotDesignationsAsTyped(text: string): string[] {
+  const found = Array.from(
+    text.matchAll(/(?:lots?|units?)\s*\.?\s*\d{1,5}(?:\s*(?:,|&|\band\b)\s*\d{1,5})*/gi),
+    (match) => match[0].replace(/\s+/g, ' ').trim(),
+  );
+  return found.slice(0, 12);
 }
 
 function textNames(text: string, identity: RowIdentity): string[] {
@@ -270,7 +308,10 @@ function textNames(text: string, identity: RowIdentity): string[] {
 
 async function pdfCensus(asset: FetchedAsset, identity: RowIdentity): Promise<void> {
   const bytes = asset.bytes;
-  const recovered = await recoverCompressedObjects(bytes);
+  // The page readers take the recovered OBJECTS; the stream count beside them
+  // is the election's business. Handing them the whole result read every
+  // compressed object as absent.
+  const recovered = (await recoverCompressedObjects(bytes)).objects;
   const pageCount = countPdfPages(bytes, recovered);
   const authoritative = pageOrderIsAuthoritative(bytes, recovered);
   console.log(`      pdf census: ${pageCount} page(s), page order ${authoritative ? 'authoritative' : 'NOT authoritative'}`);
@@ -301,11 +342,152 @@ async function pdfCensus(asset: FetchedAsset, identity: RowIdentity): Promise<vo
     if (names.length) parts.push(`states: ${names.join(', ')}`);
     console.log(`        ${parts.join(' | ')}`);
     if (index === 0 || names.length) {
-      const snippet = text.replace(/\s+/g, ' ').trim().slice(0, 180);
+      const snippet = redactContacts(text.replace(/\s+/g, ' ').trim()).slice(0, 180);
       if (snippet) console.log(`          text: "${snippet}"`);
+    }
+    if (textResult.ok) {
+      // The cover rule's OWN verdict on this page, with the test that refused.
+      const refusal = coverIdentityRefusal(text, identity.label, identity.hints);
+      const facts = packageFactsOn(text);
+      console.log(`          cover rule: ${refusal ?? 'states this property'}`
+        + ` | package facts ${facts.length}${facts.length ? ` (${facts.join(', ')})` : ''}`
+        + ` | designations typed: [${lotDesignationsAsTyped(text).join(' ; ')}]`);
+      // Where a page falls short of a package's facts, what it printed that
+      // looks like money — so a price the rule did not recognise is visible.
+      if (facts.length < 2) {
+        const money = Array.from(
+          text.matchAll(/(?:\$|aud)\s*\d[\d,. ]{0,14}(?:k|m)?|\b\d{3}[, ]\d{3}\b|\bprice\b[^\n]{0,40}/gi),
+          (match) => match[0].replace(/\s+/g, ' ').trim(),
+        ).slice(0, 8);
+        console.log(`          money-like: [${money.map((m) => redactContacts(m)).join(' ; ')}]`);
+      }
     }
   }
   if (pageCount > limit) console.log(`        … census capped at ${limit} of ${pageCount} pages (count above is exact)`);
+
+  // What the election itself made of the pictures: which pages it searched,
+  // every raster it materialised, and the role and reason each was given.
+  if (textResult.ok) {
+    try {
+      const selection = await selectPdfPropertyPrimary(bytes, {
+        label: identity.label,
+        pageTexts: textResult.pages,
+        design: identity.rowDesign,
+        identityHints: identity.hints,
+      });
+      console.log(`      election: cover pages [${selection.coverPages.join(', ')}]`
+        + ` | primary ${selection.primary ? `p${selection.primary.page} ${selection.primary.key}` : 'none'}`
+        + ` | ${selection.assets.length} raster(s) decoded`);
+      for (const decoded of selection.assets) {
+        const share = decoded.placement?.pageAreaShare;
+        console.log(`        p${decoded.page} ${decoded.key}`
+          + ` ${decoded.provenance.sourceWidth}x${decoded.provenance.sourceHeight}`
+          + ` area ${typeof share === 'number' ? `${Math.round(share * 1000) / 10}%` : '?'}`
+          + ` → ${decoded.role.role} (level ${decoded.role.evidenceLevel}): ${decoded.role.reason.slice(0, 200)}`);
+      }
+    } catch (error) {
+      console.log(`      election threw: ${String((error as { message?: string })?.message ?? error).slice(0, 200)}`);
+    }
+  }
+}
+
+/**
+ * What the display gate will see in a recovered picture: the overlay verdict,
+ * where each line of type and each flat block sits, and what Tesseract reads
+ * in each line of type at full size. Nothing here decides anything; it names
+ * what the marketplace eligibility rule will be judging.
+ */
+async function overlayReport(bytes: Uint8Array): Promise<void> {
+  const decoded = await decodeThumbnailResult(bytes);
+  if (!decoded.ok) {
+    console.log(`      overlay: could not decode (${decoded.reason})`);
+    return;
+  }
+  const view = decoded.thumbnail;
+  const verdict = readMarketingOverlay(view);
+  console.log(`      overlay: annotated=${verdict.annotated} uncertain=${verdict.uncertain}`
+    + ` lines=${verdict.textLineCount} lineHeight=${verdict.textHeightShare}`
+    + ` blocks=${verdict.regionCount} largestBlock=${verdict.largestShare}`
+    + ` faintLines=${verdict.faintTextLineCount} (thumbnail ${view.width}x${view.height})`);
+  const pct = (value: number, of: number) => `${Math.round((value / of) * 1000) / 10}%`;
+  const blocks = measureFlatColourRegions(view).regions;
+  for (const region of blocks) {
+    const b = region.box;
+    console.log(`        block x ${pct(b.left, view.width)}–${pct(b.right, view.width)}`
+      + ` y ${pct(b.top, view.height)}–${pct(b.bottom, view.height)}`);
+  }
+  const lines = overlayTextBoxes(view);
+  const full = lines.length || blocks.length ? await decodeFullRaster(bytes) : null;
+  /*
+   * A PICTURE THE GATE REFUSED IS SHOWN, for a property a person named.
+   *
+   * Only where the run was asked about specific items and only for a picture
+   * the gate convicted or doubted: a verdict about type on a photograph is
+   * settled by looking at the photograph, and the builder's render is the one
+   * thing the log could not otherwise carry. Bounded to 480 pixels wide, as a
+   * PNG the reader can decode.
+   */
+  if (full && itemFilter && (verdict.annotated || verdict.uncertain)) {
+    const scale = Math.min(1, 480 / full.width);
+    const width = Math.max(1, Math.round(full.width * scale));
+    const height = Math.max(1, Math.round(full.height * scale));
+    const small = new Uint8Array(width * height * 3);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const sx = Math.min(full.width - 1, Math.floor(x / scale));
+        const sy = Math.min(full.height - 1, Math.floor(y / scale));
+        small.set(full.pixels.subarray((sy * full.width + sx) * 3, (sy * full.width + sx) * 3 + 3),
+          (y * width + x) * 3);
+      }
+    }
+    const png = await encodePng(small, { width, height, components: 3 });
+    if (png) {
+      let binary = '';
+      for (const byte of png) binary += String.fromCharCode(byte);
+      console.log(`      picture ${width}x${height} png base64 BEGIN`);
+      console.log(btoa(binary));
+      console.log('      picture END');
+    }
+  }
+  let index = 0;
+  for (const line of lines.slice(0, 6)) {
+    index += 1;
+    let read = '';
+    if (full) {
+      const sx = full.width / view.width;
+      const sy = full.height / view.height;
+      const pad = 4;
+      const left = Math.max(0, Math.floor(line.left * sx) - pad);
+      const top = Math.max(0, Math.floor(line.top * sy) - pad);
+      const right = Math.min(full.width, Math.ceil((line.right + 1) * sx) + pad);
+      const bottom = Math.min(full.height, Math.ceil((line.bottom + 1) * sy) + pad);
+      const width = right - left;
+      const height = bottom - top;
+      if (width > 0 && height > 0) {
+        const crop = new Uint8Array(width * height * 3);
+        for (let y = 0; y < height; y++) {
+          const from = ((top + y) * full.width + left) * 3;
+          crop.set(full.pixels.subarray(from, from + width * 3), y * width * 3);
+        }
+        const png = await encodePng(crop, { width, height, components: 3 });
+        if (png) {
+          const path = await Deno.makeTempFile({ suffix: '.png' });
+          await Deno.writeFile(path, png);
+          try {
+            const out = await new Deno.Command('tesseract', {
+              args: [path, 'stdout', '--psm', '7'], stdout: 'piped', stderr: 'null',
+            }).output();
+            read = new TextDecoder().decode(out.stdout).replace(/\s+/g, ' ').trim();
+          } catch {
+            read = '(tesseract unavailable)';
+          }
+        }
+      }
+    }
+    console.log(`        type ${index}: x ${pct(line.left, view.width)}–${pct(line.right, view.width)}`
+      + ` y ${pct(line.top, view.height)}–${pct(line.bottom, view.height)}`
+      + (read ? ` reads "${redactContacts(read).slice(0, 80)}"` : ''));
+  }
 }
 
 function describeOutcome(outcome: PackageOutcome): string {
@@ -387,8 +569,16 @@ const sourcePrimary = `EXISTS (
      AND im.verification_status = 'source_supplied'
      AND im.processing_status = 'ready')`;
 
-const where = itemFilter
-  ? `i.id IN (${itemFilter.split(',').map((id) => `'${id.trim().replace(/'/g, '')}'`).join(',')})`
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const filterIds = itemFilter ? itemFilter.split(',').map((id) => id.trim()).filter(Boolean) : [];
+// A dispatch input reaches a statement here, so it is a list of uuids or
+// nothing runs at all.
+if (filterIds.some((id) => !UUID.test(id))) {
+  console.error('FORENSICS_ITEM_IDS must be comma-separated stock item uuids.');
+  Deno.exit(1);
+}
+const where = filterIds.length
+  ? `i.id IN (${filterIds.map((id) => `'${id}'`).join(',')})`
   : `i.lifecycle_status IN ('active','staged') AND NOT ${sourcePrimary}`;
 
 const items = await sql('affected items', `
@@ -444,6 +634,7 @@ for (const item of items) {
     label,
     lot: labelParts.lot ?? (record.lot_number ? String(record.lot_number).toLowerCase() : null),
     design,
+    rowDesign: designOfRecordOrRow(record) ?? null,
     hints: stockIdentityHints(record as unknown as Parameters<typeof stockIdentityHints>[0]),
     street: streetAddressFrom(label),
   };
@@ -556,6 +747,10 @@ for (const item of items) {
           url: branch.url,
         });
         licensed = describeOutcome(outcome);
+        const recovered = outcome as { status?: string; image?: { bytes?: Uint8Array } };
+        if (recovered.status === 'recovered' && recovered.image?.bytes) {
+          await overlayReport(recovered.image.bytes);
+        }
       } catch (error) {
         licensed = `threw: ${String((error as { message?: string })?.message ?? error).slice(0, 200)}`;
       }

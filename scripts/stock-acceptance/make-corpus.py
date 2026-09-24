@@ -3241,6 +3241,163 @@ def _h10(c):
     c.showPage()
 
 
+# ===========================================================================
+# STOCK LISTS KEPT AS SPREADSHEETS, WHOSE ROWS LINK THEIR OWN DOCUMENTS
+#
+# THE ROUTE THIS GATE NEVER RAN. Every document above is a PDF read as the
+# stock list itself. A builder who keeps a Google Sheet does something else:
+# each ROW links that property's flyer, and the photograph comes out of the
+# linked document through `recoverPackageImage` and the shared election. On
+# 24 September 2026 twelve of twenty-three properties on such a sheet came
+# back with no photograph, and nothing here could have seen it, because no
+# fixture linked a document from a row.
+#
+# A sheet fixture is the CSV a spreadsheet exports, plus every document its
+# rows link, each under the Drive file id its link names. The harness serves
+# those documents to the product's own package recovery as Drive would, and
+# nothing else about the route is simulated.
+# ===========================================================================
+
+SHEETS = []
+
+
+def sheet_fixture(name, filename, expect, header, rows, linked, held_out=True, org='alpha'):
+    """Declare a spreadsheet stock list and the documents its rows link.
+
+    `linked` maps a Drive file id to (filename, build) where `build(c)` draws
+    that document the way `@fixture` bodies do.
+    """
+    SHEETS.append(dict(name=name, filename=filename, expect=expect, header=header,
+                       rows=rows, linked=linked, held_out=held_out, org=org))
+
+
+def drive_link(file_id):
+    return f'https://drive.google.com/file/d/{file_id}/view?usp=drive_link'
+
+
+def design_flyer(lot, design, street, price, land, build, counts, seed, size, listed,
+                 split_price=False):
+    """A one-lot townhouse flyer as the measured estate sets it.
+
+    Its own lot stands alone under the estate's name; the lots its design is
+    released on are listed further down the page. The facade is drawn at a
+    size no other flyer in the sheet uses, so the card proves which one it got.
+    """
+    def build_page(c):
+        text(c, 20, 24, 'KESTREL GROVE', 16, True)
+        text(c, 20, 34, f'Lot {lot}')
+        text(c, 20, 42, design, 18, True)
+        for i, count in enumerate(counts):
+            text(c, 32 + i * 20, 50, count)
+        text(c, 95, 42, f'{street},')
+        text(c, 95, 49, 'Mernda VIC 3754')
+        if split_price:
+            # The thousands in a run of their own, as the exporter set them.
+            end = pt(c, 130 * mm, H - 34 * mm, f'Price - ${price // 1000},', 11)
+            pt(c, end + 3.2, H - 34 * mm, f'{price % 1000:03d}', 11)
+        else:
+            text(c, 130, 34, f'Sale Price - ${price:,}')
+        text(c, 130, 42, f'Land Size - {land}sqm')
+        text(c, 130, 50, f'Build Size - {build}sqm')
+        hero(c, facade(seed, *size), top=170, height=105)
+        text(c, 20, 185, 'Turn-Key Inclusions', 9, True)
+        text(c, 20, 191, f'{design} townhomes are released on', 8)
+        for i, line in enumerate(listed):
+            text(c, 20, 197 + i * 6, line, 9)
+        text(c, 20, 230, 'Front and rear landscaping, driveway + fencing included.', 8)
+        text(c, 20, 236, 'Artist impression only. Not to scale.', 8)
+        c.showPage()
+    return build_page
+
+
+def masterplan(c):
+    """Estate collateral, linked from every row under a heading that says so."""
+    text(c, 20, 24, 'KESTREL GROVE MASTERPLAN', 16, True)
+    for i, lot in enumerate(['LOT 210', 'LOT 211', 'LOT 212', 'LOT 213', 'LOT 214',
+                             'LOT 220', 'LOT 221', 'LOT 223', 'LOT 318']):
+        text(c, 20 + (i % 3) * 55, 60 + (i // 3) * 20, lot, 10)
+    text(c, 20, 140, 'Plover Walk    Finch Way    Wren Street', 9)
+    c.showPage()
+
+
+# THE MEASURED SHAPES, invented names. Each townhouse flyer states its lot
+# alone and then its design's release list, and the list is what the cover
+# rule read as a second lot: only the lot that led the list kept its
+# photograph. Lot 318's flyer prints its price as the exporter split it, so the
+# page carried one package fact against a cover's two. Lot 212 leads the list
+# and was never refused — it is the control that holds on both sides.
+TALLIS_LIST = ['LOT 212, 213, 214,', '220, 221, 223']
+_KG_HEADER = ['Lot', 'Design', 'Bed', 'Bath', 'Car', 'Land Size', 'Build Size', 'Price',
+              'Suburb', 'State', 'Postcode', 'Individual Lot Flyer URL', 'Masterplan URL']
+_KG_ROWS = [
+    ('212', 'Tallis', '5 Plover Walk', 750000, 232, 154, (1240, 780)),
+    ('213', 'Tallis', '7 Plover Walk', 725000, 171, 153, (1180, 740)),
+    ('220', 'Tallis', '19 Plover Walk', 730000, 174, 152, (1100, 690)),
+    ('223', 'Tallis', '25 Plover Walk', 730000, 176, 153, (1060, 660)),
+    ('318', 'Oriole', '11 Finch Way', 841000, 255, 165, (1160, 720)),
+]
+_KG_MASTERPLAN_ID = 'KestrelGroveMasterplanFixture01'
+
+
+def _kg_flyer_id(lot):
+    return f'KestrelGroveLot{lot}FlyerFixture'
+
+
+sheet_fixture(
+    'heldout-a-sheet-whose-rows-link-flyers-that-list-their-designs-lots',
+    'KESTREL GROVE - STOCK LIST.csv',
+    header=_KG_HEADER,
+    rows=[[lot, design, '4' if lot == '318' else '3', '2', '1', str(land), str(build),
+           f'${price:,}', 'Mernda', 'VIC', '3754',
+           drive_link(_kg_flyer_id(lot)), drive_link(_KG_MASTERPLAN_ID)]
+          for lot, design, street, price, land, build, size in _KG_ROWS],
+    linked={
+        **{_kg_flyer_id(lot): (
+            f'LOT {lot} - {design.upper()} - FLYER.pdf',
+            design_flyer(lot, design, street, price, land, build,
+                         ['4', '2.5', '1'] if lot == '318' else ['3', '2.5', '1'],
+                         int(lot), size,
+                         ['LOT 318'] if lot == '318' else TALLIS_LIST,
+                         split_price=(lot == '318')))
+           for lot, design, street, price, land, build, size in _KG_ROWS},
+        _KG_MASTERPLAN_ID: ('KESTREL GROVE - MASTERPLAN.pdf', masterplan),
+    },
+    expect=dict(
+        properties=5,
+        rows=[dict(lot_number=lot, image_size=f'{size[0]}x{size[1]}')
+              for lot, design, street, price, land, build, size in _KG_ROWS],
+        image='facade_page_1',
+        # The masterplan names these lots; none of them is a row of this sheet.
+        forbid=dict(no_lot_numbers=['210', '211', '214', '221'])))
+
+
+def write_sheets(outdir, manifest):
+    import csv
+    for f in SHEETS:
+        sub = os.path.join(outdir, f['org'])
+        os.makedirs(os.path.join(sub, 'linked'), exist_ok=True)
+        path = os.path.join(sub, f['filename'])
+        with open(path, 'w', newline='') as fh:
+            writer = csv.writer(fh)
+            writer.writerow(f['header'])
+            writer.writerows(f['rows'])
+        linked = []
+        for file_id, (filename, build) in f['linked'].items():
+            doc = os.path.join(sub, 'linked', filename)
+            c = canvas.Canvas(doc, pagesize=A4)
+            build(c)
+            c.save()
+            linked.append(dict(id=file_id, filename=filename,
+                               path=os.path.relpath(doc, outdir),
+                               bytes=os.path.getsize(doc)))
+        manifest.append(dict(name=f['name'], org=f['org'], filename=f['filename'],
+                             path=os.path.relpath(path, outdir),
+                             held_out=f['held_out'], expect=f['expect'],
+                             known_limit=f['expect'].get('known_limit'),
+                             bytes=os.path.getsize(path),
+                             kind='sheet', content_type='text/csv', linked=linked))
+
+
 def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     manifest = []
@@ -3270,6 +3427,7 @@ def main(outdir):
                 path=os.path.relpath(rev_path, outdir),
                 bytes=os.path.getsize(rev_path))
         manifest.append(entry)
+    write_sheets(outdir, manifest)
     with open(os.path.join(outdir, 'manifest.json'), 'w') as fh:
         json.dump(manifest, fh, indent=2)
     total = sum(m['bytes'] for m in manifest)

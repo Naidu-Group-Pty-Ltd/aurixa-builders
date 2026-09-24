@@ -71,7 +71,15 @@ export interface PropertyCoverEvidence {
  * and from a gallery page that repeats the address.
  */
 const PACKAGE_FACTS: ReadonlyArray<readonly [string, RegExp]> = [
-  ['a package price', /(?:\$|aud\s*)\s?\d{1,3}(?:[, ]\d{3})+(?:\.\d{2})?/i],
+  /*
+   * A THOUSANDS SEPARATOR THE TEXT LAYER SPLIT IS STILL ONE. An exporter that
+   * sets the thousands in a run of their own hands the text layer `$841, 000`
+   * or `$841 ,000`, and a single-character separator read that as no price at
+   * all — measured on a Havenwood flyer, 24 September 2026, which then carried
+   * one package fact against a cover's two and elected nothing. The comma may
+   * have one space on either side; the digits either side of it are unchanged.
+   */
+  ['a package price', /(?:\$|aud\s*)\s?\d{1,3}(?:(?:\s?,\s?|\s)\d{3})+(?:\.\d{2})?/i],
   ['a contract or package heading', /\b(fixed\s*price\s*contract|price\s*contract|house\s*(?:and|&|\+)\s*land|package|single\s*contract|two\s*part\s*contract|turnkey|build\s*contract|hia\s*contract)\b/i],
   ['a land or build size', /\b(land\s*size|build\s*size|lot\s*size|house\s*size|floor\s*area|\d{2,4}\s*m\s*2|\d{2,4}\s*sqm)\b/i],
   ['a bedroom/bathroom/car configuration', /\b\d\s*(bed|bedroom|bath|bathroom|car|garage)s?\b/i],
@@ -164,6 +172,135 @@ function lotDesignationReadings(value: string): LotReading[] {
     found.push({ strict: first, fused });
   }
   return found;
+}
+
+/**
+ * A LIST OF LOTS IS A LIST, NOT ONE LOT.
+ *
+ * MEASURED 24 SEPTEMBER 2026, on a Google Sheet whose every row links that
+ * lot's own flyer. Each townhouse flyer states its lot — `Lot 29` — and then
+ * the lots its design is released on: `LOT 28, 29, 30, 36, 37, 40, 41, 43,
+ * 44`. The readings above see a lot word and the digits after it, so that
+ * whole list was ONE designation of lot 28 (or 2829, fused), and the page
+ * "stated another lot". Eleven of twenty-three properties were refused their
+ * own flyer's photograph that way, and the only lots that kept theirs were
+ * the ones whose number happened to lead a list.
+ *
+ * A list names a GROUP: which lots share a design, a release, a site plan.
+ * It does not name a competing subject, and neither of the two readings above
+ * can see it, because both are built on tokens and a list is punctuation —
+ * so this reads the page's own text for a lot word followed by numbers joined
+ * by a comma, an ampersand, `and` or `+`, the way a list is typeset, across a
+ * line break where the page breaks it.
+ *
+ * WHAT A LIST MUST NEVER SWALLOW, each of which ends the list where it stands:
+ *
+ *   `Lot 906, 14 Heath Street`   a number followed by a word on its line is a
+ *                                street number (or `3 Bed`, `300m2`), never a
+ *                                lot — and so is one ending its line with a
+ *                                street's name beginning the next;
+ *   `Lot 32, $699,000`           a figure that is not a bare number;
+ *   `Lot 32, 699,000`, `Lot 1,037`  digits grouped in thousands are ONE number;
+ *   `3.5`                        a decimal.
+ *
+ * A lot word with one number after it is not a list and is left to the
+ * readings above, exactly as before.
+ */
+export interface LotList {
+  /** Where the list sits in the page text, lot word to last member. */
+  start: number;
+  end: number;
+  /** Every lot the list names, in the page's order. */
+  members: string[];
+}
+
+/** The common street types, for ending a list at a street number only. */
+const STREET_AFTER_A_NUMBER = /^[a-z][a-z'.-]*(?:\s+[a-z][a-z'.-]*){0,3}\s+(?:street|st|road|rd|avenue|ave|drive|dr|court|ct|crescent|cres|place|pl|way|lane|ln|parade|pde|boulevard|blvd|close|cl|circuit|cct|terrace|tce|highway|hwy|grove|gr|rise|walk|loop|link|mews|square|sq|track|trail|esplanade|esp|promenade|glade|green|heights|hts|parkway|pkwy|chase|ridge|row|run|strand|vista|wynd|circle|cir|key|quay|retreat|view|vale|approach|app|outlook|pass|path|pathway)\b/i;
+
+/** A count or a measure: what `3` is in `3 Bed`, `300m2`, `2 storey`. */
+const MEASURE_AFTER_A_NUMBER = /^(?:bed|beds|bedroom|bedrooms|br|bath|baths|bathroom|bathrooms|ba|car|cars|carport|carports|garage|garages|storey|storeys|story|stories|level|levels|living|study|squares?|sq|sqm|m2|m²|m|ha|hectares?|acres?|%|x)(?![a-z])/i;
+
+/**
+ * Does what follows a number let it stand as a member of a list?
+ *
+ * `joined` is how the number was introduced. A number an ampersand or `and`
+ * introduces is declared a member by the conjunction itself — a street number
+ * never follows one — so a word after it on its line does not end the list,
+ * unless the word makes the number a count, a measure or a street number.
+ */
+function endsAListMember(after: string, joined: 'comma' | 'conjunction' = 'comma'): boolean {
+  // Digits grouped in thousands and decimals continue the NUMBER.
+  if (/^ ?,\d{3}(?!\d)/.test(after)) return false;
+  if (/^\.\d/.test(after)) return false;
+  const rest = after.replace(/^[ \t]+/, '');
+  if (!rest || /^[\r\n]/.test(rest)) {
+    // At the end of its line: a member, unless the next line names a street
+    // this number is the street number of.
+    const next = rest.replace(/^\s+/, '');
+    return !STREET_AFTER_A_NUMBER.test(next);
+  }
+  if (/^(?:[,&+]|and\b)/i.test(rest)) return true;
+  if (/^[.;:)\]]/.test(rest)) return true;
+  if (/^[-–—|•·]\s*(?!\d)/.test(rest)) return true;
+  if (joined === 'conjunction' && /^[a-z]/i.test(rest)) {
+    return !MEASURE_AFTER_A_NUMBER.test(rest) && !STREET_AFTER_A_NUMBER.test(rest);
+  }
+  return false;
+}
+
+export function lotListsIn(text: string | null | undefined): LotList[] {
+  const page = String(text ?? '');
+  const lists: LotList[] = [];
+  const head = /(?<![a-z0-9])(?:lots?|units?)\s*\.?\s*(\d{1,5})(?!\d)/gi;
+  for (let match = head.exec(page); match; match = head.exec(page)) {
+    const members = [match[1]];
+    let at = match.index + match[0].length;
+    // `Lot 1,037` is one lot, and `Lot 12, 3 Bed` a lot and its bedrooms.
+    if (!endsAListMember(page.slice(at))) continue;
+    for (;;) {
+      const rest = page.slice(at);
+      const separator = /^\s*(,|&|\band\b|\+)\s*/i.exec(rest);
+      if (!separator) break;
+      const member = /^(\d{1,5})(?!\d)/.exec(rest.slice(separator[0].length));
+      if (!member) break;
+      const end = at + separator[0].length + member[0].length;
+      const joined = separator[1] === ',' ? 'comma' : 'conjunction';
+      if (!endsAListMember(page.slice(end), joined)) break;
+      members.push(member[1]);
+      at = end;
+    }
+    if (members.length >= 2) {
+      lists.push({ start: match.index, end: at, members });
+      head.lastIndex = at;
+    }
+  }
+  return lists;
+}
+
+/**
+ * What a page designates, read as the page typesets it.
+ *
+ * `singular` is every lot the page names on its own — its heading, a price
+ * list's rows — through the two readings above, over the page with its lists
+ * taken out. `listed` is every lot a list names. Rule 1 of `pageStatesIdentity`
+ * accepts either; rule 2 weighs only the singular ones, because a list says
+ * which lots share something with the subject and never which lot the subject
+ * is.
+ */
+function pageLotDesignations(text: string): { singular: LotReading[]; listed: string[] } {
+  const lists = lotListsIn(text);
+  if (!lists.length) return { singular: lotDesignationReadings(text), listed: [] };
+  let rest = '';
+  let from = 0;
+  for (const list of lists) {
+    rest += `${text.slice(from, list.start)} `;
+    from = list.end;
+  }
+  rest += text.slice(from);
+  return {
+    singular: lotDesignationReadings(rest),
+    listed: lists.flatMap((list) => list.members),
+  };
 }
 
 /**
@@ -288,11 +425,13 @@ export function coverIdentityRefusal(
       ? null : 'nothing on the page corroborates the lot';
   }
 
-  const pageLotReadings = lotDesignationReadings(pageText);
+  const { singular, listed } = pageLotDesignations(pageText);
   const readsAsOurs = (reading: LotReading) =>
     labelLots.includes(reading.strict) || labelLots.includes(reading.fused);
-  if (!pageLotReadings.some(readsAsOurs)) return 'the page does not state this lot';
-  if (!soleProperty && pageLotReadings.some((reading) => !readsAsOurs(reading))) {
+  if (!singular.some(readsAsOurs) && !listed.some((lot) => labelLots.includes(lot))) {
+    return 'the page does not state this lot';
+  }
+  if (!soleProperty && singular.some((reading) => !readsAsOurs(reading))) {
     return 'the page states another lot';
   }
 
@@ -350,15 +489,18 @@ function pageStatesIdentity(
   }
 
   // 1 — the lot is stated, as a lot. A number the exporter split into runs
-  // is read whole as well as strictly — see `lotDesignationReadings`.
-  const pageLotReadings = lotDesignationReadings(pageText);
+  // is read whole as well as strictly — see `lotDesignationReadings` — and a
+  // lot a LIST names is stated too — see `lotListsIn`.
+  const { singular, listed } = pageLotDesignations(pageText);
   const readsAsOurs = (reading: LotReading) =>
     labelLots.includes(reading.strict) || labelLots.includes(reading.fused);
-  if (!pageLotReadings.some(readsAsOurs)) return false;
+  if (!singular.some(readsAsOurs) && !listed.some((lot) => labelLots.includes(lot))) return false;
 
-  // 2 — and no other lot is: a run is another lot only when NEITHER of its
-  // readings is ours. Waived for a sole-property document — see the parameter.
-  if (!soleProperty && pageLotReadings.some((reading) => !readsAsOurs(reading))) return false;
+  // 2 — and no other lot is the page's own: a run is another lot only when
+  // NEITHER of its readings is ours. A list is not weighed here: it names the
+  // lots that share something with the subject, never which lot the subject
+  // is. Waived for a sole-property document — see the parameter.
+  if (!soleProperty && singular.some((reading) => !readsAsOurs(reading))) return false;
 
   // 3 — the design, when the label names one.
   const design = designTokens(label);
@@ -1207,13 +1349,29 @@ export function statedOtherLotDesignation(
   if (!ours.length) return null;
 
   const text = String(pageText ?? '');
-  const readings = lotDesignationReadings(text);
+  /*
+   * THE PAGE'S OWN LOT FIRST, AND A LIST ONLY WHERE IT NAMES NOTHING ELSE.
+   * A flyer states its lot and then the lots its design is released on; the
+   * lot it is ABOUT is the one it states alone, and reading the list as a lot
+   * reported `Lot 212213` — the list's first two numbers fused — about a page
+   * that plainly says `Lot 220`. So the readings run over the page with its
+   * lists taken out (`pageLotDesignations`), and a page whose only lots are a
+   * list names that list.
+   */
+  const { singular, listed } = pageLotDesignations(text);
+  let rest = text;
+  for (const list of lotListsIn(text).reverse()) {
+    rest = `${rest.slice(0, list.start)} ${rest.slice(list.end)}`;
+  }
   const raw = Array.from(
-    text.matchAll(/(?:lot|unit)\s*\.?\s*(\d{1,5})/gi),
+    rest.matchAll(/(?:lot|unit)\s*\.?\s*(\d{1,5})/gi),
     (match) => match[1],
   );
-  const stated = [...readings.flatMap((reading) => [reading.strict, reading.fused]), ...raw];
-  if (!stated.length) return null;
+  const stated = [...singular.flatMap((reading) => [reading.strict, reading.fused]), ...raw];
+  if (!stated.length) {
+    if (!listed.length || listed.some((value) => ours.includes(value))) return null;
+    return [...new Set(listed)].slice(0, 6).join(', ');
+  }
   if (stated.some((value) => ours.includes(value))) return null;
 
   /*

@@ -79,6 +79,16 @@ import {
  *      of a recovered Sandpiper facade that carries no overlay at all —
  *      convicted a clean builder photograph and hid it. Every verdict version 1
  *      recorded was reached with that mark counting, so all of them are stale.
+ *   3  a faint-only uncertainty the source document can settle: where the
+ *      strict pass measured nothing at all and one faint line is the only
+ *      thing against a picture the document designated as its cover, the
+ *      designation breaks the tie (`resolvedBy: 'cover_designation'`)
+ *   4  structure the crop cut is not type. A band of ink that reaches a side
+ *      of the frame and runs across half of it or more is a kerb, a fence or
+ *      a roof edge, not lettering laid over the picture — measured on Lot
+ *      54's facade render, whose kerb line was the one frame-reaching run
+ *      among the 21 strict runs this deployment had stored. See
+ *      `FRAME_STRUCTURE_MIN_WIDTH_SHARE` in `marketingOverlay.pure.ts`.
  *
  * IT HAS A SECOND HALF IN THE DATABASE. `builder_stock_settlement_target`
  * carries the version production is being brought TO, because the sweep's cron
@@ -88,7 +98,7 @@ import {
  * migrations and fails when they disagree — a bump that ships only this half
  * changes new imports and silently leaves every stored image on the old rules.
  */
-export const MARKETPLACE_ELIGIBILITY_VERSION = 3;
+export const MARKETPLACE_ELIGIBILITY_VERSION = 4;
 
 /** The three answers. `pending` is the one that keeps this failing closed. */
 export type MarketplaceEligibilityState = 'eligible' | 'ineligible' | 'pending';

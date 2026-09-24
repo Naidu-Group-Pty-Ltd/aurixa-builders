@@ -61,6 +61,7 @@
  */
 import { STOCK_IMAGE_BUCKET } from './fileTypes.pure.ts';
 import { sanitizeSourceImage } from './sanitizeImage.ts';
+import { STRICT_TYPE_READING } from './marketingOverlay.pure.ts';
 import { sha256Hex } from './rasterPng.ts';
 import {
   clearanceDetail, derivativeDetail, failureDetail, sanitizationSettled, storedOriginalSha,
@@ -604,6 +605,9 @@ export async function settleImageSanitization(
          */
         clearance_refusal: (result as { clearanceRefusal?: string | null })
           .clearanceRefusal ?? null,
+        // Which reading of a line of type this refusal rests on, so a later
+        // reading can reopen the one refusal it can change and no other.
+        type_reading: STRICT_TYPE_READING,
       };
       const { error: writeError } = await settleWrite(
         row, detail, failureDetail(failure),

@@ -35,9 +35,30 @@ const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  — ${detail}` : ''}`);
 };
 
+/**
+ * THE VERSIONS THIS BUILD SPEAKS, READ FROM THE MODULES THAT DEFINE THEM.
+ *
+ * This script is plain Node and cannot import the TypeScript the bundle was
+ * built from, so it used to restate the protocol as a literal — which is how
+ * a protocol bump turns the canary red for a reason that has nothing to do
+ * with the worker. Read, never typed: the canary checks the deployment
+ * against the source this commit ships, whatever those numbers are.
+ */
+function sourceConstant(relative, name) {
+  const text = readFileSync(resolve(here, '../../..', relative), 'utf8');
+  const match = new RegExp(`export const ${name} = (\\d+);`).exec(text);
+  if (!match) throw new Error(`${name} is not declared in ${relative}`);
+  return Number(match[1]);
+}
+const PROTOCOL = sourceConstant(
+  'supabase/functions/_shared/builderStock/pdfElectionBoundary.pure.ts', 'PDF_ELECTION_PROTOCOL');
+const PROVENANCE_VERSION = sourceConstant(
+  'supabase/functions/_shared/builderStock/provenanceVersion.pure.ts', 'PROVENANCE_VERSION');
+
 const PDF = new Uint8Array(readFileSync(resolve(here, 'fixtures/lot-717-enzo-brochure.pdf')));
 const CONTEXT = {
-  protocol: 1,
+  protocol: PROTOCOL,
+  provenanceVersion: PROVENANCE_VERSION,
   label: 'Lot 717 — Enzo 10.5 Modern',
   identifiedBy: 'folder_structure',
   design: 'Enzo 10.5',
@@ -101,7 +122,9 @@ const auth = { authorization: `Bearer ${tokenArg}` };
   const body = await res.json().catch(() => ({}));
   check('health answers 200 with a token configured', res.status === 200, `status ${res.status}`);
   check('health names this service', body.service === 'builder-stock-pdf-worker', String(body.service));
-  check('health states protocol 1', body.protocol === 1, String(body.protocol));
+  check(`health states protocol ${PROTOCOL}`, body.protocol === PROTOCOL, String(body.protocol));
+  check(`health states extractor version ${PROVENANCE_VERSION}`,
+    body.provenanceVersion === PROVENANCE_VERSION, String(body.provenanceVersion));
   check('health never states the token', !JSON.stringify(body).includes(tokenArg));
 }
 
@@ -124,6 +147,16 @@ const auth = { authorization: `Bearer ${tokenArg}` };
   check('an unvouchable context is refused 400 — never elected against a default',
     badContext.status === 400, `status ${badContext.status}`);
 
+  // A settler on another extractor version would file this worker's answer
+  // under rules that did not produce it. See `WireElectionContext`.
+  const otherVersion = Buffer.from(JSON.stringify(
+    { ...CONTEXT, provenanceVersion: PROVENANCE_VERSION - 1 }), 'utf8').toString('base64');
+  const skewed = await call('/v1/elect', {
+    method: 'POST', body: PDF, headers: { ...auth, 'x-election-context': otherVersion },
+  });
+  check('a context asked under another extractor version is refused 400',
+    skewed.status === 400, `status ${skewed.status}`);
+
   const empty = await call('/v1/elect', {
     method: 'POST', body: new Uint8Array(0),
     headers: { ...auth, 'x-election-context': contextHeader },
@@ -143,7 +176,7 @@ const auth = { authorization: `Bearer ${tokenArg}` };
   const body = await res.json().catch(() => ({}));
 
   check('the election answers 200', res.status === 200, `status ${res.status}`);
-  check('the answer speaks protocol 1', body.protocol === 1, String(body.protocol));
+  check(`the answer speaks protocol ${PROTOCOL}`, body.protocol === PROTOCOL, String(body.protocol));
   check('the brochure elected an image', body.status === 'recovered',
     body.status === 'recovered' ? '' : `status=${body.status} detail=${String(body.detail).slice(0, 120)}`);
 
