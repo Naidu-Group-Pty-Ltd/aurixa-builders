@@ -320,8 +320,13 @@ try {
            (SELECT coalesce(json_agg(d.kind || '|' || d.label || '|' || d.url ORDER BY d.position), '[]')
               FROM public.builder_network_stock_item_documents d WHERE d.stock_item_id = i.id) AS documents,
            (SELECT m.media_version FROM public.builder_network_stock_item_media m WHERE m.stock_item_id = i.id) AS media_version,
+           -- Only property events carry media. A catalogue reconciliation is
+           -- consumed by the main sweep and never stamped by the media sweep,
+           -- so counting it here would wait for ever.
            (SELECT count(*) FROM public.builder_network_inbound_events e
-             WHERE e.connection_id = c.id AND (e.processed_at IS NULL OR e.media_applied_at IS NULL)) AS waiting
+             WHERE e.connection_id = c.id
+               AND (e.processed_at IS NULL
+                    OR (e.event_type = 'stock.item.upserted' AND e.media_applied_at IS NULL))) AS waiting
       FROM public.builder_network_stock_items i
       JOIN public.builder_network_connections c ON c.network_connection_id = ${id(connection)}
      WHERE i.id = ${id(item)}`);
