@@ -16,7 +16,7 @@ import {
   agencyMessageRefusal,
   projectAgencyMessages,
 } from '../../../supabase/functions/_shared/builderStock/agencyMessages.pure';
-import { agencyDedupeKeyFor, agencyPayloadContractViolation } from '../../../supabase/functions/_shared/builderStock/agencyMessages.pure';
+import { agencyDedupeKeyFor, agencyPayloadContractViolation, sameAgencyEnvelope } from '../../../supabase/functions/_shared/builderStock/agencyMessages.pure';
 import { readAgencyConversation } from '../../../supabase/functions/_shared/builderStock/agencyMessages';
 import {
   AGENCY_CONVERSATION_CLOSED_POLL_MS, AGENCY_CONVERSATION_POLL_MS, agencyConversationPollInterval, collectEveryPage, newClientMessageId, outboundStateLabel, scrollLogToEnd,
@@ -424,5 +424,25 @@ describe('a generation is a positive whole number', () => {
       expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, generation })).toMatchObject({ mistyped: ['generation'] });
     }
     expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, generation: 7 })).toBeNull();
+  });
+});
+
+describe('a duplicate message key is a duplicate only if it is the same envelope', () => {
+  const stored = { connection_id: 'conn', event_type: 'agency.message.posted',
+    payload: { message_id: 'm', generation: 1, body: 'Hello', sent_at: '2026-09-25T00:00:00Z' } };
+  it('matches the same envelope whatever the key order', () => {
+    expect(sameAgencyEnvelope(stored, { ...stored, payload: { sent_at: '2026-09-25T00:00:00Z', body: 'Hello', generation: 1, message_id: 'm' } })).toBe(true);
+  });
+  it('does not match a changed body, another connection or another type', () => {
+    expect(sameAgencyEnvelope(stored, { ...stored, payload: { ...stored.payload, body: 'Changed' } })).toBe(false);
+    expect(sameAgencyEnvelope(stored, { ...stored, connection_id: 'other' })).toBe(false);
+    expect(sameAgencyEnvelope(stored, { ...stored, event_type: 'agency.message.receipt' })).toBe(false);
+  });
+  it('the door compares a message duplicate before acknowledging it', () => {
+    const door = readCode('supabase/functions/builder-network-inbound/index.ts');
+    const dup = door.slice(door.indexOf("=== '23505'"));
+    expect(dup.indexOf('sameAgencyEnvelope(')).toBeGreaterThan(-1);
+    expect(dup.indexOf('sameAgencyEnvelope(')).toBeLessThan(dup.indexOf('duplicate: true'));
+    expect(dup).toMatch(/error: 'message_conflict' \}, 409/);
   });
 });

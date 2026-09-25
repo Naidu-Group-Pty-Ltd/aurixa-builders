@@ -32,7 +32,7 @@ import {
   assertPayloadCrossesClean,
 } from '../_shared/builderNetworkPrivacy.pure.ts';
 import { buildStamp } from '../_shared/builderNetworkStamp.pure.ts';
-import { agencyDedupeKeyFor, agencyPayloadContractViolation } from '../_shared/builderStock/agencyMessages.pure.ts';
+import { agencyDedupeKeyFor, agencyPayloadContractViolation, sameAgencyEnvelope } from '../_shared/builderStock/agencyMessages.pure.ts';
 
 const MAX_BODY_BYTES = 256 * 1024;
 
@@ -150,6 +150,15 @@ Deno.serve(async (req) => {
       });
     if (insertError) {
       if (String(insertError.code) === '23505') {
+        // A message key is a duplicate only if it is the SAME envelope: the
+        // same key carrying other content is a conflict, never acknowledged.
+        if (expectedKey !== null) {
+          const { data: stored } = await supabase.from('builder_network_inbound_events')
+            .select('connection_id, event_type, payload').eq('dedupe_key', dedupeKey).maybeSingle();
+          if (!stored || !sameAgencyEnvelope(stored, { connection_id: connection.id, event_type: eventType, payload: envelope.payload ?? {} })) {
+            return json({ error: 'message_conflict' }, 409);
+          }
+        }
         // Redelivery of something already landed: the 200 the sender lost.
         return json({ accepted: true, duplicate: true });
       }

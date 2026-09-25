@@ -139,3 +139,26 @@ export function agencyDedupeKeyFor(eventType: string, payload: unknown): string 
   if (eventType === 'agency.message.receipt') return `agency.receipt:${String(record.message_id)}:${String(record.generation)}`;
   return null;
 }
+
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort()
+      .map((key) => [key, canonical((value as Record<string, unknown>)[key])]));
+  }
+  return value;
+}
+
+/**
+ * Whether an envelope that hit an existing dedupe key is the SAME envelope.
+ * Only then is it a redelivery to acknowledge; the same key carrying other
+ * content is a conflict, never an accepted duplicate.
+ */
+export function sameAgencyEnvelope(
+  stored: { connection_id: unknown; event_type: unknown; payload: unknown },
+  incoming: { connection_id: unknown; event_type: unknown; payload: unknown },
+): boolean {
+  return stored.connection_id === incoming.connection_id
+    && stored.event_type === incoming.event_type
+    && JSON.stringify(canonical(stored.payload)) === JSON.stringify(canonical(incoming.payload));
+}
