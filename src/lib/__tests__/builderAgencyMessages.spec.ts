@@ -19,7 +19,7 @@ import {
 import { agencyDedupeKeyFor, agencyPayloadContractViolation, sameAgencyEnvelope } from '../../../supabase/functions/_shared/builderStock/agencyMessages.pure';
 import { readAgencyConversation } from '../../../supabase/functions/_shared/builderStock/agencyMessages';
 import {
-  AGENCY_CONVERSATION_CLOSED_POLL_MS, accessRefused, retryUnlessRefused, AGENCY_CONVERSATION_POLL_MS, agencyConversationPollInterval, arrivalScrollTarget, collectEveryPage, newClientMessageId, outboundStateLabel, scrollLogToEnd,
+  AGENCY_CONVERSATION_CLOSED_POLL_MS, accessRefused, agencyConversationRefetchInterval, retryUnlessRefused, AGENCY_CONVERSATION_POLL_MS, agencyConversationPollInterval, arrivalScrollTarget, collectEveryPage, newClientMessageId, outboundStateLabel, scrollLogToEnd,
 } from '../builderAgency';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
@@ -197,7 +197,7 @@ describe('reading a conversation', () => {
     const next = await readAgencyConversation(standIn(f).client, args);
     if (!next.ok) throw new Error('read failed');
     expect(next.messages.at(-1)?.body).toBe('Just arrived');
-    expect(readCode('src/lib/builderStockQueries.ts')).toMatch(/refetchInterval:\s*\(query\)\s*=>\s*agencyConversationPollInterval/);
+    expect(readCode('src/lib/builderStockQueries.ts')).toMatch(/refetchInterval:\s*\(query\)\s*=>\s*agencyConversationRefetchInterval\(query\.state\)/);
   });
 
   it('a revoked connection is read-only, even while its activation row stands', async () => {
@@ -357,7 +357,9 @@ describe('polling and paging', () => {
     expect(agencyConversationPollInterval({ open: false })).toBe(AGENCY_CONVERSATION_CLOSED_POLL_MS);
     expect(AGENCY_CONVERSATION_CLOSED_POLL_MS).toBeGreaterThanOrEqual(6 * AGENCY_CONVERSATION_POLL_MS);
     expect(readCode('src/lib/builderStockQueries.ts'))
-      .toMatch(/refetchInterval:\s*\(query\)\s*=>\s*agencyConversationPollInterval\(query\.state\.data\)/);
+      .toMatch(/refetchInterval:\s*\(query\)\s*=>\s*agencyConversationRefetchInterval\(query\.state\)/);
+    expect(readCode('src/lib/builderAgency.ts'))
+      .toMatch(/accessRefused\(state\.error\)\s*\?\s*false\s*:\s*agencyConversationPollInterval\(state\.data\)/);
   });
 
   it('collects every page, in order, and stops at the stated last page', async () => {
@@ -607,5 +609,20 @@ describe('a refusal is not retried before it is shown', () => {
       const body = q.slice(start, q.indexOf('\nexport ', start + 10));
       expect(body).toMatch(/retry:\s*retryUnlessRefused/);
     }
+  });
+});
+
+describe('the conversation poll after a refusal', () => {
+  it('stops, and keeps polling through a transient failure', () => {
+    const data = { open: true };
+    expect(agencyConversationRefetchInterval({ data, error: { status: 403 } })).toBe(false);
+    expect(agencyConversationRefetchInterval({ data, error: { status: 401 } })).toBe(false);
+    expect(agencyConversationRefetchInterval({ data, error: { status: 503 } })).toBe(agencyConversationPollInterval(data));
+    expect(agencyConversationRefetchInterval({ data, error: null })).toBe(agencyConversationPollInterval(data));
+  });
+
+  it('the poll reads it', () => {
+    expect(readCode('src/lib/builderStockQueries.ts'))
+      .toMatch(/refetchInterval:\s*\(query\)\s*=>\s*agencyConversationRefetchInterval\(query\.state\)/);
   });
 });

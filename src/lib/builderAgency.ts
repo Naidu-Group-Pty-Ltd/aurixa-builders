@@ -130,6 +130,14 @@ export function retryUnlessRefused(failureCount: number, error: unknown): boolea
   return !accessRefused(error) && failureCount < 1;
 }
 
+/**
+ * The poll stops once a read is refused: every later poll would be refused
+ * too. Remounting the conversation reads again.
+ */
+export function agencyConversationRefetchInterval(state: { data?: { open?: boolean }; error?: unknown }): number | false {
+  return accessRefused(state.error) ? false : agencyConversationPollInterval(state.data);
+}
+
 export const AGENCIES_PATH = '/builder/agencies';
 export const AGENCY_TABS = ['activations', 'messages'] as const;
 export type AgencyTab = typeof AGENCY_TABS[number];

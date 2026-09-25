@@ -19,7 +19,7 @@ import type {
   ManualStatField, StatedLocationField,
 } from '@/lib/builderStock';
 import {
-  agencyConversationPollInterval, collectEveryPage, retryUnlessRefused, type ActivatedProperty, type AgencyConversation, type AgencyMessageView,
+  agencyConversationPollInterval, agencyConversationRefetchInterval, collectEveryPage, retryUnlessRefused, type ActivatedProperty, type AgencyConversation, type AgencyMessageView,
 } from '@/lib/builderAgency';
 
 export const builderStockKeys = {
@@ -272,7 +272,7 @@ export function useAgencyConversation(connectionId: string | null, stockItemId: 
     queryFn: () => invoke<AgencyConversation>({
       operation: 'get_agency_conversation', connection_id: connectionId, stock_item_id: stockItemId,
     }),
-    refetchInterval: (query) => agencyConversationPollInterval(query.state.data),
+    refetchInterval: (query) => agencyConversationRefetchInterval(query.state),
     refetchIntervalInBackground: false,
     retry: retryUnlessRefused,
   });
