@@ -304,6 +304,57 @@ const stampedImagesOf = (itemId, confirmationId) => q('stamped images', `
 
 const TERMINAL = ['settled', 'failed'];
 
+/*
+ * WHAT THE ROWS SAID WHEN A WAIT RAN OUT, PRINTED BEFORE CLEANUP DELETES THEM.
+ *
+ * Run 36013693485 waited twelve minutes, printed `lot 2046 source` three times
+ * and then deleted the only evidence of why. The rows would have said it in
+ * the first minute: the brochure link the import stored was 300 characters of
+ * the 488 sent, and every branch was being refused as a fault on our side.
+ * So a wait that ends undone prints each property's work state, each branch's
+ * stored answer (by host, never by link), and the minute job's recent runs.
+ */
+async function explainStall(orgId, label) {
+  console.log(`\n  -- why "${label}" did not finish: what the rows say --`);
+  try {
+    const rows = await q('stalled items', `
+      SELECT lot_number, lifecycle_status, image_work_stage, image_work_attempts,
+             image_work_failures, image_work_next_attempt_at, image_work_claim_until,
+             left(coalesce(image_work_last_result::text, ''), 300) AS last_result,
+             left(coalesce(image_work_last_error::text, ''), 300) AS last_error,
+             primary_image_id IS NOT NULL AS has_primary,
+             source_provenance_result->'branches' AS branches
+        FROM public.builder_stock_items
+       WHERE organisation_id = ${sqlLit(orgId)} ORDER BY lot_number`);
+    for (const row of rows) {
+      console.log(`  lot ${row.lot_number}: ${row.lifecycle_status}/${row.image_work_stage}`
+        + ` attempts ${row.image_work_attempts} failures ${row.image_work_failures}`
+        + ` next ${row.image_work_next_attempt_at} claim ${row.image_work_claim_until}`
+        + ` primary ${row.has_primary ? 'yes' : 'no'}`);
+      if (row.last_result) console.log(`    last result: ${row.last_result}`);
+      if (row.last_error) console.log(`    last error: ${row.last_error}`);
+      for (const [link, answer] of Object.entries(row.branches ?? {})) {
+        let host = '?';
+        try { host = new URL(link).hostname; } catch { /* not an address */ }
+        const a = answer ?? {};
+        console.log(`    branch ${host} (${link.length} chars): result ${a.result ?? '—'}`
+          + ` provenance ${a.provenance_version ?? '—'} attempts ${a.attempts ?? '—'}`);
+      }
+    }
+    const ticks = await q('recent ticks', `
+      SELECT j.jobname, d.status, left(coalesce(d.return_message, ''), 160) AS message, d.start_time
+        FROM cron.job_run_details d JOIN cron.job j USING (jobid)
+       WHERE j.jobname IN ('settle-builder-stock-source-images',
+                           'settle-builder-stock-marketplace-eligibility')
+       ORDER BY d.start_time DESC LIMIT 6`);
+    for (const tick of ticks) {
+      console.log(`  tick ${tick.jobname} ${tick.status} at ${tick.start_time}: ${tick.message}`);
+    }
+  } catch (error) {
+    console.log(`  (the rows could not be read: ${String(error?.message ?? error).slice(0, 200)})`);
+  }
+}
+
 async function waitFor(label, check, deadlineMs = SETTLE_DEADLINE_MS) {
   const startedAt = Date.now();
   let last = null;
@@ -360,6 +411,21 @@ try {
     `HTTP ${processed.status}, ${JSON.stringify(processed.json?.summary ?? {})}`);
   summary.uploadId = uploadId;
 
+  /*
+   * AND EVERY LINK ARRIVED WHOLE. A signed link is its own credential, so a
+   * stored link that is a character short is a link nothing will answer — run
+   * 36013693485 stored 300 of 488 and waited twelve minutes to find out.
+   */
+  const storedLinks = await q('stored links', `
+    SELECT lot_number, source_row->'unmapped'->>'Brochure URL' AS link
+      FROM public.builder_stock_items
+     WHERE organisation_id = ${sqlLit(user.orgId)} ORDER BY lot_number`);
+  const sentByLot = { 2046: ownUrl, 3158: siblingUrl, 3185: siblingUrl };
+  record('2: every brochure link reached the database whole',
+    storedLinks.length === 3 && storedLinks.every((row) => row.link === sentByLot[row.lot_number]),
+    storedLinks.map((row) => `lot ${row.lot_number} ${String(row.link ?? '').length}`
+      + ` of ${String(sentByLot[row.lot_number] ?? '').length} chars`).join(', '));
+
   // --- 3. THE SETTLER READS ALL THREE BROCHURES ----------------------------
   const settled = await waitFor('first settlement', async () => {
     const items = await itemsOf(user.orgId);
@@ -373,7 +439,10 @@ try {
   record('3: three properties, each read to a conclusion', settled.done === true,
     (settled.items ?? []).map((i) => `lot ${i.lot_number} ${i.image_work_stage}`).join(', ')
     + ` after ${Math.round(settled.ms / 1000)} s`);
-  if (!settled.done) throw new Error('the properties did not settle; nothing further can be proved');
+  if (!settled.done) {
+    await explainStall(user.orgId, 'first settlement');
+    throw new Error('the properties did not settle; nothing further can be proved');
+  }
   const own = lot('2046');
   const sibling = lot('3158');
   const owner = lot('3185');
@@ -428,6 +497,7 @@ try {
     const image = item?.primary_image_id ? await imageOf(item.primary_image_id) : null;
     return { item, image, done: !!image && TERMINAL.includes(item?.image_work_stage) };
   });
+  if (!applied.done) await explainStall(user.orgId, 'the confirmed brochure');
   summary.appliedMs = applied.ms;
   record('6: the card shows the brochure\'s own photograph, stamped with the confirmation',
     applied.done === true && applied.image?.size === OWN_PHOTO
@@ -460,6 +530,7 @@ try {
     const note = TERMINAL.includes(item?.image_work_stage) ? mismatchOf(await read(own.id)) : null;
     return { item, note, done: !!note };
   });
+  if (!reread.done) await explainStall(user.orgId, 'the undone brochure');
   record('7: the settler reads it again and the notice comes back, with the choice',
     reread.done === true && reread.note?.confirmable === true && !reread.item?.primary_image_id,
     `stage ${reread.item?.image_work_stage}, notice ${reread.note ? reread.note.states : 'none'}, `
