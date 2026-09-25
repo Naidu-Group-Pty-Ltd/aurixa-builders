@@ -506,6 +506,49 @@ if (!urlArg) {
   console.log('\n(lane checks are bundle-mode only: the wire does not name the object that served)');
 }
 
+// ---- a figures reading ---------------------------------------------------
+/*
+ * PROTOCOL 4 ASKS A DIFFERENT QUESTION OF THE SAME DOCUMENT: what it states
+ * about its property's figures (`brochureFigures.ts`). The answer is evidence,
+ * never a picture, and it must speak the protocol it was asked in.
+ */
+{
+  const FIGURES_PROTOCOL = sourceConstant(
+    'supabase/functions/_shared/builderStock/pdfElectionBoundary.pure.ts', 'FIGURES_PROTOCOL');
+  const figuresHeader = Buffer.from(JSON.stringify({
+    ...CONTEXT, protocol: FIGURES_PROTOCOL, purpose: 'figures', label: 'figures',
+    identifiedBy: 'direct_link', identityHints: [],
+  }), 'utf8').toString('base64');
+  const res = await call('/v1/elect', {
+    method: 'POST', body: PDF,
+    headers: { ...auth, 'content-type': 'application/pdf', 'x-election-context': figuresHeader },
+  });
+  const body = await res.json().catch(() => ({}));
+  check('a figures reading answers 200', res.status === 200, `status ${res.status}`);
+  check(`the figures answer speaks protocol ${FIGURES_PROTOCOL}`,
+    body.protocol === FIGURES_PROTOCOL, String(body.protocol));
+  check('the figures answer is evidence, not a picture',
+    body.status === 'figures' && !body.image, `status=${body.status}`);
+  const rows = body.evidence?.reading?.rows ?? [];
+  check('the brochure is read as one property with a floor area',
+    body.evidence?.reading?.status === 'complete' && rows.length === 1
+      && rows[0].building_size_sqm != null,
+    JSON.stringify(body.evidence?.reading ?? null).slice(0, 200));
+  check('the document is recognised as presenting its design',
+    body.evidence?.presentsDesign === true, String(body.evidence?.presentsDesign));
+
+  const mixed = await call('/v1/elect', {
+    method: 'POST', body: PDF,
+    headers: {
+      ...auth, 'content-type': 'application/pdf',
+      'x-election-context': Buffer.from(JSON.stringify({ ...CONTEXT, purpose: 'figures' }), 'utf8')
+        .toString('base64'),
+    },
+  });
+  check('a figures purpose under an election protocol is refused 400',
+    mixed.status === 400, `status ${mixed.status}`);
+}
+
 const failed = checks.filter((c) => !c.ok);
 console.log(`\n${checks.length - failed.length}/${checks.length} checks passed`);
 if (failed.length) {

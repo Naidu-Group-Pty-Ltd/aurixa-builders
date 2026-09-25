@@ -53,8 +53,11 @@ describe('a re-read of the same file may unsay what it no longer states', () => 
     // spreadsheet had fewer columns.
     expect(importStock).toMatch(
       /if \(value !== null && value !== undefined && value !== ''\) patch\[column\] = value;/);
+    // Unsaid to what the property's own brochure stated, or to null where it
+    // stated nothing (`documentFigureFallback`): the stock list's silence is
+    // not a correction of the brochure. See builder-portal doc 57.
     expect(importStock).toMatch(
-      /else if \(options\.sameSourceReread && UNSAYABLE_ON_REREAD\.has\(column\)\) patch\[column\] = null;/);
+      /else if \(options\.sameSourceReread && UNSAYABLE_ON_REREAD\.has\(column\)\) \{\s*patch\[column\] = documentFigureFallback\(options\.documentFigures, column\);/);
   });
 
   it('decides "same source" from the row\'s own previous supplier', () => {

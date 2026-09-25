@@ -28,9 +28,12 @@ import { electFromPdfBytes, type ElectionContext } from './pdfElection.ts';
 import { electionRoute, type ElectionRoute } from './pdfElectionRoute.pure.ts';
 import {
   ELECTION_CONTEXT_HEADER, ELECTION_TIMEOUT_MS, MAX_DOCUMENT_BYTES,
-  base64ToBytes, electionProtocolFor, encodeElectionContext,
-  isElectionRefusalReason,
+  FIGURES_PROTOCOL, base64ToBytes, electionProtocolFor, encodeElectionContext,
+  encodeFigureContext, isElectionRefusalReason,
 } from './pdfElectionBoundary.pure.ts';
+import {
+  parseBrochureFigureEvidence, type BrochureFigureEvidence,
+} from './brochureFigures.pure.ts';
 import type { PackageOutcome } from './packageImages.ts';
 import { isDocumentFinding } from './negativeProvenance.pure.ts';
 import { TELEMETRY_PREFIX, pdfTelemetry } from './importTelemetry.pure.ts';
@@ -380,4 +383,67 @@ async function electViaWorker(
       role: image.role,
     },
   } as PackageOutcome;
+}
+
+/**
+ * WHAT A BROCHURE STATES ABOUT ITS PROPERTY'S FIGURES, read on the worker.
+ *
+ * The same route, token and body as an election, asked under protocol 4
+ * (`FIGURES_PROTOCOL`). Everything this side cannot vouch for is
+ * `unavailable` — a retry, never a statement about the document — and the
+ * evidence is re-checked field by field (`parseBrochureFigureEvidence`), so a
+ * worker running ahead of this build cannot hand over a shape it never read.
+ * There is no in-process path: parsing here is the CPU the worker exists for.
+ */
+export async function readFigureEvidenceOnWorker(
+  bytes: Uint8Array,
+  context: { design?: string | null; documentName: string; url: string },
+): Promise<
+  | { ok: true; evidence: BrochureFigureEvidence }
+  | { ok: false; reason: string; unreadable?: boolean }
+> {
+  const route = electionRoute({
+    runtimeVersion: RUNTIME_VERSION,
+    endpoint: env('BUILDER_STOCK_PDF_WORKER_URL'),
+    token: env('BUILDER_STOCK_PDF_WORKER_TOKEN'),
+  });
+  if (route.kind !== 'worker') return { ok: false, reason: 'worker_not_configured' };
+  if (!bytes.length || bytes.length > MAX_DOCUMENT_BYTES) {
+    return { ok: false, reason: 'document_size_outside_bounds', unreadable: true };
+  }
+  let response: Response;
+  try {
+    response = await meteredFetch(`${route.endpoint}/v1/elect`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${route.token}`,
+        'content-type': 'application/pdf',
+        [ELECTION_CONTEXT_HEADER]: encodeFigureContext(context),
+      },
+      body: bytes as unknown as BodyInit,
+      signal: AbortSignal.timeout(ELECTION_TIMEOUT_MS),
+    }, {
+      secretName: 'BUILDER_STOCK_PDF_WORKER_TOKEN',
+      feature: 'builder-stock/pdf-election',
+      metadata: { purpose: 'document_figures' },
+    });
+  } catch (error) {
+    return { ok: false, reason: `worker_unreachable:${String(error).slice(0, 80)}` };
+  }
+  if (!response.ok) {
+    await response.text().catch(() => '');
+    return { ok: false, reason: `worker_refused_${response.status}` };
+  }
+  let body: Record<string, unknown>;
+  try {
+    body = await response.json() as Record<string, unknown>;
+  } catch {
+    return { ok: false, reason: 'worker_answer_not_json' };
+  }
+  if (Number(body.protocol) !== FIGURES_PROTOCOL) return { ok: false, reason: 'worker_protocol' };
+  if (body.status === 'unreadable') {
+    return { ok: false, reason: String(body.reason ?? 'unreadable').slice(0, 120), unreadable: true };
+  }
+  const evidence = body.status === 'figures' ? parseBrochureFigureEvidence(body.evidence) : null;
+  return evidence ? { ok: true, evidence } : { ok: false, reason: 'worker_answer_unrecognised' };
 }

@@ -3486,6 +3486,101 @@ sheet_fixture(
         )))
 
 
+# A SHEET WITH NO FLOOR-AREA COLUMN, WHOSE ROWS LINK BROCHURES THAT STATE IT.
+#
+# MEASURED 25 SEPTEMBER 2026 (`stock-field-coverage`): the one live stock
+# list, a Google Sheet of seventy properties, has no floor-area column at all
+# and leaves the car count blank on twenty rows, so 69 properties drew "—"
+# for home size. Every one of those rows links its OWN brochure, which the
+# image ladder already opens for a photograph, and the brochure's cover prints
+# a "House Specifications" block (living, garage, porch, total) beside the lot
+# size — measured through the product's own reader over the real brochures:
+# 43 of 69 give a building size from their text.
+#
+# The shape here is that block, with invented names. Four rows, four answers:
+#
+#   5102  the sheet is silent; its own brochure states the total → filled
+#   5104  the sheet leaves the car count blank too; the brochure states it
+#         with the other counts → both filled
+#   5106  the sheet STATES a build size; its brochure states another → the
+#         sheet's figure stands (the stock list is the builder's own word)
+#   5108  links the brochure of ANOTHER lot of the same design, which the
+#         photograph election accepts on the design (measured: production's
+#         Lot 1728 · Nex 20 shows Lot 1629's). A design's figures are the
+#         design's — its bedrooms, bathrooms, car spaces and house size — so
+#         those may fill; its land size is the other LOT's and never does.
+#         The sheet states no land for it here, so that is what is proved.
+def spec_brochure(lot, street, estate, design, price, land, living, garage, porch, total,
+                  seed, size, beds=4, baths=2, cars=2):
+    """A one-page package cover: facade, identity, and the House Specifications
+    block the measured brochures print."""
+    def build(c):
+        text(c, 20, 22, design, 20, True)
+        text(c, 20, 32, f'{beds} Bedrooms  {baths} Bathrooms  {cars} Car Spaces', 10)
+        text(c, 20, 42, f'Lot {lot} {street}, Coldwater')
+        text(c, 20, 49, f'({estate})', 9)
+        text(c, 130, 22, f'Package Price - ${price:,}', 12, True)
+        text(c, 130, 32, 'Lot Size')
+        text(c, 130, 38, f'{land}m2')
+        text(c, 130, 48, 'House Specifications', 10, True)
+        text(c, 130, 55, f'Living: {living}m2')
+        text(c, 130, 61, f'Garage: {garage}m2')
+        text(c, 130, 67, f'Porch: {porch}m2')
+        text(c, 130, 73, f'Total: {total}m2')
+        hero(c, facade(seed, *size), top=185, height=100)
+        text(c, 20, 200, 'Artist impression only. Plan may vary without notice.', 8)
+        c.showPage()
+    return build
+
+
+_CW_HEADER = ['Lot', 'Design', 'Bed', 'Bath', 'Car', 'Land Size', 'Build Size', 'Price',
+              'Suburb', 'State', 'Postcode', 'Brochure URL']
+
+sheet_fixture(
+    'heldout-a-sheet-with-no-floor-area-whose-brochures-state-it',
+    'COLDWATER GROVE - STOCK LIST.csv',
+    header=_CW_HEADER,
+    rows=[
+        ['5102', 'Marlo 21', '4', '2', '2', '400', '', '$684,000',
+         'Coldwater', 'VIC', '3979', drive_link('ColdwaterGroveLot5102Brochure')],
+        ['5104', 'Tamsin 19', '4', '2', '', '375', '', '$652,500',
+         'Coldwater', 'VIC', '3979', drive_link('ColdwaterGroveLot5104Brochure')],
+        ['5106', 'Marlo 21', '4', '2', '2', '420', '188', '$689,000',
+         'Coldwater', 'VIC', '3979', drive_link('ColdwaterGroveLot5106Brochure')],
+        ['5108', 'Tamsin 19', '4', '2', '2', '', '', '$655,000',
+         'Coldwater', 'VIC', '3979', drive_link('ColdwaterGroveLot5180Brochure')],
+    ],
+    linked={
+        'ColdwaterGroveLot5102Brochure': ('LOT 5102 - MARLO 21 - BROCHURE.pdf', spec_brochure(
+            '5102', 'Tarrin Street', 'Coldwater Grove Estate', 'Marlo 21', 684000, 400,
+            '151.40', '36.10', '4.20', '191.70', 2062, (1320, 820))),
+        'ColdwaterGroveLot5104Brochure': ('LOT 5104 - TAMSIN 19 - BROCHURE.pdf', spec_brochure(
+            '5104', 'Tarrin Street', 'Coldwater Grove Estate', 'Tamsin 19', 652500, 375,
+            '138.25', '35.80', '3.95', '178.00', 3185, (1200, 760))),
+        'ColdwaterGroveLot5106Brochure': ('LOT 5106 - MARLO 21 - BROCHURE.pdf', spec_brochure(
+            '5106', 'Tarrin Street', 'Coldwater Grove Estate', 'Marlo 21', 689000, 420,
+            '151.40', '36.10', '4.20', '191.70', 2062, (1440, 900))),
+        'ColdwaterGroveLot5180Brochure': ('LOT 5180 - TAMSIN 19 - BROCHURE.pdf', spec_brochure(
+            '5180', 'Tarrin Street', 'Coldwater Grove Estate', 'Tamsin 19', 655000, 380,
+            '138.25', '35.80', '3.95', '178.00', 3185, (960, 600))),
+    },
+    expect=dict(
+        properties=4,
+        rows=[dict(lot_number='5102'), dict(lot_number='5104'),
+              dict(lot_number='5106'), dict(lot_number='5108')],
+        document_figures=dict(
+            # What each property holds once its own brochure has been read,
+            # and still holds after the same stock list is read again.
+            holds=[
+                dict(lot_number='5102', building_size_sqm=191.7, car_spaces=2),
+                dict(lot_number='5104', building_size_sqm=178.0, car_spaces=2),
+                dict(lot_number='5106', building_size_sqm=188.0, car_spaces=2),
+                dict(lot_number='5108', building_size_sqm=178.0, car_spaces=2,
+                     land_size_sqm=None),
+            ],
+        )))
+
+
 # A ROW WHOSE BROCHURE IS LINKED BY A LONG SIGNED ADDRESS.
 #
 # MEASURED 24 SEPTEMBER 2026, production-rollout run 36013693485. A stock

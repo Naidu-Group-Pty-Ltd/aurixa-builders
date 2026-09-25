@@ -214,3 +214,95 @@ export function readAreaScheduleTotal(
   if (refused || totals.size !== 1) return null;
   return [...totals.values()][0];
 }
+
+/**
+ * THE SAME SCHEDULE, WHERE THE PAGE SETS ITS LABELS AND ITS VALUES APART.
+ *
+ * MEASURED 25 SEPTEMBER 2026 on the production `VG18` brochures: the cover's
+ * "House Specifications" block prints its labels as one run and its values as
+ * another, in a part of the page the positioned reader does not reach —
+ *
+ *     Ground Floor:          …          132.75m2
+ *     Garage:                            36.05m2
+ *     Porch:                              4.04m2
+ *     Total:                            172.84m2
+ *
+ * arrives in the text as `Ground Floor:` `Garage:` `Porch:` `Total:` and, a
+ * few dozen lines later, `132.75m2` `36.05m2` `4.04m2` `172.84m2`. Nothing
+ * places the values beside their labels, so the loose tolerance
+ * `readAreaScheduleTotal` allows a positioned schedule is NOT allowed here:
+ * the two runs are paired only where they have the same length, the labels
+ * are a dwelling's parts closing on `Total`, and the values' own arithmetic
+ * proves the order — every part but the last adds to the last within the
+ * rounding two printed decimals allow. Exactly one such pairing per document,
+ * or none.
+ */
+const LABEL_ONLY = /^([A-Za-z][A-Za-z\s]*?)\s*:\s*$/;
+const AREA_ONLY = /^(\d{1,5}(?:[.,]\d{1,2})?)\s*(?:m2|m²|sqm|sq\s?m)$/i;
+const LINES_TOLERANCE_PER_PART = 0.006;
+
+export function readAreaScheduleTotalFromLines(
+  pageTexts: readonly string[],
+): AreaScheduleTotal | null {
+  const found = new Map<string, AreaScheduleTotal>();
+  for (const pageText of pageTexts ?? []) {
+    const lines = String(pageText ?? '').split(/\r?\n/).map((line) => line.replace(/\s+/g, ' ').trim());
+    // Runs of label-only lines closing on a total.
+    const labelRuns: string[][] = [];
+    let run: string[] = [];
+    for (const line of lines) {
+      const match = line.match(LABEL_ONLY);
+      const label = match ? match[1].trim() : '';
+      if (label && (DWELLING_PART.test(label) || SCHEDULE_TOTAL.test(label))) {
+        run.push(label);
+        if (SCHEDULE_TOTAL.test(label)) { labelRuns.push(run); run = []; }
+      } else {
+        run = [];
+      }
+    }
+    // Runs of value-only lines.
+    const valueRuns: string[][] = [];
+    let values: string[] = [];
+    for (const line of lines) {
+      if (AREA_ONLY.test(line)) values.push(line);
+      else { if (values.length) valueRuns.push(values); values = []; }
+    }
+    if (values.length) valueRuns.push(values);
+
+    // And the same schedule set inline, one `Label: value` per line.
+    let inline: Array<{ label: string; value: string }> = [];
+    for (const line of lines) {
+      const match = line.match(/^([A-Za-z][A-Za-z\s]*?)\s*:\s*(\d.*)$/);
+      const label = match ? match[1].trim() : '';
+      const value = match ? match[2].trim() : '';
+      if (label && AREA_ONLY.test(value) && (DWELLING_PART.test(label) || SCHEDULE_TOTAL.test(label))) {
+        inline.push({ label, value });
+        if (SCHEDULE_TOTAL.test(label)) {
+          labelRuns.push(inline.map((entry) => entry.label));
+          valueRuns.push(inline.map((entry) => entry.value));
+          inline = [];
+        }
+      } else {
+        inline = [];
+      }
+    }
+
+    for (const labels of labelRuns) {
+      const parts = labels.slice(0, -1);
+      if (parts.length < 2 || parts.some((label) => SCHEDULE_TOTAL.test(label))) continue;
+      if (new Set(parts.map((label) => label.toLowerCase())).size !== parts.length) continue;
+      for (const written of valueRuns) {
+        if (written.length !== labels.length) continue;
+        const areas = written.map((value) => Number(value.match(AREA_ONLY)![1].replace(',', '.')));
+        const total = areas[areas.length - 1];
+        const partAreas = areas.slice(0, -1);
+        const sum = partAreas.reduce((acc, area) => acc + area, 0);
+        if (total < Math.max(...partAreas)) continue;
+        if (Math.abs(sum - total) > LINES_TOLERANCE_PER_PART * partAreas.length + 0.001) continue;
+        found.set(String(total), { value: written[written.length - 1], parts: partAreas.length });
+      }
+    }
+  }
+  return found.size === 1 ? [...found.values()][0] : null;
+}
+

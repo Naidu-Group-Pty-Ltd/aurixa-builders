@@ -246,6 +246,17 @@ interface Expect {
       in_use_by?: string; sibling?: string;
     }>;
   };
+  /**
+   * The figures a property's OWN brochure states where its stock list is
+   * silent, read once the imagery has settled and still held after the same
+   * stock list is read again. `null` is a figure that must stay absent. See 6e1c.
+   */
+  document_figures?: {
+    holds: Array<{
+      lot_number: string; building_size_sqm?: number | null; car_spaces?: number | null;
+      land_size_sqm?: number | null;
+    }>;
+  };
 }
 interface Entry {
   name: string; org: string; filename: string; path: string;
@@ -929,6 +940,61 @@ async function itemsFor(uploadId: string) {
   if (error) throw new Error(`read items: ${error.message}`);
   return (data ?? []).slice().sort((a: any, b: any) =>
     String(a.lot_number ?? a.id).localeCompare(String(b.lot_number ?? b.id)));
+}
+
+/** The figures each named property holds, against the expectation. */
+function checkDocumentFigures(entry: any, items: any[], when: string) {
+  const held: any[] = [];
+  for (const want of entry.expect.document_figures.holds ?? []) {
+    const it = items.find((i: any) => String(i.lot_number) === want.lot_number);
+    if (!it) { fail(entry, `no property for lot ${want.lot_number}`); continue; }
+    const got = {
+      lot_number: want.lot_number,
+      building_size_sqm: it.building_size_sqm == null ? null : Number(it.building_size_sqm),
+      car_spaces: it.car_spaces == null ? null : Number(it.car_spaces),
+      land_size_sqm: it.land_size_sqm == null ? null : Number(it.land_size_sqm),
+    };
+    held.push(got);
+    for (const key of ['building_size_sqm', 'car_spaces', 'land_size_sqm'] as const) {
+      if (!(key in want)) continue;
+      if (got[key] !== want[key]) {
+        fail(entry, `lot ${want.lot_number} holds ${key} ${JSON.stringify(got[key])} ${when}, `
+          + `expected ${JSON.stringify(want[key])}`);
+      }
+    }
+  }
+  return held;
+}
+
+/**
+ * The figures a property's own brochure states, read by the product. See 6e1c.
+ *
+ * IMPORTED AT RUN TIME, as the confirmation is: a build that cannot read a
+ * brochure's figures fails this fixture rather than failing to load the gate.
+ */
+async function exerciseDocumentFigures(entry: any, uploadId: string, when: string) {
+  const module: any = await import(
+    '../../supabase/functions/_shared/builderStock/documentFigures.ts').catch(() => null);
+  const evidence: any = await import(
+    '../../supabase/functions/_shared/builderStock/brochureFigures.ts').catch(() => null);
+  if (!module?.readOwedDocumentFigures || !evidence?.readBrochureFigureEvidence) {
+    fail(entry, 'the product cannot read a property\'s figures from its own brochure');
+    return null;
+  }
+  const passes: any[] = [];
+  for (let pass = 0; pass < 12; pass += 1) {
+    const done = await module.readOwedDocumentFigures(db, {
+      uploadId, maxItems: 8, deadlineAt: Date.now() + 90_000,
+    }, {
+      fetchDocument: linkedDocumentFetch,
+      // The worker's own function, in this process.
+      readEvidence: (bytes: Uint8Array, context: unknown) =>
+        evidence.readBrochureFigureEvidence(bytes, context),
+    });
+    passes.push({ read: done.read, filled: done.filled });
+    if (!done.read) break;
+  }
+  return { passes, holds: checkDocumentFigures(entry, await itemsFor(uploadId), when) };
 }
 
 /**
@@ -1716,6 +1782,21 @@ for (const entry of manifest) {
     row.confirmation = await exerciseConfirmation(entry, a.uploadId, itemsA);
   }
 
+  // --- 6e1c. A PROPERTY'S OWN BROCHURE FILLS WHAT ITS STOCK LIST LEFT OUT --
+  /*
+   * Driven through the product's own reader, with the document fetched and
+   * read exactly as the settler's worker reads it — the same shared function,
+   * run in this process — and then held to the stock list's own word: a
+   * figure the sheet states stands, a brochure that is another property's
+   * gives nothing, and a re-read of the same sheet keeps what the brochure
+   * gave (6e2 below compares against the rows as they stand after this).
+   */
+  let itemsBeforeReread = itemsA;
+  if (a.result.ok && entry.expect.document_figures) {
+    row.documentFigures = await exerciseDocumentFigures(entry, a.uploadId, 'after the brochures were read');
+    itemsBeforeReread = await itemsFor(a.uploadId);
+  }
+
   // --- 6e2. REPEAT PROCESSING IS SAFE -------------------------------------
   /*
    * Two different acts, and the product answers them differently on purpose.
@@ -1748,6 +1829,10 @@ for (const entry of manifest) {
 
     const reread = await readAgainAsThePortalDoes(entry, a.uploadId, bytes);
     const afterReread = await itemsFor(a.uploadId);
+    if (entry.expect.document_figures) {
+      row.documentFiguresAfterReread = checkDocumentFigures(entry, afterReread,
+        'after the same stock list was read again');
+    }
     row.reread = { ok: reread.ok, code: (reread as any).code,
                    properties: afterReread.length };
     if (!reread.ok) {
@@ -1759,7 +1844,7 @@ for (const entry of manifest) {
       // the same count.
       for (let i = 0; i < before; i += 1) {
         for (const f of COMPARED) {
-          const was = valueOf(itemsA[i], f); const now = valueOf(afterReread[i], f);
+          const was = valueOf(itemsBeforeReread[i], f); const now = valueOf(afterReread[i], f);
           if (String(was).toLowerCase() !== String(now).toLowerCase()) {
             fail(entry, `a re-read changed ${f}: ${JSON.stringify(was)} -> ${JSON.stringify(now)}`);
           }

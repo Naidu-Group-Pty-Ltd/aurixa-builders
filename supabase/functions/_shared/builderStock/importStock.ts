@@ -64,6 +64,7 @@ import {
   documentVisualKinds, documentVisualKindsPixels, eligibilityDecodePixels, eligibilityDecodes,
   eligibilityDetailFor,
 } from './assessSourceImage.ts';
+import { documentFigureFallback } from './brochureFigures.pure.ts';
 
 /** What `attachDocumentMedia` did with one picture, for a caller that counts. */
 export interface AttachedMedia {
@@ -179,6 +180,12 @@ interface ExistingItem {
    * costs, which is why the blob itself still stays unread.
    */
   house_design: string | null;
+  /**
+   * What the property's own brochure stated where its stock list was silent
+   * (`brochureFigures.pure.ts`). Read so a re-read of the same silent list
+   * puts the brochure's figure back rather than blanking it.
+   */
+  document_figures?: unknown;
 }
 
 /**
@@ -237,7 +244,7 @@ const EXISTING_ITEM_SELECT = 'id, external_reference, development_name, project_
   + 'unit_number, lot_number, address_line, suburb, building_size_sqm, '
   + 'lifecycle_status, upload_id, primary_image_id, '
   + 'source_anchor:source_row->>source_anchor, '
-  + 'house_design:source_row->>house_design';
+  + 'house_design:source_row->>house_design, document_figures';
 
 /**
  * Lend a property's settled imagery to the row a re-import just created.
@@ -354,12 +361,24 @@ function writablePatch(
    * the same file, read again. Absent, this is byte-for-byte the patch this
    * function has always built.
    */
-  options: { sameSourceReread?: boolean } = {},
+  options: {
+    sameSourceReread?: boolean;
+    /**
+     * What the row's own brochure stated. A re-read that unsays a figure the
+     * stock list never stated puts the brochure's back: the stock list's
+     * silence is not a correction of the brochure, and without this every
+     * "Read again" of a sheet with no floor-area column would blank every
+     * floor area the brochures supplied.
+     */
+    documentFigures?: unknown;
+  } = {},
 ): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
   const set = (column: string, value: unknown) => {
     if (value !== null && value !== undefined && value !== '') patch[column] = value;
-    else if (options.sameSourceReread && UNSAYABLE_ON_REREAD.has(column)) patch[column] = null;
+    else if (options.sameSourceReread && UNSAYABLE_ON_REREAD.has(column)) {
+      patch[column] = documentFigureFallback(options.documentFigures, column);
+    }
   };
   set('external_reference', record.external_reference);
   set('development_name', record.development_name);
@@ -853,7 +872,10 @@ export async function importStockRecords(
   const supplierBefore = new Map<string, string>();
   /** Item id -> its lifecycle before this import, so a match cannot publish it. */
   const lifecycleBefore = new Map<string, string | null>();
+  /** Item id -> what its own brochure stated. See `writablePatch`. */
+  const documentFiguresBefore = new Map<string, unknown>();
   for (const item of (existingRows ?? []) as ExistingItem[]) {
+    if (item.document_figures) documentFiguresBefore.set(item.id, item.document_figures);
     const reference = referenceKey(item);
     if (reference) byReference.set(reference, item.id);
     const developmentUnit = developmentUnitKey(item);
@@ -1048,7 +1070,10 @@ export async function importStockRecords(
        */
       const sameSourceReread = Boolean(existingId)
         && supplierBefore.get(existingId as string) === input.uploadId;
-      const patch = writablePatch(record, { sameSourceReread });
+      const patch = writablePatch(record, {
+        sameSourceReread,
+        documentFigures: existingId ? documentFiguresBefore.get(existingId as string) : undefined,
+      });
 
       // Link, never copy.
       const projectName = (record.project_name ?? record.development_name ?? '').trim().toLowerCase();

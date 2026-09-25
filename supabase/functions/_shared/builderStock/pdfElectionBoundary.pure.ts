@@ -70,6 +70,18 @@ export function electionProtocolFor(context: object): number {
 export const ELECTION_CONTEXT_HEADER = 'x-election-context';
 
 /**
+ * PROTOCOL 4 IS A DIFFERENT QUESTION, NOT A NEWER ELECTION.
+ *
+ * It asks what a brochure STATES about its property's figures
+ * (`brochureFigures.ts`): the same parse the election does, answered with a
+ * reading instead of a picture, and no picture decoded. Only a context that
+ * says `purpose: 'figures'` may carry it, and an election is never asked under
+ * it — so a worker built before it refuses a figures request (a retry at the
+ * caller) and answers every election exactly as it did.
+ */
+export const FIGURES_PROTOCOL = 4;
+
+/**
  * WHY A REFUSAL CARRIES A CODE AS WELL AS A SENTENCE.
  *
  * `unreachable` is one word covering two opposite kinds of failure, and the
@@ -181,6 +193,8 @@ export interface WireElectionContext {
   confirmedLots: string[];
   documentName: string;
   url: string;
+  /** Protocol 4 only: read the document's figures rather than elect a picture. */
+  purpose?: 'figures';
 }
 
 export function encodeElectionContext(context: {
@@ -214,6 +228,30 @@ export function encodeElectionContext(context: {
 }
 
 /**
+ * A figures request's context. The label is fixed: a figures reading is told
+ * the design and nothing that names a property, so the worker still cannot
+ * act on one.
+ */
+export function encodeFigureContext(context: {
+  design?: string | null;
+  documentName: string;
+  url: string;
+}): string {
+  const wire = {
+    protocol: FIGURES_PROTOCOL,
+    purpose: 'figures',
+    provenanceVersion: PROVENANCE_VERSION,
+    label: 'figures',
+    identifiedBy: 'direct_link',
+    design: context.design ?? null,
+    identityHints: [],
+    documentName: context.documentName,
+    url: context.url,
+  };
+  return bytesToBase64(new TextEncoder().encode(JSON.stringify(wire)));
+}
+
+/**
  * NEVER GUESSED.
  *
  * An election run against the wrong property's label puts another house on a
@@ -232,7 +270,12 @@ export function decodeElectionContext(raw: string | null | undefined): WireElect
   if (!parsed || typeof parsed !== 'object') return null;
   const c = parsed as Record<string, unknown>;
   const protocol = Number(c.protocol);
-  if (protocol !== PDF_ELECTION_PROTOCOL && protocol !== OLDEST_PDF_ELECTION_PROTOCOL) return null;
+  // Protocol 4 asks for figures and nothing else; figures are asked under 4 alone.
+  const figures = protocol === FIGURES_PROTOCOL;
+  if (figures !== (c.purpose === 'figures')) return null;
+  if (!figures && protocol !== PDF_ELECTION_PROTOCOL && protocol !== OLDEST_PDF_ELECTION_PROTOCOL) {
+    return null;
+  }
   // Rules of a different version would answer a different question. See
   // `WireElectionContext.provenanceVersion`.
   if (Number(c.provenanceVersion) !== PROVENANCE_VERSION) return null;
@@ -264,6 +307,7 @@ export function decodeElectionContext(raw: string | null | undefined): WireElect
     confirmedLots,
     documentName: c.documentName,
     url: c.url,
+    ...(figures ? { purpose: 'figures' as const } : {}),
   };
 }
 
