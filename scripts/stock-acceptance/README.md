@@ -96,6 +96,24 @@ about photographs.** The fixture is fixed instead, with the measurement
 recorded beside it, and the two that remain are named limits the gate reports
 on every run.
 
+### A named limit covers what it names, and nothing else
+
+A fixture's `known_limit` says why a gap exists; its `limit_covers` says what
+the gap is: `photograph`, or `<row>.<field>` for a field the document states
+and the pipeline leaves absent. Only those shortfalls are reported as named
+limits. Everything else a check finds fails the gate on that fixture as on any
+other: a wrong value, a fabricated record, a forbidden word, a property or a
+photograph in the wrong organisation. So does a declared shortfall that stopped
+falling short, because a limit left standing would absorb the same shortfall
+the day it came back. A `known_limit` with `limit_covers=[]` is a note and
+absorbs nothing. The rules are `failureFiling.pure.ts`, asserted by
+`src/lib/__tests__/stockAcceptanceFailureFiling.spec.ts`.
+
+Until 25 September 2026 a `known_limit` absorbed every failure of its fixture,
+thirteen fixtures could not fail the gate at all, and a forbidden word was
+looked for in the record's whole JSON — so a footer's `1300` was found in a
+`created_at` of `…16.413007…`.
+
 ## The gate proves it is right; `latency.ts` measures how long it takes
 
 `scripts/stock-acceptance/latency.ts` runs the same modules over the same

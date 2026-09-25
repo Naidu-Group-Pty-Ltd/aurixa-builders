@@ -431,6 +431,7 @@ def _f4(c):
     # name, not relaxing the rule.
     known_limit='a bare design name with no estate and no filename to '
                 'corroborate it',
+    limit_covers=['0.house_design'],
     # NO PHOTOGRAPH, and that is correct rather than a shortfall: page 1 is a
     # photograph OF PAPER. There is no facade in this document, so nothing may
     # designate one.
@@ -571,6 +572,8 @@ def _f7(c):
     known_limit='both properties import with lot, locality, land and price; '
                 'the design and the counts are printed with no label and no '
                 'icons, and an unlabelled name or bare figures are never read',
+    limit_covers=[f'{row}.{field}' for row in (0, 1)
+                  for field in ('bedrooms', 'bathrooms', 'car_spaces', 'house_design')],
     properties=2,
     rows=[dict(lot_number='402', suburb='Wollert', state='VIC', bedrooms=4,
                bathrooms=2, car_spaces=2, land_size_sqm=400, price=768000,
@@ -661,6 +664,7 @@ _COLLIDE = dict(properties=1, image='facade_page_1')
     # equally be an estate or the builder. The reader declines it rather than
     # guessing. Everything that identifies the property is read.
     known_limit='a bare design heading with no estate and no filename to corroborate it',
+    limit_covers=['0.house_design'],
     properties=1, image='facade_page_1',
     rows=[dict(lot_number='100', suburb='Werribee', state='VIC', price=640000,
                design='Aspen 18')]))
@@ -673,6 +677,7 @@ def _f12(c):
 
 @fixture('org-collision-beta', 'LOT 100 - BROCHURE.pdf', org='beta', expect=dict(
     known_limit='a bare design heading with no estate and no filename to corroborate it',
+    limit_covers=['0.house_design'],
     properties=1, image='facade_page_1',
     rows=[dict(lot_number='100', suburb='Ipswich', state='QLD', price=589000,
                design='Coral 16')]))
@@ -744,6 +749,7 @@ def _h1(c):
              known_limit='the synthetic facade at this seed carries the largest '
                          'flat region in the corpus and the overlay repair '
                          'returns still_annotated',
+             limit_covers=['photograph'],
              forbid=dict(no_suburb=['Port Melbourne'], no_street=['Normanby Road'])))
 def _h2(c):
     text(c, 20, 26, 'BIRCH 20', 18, True)
@@ -810,6 +816,7 @@ def _h2(c):
              # something to do while making a gate green.
              known_limit='a cover must state 2 package facts; this page states '
                          '1, because its money carries no currency marker',
+             limit_covers=['photograph'],
              forbid=dict(land_size_not_in=[659900, 320000, 339900],
                          price_not_in=[320, 186])))
 def _h3(c):
@@ -1042,7 +1049,8 @@ def _m1(c):
              # is about segmentation and says nothing about imagery.
              image=None,
              known_limit='three columns on A4 leave each picture at 3% of the '
-                         'page, under the product 6% floor for a listing image'))
+                         'page, under the product 6% floor for a listing image',
+             limit_covers=[]))
 def _m2(c):
     text(c, L, 22, 'FERNLEIGH PARK - AUTUMN RELEASE', 18, True)
     for x, (lot, design, land, build, price) in zip(THIRDS, [
@@ -1137,7 +1145,8 @@ def _m4(c):
                       build_size_sqm=201, price=708000, estate='Willowmead Estate'),
              ],
              image=None,
-             known_limit='this release sheet carries no photograph at all'))
+             known_limit='this release sheet carries no photograph at all',
+             limit_covers=[]))
 def _m5(c):
     text(c, L, 22, 'WILLOWMEAD ESTATE - STAGE 4 TITLED LAND RELEASE', 18, True)
     mcard(c, L, 45, '508', 'Sable 17', '312m2', '168m2', '$627,000')
@@ -1200,6 +1209,7 @@ def _m6(c):
              ],
              image=None,
              known_limit='this release sheet carries no photograph at all',
+             limit_covers=[],
              # THE FOOTER IS NOT A PROPERTY FACT. It crosses the gutter, so it
              # belongs to the page; nothing in it may reach a column of either
              # property.
@@ -1232,7 +1242,8 @@ def _m7(c):
                       build_size_sqm=252, price=901000),
              ],
              image=None,
-             known_limit='this release sheet carries no photograph at all'))
+             known_limit='this release sheet carries no photograph at all',
+             limit_covers=[]))
 def _m8(c):
     text(c, L, 22, 'KESTREL HOMES - AVAILABLE PACKAGES THIS MONTH', 18, True)
     mcard(c, L, 45, '412', 'Pinnacle 20', '400m2', '210m2', '$755,000')
@@ -1257,7 +1268,8 @@ def _m8(c):
                       build_size_sqm=203, price=726000),
              ],
              image=None,
-             known_limit='this release sheet carries no photograph at all'))
+             known_limit='this release sheet carries no photograph at all',
+             limit_covers=[]))
 def _m9(c):
     text(c, L, 22, 'ASHFORD RIDGE - THE HAWKE 20, TWO POSITIONS', 17, True)
     mcard(c, L, 45, '31', 'Hawke 20', '375m2', '203m2', '$698,000')
@@ -1281,7 +1293,8 @@ def _m9(c):
                       build_size_sqm=264, price=848000),
              ],
              image=None,
-             known_limit='this stock list carries no photograph at all'))
+             known_limit='this stock list carries no photograph at all',
+             limit_covers=[]))
 def _m10(c):
     text(c, L, 22, 'MERIDIAN PARK - STOCK LIST PAGE 1 OF 2', 17, True)
     mcard(c, L, 45, '60', 'Onyx 18', '301m2', '174m2', '$619,000')
@@ -1377,6 +1390,7 @@ def _m12(c):
              # than papered over.
              known_limit='a page whose text was recognised is never divided; '
                          'its positions describe only the native fragment',
+             limit_covers=['2.house_design'],
              refusal_must_not_be=['ai_budget_exhausted', 'assisted_reader_unavailable',
                                   'assisted_reader_refused', 'assisted_reader_timeout',
                                   'assisted_reader_invalid_response']))
