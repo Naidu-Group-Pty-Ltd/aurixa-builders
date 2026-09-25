@@ -430,6 +430,26 @@ sweep();
 check('a delivered message never times out, and an old generation cannot time out the current one',
   sql(`SELECT delivery_state FROM public.builder_agency_messages WHERE id = ${lit(lost)}`) === 'delivered');
 
+console.log('\nA lost response, retried after the connection is revoked');
+{
+  const key = randomUUID();
+  const original = post(ORG_A, CONN_A, ITEM_A1, USER_A, key, 'Sent just before the revocation.');
+  sql(`UPDATE public.workspace_connections SET state = 'revoked', revoked_at = now() WHERE id = ${lit(CONN_A)}`);
+  let again = null; let edited = null; let fresh = null;
+  try {
+    again = refusal(`SELECT id FROM public.builder_agency_post_message(${lit(ORG_A)}, ${lit(CONN_A)}, ${lit(ITEM_A1)}, ${lit(USER_A)}, ${lit(key)}, 'Sent just before the revocation.')`)
+      ?? sql(`SELECT id FROM public.builder_agency_post_message(${lit(ORG_A)}, ${lit(CONN_A)}, ${lit(ITEM_A1)}, ${lit(USER_A)}, ${lit(key)}, 'Sent just before the revocation.')`);
+    edited = refusal(`SELECT public.builder_agency_post_message(${lit(ORG_A)}, ${lit(CONN_A)}, ${lit(ITEM_A1)}, ${lit(USER_A)}, ${lit(key)}, 'Edited after the revocation.')`);
+    fresh = refusal(`SELECT public.builder_agency_post_message(${lit(ORG_A)}, ${lit(CONN_A)}, ${lit(ITEM_A1)}, ${lit(USER_A)}, gen_random_uuid(), 'New after the revocation.')`);
+  } finally {
+    sql(`UPDATE public.workspace_connections SET state = 'active', revoked_at = NULL WHERE id = ${lit(CONN_A)}`);
+  }
+  check('the same send repeated after a revocation is answered with the message it already made',
+    again === original && outbox(`dedupe_key LIKE 'agency.message:${original}:%'`) === '1', String(again));
+  check('…while an edited repeat and a new message are still refused',
+    /AGENCY_MESSAGE_ID_REUSED/.test(edited ?? '') && /AGENCY_CONVERSATION_NOT_FOUND/.test(fresh ?? ''));
+}
+
 console.log('\nThe exact contract, at the apply step too');
 {
   const extra = { ...agencyMessage({ body: 'Carrying a field the contract does not have.' }), customer_details: 'Jordan Buyer' };

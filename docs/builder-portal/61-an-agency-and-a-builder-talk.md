@@ -51,7 +51,7 @@ Both event types are sent through the existing outbox, signed, with the existing
 
 **The confirmation window.** Without it, a lost receipt would leave a message Sending for ever: its outbox row is already delivered, and only a failed message may be retried. The message sweep's own minute schedule fails any message whose current generation has been delivered for more than 15 minutes without a receipt. It reads only the message and its outbox row; there is no second transport.
 
-**Idempotency.** A repeat of the same send reuses the same browser `client_message_id`, which is unique per sender. So a lost response or an ambiguous timeout never creates a second message. The key is bound to the text: the same key with different text is refused (`AGENCY_MESSAGE_ID_REUSED`), and the composer mints a new key whenever the text changes.
+**Idempotency.** A repeat of the same send reuses the same browser `client_message_id`, which is unique per sender. So a lost response or an ambiguous timeout never creates a second message. The key is bound to the text: the same key with different text is refused (`AGENCY_MESSAGE_ID_REUSED`), and the composer mints a new key whenever the text changes. A repeat is answered before anything about the relationship is checked: it writes nothing, so a connection that closed or paused after the first send cannot make the sender read a message it already made as "not sent".
 
 ## 4. Its own lane
 
