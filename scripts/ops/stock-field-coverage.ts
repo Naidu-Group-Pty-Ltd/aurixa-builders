@@ -143,7 +143,7 @@ const gallery = await sql('gallery census', `
   select m.source_stage, m.verification_status, m.processing_status,
          coalesce(m.source_detail->>'role', '(none)') as role,
          (m.storage_path is not null or m.external_url is not null) as has_bytes,
-         coalesce(m.source_detail->'marketplace'->>'state', '(unjudged)') as marketplace,
+         coalesce(m.source_detail->>'marketplace_eligibility_state', '(unjudged)') as marketplace,
          count(*)::int as images, count(distinct m.stock_item_id)::int as properties
   from builder_stock_item_images m join builder_stock_items i on i.id = m.stock_item_id
   where i.${LIVE}
