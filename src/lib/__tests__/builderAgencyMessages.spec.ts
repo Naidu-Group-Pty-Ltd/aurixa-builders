@@ -131,6 +131,28 @@ describe('reading a conversation', () => {
     expect(read.messages[499].body).toBe('Message 500');
   });
 
+  it('past the cap, a message that arrived late with an older time still reaches the thread, in its place', async () => {
+    const f = fixture();
+    f.builder_agency_messages = Array.from({ length: 500 }, (_, i) => ({
+      id: `m${String(i).padStart(4, '0')}`, conversation_id: CONV, side: 'command_centre',
+      sender_display_name: 'Casey Agent', body: `Message ${i}`,
+      sent_at: new Date(Date.UTC(2026, 8, 25, 1, 0, i)).toISOString(), created_at: new Date(Date.UTC(2026, 8, 25, 1, 0, i)).toISOString(),
+      delivery_state: null, delivered_at: null, failure_reason: null, sender_builder_user_id: null, client_message_id: null, delivery_generation: 1,
+    }));
+    f.builder_agency_messages.push({
+      id: 'late', conversation_id: CONV, side: 'command_centre', sender_display_name: 'Casey Agent', body: 'Written earlier, arrived late',
+      sent_at: '2026-09-25T00:30:00.000Z', created_at: '2026-09-25T02:00:00.000Z',
+      delivery_state: null, delivered_at: null, failure_reason: null, sender_builder_user_id: null, client_message_id: null, delivery_generation: 1,
+    });
+    const read = await readAgencyConversation(standIn(f).client, {
+      organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME,
+    });
+    if (!read.ok) throw new Error('read failed');
+    expect(read.messages[0].body).toBe('Written earlier, arrived late');
+    expect(read.messages.filter((m) => m.id === 'late')).toHaveLength(1);
+    expect(read.messages[read.messages.length - 1].body).toBe('Message 499');
+  });
+
   it('a property with an activation and no messages yet is an empty, open conversation', async () => {
     const f = fixture();
     f.builder_agency_messages = [];
