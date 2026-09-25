@@ -209,7 +209,7 @@ function MessagesShell({ firstPage }: { firstPage: ActivatedProperty[] }) {
   // Every activation, not just the first page the list tab shows, so no
   // conversation is unreachable; the first page stands in until it arrives.
   const every = useEveryBuilderActivatedProperty();
-  const records = every.data ?? firstPage;
+  const records = every.data?.records ?? firstPage;
   const threads = useMemo(() => agencyThreadsFrom(records), [records]);
   const [params, setParams] = useSearchParams();
   const selectedKey = params.get('thread') ?? '';
@@ -232,10 +232,19 @@ function MessagesShell({ firstPage }: { firstPage: ActivatedProperty[] }) {
     </div>
   ) : null;
 
+  // The server stopped serving new pages before the list was complete: say
+  // so, rather than presenting the part it served as every conversation.
+  const truncated = every.data?.truncated ? (
+    <p role="status" className="text-sm text-muted-foreground">
+      Not every conversation is listed: only the first {every.data.records.length.toLocaleString('en-AU')} activations could be read.
+    </p>
+  ) : null;
+
   if (!threads.length) {
     return (
       <div className="space-y-3">
         {stale}
+        {truncated}
         <Card>
           <CardContent className="py-8 text-sm text-muted-foreground">
             No conversations yet. A conversation opens here for each property an agency activates
@@ -255,6 +264,7 @@ function MessagesShell({ firstPage }: { firstPage: ActivatedProperty[] }) {
   return (
     <div className="space-y-3">
     {stale}
+    {truncated}
     <div className="grid gap-4 lg:grid-cols-[20rem_minmax(0,1fr)]">
       <div role="listbox" aria-label="Conversations" className="space-y-2">
         {threads.map((thread) => (

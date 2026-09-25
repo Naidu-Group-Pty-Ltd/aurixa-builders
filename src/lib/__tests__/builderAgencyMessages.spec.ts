@@ -367,7 +367,8 @@ describe('polling and paging', () => {
       return { records: [`r${page}a`, `r${page}b`], pagination: { page, page_size: 2, total: 5, total_pages: 3 } };
     });
     expect(asked).toEqual([1, 2, 3]);
-    expect(all).toEqual(['r1a', 'r1b', 'r2a', 'r2b', 'r3a', 'r3b']);
+    expect(all.records).toEqual(['r1a', 'r1b', 'r2a', 'r2b', 'r3a', 'r3b']);
+    expect(all.truncated).toBe(false);
   });
 
   it('the refresh reaches the same cache the full list is read from', () => {
@@ -383,7 +384,8 @@ describe('polling and paging', () => {
       return { records: [page], pagination: { page, page_size: 1, total: 60, total_pages: 60 } };
     });
     expect(asked.length).toBe(60);
-    expect(all).toEqual(Array.from({ length: 60 }, (_, i) => i + 1));
+    expect(all.records).toEqual(Array.from({ length: 60 }, (_, i) => i + 1));
+    expect(all.truncated).toBe(false);
   });
 
   it('stops at an empty page, whatever the server claims', async () => {
@@ -393,7 +395,7 @@ describe('polling and paging', () => {
       return { records: page <= 3 ? [page] : [], pagination: { page, page_size: 1, total: 1_000_000, total_pages: 1_000_000 } };
     });
     expect(asked).toBe(4);
-    expect(all).toEqual([1, 2, 3]);
+    expect(all.records).toEqual([1, 2, 3]);
   });
 
   it('stops once it holds the count the server stated, whatever page count it claims', async () => {
@@ -403,6 +405,30 @@ describe('polling and paging', () => {
       return { records: [page, page], pagination: { page, page_size: 2, total: 6, total_pages: 1_000_000 } };
     });
     expect(asked).toBe(3);
+  });
+
+  it('never walks past the page the server clamps to: a repeated page is truncation, not more rows', async () => {
+    // stockPagination answers page 500 for any request above it, so an
+    // organisation with more than 50,000 activations would otherwise get
+    // page 500 appended again and again until the count was reached.
+    const MAX = 500;
+    const asked: number[] = [];
+    const all = await collectEveryPage(async (requested) => {
+      asked.push(requested);
+      const page = Math.min(MAX, requested);
+      return { records: [`r${page}`], pagination: { page, page_size: 1, total: 60_000, total_pages: 60_000 } };
+    });
+    expect(asked.length).toBe(MAX + 1);
+    expect(all.records.length).toBe(MAX);
+    expect(new Set(all.records).size).toBe(MAX);
+    expect(all.truncated).toBe(true);
+  });
+
+  it('the server that clamps is the server this walks: the page it answered is part of the reply', () => {
+    const read = readCode('supabase/functions/_shared/builderStock/activatedProperties.ts');
+    expect(read).toMatch(/pagination:\s*\{[\s\S]*?\bpage\b/);
+    const projection = readCode('supabase/functions/_shared/builderStock/projection.pure.ts');
+    expect(projection).toMatch(/Math\.min\(500,/);
   });
 });
 

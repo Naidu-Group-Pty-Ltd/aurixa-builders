@@ -85,19 +85,30 @@ export function agencyConversationPollInterval(data: { open?: boolean } | undefi
  * activation sits past an arbitrary cut-off would vanish from the list with
  * nothing saying so. It still cannot be kept asking: it stops at the first
  * empty page and once it holds as many rows as the server said exist.
+ *
+ * The server clamps the page it serves (`stockPagination` answers its last
+ * page for any request above it), so a reply naming a different page than
+ * was asked for is the server's ceiling, not more rows: it is not appended
+ * and the list says it is `truncated`, because repeating one page until the
+ * count was reached would present duplicates as a complete list.
  */
+export interface EveryPage<T> { records: T[]; truncated: boolean }
+
 export async function collectEveryPage<T>(
-  fetchPage: (page: number) => Promise<{ records: T[]; pagination: { total_pages: number; total?: number } }>,
-): Promise<T[]> {
+  fetchPage: (page: number) => Promise<{ records: T[]; pagination: { page?: number; total_pages: number; total?: number } }>,
+): Promise<EveryPage<T>> {
   const all: T[] = [];
   for (let page = 1; ; page += 1) {
     const { records, pagination } = await fetchPage(page);
+    if (typeof pagination.page === 'number' && pagination.page !== page) {
+      return { records: all, truncated: true };
+    }
     if (records.length === 0) break;
     all.push(...records);
     if (page >= pagination.total_pages) break;
     if (typeof pagination.total === 'number' && all.length >= pagination.total) break;
   }
-  return all;
+  return { records: all, truncated: false };
 }
 
 export const AGENCIES_PATH = '/builder/agencies';

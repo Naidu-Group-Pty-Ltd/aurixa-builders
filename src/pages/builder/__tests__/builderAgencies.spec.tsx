@@ -30,6 +30,8 @@ const state: {
   everyError: { status?: number; message?: string } | null;
   /** A refresh that failed after the full list had been read once. */
   everyStale?: boolean;
+  /** The server stopped answering new pages before the list was complete. */
+  everyTruncated?: boolean;
 } = { records: [], error: null, loading: false, conversation: null, laterPages: [], everyError: null };
 const sent: Array<{ clientMessageId: string; body: string }> = [];
 const sendFailures = { remaining: 0 };
@@ -46,7 +48,8 @@ vi.mock('@/lib/builderStockQueries', () => ({
   }),
   useRefreshEveryBuilderActivatedProperty: () => async () => { refreshed.every += 1; },
   useEveryBuilderActivatedProperty: () => ({
-    data: state.error || (state.everyError && !state.everyStale) ? undefined : [...state.records, ...state.laterPages],
+    data: state.error || (state.everyError && !state.everyStale) ? undefined
+      : { records: [...state.records, ...state.laterPages], truncated: !!state.everyTruncated },
     error: state.error ?? state.everyError,
     isLoading: state.loading,
     refetch: vi.fn(async () => { refreshed.every += 1; }),
@@ -121,6 +124,7 @@ beforeEach(() => {
   refreshed.every = 0;
   state.everyError = null;
   state.everyStale = false;
+  state.everyTruncated = false;
   state.records = [];
   state.error = null;
   state.loading = false;
@@ -382,6 +386,16 @@ describe('a refresh of the full list that fails', () => {
     expect(screen.getByText(/could not be refreshed/i)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /try again/i }));
     expect(refreshed.every).toBe(1);
+  });
+});
+
+describe('a full list the server would not finish', () => {
+  it('lists what it read and says the list is incomplete', () => {
+    state.records = [ACTIVATION];
+    state.everyTruncated = true;
+    renderAt('/builder/agencies/messages');
+    expect(screen.getByRole('listbox', { name: /conversations/i })).toBeTruthy();
+    expect(screen.getByText(/not every conversation is listed/i)).toBeTruthy();
   });
 });
 
