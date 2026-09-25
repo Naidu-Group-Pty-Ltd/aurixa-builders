@@ -68,8 +68,9 @@ async function redact(value: unknown): Promise<unknown> {
   }
   if (Array.isArray(value)) return Promise.all(value.map(redact));
   if (value && typeof value === 'object') {
+    // Keys too: a provenance branch is KEYED by the link it read.
     const entries = await Promise.all(Object.entries(value as Record<string, unknown>)
-      .map(async ([k, v]) => [k, await redact(v)] as const));
+      .map(async ([k, v]) => [String(await redact(k)), await redact(v)] as const));
     return Object.fromEntries(entries);
   }
   return value;
