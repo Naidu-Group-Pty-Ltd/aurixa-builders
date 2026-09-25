@@ -186,3 +186,26 @@ export function agencyThreadsFrom(records: readonly ActivatedProperty[]): Agency
 export function scrollLogToEnd(log: { scrollTop: number; scrollHeight: number } | null | undefined): void {
   if (log) log.scrollTop = log.scrollHeight;
 }
+
+/**
+ * Where the log should move after a read. `null` before any read, or on a new
+ * thread, opens at the end. A new last message follows the end. A message the
+ * poll sorted ABOVE the newest one (it was written earlier and arrived late)
+ * is brought into view itself, because following the end would leave it out
+ * of sight with nothing saying it came. Otherwise the log stays where the
+ * reader put it.
+ */
+export function arrivalScrollTarget(previousIds: readonly string[] | null, ids: readonly string[]): 'end' | string | null {
+  if (previousIds === null) return 'end';
+  const seen = new Set(previousIds);
+  const arrived = ids.filter((id) => !seen.has(id));
+  if (!arrived.length) return null;
+  if (arrived.includes(ids[ids.length - 1])) return 'end';
+  return arrived[0];
+}
+
+/** Brings one message of a log into view, by the id it is drawn with. */
+export function scrollMessageIntoView(log: HTMLElement | null | undefined, messageId: string): void {
+  const node = log?.querySelector?.(`[data-message-id="${CSS.escape(messageId)}"]`);
+  node?.scrollIntoView?.({ block: 'nearest' });
+}

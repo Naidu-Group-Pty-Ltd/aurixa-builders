@@ -480,6 +480,10 @@ BEGIN
   -- and turn a lost-receipt recovery into a conflict.
   IF v_item IS NULL OR v_sent IS NULL OR NOT isfinite(v_sent)
      OR (v_payload->>'sent_at') !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'
+     -- Nor from the future beyond ordinary clock skew: a message dated years
+     -- ahead would sort above every real message for ever, and enough of them
+     -- would crowd the real ones out of a capped read.
+     OR v_sent > now() + interval '5 minutes'
      OR length(v_body) NOT BETWEEN 1 AND 4000
      OR length(v_name) NOT BETWEEN 1 AND 200 THEN
     v_reason := 'invalid_message';

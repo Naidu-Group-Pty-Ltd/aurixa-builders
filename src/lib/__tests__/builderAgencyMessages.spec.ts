@@ -19,7 +19,7 @@ import {
 import { agencyDedupeKeyFor, agencyPayloadContractViolation, sameAgencyEnvelope } from '../../../supabase/functions/_shared/builderStock/agencyMessages.pure';
 import { readAgencyConversation } from '../../../supabase/functions/_shared/builderStock/agencyMessages';
 import {
-  AGENCY_CONVERSATION_CLOSED_POLL_MS, AGENCY_CONVERSATION_POLL_MS, agencyConversationPollInterval, collectEveryPage, newClientMessageId, outboundStateLabel, scrollLogToEnd,
+  AGENCY_CONVERSATION_CLOSED_POLL_MS, AGENCY_CONVERSATION_POLL_MS, agencyConversationPollInterval, arrivalScrollTarget, collectEveryPage, newClientMessageId, outboundStateLabel, scrollLogToEnd,
 } from '../builderAgency';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
@@ -279,6 +279,16 @@ describe('the browser\'s half', () => {
     expect(outboundStateLabel('failed', 'refused:conversation_not_open')).toBe('Not delivered');
     // Nobody refused it: the other side may have it, and we never heard back.
     expect(outboundStateLabel('failed', 'confirmation_timeout')).toBe('Not confirmed');
+  });
+});
+
+describe('following what a poll brings in', () => {
+  it('opens at the end, follows a new last message, brings a late one into view, and stays put otherwise', () => {
+    expect(arrivalScrollTarget(null, ['a', 'b'])).toBe('end');
+    expect(arrivalScrollTarget(['a', 'b'], ['a', 'b', 'c'])).toBe('end');
+    expect(arrivalScrollTarget(['a', 'c'], ['a', 'b', 'c'])).toBe('b');
+    expect(arrivalScrollTarget(['a', 'b'], ['a', 'b'])).toBeNull();
+    expect(arrivalScrollTarget(['a', 'b'], ['b'])).toBeNull();
   });
 });
 

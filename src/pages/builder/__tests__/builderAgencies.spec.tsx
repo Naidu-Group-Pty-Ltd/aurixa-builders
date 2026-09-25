@@ -71,6 +71,7 @@ const scrolled: unknown[] = [];
 vi.mock('@/lib/builderAgency', async (original) => ({
   ...(await original<typeof import('@/lib/builderAgency')>()),
   scrollLogToEnd: (log: unknown) => { scrolled.push(log); },
+  scrollMessageIntoView: (_log: unknown, id: string) => { scrolled.push(`message:${id}`); },
 }));
 
 import BuilderAgencies from '../BuilderAgencies';
@@ -390,5 +391,25 @@ describe('the conversation log follows its newest message', () => {
     view.rerender(tree());
     expect(scrolled.length).toBeGreaterThan(before);
     expect(scrolled[scrolled.length - 1]).toBe(screen.getByRole('log'));
+  });
+
+  it('brings a late message into view when the poll sorts it above the newest one', () => {
+    scrolled.length = 0;
+    state.records = [ACTIVATION];
+    state.conversation = {
+      conversation_id: 'c', open: true, can_send: true,
+      messages: [MESSAGE({ id: 'm1', body: 'First.', delivery_state: 'delivered' }),
+        MESSAGE({ id: 'm3', body: 'Newest.', delivery_state: 'delivered' })],
+    };
+    const tree = () => (
+      <MemoryRouter initialEntries={['/builder/agencies/messages?thread=conn-a:item-a1']}>
+        <Routes><Route path="/builder/agencies/:tab" element={<BuilderAgencies />} /></Routes>
+      </MemoryRouter>
+    );
+    const view = render(tree());
+    state.conversation = { ...state.conversation, messages: [state.conversation.messages[0],
+      MESSAGE({ id: 'm2', body: 'Arrived late.', delivery_state: 'delivered' }), state.conversation.messages[1]] };
+    view.rerender(tree());
+    expect(scrolled[scrolled.length - 1]).toBe('message:m2');
   });
 });

@@ -224,7 +224,7 @@ check('the retry is answered again; the replay is not answered twice',
   land(CONN_A, 'agency.message.posted', `agency.message:${original.message_id}:1`, original);
   sweep();
   for (const [n, change] of [[2, { body: 'Different words.' }], [3, { sender_display_name: 'Someone Else' }],
-    [4, { sent_at: '2026-09-26T09:00:00.000000Z' }]]) {
+    [4, { sent_at: '2026-09-24T09:00:00.000000Z' }]]) {
     land(CONN_A, 'agency.message.posted', `agency.message:${original.message_id}:${n}`, { ...original, ...change, generation: n });
     sweep();
     check(`a stored message id arriving with a changed ${Object.keys(change)[0]} is refused and answered as refused`,
@@ -498,6 +498,20 @@ for (const when of ['infinity', '-infinity', 'now', 'today', 'epoch', '2026-09-2
   check(`a message sent at ${when} is refused as malformed and stored nowhere`,
     sql(`SELECT message_apply_error FROM public.builder_network_inbound_events WHERE dedupe_key = 'agency.message:${odd.message_id}:1'`) === 'refused:invalid_message'
       && sql(`SELECT count(*) FROM public.builder_agency_messages WHERE id = ${lit(odd.message_id)}`) === '0');
+}
+
+console.log('\nA time from the future');
+{
+  const future = agencyMessage({ body: 'Dated a millennium ahead.', sent_at: '9999-01-01T00:00:00Z' });
+  land(CONN_A, 'agency.message.posted', `agency.message:${future.message_id}:1`, future);
+  const skewed = agencyMessage({ body: 'A minute ahead: clock skew.', sent_at: sql(`SELECT to_char((now() + interval '1 minute') AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`) });
+  land(CONN_A, 'agency.message.posted', `agency.message:${skewed.message_id}:1`, skewed);
+  sweep();
+  check('a message dated well past this side\'s clock is refused and stored nowhere, so it cannot sit above every real message',
+    sql(`SELECT message_apply_error FROM public.builder_network_inbound_events WHERE dedupe_key = 'agency.message:${future.message_id}:1'`) === 'refused:invalid_message'
+      && sql(`SELECT count(*) FROM public.builder_agency_messages WHERE id = ${lit(future.message_id)}`) === '0');
+  check('a message a minute ahead (ordinary clock skew) is stored',
+    sql(`SELECT count(*) FROM public.builder_agency_messages WHERE id = ${lit(skewed.message_id)}`) === '1');
 }
 
 console.log('\nThe exact contract, at the apply step too');

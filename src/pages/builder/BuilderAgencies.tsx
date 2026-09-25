@@ -19,7 +19,7 @@ import { useToast } from '@/hooks/use-toast';
 import { isDisplayableSourceImage, type BuilderStockImage } from '@/lib/builderStock';
 import {
   AGENCIES_PATH, activatedPropertyLocality, activatedPropertyTitle, agencyLabel,
-  agencyTabFrom, agencyThreadsFrom, newClientMessageId, outboundStateLabel, scrollLogToEnd,
+  agencyTabFrom, agencyThreadsFrom, newClientMessageId, outboundStateLabel, arrivalScrollTarget, scrollLogToEnd, scrollMessageIntoView,
   type ActivatedProperty, type AgencyMessageView, type AgencyThread, type AgencyTab,
 } from '@/lib/builderAgency';
 
@@ -283,10 +283,18 @@ function ThreadView({ thread }: { thread: AgencyThread }) {
   const conversation = query.data;
   const messages = conversation?.messages ?? [];
   const canSend = !!conversation?.can_send;
-  // Open at the newest message, and follow it as polls bring more in.
+  // Open at the newest message, and follow whatever a poll brings in, even a
+  // late message that sorts above the newest one.
   const logRef = useRef<HTMLDivElement>(null);
-  const newestId = messages.length ? messages[messages.length - 1].id : null;
-  useEffect(() => { scrollLogToEnd(logRef.current); }, [thread.key, newestId]);
+  const seenIdsRef = useRef<string[] | null>(null);
+  const idsKey = messages.map((message) => message.id).join(',');
+  useEffect(() => {
+    const ids = idsKey ? idsKey.split(',') : [];
+    const target = arrivalScrollTarget(seenIdsRef.current, ids);
+    seenIdsRef.current = ids;
+    if (target === 'end') scrollLogToEnd(logRef.current);
+    else if (target) scrollMessageIntoView(logRef.current, target);
+  }, [idsKey]);
 
   const submit = async () => {
     const body = draft.trim();
@@ -391,6 +399,7 @@ function MessageBubble({
   const ours = message.side === 'builder';
   return (
     <article
+      data-message-id={message.id}
       className={cn(
         'max-w-[85%] rounded-lg border px-3 py-2 text-sm',
         ours ? 'ml-auto border-primary/30 bg-primary/5' : 'mr-auto border-border bg-card',
