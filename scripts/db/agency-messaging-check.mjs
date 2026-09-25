@@ -450,6 +450,16 @@ console.log('\nA lost response, retried after the connection is revoked');
     /AGENCY_MESSAGE_ID_REUSED/.test(edited ?? '') && /AGENCY_CONVERSATION_NOT_FOUND/.test(fresh ?? ''));
 }
 
+console.log('\nA time that is not a time');
+for (const when of ['infinity', '-infinity']) {
+  const odd = agencyMessage({ body: `Sent at ${when}.`, sent_at: when });
+  land(CONN_A, 'agency.message.posted', `agency.message:${odd.message_id}:1`, odd);
+  sweep();
+  check(`a message sent at ${when} is refused as malformed and stored nowhere`,
+    sql(`SELECT message_apply_error FROM public.builder_network_inbound_events WHERE dedupe_key = 'agency.message:${odd.message_id}:1'`) === 'refused:invalid_message'
+      && sql(`SELECT count(*) FROM public.builder_agency_messages WHERE id = ${lit(odd.message_id)}`) === '0');
+}
+
 console.log('\nThe exact contract, at the apply step too');
 {
   const extra = { ...agencyMessage({ body: 'Carrying a field the contract does not have.' }), customer_details: 'Jordan Buyer' };
