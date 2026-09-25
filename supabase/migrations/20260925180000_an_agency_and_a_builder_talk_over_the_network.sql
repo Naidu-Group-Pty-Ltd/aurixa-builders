@@ -379,7 +379,7 @@ BEGIN
   -- ── A receipt for something this side sent ─────────────────────────────
   IF v_event.event_type = 'agency.message.receipt' THEN
     v_outcome := v_payload->>'outcome';
-    IF v_outcome NOT IN ('accepted', 'refused') THEN
+    IF v_outcome IS NULL OR v_outcome NOT IN ('accepted', 'refused') THEN
       RETURN 'refused:invalid_payload';
     END IF;
     SELECT m.* INTO v_existing

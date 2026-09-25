@@ -284,6 +284,16 @@ check('a failed message cannot be sent again once the activation is withdrawn',
     && sql(`SELECT delivery_state || '|' || delivery_generation FROM public.builder_agency_messages WHERE id = ${lit(m4)}`) === 'failed|1');
 sql(`UPDATE public.builder_stock_selection_announcements SET status = 'selected'
       WHERE connection_id = ${lit(CONN_A)} AND stock_item_id = ${lit(ITEM_A1)}`);
+{
+  const pending = post(ORG_A, CONN_A, ITEM_A1, USER_A, randomUUID(), 'A receipt with no outcome must not fail me.');
+  for (const [label, extra] of [['no outcome', {}], ['a null outcome', { outcome: null }]]) {
+    land(CONN_A, 'agency.message.receipt', `agency.receipt:${pending}:1:${randomUUID()}`,
+      { schema_version: 1, message_id: pending, conversation_id: conversationId(CONN_A, ITEM_A1), generation: 1, ...extra });
+    sweep();
+    check(`a receipt with ${label} is refused and changes nothing`,
+      sql(`SELECT delivery_state FROM public.builder_agency_messages WHERE id = ${lit(pending)}`) === 'queued');
+  }
+}
 land(CONN_B, 'agency.message.receipt', `agency.receipt:${m1}:1:${randomUUID()}`,
   { schema_version: 1, message_id: m1, conversation_id: conversationId(CONN_A, ITEM_A1), generation: 1, outcome: 'refused', reason: 'x' });
 sweep();
