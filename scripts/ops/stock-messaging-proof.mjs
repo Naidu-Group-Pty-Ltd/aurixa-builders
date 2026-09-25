@@ -587,6 +587,11 @@ try {
   const malformedId = randomUUID();
   const malformed = await deliver(networkDoor, connection, secret, 'agency.message.posted',
     posted({ message_id: malformedId, body: '   ', sent_at: 'not a time' }));
+  // A field outside the contract is refused at the door itself, before
+  // anything is stored: the allow-list behind the privacy deny-list.
+  const offContractId = randomUUID();
+  const extraField = await deliver(networkDoor, connection, secret, 'agency.message.posted',
+    { ...posted({ message_id: offContractId }), customer_details: 'proof' });
   const behindId = randomUUID();
   const behind = await deliver(networkDoor, connection, secret, 'agency.message.posted',
     posted({ message_id: behindId, body: 'A valid message behind the refused ones.' }));
@@ -608,6 +613,9 @@ try {
   record('10: a malformed message is refused and stored nowhere',
     malformed === 200 && outcomes.malformed?.error === 'refused:invalid_message' && await netCount(malformedId) === 0,
     `door ${malformed}, ${outcomes.malformed?.error ?? 'no outcome'}`);
+  record('10: a message carrying a field outside the contract is refused at the door and never stored',
+    extraField === 422 && (await netOutcome(offContractId)) === null && await netCount(offContractId) === 0,
+    `door ${extraField}`);
   record('10: a valid message behind them is applied (a refused message never blocks the next)',
     behind === 200 && outcomes.behind?.applied === true && outcomes.behind?.error === null && await netCount(behindId) === 1,
     `door ${behind}`);
