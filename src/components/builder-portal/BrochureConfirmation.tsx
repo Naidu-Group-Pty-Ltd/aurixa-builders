@@ -24,7 +24,9 @@
  * does not check again: the link and the lot are sent back exactly as shown.
  */
 import { useState } from 'react';
-import { CheckCircle2, Loader2 } from 'lucide-react';
+import {
+  AlertTriangle, CheckCircle2, Clock, FileText, ImageIcon, Loader2, Undo2,
+} from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -32,6 +34,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { useToast } from '@/hooks/use-toast';
+import { cn } from '@/lib/utils';
 import { AU_LOCALE } from '@/lib/aml/displayDate';
 import type { BuilderStockItem, StockBrochureConfirmation } from '@/lib/builderStock';
 import { useConfirmBrochureImage, useUndoBrochureImage } from '@/lib/builderStockQueries';
@@ -89,14 +92,20 @@ export function BrochureImageChoice({
 
   return (
     <>
-      {inUseBy ? <p className="mt-1 text-foreground/80">{COPY.inUse(inUseBy)}</p> : null}
+      {inUseBy ? (
+        <p className="mt-2 flex items-start gap-1.5 rounded border border-warning/40 bg-background/40 px-2 py-1.5 text-xs text-foreground">
+          <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0 text-warning" aria-hidden />
+          <span>{COPY.inUse(inUseBy)}</span>
+        </p>
+      ) : null}
       <Button
         type="button"
         variant="outline"
         size="sm"
-        className="mt-1.5 h-7 px-2 text-[11px]"
+        className="mt-2 h-8 gap-1.5 border-warning/60 px-3 text-xs font-semibold"
         onClick={() => setOpen(true)}
       >
+        <ImageIcon className="h-3.5 w-3.5" aria-hidden />
         {COPY.action}
       </Button>
       <AlertDialog open={open} onOpenChange={(next) => { if (!confirm.isPending) setOpen(next); }}>
@@ -191,7 +200,7 @@ export function BrochureConfirmations({ item }: { item: BuilderStockItem }) {
   const confirmations = item.brochure_confirmations ?? [];
   if (!confirmations.length) return null;
   return (
-    <ul className="w-full space-y-1 text-[11px] leading-snug text-muted-foreground">
+    <ul className="flex w-full flex-col gap-2">
       {confirmations.map((confirmation) => (
         <BrochureConfirmationLine key={confirmation.id} item={item} confirmation={confirmation} />
       ))}
@@ -210,25 +219,46 @@ function BrochureConfirmationLine({
   const undo = useUndoBrochureImage();
   const [open, setOpen] = useState(false);
   const line = stateLine(confirmation);
+  // Applied reads as done; pending as on its way; the rest ask for a look.
+  const tone: 'done' | 'waiting' | 'attention' = confirmation.state === 'applied'
+    ? 'done'
+    : confirmation.state === 'pending' ? 'waiting' : 'attention';
 
   return (
-    <li className="min-w-0 rounded-md border border-border/60 bg-muted/30 px-2 py-1.5">
-      <p className="flex items-start gap-1 text-foreground">
-        <CheckCircle2 className="mt-px h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />
+    <li
+      className={cn(
+        'min-w-0 rounded-md border border-l-4 px-3 py-2.5 text-xs leading-relaxed',
+        tone === 'done' && 'border-success/40 border-l-success bg-success/10',
+        tone === 'waiting' && 'border-info/40 border-l-info bg-info/5',
+        tone === 'attention' && 'border-warning/50 border-l-warning bg-warning/10',
+      )}
+    >
+      <p className="flex items-start gap-1.5 text-[13px] font-semibold leading-snug text-foreground">
+        {tone === 'done' ? (
+          <CheckCircle2 className="mt-px h-4 w-4 shrink-0 text-success" aria-hidden />
+        ) : tone === 'waiting' ? (
+          <Clock className="mt-px h-4 w-4 shrink-0 text-info" aria-hidden />
+        ) : (
+          <AlertTriangle className="mt-px h-4 w-4 shrink-0 text-warning" aria-hidden />
+        )}
         <span>{COPY.confirmedBy(confirmation.confirmed_by, confirmedOn(confirmation.confirmed_at))}</span>
       </p>
-      {line ? <p className="mt-0.5">{line}</p> : null}
-      <p className="mt-0.5 text-muted-foreground/80">
-        {confirmation.document}
-        {confirmation.states ? ` — ${confirmation.states}` : ''}
+      {line ? <p className="mt-1 text-foreground/85">{line}</p> : null}
+      <p className="mt-1 flex items-center gap-1 text-muted-foreground">
+        <FileText className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        <span className="min-w-0 truncate">
+          {confirmation.document}
+          {confirmation.states ? ` \u2014 ${confirmation.states}` : ''}
+        </span>
       </p>
       <Button
         type="button"
-        variant="ghost"
+        variant="outline"
         size="sm"
-        className="mt-1 h-6 px-1.5 text-[11px]"
+        className="mt-2 h-7 gap-1.5 px-2.5 text-xs"
         onClick={() => setOpen(true)}
       >
+        <Undo2 className="h-3.5 w-3.5" aria-hidden />
         {COPY.undo}
       </Button>
       <AlertDialog open={open} onOpenChange={(next) => { if (!undo.isPending) setOpen(next); }}>

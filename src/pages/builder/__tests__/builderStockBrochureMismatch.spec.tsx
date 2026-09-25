@@ -30,6 +30,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { BuilderStockItem } from '@/lib/builderStock';
+import { STOCK_DOCUMENT_NOTES_HEADING } from '@/components/builder-portal/StockDocumentNotes';
 import { stockItemIdentity } from '@/lib/builderStock';
 import {
   hasDocumentIdentityMismatch, stockDocumentNotes, STOCK_DOCUMENT_MISMATCH_COPY,
@@ -268,6 +269,20 @@ describe('every other refusal keeps the wording it has', () => {
     const text = pageText();
     expect(text).toContain(detail);
     expect(text).not.toContain(STOCK_DOCUMENT_MISMATCH_COPY.heading);
+  });
+
+  it('groups the links that gave no photo under one heading, and leads with a mismatch', () => {
+    const mismatch = {
+      ...plain('read in full'), finding: 'identity_mismatch', states: 'Lot 1307', quote: 'Lot 1307',
+    } as Note;
+    draw([lot1037([plain('A masterplan, not a photograph.'), mismatch])]);
+    const panel = screen.getByRole('region', { name: STOCK_DOCUMENT_NOTES_HEADING });
+    expect(panel.textContent).toContain('A masterplan, not a photograph.');
+    expect(panel.textContent).not.toContain(STOCK_DOCUMENT_MISMATCH_COPY.heading);
+    const text = pageText();
+    // The note that asks the builder to act comes first.
+    expect(text.indexOf(STOCK_DOCUMENT_MISMATCH_COPY.heading))
+      .toBeLessThan(text.indexOf(STOCK_DOCUMENT_NOTES_HEADING));
   });
 
   it('a finding with no evidence beside it is never drawn as a mismatch', () => {
