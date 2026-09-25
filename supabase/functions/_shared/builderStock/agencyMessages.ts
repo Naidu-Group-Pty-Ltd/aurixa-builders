@@ -29,7 +29,19 @@ export async function readAgencyConversation(
   if (error) return { ok: false, reason: 'unavailable' };
   const rows = (announcements ?? []) as Array<{ status: string }>;
   if (!rows.length) return { ok: false, reason: 'not_found' };
-  const open = rows.some((row) => row.status !== 'withdrawn');
+  // Open means a new message could be written now: the same two facts the
+  // writer checks — a live activation AND an active connection. A revoked
+  // connection keeps its announcement rows, so the rows alone would leave a
+  // composer that every send is refused from.
+  const { data: connection, error: connectionError } = await supabase
+    .from('workspace_connections')
+    .select('state')
+    .eq('id', args.connectionId)
+    .eq('builder_organisation_id', args.organisationId)
+    .maybeSingle();
+  if (connectionError) return { ok: false, reason: 'unavailable' };
+  const open = (connection as { state?: string } | null)?.state === 'active'
+    && rows.some((row) => row.status !== 'withdrawn');
 
   const { data: conversation, error: conversationError } = await supabase
     .from('builder_agency_conversations')

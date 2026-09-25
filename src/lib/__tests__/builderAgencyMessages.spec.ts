@@ -61,6 +61,10 @@ const CONV = 'conv-a';
 
 function fixture() {
   return {
+    workspace_connections: [
+      { id: CONN, builder_organisation_id: ORG, state: 'active' },
+      { id: 'conn-b', builder_organisation_id: 'org-b', state: 'active' },
+    ],
     builder_stock_selection_announcements: [
       { id: 'ann-1', connection_id: CONN, stock_item_id: ITEM, organisation_id: ORG, status: 'selected' },
       { id: 'ann-x', connection_id: 'conn-b', stock_item_id: 'item-b1', organisation_id: 'org-b', status: 'selected' },
@@ -149,6 +153,16 @@ describe('reading a conversation', () => {
     if (!next.ok) throw new Error('read failed');
     expect(next.messages.at(-1)?.body).toBe('Just arrived');
     expect(readCode('src/lib/builderStockQueries.ts')).toMatch(/refetchInterval:\s*AGENCY_CONVERSATION_POLL_MS/);
+  });
+
+  it('a revoked connection is read-only, even while its activation row stands', async () => {
+    const f = fixture();
+    f.workspace_connections[0].state = 'revoked';
+    const read = await readAgencyConversation(standIn(f).client, {
+      organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME,
+    });
+    expect(read).toMatchObject({ ok: true, open: false });
+    if (read.ok) expect(read.messages.length).toBeGreaterThan(0);
   });
 
   it('a withdrawn activation is read-only', async () => {
