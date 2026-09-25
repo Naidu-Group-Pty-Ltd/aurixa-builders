@@ -19,7 +19,7 @@ import type {
   ManualStatField, StatedLocationField,
 } from '@/lib/builderStock';
 import {
-  AGENCY_CONVERSATION_POLL_MS, type ActivatedProperty, type AgencyConversation, type AgencyMessageView,
+  agencyConversationPollInterval, collectEveryPage, type ActivatedProperty, type AgencyConversation, type AgencyMessageView,
 } from '@/lib/builderAgency';
 
 export const builderStockKeys = {
@@ -237,6 +237,20 @@ export function useBuilderActivatedProperties(page = 1) {
 }
 
 /**
+ * Every activation, across every page — what the Messages tab offers
+ * conversations from, so a conversation is never unreachable because its
+ * activation sits past the first page of the list.
+ */
+export function useEveryBuilderActivatedProperty() {
+  return useQuery({
+    queryKey: [...builderStockKeys.activatedProperties(0), 'every'],
+    queryFn: () => collectEveryPage((page) => invoke<Paginated<ActivatedProperty>>({
+      operation: 'list_activated_properties', page, page_size: 100,
+    })),
+  });
+}
+
+/**
  * One conversation with an agency, re-read every few seconds while it is open
  * and the tab is visible. Polling is the whole transport on this side: the
  * page is correct without anything pushed to it.
@@ -248,7 +262,7 @@ export function useAgencyConversation(connectionId: string | null, stockItemId: 
     queryFn: () => invoke<AgencyConversation>({
       operation: 'get_agency_conversation', connection_id: connectionId, stock_item_id: stockItemId,
     }),
-    refetchInterval: AGENCY_CONVERSATION_POLL_MS,
+    refetchInterval: (query) => agencyConversationPollInterval(query.state.data),
     refetchIntervalInBackground: false,
   });
 }

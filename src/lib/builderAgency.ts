@@ -63,6 +63,32 @@ export function outboundStateLabel(state: AgencyDeliveryState, failureReason?: s
 /** How often an open conversation re-reads itself. Polling is the transport's floor. */
 export const AGENCY_CONVERSATION_POLL_MS = 10_000;
 
+/**
+ * An open conversation is re-read every few seconds; a closed one (withdrawn
+ * activation, revoked connection) is history and is not re-read at all. Before
+ * the first answer it polls, because it cannot yet know.
+ */
+export function agencyConversationPollInterval(data: { open?: boolean } | undefined): number | false {
+  return data?.open === false ? false : AGENCY_CONVERSATION_POLL_MS;
+}
+
+/**
+ * Every page of a paginated list, in order, bounded so that a server claiming
+ * a million pages cannot keep the browser asking.
+ */
+export async function collectEveryPage<T>(
+  fetchPage: (page: number) => Promise<{ records: T[]; pagination: { total_pages: number } }>,
+  maxPages = 40,
+): Promise<T[]> {
+  const all: T[] = [];
+  for (let page = 1; page <= maxPages; page += 1) {
+    const { records, pagination } = await fetchPage(page);
+    all.push(...records);
+    if (page >= pagination.total_pages || records.length === 0) break;
+  }
+  return all;
+}
+
 export const AGENCIES_PATH = '/builder/agencies';
 export const AGENCY_TABS = ['activations', 'messages'] as const;
 export type AgencyTab = typeof AGENCY_TABS[number];

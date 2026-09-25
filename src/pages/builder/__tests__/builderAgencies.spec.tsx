@@ -26,7 +26,8 @@ const state: {
   error: { status?: number; message?: string } | null;
   loading: boolean;
   conversation: any;
-} = { records: [], error: null, loading: false, conversation: null };
+  laterPages: any[];
+} = { records: [], error: null, loading: false, conversation: null, laterPages: [] };
 const sent: Array<{ clientMessageId: string; body: string }> = [];
 const sendFailures = { remaining: 0 };
 const retried: string[] = [];
@@ -38,6 +39,11 @@ vi.mock('@/lib/builderStockQueries', () => ({
     isLoading: state.loading,
     isFetching: false,
     refetch: vi.fn(),
+  }),
+  useEveryBuilderActivatedProperty: () => ({
+    data: state.error ? undefined : [...state.records, ...state.laterPages],
+    error: state.error,
+    isLoading: state.loading,
   }),
   builderStockImageUrl: vi.fn(async () => null),
   useAgencyConversation: () => ({
@@ -103,6 +109,7 @@ beforeEach(() => {
   state.loading = false;
   state.conversation = null;
   sent.length = 0;
+  state.laterPages = [];
   sendFailures.remaining = 0;
   retried.length = 0;
 });
@@ -195,6 +202,16 @@ describe('Messages', () => {
     renderAt('/builder/agencies/messages');
     expect(screen.getByRole('tab', { name: /messages/i })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getAllByRole('option')).toHaveLength(1);
+  });
+
+  it('offers a conversation from beyond the first page of activations', () => {
+    state.records = [ACTIVATION];
+    state.laterPages = [{ ...ACTIVATION, id: 'ann-z', connection_id: 'conn-z', stock_item_id: 'item-z',
+      agency: { ...ACTIVATION.agency, name: 'Page Two Agency' } }];
+    state.conversation = { conversation_id: null, open: true, can_send: true, messages: [] };
+    renderAt('/builder/agencies/messages?thread=conn-z:item-z');
+    expect(screen.getAllByRole('option')).toHaveLength(2);
+    expect(screen.getByRole('option', { name: /page two agency/i })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('an open conversation with nothing in it says so, and can be written to', () => {

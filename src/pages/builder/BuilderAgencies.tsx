@@ -12,7 +12,7 @@ import {
 } from '@/components/builder-portal/StockActivation';
 import { StockPicture } from '@/components/stock/StockPicture';
 import {
-  builderStockImageUrl, useAgencyConversation, useBuilderActivatedProperties,
+  builderStockImageUrl, useAgencyConversation, useBuilderActivatedProperties, useEveryBuilderActivatedProperty,
   useRetryAgencyMessage, useSendAgencyMessage,
 } from '@/lib/builderStockQueries';
 import { useToast } from '@/hooks/use-toast';
@@ -93,7 +93,7 @@ export default function BuilderAgencies() {
           {query.isLoading ? <Loading /> : query.error ? (
             <ReadFailure denied={denied} onRetry={() => void query.refetch()} />
           ) : (
-            <MessagesShell records={records} />
+            <MessagesShell firstPage={records} />
           )}
         </TabsContent>
       </Tabs>
@@ -203,7 +203,11 @@ function ActivatedPropertiesList({ records }: { records: ActivatedProperty[] }) 
   );
 }
 
-function MessagesShell({ records }: { records: ActivatedProperty[] }) {
+function MessagesShell({ firstPage }: { firstPage: ActivatedProperty[] }) {
+  // Every activation, not just the first page the list tab shows, so no
+  // conversation is unreachable; the first page stands in until it arrives.
+  const every = useEveryBuilderActivatedProperty();
+  const records = every.data ?? firstPage;
   const threads = useMemo(() => agencyThreadsFrom(records), [records]);
   const [params, setParams] = useSearchParams();
   const selectedKey = params.get('thread') ?? '';

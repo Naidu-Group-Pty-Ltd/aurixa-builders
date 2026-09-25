@@ -17,7 +17,9 @@ import {
   projectAgencyMessages,
 } from '../../../supabase/functions/_shared/builderStock/agencyMessages.pure';
 import { readAgencyConversation } from '../../../supabase/functions/_shared/builderStock/agencyMessages';
-import { newClientMessageId, outboundStateLabel } from '../builderAgency';
+import {
+  AGENCY_CONVERSATION_POLL_MS, agencyConversationPollInterval, collectEveryPage, newClientMessageId, outboundStateLabel,
+} from '../builderAgency';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const readCode = (p: string) => readFileSync(join(REPO_ROOT, p), 'utf8')
@@ -152,7 +154,7 @@ describe('reading a conversation', () => {
     const next = await readAgencyConversation(standIn(f).client, args);
     if (!next.ok) throw new Error('read failed');
     expect(next.messages.at(-1)?.body).toBe('Just arrived');
-    expect(readCode('src/lib/builderStockQueries.ts')).toMatch(/refetchInterval:\s*AGENCY_CONVERSATION_POLL_MS/);
+    expect(readCode('src/lib/builderStockQueries.ts')).toMatch(/refetchInterval:\s*\(query\)\s*=>\s*agencyConversationPollInterval/);
   });
 
   it('a revoked connection is read-only, even while its activation row stands', async () => {
@@ -276,5 +278,34 @@ describe('the browser\'s half', () => {
     expect(outboundStateLabel('failed', 'refused:conversation_not_open')).toBe('Not delivered');
     // Nobody refused it: the other side may have it, and we never heard back.
     expect(outboundStateLabel('failed', 'confirmation_timeout')).toBe('Not confirmed');
+  });
+});
+
+describe('polling and paging', () => {
+  it('polls an open conversation, and stops once the server says it is closed', () => {
+    expect(agencyConversationPollInterval(undefined)).toBe(AGENCY_CONVERSATION_POLL_MS);
+    expect(agencyConversationPollInterval({ open: true })).toBe(AGENCY_CONVERSATION_POLL_MS);
+    expect(agencyConversationPollInterval({ open: false })).toBe(false);
+    expect(readCode('src/lib/builderStockQueries.ts'))
+      .toMatch(/refetchInterval:\s*\(query\)\s*=>\s*agencyConversationPollInterval\(query\.state\.data\)/);
+  });
+
+  it('collects every page, in order, and stops at the stated last page', async () => {
+    const asked: number[] = [];
+    const all = await collectEveryPage(async (page) => {
+      asked.push(page);
+      return { records: [`r${page}a`, `r${page}b`], pagination: { page, page_size: 2, total: 5, total_pages: 3 } };
+    });
+    expect(asked).toEqual([1, 2, 3]);
+    expect(all).toEqual(['r1a', 'r1b', 'r2a', 'r2b', 'r3a', 'r3b']);
+  });
+
+  it('never walks past its bound, whatever the server claims', async () => {
+    let asked = 0;
+    await collectEveryPage(async (page) => {
+      asked += 1;
+      return { records: [page], pagination: { page, page_size: 1, total: 1_000_000, total_pages: 1_000_000 } };
+    }, 5);
+    expect(asked).toBe(5);
   });
 });
