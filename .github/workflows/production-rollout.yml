@@ -153,6 +153,13 @@ name: Production rollout
 #            a floor area, what its own stored record carries under headers
 #            that read like either. Prints no link (host and a digest only).
 #            Runs SELECT only and refuses any statement that is not one.
+#   stock-brochure-figures
+#            read-only: for every live property missing a car count or a floor
+#            area, fetches its own brochure (the one its photograph came from,
+#            else its Brochure URL) through the product's fetcher and runs the
+#            deterministic PDF reader over it, printing the figures read and
+#            whether the brochure's lot and design agree with the row's.
+#            SELECT and a document GET only; prints no link; writes nothing.
 #   network-connection-remap
 #            points the live connection at the builder organisation named in
 #            `organisation_id` and backfills its active stock. It refuses
@@ -175,11 +182,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-overlay-audit | upload-settlement-state | stock-field-coverage'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-overlay-audit, upload-settlement-state, stock-field-coverage]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1)'
         required: false
@@ -226,7 +233,7 @@ jobs:
         with:
           node-version: 22
       - uses: denoland/setup-deno@v2
-        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' || inputs.phase == 'stock-collateral-reprocess' || inputs.phase == 'network-sync-state' || inputs.phase == 'network-connection-remap' || inputs.phase == 'portal-scope-state' || inputs.phase == 'stock-source-restore' || inputs.phase == 'stock-reading-trace' || inputs.phase == 'stock-overlay-audit' || inputs.phase == 'upload-settlement-state' || inputs.phase == 'stock-field-coverage' }}
+        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' || inputs.phase == 'stock-collateral-reprocess' || inputs.phase == 'network-sync-state' || inputs.phase == 'network-connection-remap' || inputs.phase == 'portal-scope-state' || inputs.phase == 'stock-source-restore' || inputs.phase == 'stock-reading-trace' || inputs.phase == 'stock-overlay-audit' || inputs.phase == 'upload-settlement-state' || inputs.phase == 'stock-field-coverage' || inputs.phase == 'stock-brochure-figures' }}
         with:
           deno-version: v2.x
 
@@ -290,4 +297,6 @@ jobs:
             upload-settlement-state)
                                   deno run -A --config supabase/functions/deno.json scripts/ops/stock-upload-settlement-state.ts ;;
             stock-field-coverage) deno run -A --config supabase/functions/deno.json scripts/ops/stock-field-coverage.ts ;;
+            stock-brochure-figures)
+                                  deno run -A --config supabase/functions/deno.json scripts/ops/stock-brochure-figures.ts ;;
           esac
