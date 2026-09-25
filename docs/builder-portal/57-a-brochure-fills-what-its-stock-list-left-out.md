@@ -80,3 +80,22 @@ All of these remain open to the builder through *Complete the schedule*. The car
   - all of it survives a re-read.
 - `builderStockBrochureFigures.spec.ts` pins the standing rules, the bounds, the picture fill, the fallback, the wire, the SQL's fill-only-empty rule, and the new text pairing.
 - The worker canary asks the built bundle a figures question and checks that an election protocol cannot carry one.
+
+## 7. The tick retired over work it still held
+
+The first production run read 68 of 70 properties. It finished with one still owed and the job unscheduled.
+
+The tick retired on `builder_stock_document_figures_pending()`, which counts what may be claimed *now*. It leaves out:
+
+- a property whose claim lease is still live;
+- a `retry` whose next attempt is still in the future.
+
+So a tick that ran while the last claim was leased saw nothing owed and retired. The lease then lapsed, and nothing re-armed the job except an image settling.
+
+`builder_stock_document_figures_outstanding()` answers "may the job stop". It counts:
+
+- what is claimable;
+- what is leased;
+- what is waiting on a retry with attempts left.
+
+The tick now retires only when nothing is outstanding. It still dispatches only on what is claimable. Migration `20260925140000` re-arms the job for anything left behind.

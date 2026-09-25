@@ -226,6 +226,30 @@ describe('the SQL answers to the same rules', () => {
   });
 });
 
+describe('the tick does not retire over work it still holds', () => {
+  const sql = read('supabase/migrations/20260925140000_the_figure_reader_does_not_retire_over_work_it_still_holds.sql');
+  const tick = sql.slice(sql.indexOf('FUNCTION public.builder_stock_document_figures_tick()'));
+  const outstanding = sql.slice(sql.indexOf('FUNCTION public.builder_stock_document_figures_outstanding()'),
+    sql.indexOf('FUNCTION public.builder_stock_document_figures_tick()'));
+
+  it('retires on what is outstanding, and dispatches on what is claimable now', () => {
+    expect(tick).toMatch(/IF v_outstanding = 0 AND coalesce\(v_images, 0\) = 0 THEN\s+BEGIN\s+PERFORM cron\.unschedule/);
+    expect(tick).not.toMatch(/IF v_owed = 0 AND/);
+    expect(tick).toMatch(/IF v_owed > 0 THEN\s+BEGIN\s+PERFORM public\.cron_invoke_signed_function\('builder-stock-figure-reader'/);
+  });
+
+  it('a leased claim and a deferred retry are outstanding', () => {
+    expect(outstanding).toContain('i.document_figures_claim_until >= now()');
+    expect(outstanding).toContain("i.document_figures ->> 'state' = 'retry'");
+    expect(outstanding).not.toContain('next_attempt_at');
+  });
+
+  it('re-arms whatever a retired job left behind, and closes the new function to the browser', () => {
+    expect(sql).toMatch(/SELECT public\.ensure_builder_stock_document_figures_scheduled\(\);\s*$/);
+    expect(sql).toContain('REVOKE ALL ON FUNCTION public.builder_stock_document_figures_outstanding() FROM PUBLIC, anon, authenticated;');
+  });
+});
+
 describe('a read that learned nothing', () => {
   it('backs off, doubling, and never past a day', () => {
     expect(retryDelaySeconds(1)).toBe(300);
