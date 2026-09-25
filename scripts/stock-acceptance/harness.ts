@@ -18,6 +18,7 @@
  * the runtime production runs on starts none. See `hostedRuntime.ts`.
  */
 import { HOSTED_WORKER_REFUSAL, workersRequested } from './hostedRuntime.ts';
+import { fileFailure, forbiddenWordText, staleLimits } from './failureFiling.pure.ts';
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
 import { runStockImport } from '../../supabase/functions/_shared/builderStock/runImport.ts';
 import { isImportContinuation } from '../../supabase/functions/_shared/builderStock/importContinuation.pure.ts';
@@ -221,6 +222,8 @@ interface Expect {
   forbid?: Record<string, unknown>;
   refusal_must_not_be?: string[];
   known_limit?: string;
+  /** What `known_limit` covers. See `failureFiling.pure.ts`. */
+  limit_covers?: string[];
   /**
    * What a LINKED read of this document leaves unread, and why — for a
    * document the linked route reads less of by design. See 6b.
@@ -1065,10 +1068,24 @@ const fails: string[] = [];
  */
 const limits: string[] = [];
 const report: any[] = [];
-const fail = (entry: Entry, msg: string) => {
-  (entry.expect.known_limit ? limits : fails).push(
-    `${entry.name}: ${msg}${entry.expect.known_limit ? ` [known: ${entry.expect.known_limit}]` : ''}`);
+/** The shortfalls each fixture filed under its named limit, for `staleLimits`. */
+const fellShort = new Map<string, Set<string>>();
+const fail = (entry: Entry, msg: string, shortfall: string | null = null) => {
+  if (fileFailure(entry.expect, shortfall) === 'limits') {
+    const filed = fellShort.get(entry.name) ?? new Set<string>();
+    if (shortfall) filed.add(shortfall);
+    fellShort.set(entry.name, filed);
+    limits.push(`${entry.name}: ${msg} [known: ${entry.expect.known_limit}]`);
+  } else {
+    fails.push(`${entry.name}: ${msg}`);
+  }
 };
+/**
+ * WHAT THE DOCUMENT STATES AND THE PIPELINE LEFT ABSENT — the one kind of
+ * failure a named limit may cover, and only where it names `subject`. Called
+ * from exactly two places: a row's field, and a card's photograph.
+ */
+const fallShort = (entry: Entry, subject: string, msg: string) => fail(entry, msg, subject);
 
 for (const entry of manifest) {
   const bytes = await Deno.readFile(`${corpusDir}/${entry.path}`);
@@ -1368,7 +1385,13 @@ for (const entry of manifest) {
        * reported as an observation rather than smuggled in here as a defect.
        */
       const same = want === null ? got === null : fieldHolds(field, key, got, want);
-      if (!same) fail(entry, `row ${i} ${key}: expected ${JSON.stringify(want)}, got ${JSON.stringify(got)}`);
+      if (!same) {
+        const said = `row ${i} ${key}: expected ${JSON.stringify(want)}, got ${JSON.stringify(got)}`;
+        // Absent is a shortfall a named limit may cover. A value the document
+        // does not state, or a different one, is a wrong value and never is.
+        if (got === null) fallShort(entry, `${i}.${key}`, said);
+        else fail(entry, said);
+      }
     }
   }
 
@@ -1446,7 +1469,7 @@ for (const entry of manifest) {
      * word they collapse to.
      */
     if (forbid.nothing_containing) {
-      const record = JSON.stringify(it).toUpperCase();
+      const record = forbiddenWordText(it);
       for (const word of forbid.nothing_containing as string[]) {
         if (record.includes(String(word).toUpperCase())) {
           fail(entry, `a heading the document set as display type became a `
@@ -1498,7 +1521,7 @@ for (const entry of manifest) {
       const primaryId = it.primary_image_id ?? null;
       if (!primaryId) {
         if (entry.expect.image) {
-          fail(entry, `no photograph reached the card: primary_image_id is null`);
+          fallShort(entry, 'photograph', `no photograph reached the card: primary_image_id is null`);
         }
         photographs.push({ lot: it.lot_number, primary: null });
         continue;
@@ -1727,6 +1750,10 @@ for (const entry of manifest) {
   };
   if (a.transferred !== b.transferred) {
     fail(entry, `the two routes handed the pipeline different byte counts: ${a.transferred} vs ${b.transferred}`);
+  }
+  // A declared limit that no longer holds is removed, never left to be believed.
+  for (const subject of staleLimits(entry.expect, fellShort.get(entry.name) ?? new Set())) {
+    fail(entry, `the named limit no longer holds for ${subject}: remove it from limit_covers`);
   }
   report.push(row);
 }
