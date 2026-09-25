@@ -3474,11 +3474,15 @@ sheet_fixture(
         confirmation=dict(
             # The builder's own brochure: confirmed, it leads the card with
             # its OWN facade (the size proves which), and undone, it leaves.
-            confirms=[dict(lot_number='2046', states='Lot 2064', image_size='1320x820')],
-            # A sibling's brochure the sibling already shows: refused, and
-            # the refusal names the listing it belongs to.
-            refuses=[dict(lot_number='3158', states='Lot 3185',
-                          in_use_by='Lot 3185 · Halo 24')],
+            confirms=[
+                dict(lot_number='2046', states='Lot 2064', image_size='1320x820'),
+                # A sibling's brochure the sibling already shows. The builder
+                # decides: the choice is offered, naming the listing that
+                # already uses the photograph, and confirming puts that
+                # photograph on this card too, while the sibling keeps it.
+                dict(lot_number='3158', states='Lot 3185', image_size='1200x760',
+                     in_use_by='Lot 3185 · Halo 24', sibling='3185'),
+            ],
         )))
 
 

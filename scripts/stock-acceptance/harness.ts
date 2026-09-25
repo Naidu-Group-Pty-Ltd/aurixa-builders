@@ -236,7 +236,15 @@ interface Expect {
    * another listing already uses that brochure. See 6e1b.
    */
   confirmation?: {
-    confirms?: Array<{ lot_number: string; states: string; image_size: string }>;
+    /**
+     * `in_use_by`: another listing already shows this brochure's photograph.
+     * The choice is still offered, naming it, and `sibling` must keep its own
+     * photograph through the confirmation and the undo.
+     */
+    confirms?: Array<{
+      lot_number: string; states: string; image_size: string;
+      in_use_by?: string; sibling?: string;
+    }>;
     refuses?: Array<{ lot_number: string; states: string; in_use_by: string }>;
   };
 }
@@ -989,6 +997,40 @@ async function exerciseConfirmation(entry: any, uploadId: string, items: any[]) 
         + JSON.stringify(note));
       continue;
     }
+    /*
+     * WHAT THE BUILDER IS SHOWN, as the stock list projects it: the choice is
+     * offered, and where another listing already shows this brochure's
+     * photograph, that listing is named beside it.
+     */
+    const projection: any = await import(
+      '../../supabase/functions/_shared/builderStock/imageProgress.pure.ts');
+    const lots = [String(note.states).replace(/^Lot\s+/i, '')];
+    const listings = await module.readListingsWithLots(db, { organisationId: org.id, lots });
+    const shown = projection.withConfirmationChoices([note], {
+      stockItemId: target.id, suburb: target.suburb,
+      developmentName: target.development_name, listings,
+    })[0];
+    if (shown?.confirmable !== true) {
+      fail(entry, `lot ${ask.lot_number} is not offered "Use brochure image": ${JSON.stringify(shown)}`);
+    }
+    if ((shown?.in_use_by?.identity ?? undefined) !== ask.in_use_by) {
+      fail(entry, `lot ${ask.lot_number} names ${JSON.stringify(shown?.in_use_by ?? null)} `
+        + `as using this brochure, not ${JSON.stringify(ask.in_use_by ?? null)}`);
+    }
+    const siblingRow = ask.sibling ? item(ask.sibling) : null;
+    if (ask.sibling && !siblingRow) fail(entry, `no property for lot ${ask.sibling}`);
+    const siblingPrimary = siblingRow ? (await reread(siblingRow.id))?.primary_image_id ?? null : null;
+    if (siblingRow && !siblingPrimary) {
+      fail(entry, `lot ${ask.sibling} shows no photograph before the confirmation`);
+    }
+    const siblingKept = async (when: string) => {
+      if (!siblingRow) return;
+      const now = (await reread(siblingRow.id))?.primary_image_id ?? null;
+      if (now !== siblingPrimary) {
+        fail(entry, `lot ${ask.sibling} lost its photograph ${when}: ${siblingPrimary} -> ${now}`);
+      }
+    };
+
     const answer = await module.confirmBrochureImage(db, {
       organisationId: org.id, stockItemId: target.id,
       documentReference: note.document_key, states: note.states, actor,
@@ -1026,6 +1068,8 @@ async function exerciseConfirmation(entry: any, uploadId: string, items: any[]) 
       }
     }
 
+    await siblingKept('when this card took its brochure');
+
     const undone = await module.undoBrochureImage(db, {
       organisationId: org.id, stockItemId: target.id, confirmationId: answer.id, actor,
     });
@@ -1050,6 +1094,7 @@ async function exerciseConfirmation(entry: any, uploadId: string, items: any[]) 
       fail(entry, `after the undo, lot ${ask.lot_number} no longer reads as the mismatch it was: `
         + JSON.stringify(again));
     }
+    await siblingKept('when this card gave its brochure back');
   }
   return out;
 }
