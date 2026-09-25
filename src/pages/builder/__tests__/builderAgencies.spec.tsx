@@ -28,6 +28,8 @@ const state: {
   conversation: any;
   laterPages: any[];
   everyError: { status?: number; message?: string } | null;
+  /** A refresh that failed after the full list had been read once. */
+  everyStale?: boolean;
 } = { records: [], error: null, loading: false, conversation: null, laterPages: [], everyError: null };
 const sent: Array<{ clientMessageId: string; body: string }> = [];
 const sendFailures = { remaining: 0 };
@@ -44,7 +46,7 @@ vi.mock('@/lib/builderStockQueries', () => ({
   }),
   useRefreshEveryBuilderActivatedProperty: () => async () => { refreshed.every += 1; },
   useEveryBuilderActivatedProperty: () => ({
-    data: state.error || state.everyError ? undefined : [...state.records, ...state.laterPages],
+    data: state.error || (state.everyError && !state.everyStale) ? undefined : [...state.records, ...state.laterPages],
     error: state.error ?? state.everyError,
     isLoading: state.loading,
     refetch: vi.fn(async () => { refreshed.every += 1; }),
@@ -118,6 +120,7 @@ beforeEach(() => {
   refreshed.firstPage = 0;
   refreshed.every = 0;
   state.everyError = null;
+  state.everyStale = false;
   state.records = [];
   state.error = null;
   state.loading = false;
@@ -364,6 +367,19 @@ describe('the full conversation list, when it cannot be read', () => {
     renderAt('/builder/agencies/messages');
     expect(screen.queryByRole('listbox', { name: /conversations/i })).toBeNull();
     expect(screen.getByText(/could not be loaded/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }));
+    expect(refreshed.every).toBe(1);
+  });
+});
+
+describe('a refresh of the full list that fails', () => {
+  it('keeps the list it read last, says it could not be refreshed, and offers a retry', () => {
+    state.records = [ACTIVATION];
+    state.everyError = { message: 'refresh failed' };
+    state.everyStale = true;
+    renderAt('/builder/agencies/messages');
+    expect(screen.getByRole('listbox', { name: /conversations/i })).toBeTruthy();
+    expect(screen.getByText(/could not be refreshed/i)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /try again/i }));
     expect(refreshed.every).toBe(1);
   });

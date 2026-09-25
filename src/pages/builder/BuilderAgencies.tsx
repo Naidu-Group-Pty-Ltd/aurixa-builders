@@ -222,14 +222,27 @@ function MessagesShell({ firstPage }: { firstPage: ActivatedProperty[] }) {
     return <ReadFailure denied={status === 403} onRetry={() => void every.refetch()} />;
   }
 
+  // A refresh that failed after the list was read once keeps the list it
+  // has, and says it may be out of date: a conversation opened since would
+  // otherwise look as though it did not exist.
+  const stale = every.error && every.data ? (
+    <div role="status" className="flex flex-wrap items-center gap-2 text-sm text-destructive">
+      <span>The conversation list could not be refreshed. This is the list as last read.</span>
+      <Button type="button" variant="outline" size="sm" onClick={() => void every.refetch()}>Try again</Button>
+    </div>
+  ) : null;
+
   if (!threads.length) {
     return (
-      <Card>
-        <CardContent className="py-8 text-sm text-muted-foreground">
-          No conversations yet. A conversation opens here for each property an agency activates
-          from your stock list.
-        </CardContent>
-      </Card>
+      <div className="space-y-3">
+        {stale}
+        <Card>
+          <CardContent className="py-8 text-sm text-muted-foreground">
+            No conversations yet. A conversation opens here for each property an agency activates
+            from your stock list.
+          </CardContent>
+        </Card>
+      </div>
     );
   }
 
@@ -240,6 +253,8 @@ function MessagesShell({ firstPage }: { firstPage: ActivatedProperty[] }) {
   };
 
   return (
+    <div className="space-y-3">
+    {stale}
     <div className="grid gap-4 lg:grid-cols-[20rem_minmax(0,1fr)]">
       <div role="listbox" aria-label="Conversations" className="space-y-2">
         {threads.map((thread) => (
@@ -266,6 +281,7 @@ function MessagesShell({ firstPage }: { firstPage: ActivatedProperty[] }) {
           </CardContent>
         </Card>
       )}
+    </div>
     </div>
   );
 }
