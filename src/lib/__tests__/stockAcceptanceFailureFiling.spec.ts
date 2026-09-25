@@ -28,7 +28,7 @@ import {
   staleLimits,
 } from '../../../scripts/stock-acceptance/failureFiling.pure';
 
-const read = (path: string) => readFileSync(resolve(__dirname, '../../..', path), 'utf8');
+const read = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8');
 
 const LIMITED = {
   known_limit: 'the synthetic facade at this seed carries the largest flat region',

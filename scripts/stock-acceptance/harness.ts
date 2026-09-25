@@ -1065,6 +1065,11 @@ const fails: string[] = [];
  * describes. A fixture that starts producing a wrong value fails whatever is
  * written here, because every forbid- and transport-check below still runs
  * on it.
+ *
+ * And a limit absorbs only the shortfalls it declares (`limit_covers`): a
+ * field it names left absent, or the card's photograph. That is decided in
+ * `failureFiling.pure.ts`, because until 25 September 2026 it was not true —
+ * a `known_limit` turned every failure of its fixture into a named limit.
  */
 const limits: string[] = [];
 const report: any[] = [];
