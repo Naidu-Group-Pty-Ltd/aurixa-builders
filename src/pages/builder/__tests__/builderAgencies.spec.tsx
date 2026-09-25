@@ -25,7 +25,10 @@ const state: {
   records: any[];
   error: { status?: number; message?: string } | null;
   loading: boolean;
-} = { records: [], error: null, loading: false };
+  conversation: any;
+} = { records: [], error: null, loading: false, conversation: null };
+const sent: Array<{ clientMessageId: string; body: string }> = [];
+const retried: string[] = [];
 
 vi.mock('@/lib/builderStockQueries', () => ({
   useBuilderActivatedProperties: () => ({
@@ -36,6 +39,17 @@ vi.mock('@/lib/builderStockQueries', () => ({
     refetch: vi.fn(),
   }),
   builderStockImageUrl: vi.fn(async () => null),
+  useAgencyConversation: () => ({
+    data: state.conversation ?? undefined, error: null, isLoading: false, isFetching: false,
+  }),
+  useSendAgencyMessage: () => ({
+    isPending: false,
+    mutateAsync: vi.fn(async (input: { clientMessageId: string; body: string }) => { sent.push(input); return { message: null }; }),
+  }),
+  useRetryAgencyMessage: () => ({
+    isPending: false,
+    mutateAsync: vi.fn(async (id: string) => { retried.push(id); return { message: null }; }),
+  }),
 }));
 
 import BuilderAgencies from '../BuilderAgencies';
@@ -82,6 +96,15 @@ beforeEach(() => {
   state.records = [];
   state.error = null;
   state.loading = false;
+  state.conversation = null;
+  sent.length = 0;
+  retried.length = 0;
+});
+
+const MESSAGE = (overrides: Record<string, unknown>) => ({
+  id: 'm', side: 'builder', sender_display_name: 'Bailey Builder', body: 'Hello',
+  sent_at: '2026-09-25T10:00:00Z', delivery_state: 'delivered', delivered_at: '2026-09-25T10:00:05Z',
+  failure_reason: null, mine: true, can_retry: false, ...overrides,
 });
 
 describe('navigation', () => {
@@ -160,19 +183,75 @@ describe('Activated Properties', () => {
   });
 });
 
-describe('Messages shell', () => {
-  it('lists one conversation per agency and property, with no messages it did not receive', () => {
+describe('Messages', () => {
+  it('lists one conversation per agency and property', () => {
     state.records = [ACTIVATION, { ...ACTIVATION, id: 'ann-a1-again' }];
     renderAt('/builder/agencies/messages');
     expect(screen.getByRole('tab', { name: /messages/i })).toHaveAttribute('aria-selected', 'true');
-    const conversations = screen.getAllByRole('option');
-    expect(conversations).toHaveLength(1);
-    fireEvent.click(conversations[0]);
+    expect(screen.getAllByRole('option')).toHaveLength(1);
+  });
+
+  it('an open conversation with nothing in it says so, and can be written to', () => {
+    state.records = [ACTIVATION];
+    state.conversation = { conversation_id: null, open: true, can_send: true, messages: [] };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
     expect(screen.getByText(/no messages yet/i)).toBeInTheDocument();
-    expect(screen.getAllByText('Example Agency').length).toBeGreaterThan(0);
-    const composer = screen.getByRole('textbox', { name: /message/i });
-    expect(composer).toBeDisabled();
-    expect(screen.getByRole('button', { name: /send/i })).toBeDisabled();
+    expect(screen.getByRole('textbox', { name: /message/i })).not.toBeDisabled();
+  });
+
+  it('shows each message with its actual sender and, for ours, whether it arrived', () => {
+    state.records = [ACTIVATION];
+    state.conversation = {
+      conversation_id: 'c', open: true, can_send: true,
+      messages: [
+        MESSAGE({ id: 'm1', side: 'command_centre', sender_display_name: 'Casey Agent', body: 'Is it available?', delivery_state: null, mine: false }),
+        MESSAGE({ id: 'm2', body: 'Yes it is.', delivery_state: 'delivered' }),
+        MESSAGE({ id: 'm3', sender_display_name: 'Alex Builder', body: 'Brochure attached tomorrow.', delivery_state: 'queued', mine: false }),
+      ],
+    };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    const thread = screen.getByRole('log');
+    const items = within(thread).getAllByRole('article');
+    expect(items.map((item) => item.textContent)).toEqual([
+      expect.stringContaining('Casey Agent'), expect.stringContaining('Bailey Builder'), expect.stringContaining('Alex Builder'),
+    ]);
+    expect(within(items[1]).getByText('Delivered')).toBeInTheDocument();
+    expect(within(items[2]).getByText('Sending')).toBeInTheDocument();
+    expect(within(items[0]).queryByText(/delivered|sending/i)).toBeNull();
+  });
+
+  it('a failed message stays visible and its writer can send it again', () => {
+    state.records = [ACTIVATION];
+    state.conversation = {
+      conversation_id: 'c', open: true, can_send: true,
+      messages: [MESSAGE({ id: 'm-failed', body: 'Did this arrive?', delivery_state: 'failed', failure_reason: 'not_delivered', can_retry: true })],
+    };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    expect(screen.getByText('Did this arrive?')).toBeInTheDocument();
+    expect(screen.getByText('Not delivered')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /send again/i }));
+    expect(retried).toEqual(['m-failed']);
+  });
+
+  it('sends what was typed with one idempotency key, and keeps the key if the send is repeated', async () => {
+    state.records = [ACTIVATION];
+    state.conversation = { conversation_id: null, open: true, can_send: true, messages: [] };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    fireEvent.change(screen.getByRole('textbox', { name: /message/i }), { target: { value: '  Hello agency  ' } });
+    fireEvent.click(screen.getByRole('button', { name: /^send$/i }));
+    await screen.findByRole('textbox', { name: /message/i });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].body).toBe('Hello agency');
+    expect(sent[0].clientMessageId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('a closed conversation keeps its history and cannot be written to', () => {
+    state.records = [ACTIVATION];
+    state.conversation = { conversation_id: 'c', open: false, can_send: false, messages: [MESSAGE({})] };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    expect(screen.getByText('Hello')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: /message/i })).toBeDisabled();
+    expect(screen.getByText(/no longer activated/i)).toBeInTheDocument();
   });
 
   it('tells an organisation with no activations that there is nobody to message yet', () => {
@@ -181,10 +260,9 @@ describe('Messages shell', () => {
     expect(screen.queryByRole('textbox', { name: /message/i })).toBeNull();
   });
 
-  it('sends nothing anywhere: no mutation, no model, no email', () => {
+  it('no model and no email: a message is text between people', () => {
     const page = code('src/pages/builder/BuilderAgencies.tsx');
-    expect(page).not.toMatch(/useMutation|mutateAsync|invoke\(/);
     expect(page).not.toMatch(/openrouter|anthropic|openai|claude/i);
-    expect(page).not.toMatch(/mailto:.*send|sendEmail/);
+    expect(page).not.toMatch(/sendEmail|resend/i);
   });
 });

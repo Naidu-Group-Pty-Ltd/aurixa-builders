@@ -5,10 +5,11 @@
  * of one comes entirely from its activations of their stock, read by
  * `list_activated_properties`; this module shapes that for the two tabs.
  *
- * THE MESSAGES SHELL HAS NO TRANSPORT YET. A conversation is keyed by the
- * connection and the property — the relationship it will belong to once
- * messaging is carried over the network — and every thread here is empty and
- * says so (`transport: 'not_connected'`). Nothing is invented to fill it.
+ * A conversation is keyed by the connection and the property, the relationship
+ * the network carries it over. The thread list is built from the
+ * organisation's own activations; each thread's messages are read by
+ * `get_agency_conversation`, polled while it is open. Nothing is invented to
+ * fill a thread.
  */
 import type {
   ActivatedProperty,
@@ -17,7 +18,44 @@ import type {
   ActivationStatus,
 } from '../../supabase/functions/_shared/builderStock/activatedProperties.pure';
 
+import type {
+  AgencyDeliveryState,
+  AgencyMessageView,
+} from '../../supabase/functions/_shared/builderStock/agencyMessages.pure';
+
 export type { ActivatedProperty, ActivatedPropertyAgency, ActivatedPropertyFacts, ActivationStatus };
+export type { AgencyDeliveryState, AgencyMessageView };
+
+/** A conversation as the Messages tab reads it. */
+export interface AgencyConversation {
+  conversation_id: string | null;
+  /** False once the agency has withdrawn the activation: history stays, writing stops. */
+  open: boolean;
+  can_send: boolean;
+  messages: AgencyMessageView[];
+}
+
+/**
+ * The key that makes a send idempotent. Minted once per message the person
+ * writes and reused for every retry of that same send, so a lost response or a
+ * double click can never create a second message.
+ */
+export function newClientMessageId(): string {
+  return crypto.randomUUID();
+}
+
+const OUTBOUND_LABELS: Record<AgencyDeliveryState, string> = {
+  queued: 'Sending',
+  delivered: 'Delivered',
+  failed: 'Not delivered',
+};
+
+export function outboundStateLabel(state: AgencyDeliveryState): string {
+  return OUTBOUND_LABELS[state];
+}
+
+/** How often an open conversation re-reads itself. Polling is the transport's floor. */
+export const AGENCY_CONVERSATION_POLL_MS = 10_000;
 
 export const AGENCIES_PATH = '/builder/agencies';
 export const AGENCY_TABS = ['activations', 'messages'] as const;
@@ -60,9 +98,6 @@ export interface AgencyThread {
   property: ActivatedPropertyFacts | null;
   /** The latest activation of this property by this agency. */
   activation: ActivatedProperty;
-  /** Empty until messaging is carried over the network. Never invented. */
-  messages: readonly never[];
-  transport: 'not_connected';
 }
 
 export function agencyThreadKey(a: { connection_id: string; stock_item_id: string }): string {
@@ -93,8 +128,6 @@ export function agencyThreadsFrom(records: readonly ActivatedProperty[]): Agency
       agency: activation.agency,
       property: activation.property,
       activation,
-      messages: [] as const,
-      transport: 'not_connected' as const,
     }))
     .sort((a, b) =>
       a.activation.activated_at === b.activation.activated_at

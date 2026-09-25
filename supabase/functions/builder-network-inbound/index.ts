@@ -139,6 +139,15 @@ Deno.serve(async (req) => {
     if (applyError) {
       console.error('[builder-network-inbound] opportunistic apply failed', applyError.message);
     }
+    // Messages have their own lane and sweep; the same opportunism, the same
+    // rule: a failure here costs latency, never the delivery.
+    if (eventType === 'agency.message.posted' || eventType === 'agency.message.receipt') {
+      const { error: messageError } = await supabase
+        .rpc('builder_agency_apply_message_events', { _limit: 25 });
+      if (messageError) {
+        console.error('[builder-network-inbound] opportunistic message apply failed', messageError.message);
+      }
+    }
 
     // The stamp says WHETHER; source_version says WHAT. Monotonic: an
     // out-of-order redelivery may not wind the version back.

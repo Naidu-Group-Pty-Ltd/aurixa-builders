@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Handshake, Loader2, MessageSquare, RefreshCw, Send, ShieldAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -11,11 +11,16 @@ import {
   ActivationContact, ActivationProjectLink, ActivationStatusBadge,
 } from '@/components/builder-portal/StockActivation';
 import { StockPicture } from '@/components/stock/StockPicture';
-import { builderStockImageUrl, useBuilderActivatedProperties } from '@/lib/builderStockQueries';
+import {
+  builderStockImageUrl, useAgencyConversation, useBuilderActivatedProperties,
+  useRetryAgencyMessage, useSendAgencyMessage,
+} from '@/lib/builderStockQueries';
+import { useToast } from '@/hooks/use-toast';
 import { isDisplayableSourceImage, type BuilderStockImage } from '@/lib/builderStock';
 import {
   AGENCIES_PATH, activatedPropertyLocality, activatedPropertyTitle, agencyLabel,
-  agencyTabFrom, agencyThreadsFrom, type ActivatedProperty, type AgencyThread, type AgencyTab,
+  agencyTabFrom, agencyThreadsFrom, newClientMessageId, outboundStateLabel,
+  type ActivatedProperty, type AgencyMessageView, type AgencyThread, type AgencyTab,
 } from '@/lib/builderAgency';
 
 /**
@@ -33,9 +38,12 @@ import {
  * builder was never told (who the agency's client is). A project is linked
  * only where the builder already has project access.
  *
- * The Messages tab is a SHELL. It lists one conversation per agency and
- * property and shows each empty, with the composer disabled, because there
- * is no transport yet. It sends nothing and invents nothing.
+ * The Messages tab lists one conversation per agency and property and reads
+ * each through `get_agency_conversation`, polled while it is open. A message
+ * is written with one idempotency key (reused if the same send is repeated),
+ * shows who wrote it and — for what this side sent — whether it arrived, and
+ * a failed one stays visible with "Send again". Writing needs inventory edit
+ * and an activation that is still live; the server decides both.
  */
 export default function BuilderAgencies() {
   const params = useParams<{ tab?: string }>();
@@ -238,7 +246,7 @@ function MessagesShell({ records }: { records: ActivatedProperty[] }) {
           </button>
         ))}
       </div>
-      {selected ? <ThreadShell thread={selected} /> : (
+      {selected ? <ThreadView key={selected.key} thread={selected} /> : (
         <Card>
           <CardContent className="py-8 text-sm text-muted-foreground">
             Choose a conversation to see it.
@@ -249,7 +257,48 @@ function MessagesShell({ records }: { records: ActivatedProperty[] }) {
   );
 }
 
-function ThreadShell({ thread }: { thread: AgencyThread }) {
+function ThreadView({ thread }: { thread: AgencyThread }) {
+  const { toast } = useToast();
+  const query = useAgencyConversation(thread.connection_id, thread.stock_item_id);
+  const send = useSendAgencyMessage(thread.connection_id, thread.stock_item_id);
+  const retry = useRetryAgencyMessage(thread.connection_id, thread.stock_item_id);
+  const [draft, setDraft] = useState('');
+  // One key per message the person writes. A send that fails in flight is
+  // repeated with the SAME key, so it can never arrive twice.
+  const [clientMessageId, setClientMessageId] = useState(newClientMessageId);
+
+  const conversation = query.data;
+  const messages = conversation?.messages ?? [];
+  const canSend = !!conversation?.can_send;
+
+  const submit = async () => {
+    const body = draft.trim();
+    if (!body || send.isPending) return;
+    try {
+      await send.mutateAsync({ clientMessageId, body });
+      setDraft('');
+      setClientMessageId(newClientMessageId());
+    } catch (error) {
+      toast({
+        title: 'Your message was not sent',
+        description: error instanceof Error ? error.message : 'Try again shortly.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const sendAgain = async (messageId: string) => {
+    try {
+      await retry.mutateAsync(messageId);
+    } catch (error) {
+      toast({
+        title: 'That message could not be sent again',
+        description: error instanceof Error ? error.message : 'Try again shortly.',
+        variant: 'destructive',
+      });
+    }
+  };
+
   return (
     <Card>
       <CardContent className="space-y-4 py-5">
@@ -260,28 +309,86 @@ function ThreadShell({ thread }: { thread: AgencyThread }) {
             {thread.agency.contact_name ? ` · ${thread.agency.contact_name}` : ''}
           </p>
         </div>
-        <div className="rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
-          <p className="font-medium text-foreground">No messages yet.</p>
-          <p className="mt-1">
-            Messaging with agencies is not switched on yet. When it is, your conversation with this
-            agency about this property will appear here.
+
+        {query.isLoading ? <Loading /> : query.error ? (
+          <p className="text-sm text-muted-foreground">
+            This conversation could not be loaded just now. It will try again shortly.
           </p>
-        </div>
+        ) : messages.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
+            <p className="font-medium text-foreground">No messages yet.</p>
+            <p className="mt-1">Anything you write here is sent to {agencyLabel(thread.agency)} about this property.</p>
+          </div>
+        ) : (
+          <div role="log" aria-label="Conversation" aria-live="polite" className="max-h-[28rem] space-y-3 overflow-y-auto pr-1">
+            {messages.map((message) => (
+              <MessageBubble key={message.id} message={message} onRetry={sendAgain} retrying={retry.isPending} />
+            ))}
+          </div>
+        )}
+
+        {conversation && !conversation.open ? (
+          <p className="text-sm text-muted-foreground">
+            This property is no longer activated by this agency, so the conversation is closed. Its history stays here.
+          </p>
+        ) : null}
+
         <div className="space-y-2">
           <Textarea
             aria-label="Message"
-            placeholder="Messaging is not available yet"
-            disabled
+            placeholder={canSend ? 'Write a message' : 'You cannot write in this conversation'}
+            value={draft}
+            maxLength={4000}
+            onChange={(event) => setDraft(event.target.value)}
+            disabled={!canSend || send.isPending}
             rows={3}
           />
           <div className="flex justify-end">
-            <Button type="button" disabled>
-              <Send className="mr-2 h-4 w-4" aria-hidden />
+            <Button type="button" onClick={() => void submit()} disabled={!canSend || send.isPending || !draft.trim()}>
+              {send.isPending
+                ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+                : <Send className="mr-2 h-4 w-4" aria-hidden />}
               Send
             </Button>
           </div>
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function MessageBubble({
+  message, onRetry, retrying,
+}: {
+  message: AgencyMessageView;
+  onRetry: (id: string) => void;
+  retrying: boolean;
+}) {
+  const ours = message.side === 'builder';
+  return (
+    <article
+      className={cn(
+        'max-w-[85%] rounded-lg border px-3 py-2 text-sm',
+        ours ? 'ml-auto border-primary/30 bg-primary/5' : 'mr-auto border-border bg-card',
+      )}
+    >
+      <p className="text-xs text-muted-foreground">
+        <span className="font-medium text-foreground">{message.sender_display_name}</span>
+        {' · '}{ours ? 'Your team' : 'Agency'}{' · '}{when(message.sent_at)}
+      </p>
+      <p className="mt-1 whitespace-pre-wrap break-words text-foreground">{message.body}</p>
+      {message.delivery_state ? (
+        <p className={cn('mt-1 flex items-center gap-2 text-xs',
+          message.delivery_state === 'failed' ? 'text-destructive' : 'text-muted-foreground')}>
+          <span>{outboundStateLabel(message.delivery_state)}</span>
+          {message.can_retry ? (
+            <Button type="button" variant="outline" size="sm" className="h-6 px-2 text-xs"
+              onClick={() => onRetry(message.id)} disabled={retrying}>
+              Send again
+            </Button>
+          ) : null}
+        </p>
+      ) : null}
+    </article>
   );
 }

@@ -24,7 +24,8 @@
     "check:migration-versions": "node scripts/db/check-migration-version-collisions.mjs",
     "check:migration-order": "node --max-old-space-size=4096 scripts/db/check-migration-dependency-order.mjs",
     "ocr:vendor-language": "node scripts/ocr/vendor-language.mjs",
-    "ocr:vendor-engine": "node scripts/ocr/vendor-engine.mjs"
+    "ocr:vendor-engine": "node scripts/ocr/vendor-engine.mjs",
+    "db:agency-messaging:check": "node scripts/db/agency-messaging-check.mjs"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.2",

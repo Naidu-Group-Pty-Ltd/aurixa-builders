@@ -47,6 +47,8 @@ import {
   logBuilderProjectActivity,
 } from '../_shared/builderPortalAuth.ts';
 import { readActivatedProperties } from '../_shared/builderStock/activatedProperties.ts';
+import { readAgencyConversation } from '../_shared/builderStock/agencyMessages.ts';
+import { agencyMessageRefusal, projectAgencyMessages } from '../_shared/builderStock/agencyMessages.pure.ts';
 import {
   MAX_STOCK_FILE_BYTES, STOCK_LIST_BUCKET, STOCK_IMAGE_BUCKET,
   STOCK_LIST_STORAGE_PREFIX, STOCK_ALLOWED_DECLARED_MIME,
@@ -2524,6 +2526,88 @@ Deno.serve(async (req) => {
         return json({ success: false, error: 'activations_could_not_be_read' }, 503);
       }
       return json({ success: true, records: read.records, pagination: read.pagination });
+    }
+
+    // =====================================================================
+    // Agency messages — a conversation with the agency that activated a
+    // property, carried over the signed network. Readable under the same gate
+    // as the activation; writing needs inventory edit. The organisation and
+    // the sender are the session's; ids in the body are lookup keys only.
+    // =====================================================================
+
+    const uuidOf = (value: unknown): string | null => {
+      const text = cleanText(value, 64).toLowerCase();
+      return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(text) ? text : null;
+    };
+    const agencyRefusal = (error: { message?: string } | null) => {
+      const refusal = agencyMessageRefusal(String(error?.message ?? ''));
+      if (refusal) return json({ success: false, error: refusal.error, code: refusal.code }, refusal.status);
+      console.error('[builder-portal-stock] agency message failed', error?.message);
+      return json({ success: false, error: 'The message could not be saved. Try again shortly.' }, 503);
+    };
+
+    if (operation === 'get_agency_conversation') {
+      const connectionId = uuidOf(body.connection_id);
+      const stockItemId = uuidOf(body.stock_item_id);
+      if (!connectionId || !stockItemId) return notFoundHere('That conversation');
+      const read = await readAgencyConversation(supabase, {
+        organisationId: activeOrganisationId,
+        connectionId,
+        stockItemId,
+        viewerUserId: me.id,
+      });
+      if (!read.ok) {
+        return read.reason === 'not_found'
+          ? notFoundHere('That conversation')
+          : json({ success: false, error: 'conversation_could_not_be_read' }, 503);
+      }
+      return json({
+        success: true,
+        conversation_id: read.conversation_id,
+        open: read.open,
+        can_send: read.open && await can('edit'),
+        messages: read.messages,
+      });
+    }
+
+    if (operation === 'send_agency_message') {
+      if (!await can('edit')) {
+        return json({ error: 'You do not have permission to message agencies', code: 'permission_denied' }, 403);
+      }
+      const connectionId = uuidOf(body.connection_id);
+      const stockItemId = uuidOf(body.stock_item_id);
+      const clientMessageId = uuidOf(body.client_message_id);
+      if (!connectionId || !stockItemId) return notFoundHere('That conversation');
+      if (!clientMessageId) {
+        return json({ success: false, error: 'A message needs its own id.', code: 'invalid_message' }, 400);
+      }
+      const { data, error } = await supabase.rpc('builder_agency_post_message', {
+        _organisation_id: activeOrganisationId,
+        _connection_id: connectionId,
+        _stock_item_id: stockItemId,
+        _sender_builder_user_id: me.id,
+        _client_message_id: clientMessageId,
+        _body: String(body.body ?? '').slice(0, 8000),
+      });
+      if (error) return agencyRefusal(error);
+      const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
+      return json({ success: true, message: row ? projectAgencyMessages([row], me.id)[0] : null });
+    }
+
+    if (operation === 'retry_agency_message') {
+      if (!await can('edit')) {
+        return json({ error: 'You do not have permission to message agencies', code: 'permission_denied' }, 403);
+      }
+      const messageId = uuidOf(body.message_id);
+      if (!messageId) return notFoundHere('That message');
+      const { data, error } = await supabase.rpc('builder_agency_retry_message', {
+        _organisation_id: activeOrganisationId,
+        _message_id: messageId,
+        _sender_builder_user_id: me.id,
+      });
+      if (error) return agencyRefusal(error);
+      const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
+      return json({ success: true, message: row ? projectAgencyMessages([row], me.id)[0] : null });
     }
 
     if (operation === 'acknowledge_selection') {
