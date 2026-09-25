@@ -430,6 +430,21 @@ sweep();
 check('a delivered message never times out, and an old generation cannot time out the current one',
   sql(`SELECT delivery_state FROM public.builder_agency_messages WHERE id = ${lit(lost)}`) === 'delivered');
 
+console.log('\nThe exact contract, at the apply step too');
+{
+  const extra = { ...agencyMessage({ body: 'Carrying a field the contract does not have.' }), customer_details: 'Jordan Buyer' };
+  land(CONN_A, 'agency.message.posted', `agency.message:${extra.message_id}:1`, extra);
+  const waiting = post(ORG_A, CONN_A, ITEM_A1, USER_A, randomUUID(), 'Waiting on a clean receipt.');
+  land(CONN_A, 'agency.message.receipt', `agency.receipt:${waiting}:1:${randomUUID()}`,
+    { schema_version: 1, message_id: waiting, conversation_id: conversationId(CONN_A, ITEM_A1), generation: 1, outcome: 'accepted', client_id: 'x' });
+  sweep();
+  check('a message carrying a key outside the contract is refused and stored nowhere',
+    sql(`SELECT message_apply_error FROM public.builder_network_inbound_events WHERE dedupe_key = 'agency.message:${extra.message_id}:1'`) === 'refused:invalid_payload'
+      && sql(`SELECT count(*) FROM public.builder_agency_messages WHERE id = ${lit(extra.message_id)}`) === '0');
+  check('a receipt carrying a key outside the contract changes nothing',
+    sql(`SELECT delivery_state FROM public.builder_agency_messages WHERE id = ${lit(waiting)}`) === 'queued');
+}
+
 console.log('\nA check and the change it guards against, at the same moment');
 {
   const withdrawal = sqlAsync(`BEGIN; UPDATE public.builder_stock_selection_announcements SET status = 'withdrawn'

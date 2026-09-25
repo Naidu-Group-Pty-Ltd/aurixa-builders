@@ -70,3 +70,42 @@ export function agencyMessageRefusal(message: string): { status: number; code: s
   }
   return null;
 }
+
+/**
+ * The exact key set of each message event. The privacy screen is a deny-list;
+ * this is the allow-list: a signed peer cannot widen what crosses by adding a
+ * field, because an envelope carrying anything else is refused at the door,
+ * before it is stored, and again when it is applied.
+ */
+const POSTED_KEYS = [
+  'body', 'conversation_id', 'generation', 'message_id', 'schema_version',
+  'sender_display_name', 'sent_at', 'stock_item_id',
+] as const;
+const RECEIPT_REQUIRED_KEYS = ['conversation_id', 'generation', 'message_id', 'outcome', 'schema_version'] as const;
+const RECEIPT_OPTIONAL_KEYS = ['reason'] as const;
+
+export interface AgencyContractViolation {
+  /** Key NAMES outside the contract; a value is never carried. */
+  unexpected: string[];
+  missing: string[];
+}
+
+export function agencyPayloadContractViolation(eventType: string, payload: unknown): AgencyContractViolation | null {
+  let required: readonly string[];
+  let optional: readonly string[];
+  if (eventType === 'agency.message.posted') {
+    required = POSTED_KEYS; optional = [];
+  } else if (eventType === 'agency.message.receipt') {
+    required = RECEIPT_REQUIRED_KEYS; optional = RECEIPT_OPTIONAL_KEYS;
+  } else {
+    return null;
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { unexpected: [], missing: [...required] };
+  }
+  const keys = Object.keys(payload as Record<string, unknown>);
+  const allowed = new Set<string>([...required, ...optional]);
+  const unexpected = keys.filter((key) => !allowed.has(key)).sort();
+  const missing = required.filter((key) => !keys.includes(key));
+  return unexpected.length || missing.length ? { unexpected, missing } : null;
+}

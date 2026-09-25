@@ -381,6 +381,18 @@ BEGIN
     RETURN 'refused:connection_not_active';
   END IF;
 
+  -- Exactly the contract's keys: the door refuses anything else before it is
+  -- stored, and this is the same rule where the event is applied.
+  IF jsonb_typeof(v_payload) <> 'object' OR EXISTS (
+    SELECT 1 FROM jsonb_object_keys(CASE WHEN jsonb_typeof(v_payload) = 'object' THEN v_payload ELSE '{}'::jsonb END) k
+     WHERE k <> ALL (CASE WHEN v_event.event_type = 'agency.message.posted'
+                          THEN ARRAY['body', 'conversation_id', 'generation', 'message_id', 'schema_version',
+                                     'sender_display_name', 'sent_at', 'stock_item_id']
+                          ELSE ARRAY['conversation_id', 'generation', 'message_id', 'outcome', 'reason',
+                                     'schema_version'] END)) THEN
+    RETURN 'refused:invalid_payload';
+  END IF;
+
   BEGIN
     v_message_id := (v_payload->>'message_id')::uuid;
     v_conversation_id := (v_payload->>'conversation_id')::uuid;

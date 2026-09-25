@@ -32,6 +32,7 @@ import {
   assertPayloadCrossesClean,
 } from '../_shared/builderNetworkPrivacy.pure.ts';
 import { buildStamp } from '../_shared/builderNetworkStamp.pure.ts';
+import { agencyPayloadContractViolation } from '../_shared/builderStock/agencyMessages.pure.ts';
 
 const MAX_BODY_BYTES = 256 * 1024;
 
@@ -109,6 +110,27 @@ Deno.serve(async (req) => {
         return json({ error: 'privacy_contract_failed' }, 422);
       }
       throw violation;
+    }
+
+    // A message event carries exactly its contract's keys and nothing else:
+    // refused here, before anything is stored, naming the keys and never a value.
+    const contract = agencyPayloadContractViolation(eventType, envelope.payload ?? {});
+    if (contract) {
+      await supabase.from('portal_operational_events').insert({
+        event_name: 'builder_network_inbound_message_contract_violation',
+        severity: 'warning',
+        request_id: dedupeKey,
+        actor_type: 'system',
+        portal: 'builder',
+        success: false,
+        metadata: {
+          connection_id: connection.id,
+          event_type: eventType,
+          unexpected_keys: contract.unexpected.slice(0, 20),
+          missing_keys: contract.missing.slice(0, 20),
+        },
+      });
+      return json({ error: 'message_contract_failed' }, 422);
     }
 
     const { error: insertError } = await supabase
