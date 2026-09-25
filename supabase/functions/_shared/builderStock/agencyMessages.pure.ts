@@ -92,6 +92,9 @@ export interface AgencyContractViolation {
   mistyped: string[];
 }
 
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const RECEIPT_OUTCOMES: readonly string[] = ['accepted', 'refused'];
+
 /** The message schema version both sides write and apply. */
 export const AGENCY_MESSAGE_SCHEMA_VERSION = 1;
 
@@ -128,6 +131,11 @@ export function agencyPayloadContractViolation(eventType: string, payload: unkno
       // a skewed peer's message stays pending and is retried, never marked
       // delivered only to be dropped where no receipt can follow.
       || (key === 'schema_version' && record[key] !== AGENCY_MESSAGE_SCHEMA_VERSION)
+      // The values the apply step reads without answering: an id it cannot
+      // cast, or an outcome it does not know, would be stamped invalid there
+      // with no receipt, after the door had already said delivered.
+      || ((key === 'message_id' || key === 'conversation_id') && !UUID_SHAPE.test(String(record[key])))
+      || (key === 'outcome' && !RECEIPT_OUTCOMES.includes(record[key] as string))
       // A generation is a positive whole number within an integer's range.
       || (key === 'generation' && !(Number.isInteger(record[key]) && (record[key] as number) >= 1
         && (record[key] as number) <= 2_147_483_647)))

@@ -371,10 +371,10 @@ describe('a reader who may not write', () => {
 
 describe('the exact message contract, at the door', () => {
   const posted = {
-    schema_version: 1, conversation_id: 'c', message_id: 'm', stock_item_id: 'i', body: 'Hello',
+    schema_version: 1, conversation_id: '00000000-0000-4000-8000-00000000000c', message_id: '00000000-0000-4000-8000-00000000000d', stock_item_id: 'i', body: 'Hello',
     sender_display_name: 'Avery', sent_at: '2026-09-25T00:00:00Z', generation: 1,
   };
-  const receipt = { schema_version: 1, message_id: 'm', conversation_id: 'c', generation: 1, outcome: 'accepted' };
+  const receipt = { schema_version: 1, message_id: '00000000-0000-4000-8000-00000000000d', conversation_id: '00000000-0000-4000-8000-00000000000c', generation: 1, outcome: 'accepted' };
 
   it('accepts exactly the contract\'s keys, and a receipt\'s optional reason', () => {
     expect(agencyPayloadContractViolation('agency.message.posted', posted)).toBeNull();
@@ -411,7 +411,7 @@ describe('the exact message contract, at the door', () => {
 
 describe('the exact message contract: each value\'s JSON type', () => {
   const posted = {
-    schema_version: 1, conversation_id: 'c', message_id: 'm', stock_item_id: 'i', body: 'Hello',
+    schema_version: 1, conversation_id: '00000000-0000-4000-8000-00000000000c', message_id: '00000000-0000-4000-8000-00000000000d', stock_item_id: 'i', body: 'Hello',
     sender_display_name: 'Avery', sent_at: '2026-09-25T00:00:00Z', generation: 1,
   };
   it('refuses a body, a name or an id that is not a string, and a generation that is not a number', () => {
@@ -422,11 +422,11 @@ describe('the exact message contract: each value\'s JSON type', () => {
     expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, generation: '1' }))
       .toMatchObject({ mistyped: ['generation'] });
     expect(agencyPayloadContractViolation('agency.message.receipt',
-      { schema_version: 1, message_id: 'm', conversation_id: 'c', generation: 1, outcome: 'refused', reason: 7 }))
+      { schema_version: 1, message_id: '00000000-0000-4000-8000-00000000000d', conversation_id: '00000000-0000-4000-8000-00000000000c', generation: 1, outcome: 'refused', reason: 7 }))
       .toMatchObject({ mistyped: ['reason'] });
   });
   it('accepts a receipt whose reason is absent or null', () => {
-    const receipt = { schema_version: 1, message_id: 'm', conversation_id: 'c', generation: 1, outcome: 'accepted' };
+    const receipt = { schema_version: 1, message_id: '00000000-0000-4000-8000-00000000000d', conversation_id: '00000000-0000-4000-8000-00000000000c', generation: 1, outcome: 'accepted' };
     expect(agencyPayloadContractViolation('agency.message.receipt', receipt)).toBeNull();
     expect(agencyPayloadContractViolation('agency.message.receipt', { ...receipt, reason: null })).toBeNull();
   });
@@ -459,13 +459,25 @@ describe('a message envelope\'s dedupe key is bound to its payload', () => {
 });
 
 describe('a generation is a positive whole number', () => {
-  const posted = { schema_version: 1, conversation_id: 'c', message_id: 'm', stock_item_id: 'i', body: 'Hi',
+  const posted = { schema_version: 1, conversation_id: '00000000-0000-4000-8000-00000000000c', message_id: '00000000-0000-4000-8000-00000000000d', stock_item_id: 'i', body: 'Hi',
     sender_display_name: 'A', sent_at: '2026-09-25T00:00:00Z', generation: 1 };
+  it('refuses a malformed message or conversation id, or an unknown receipt outcome, so a sweep never drops it silently', () => {
+    const id = '00000000-0000-4000-8000-0000000000aa';
+    const good = { ...posted, message_id: id, conversation_id: id };
+    expect(agencyPayloadContractViolation('agency.message.posted', good)).toBeNull();
+    expect(agencyPayloadContractViolation('agency.message.posted', { ...good, message_id: 'not-a-uuid' })).toMatchObject({ mistyped: ['message_id'] });
+    expect(agencyPayloadContractViolation('agency.message.posted', { ...good, conversation_id: '' })).toMatchObject({ mistyped: ['conversation_id'] });
+    const receipt = { schema_version: 1, message_id: id, conversation_id: id, generation: 1, outcome: 'accepted' };
+    expect(agencyPayloadContractViolation('agency.message.receipt', receipt)).toBeNull();
+    expect(agencyPayloadContractViolation('agency.message.receipt', { ...receipt, outcome: 'refused', reason: 'x' })).toBeNull();
+    expect(agencyPayloadContractViolation('agency.message.receipt', { ...receipt, outcome: 'delivered' })).toMatchObject({ mistyped: ['outcome'] });
+    expect(agencyPayloadContractViolation('agency.message.receipt', { ...receipt, message_id: 'm' })).toMatchObject({ mistyped: ['message_id'] });
+  });
   it('refuses a schema version it cannot apply, so a skewed peer keeps retrying instead of being marked delivered', () => {
     for (const schema_version of [2, 0, 1.5]) {
       expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, schema_version })).toMatchObject({ mistyped: ['schema_version'] });
       expect(agencyPayloadContractViolation('agency.message.receipt',
-        { schema_version, message_id: 'm', conversation_id: 'c', generation: 1, outcome: 'accepted' })).toMatchObject({ mistyped: ['schema_version'] });
+        { schema_version, message_id: '00000000-0000-4000-8000-00000000000d', conversation_id: '00000000-0000-4000-8000-00000000000c', generation: 1, outcome: 'accepted' })).toMatchObject({ mistyped: ['schema_version'] });
     }
     expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, schema_version: 1 })).toBeNull();
   });
