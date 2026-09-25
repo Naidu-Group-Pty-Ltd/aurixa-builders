@@ -13,7 +13,14 @@
  * Operations
  *   list_projects | get_project | update_project | set_status
  *   list_parties | upsert_party | delete_party
- *   status_history | project_stats
+ *   status_history | project_stats | image_url
+ *
+ * The property a project IS — the Stock List record its activation named —
+ * is read through `readPropertyViews`, the Stock List's own overlay and image
+ * rows, so a project shows the same figures and the same photograph. Its
+ * photograph is served by `image_url` to anybody the PROJECT is open to:
+ * project access, not the Stock List's inventory permission, is what opens a
+ * project, and a photograph is part of the project it belongs to.
  *
  * Divergences from the Solicitor original, all deliberate:
  *   * The session is resolved from the HttpOnly cookie only (Phase 0 NOCOPY-02).
@@ -47,7 +54,9 @@ import {
   cleanEnum,
   cleanText,
 } from '../_shared/builderProjects.ts';
-import { STOCK_ITEM_SELECT } from '../_shared/builderStock/projection.pure.ts';
+import { readPropertyViews } from '../_shared/builderStock/propertyView.ts';
+import { projectStockItemIds } from '../_shared/builderStock/projectProperty.pure.ts';
+import { serveStockImage } from '../_shared/builderStock/serveStockImage.ts';
 
 Deno.serve(async (req) => {
   const corsHeaders = createCorsHeaders(req.headers.get('origin'));
@@ -207,6 +216,30 @@ Deno.serve(async (req) => {
       return byProject;
     };
 
+    /**
+     * The Stock List property each project IS, keyed by project id: the one
+     * its activation named, else the one whose own row names the project
+     * (`projectStockItemIds`). Pinned to the session's organisation.
+     */
+    const loadProjectStockIds = async (
+      projectIds: string[],
+      activationByProject: Map<string, Record<string, unknown>>,
+    ): Promise<Map<string, string>> => {
+      const ids = projectIds.filter(Boolean);
+      if (!ids.length) return new Map();
+      const { data: linked } = await supabase
+        .from('builder_stock_items')
+        .select('id, builder_project_id, updated_at')
+        .eq('organisation_id', activeOrganisationId)
+        .in('builder_project_id', ids);
+      return projectStockItemIds({
+        projectIds: ids,
+        activationStockItemByProject: new Map(ids.map((id) =>
+          [id, (activationByProject.get(id)?.stock_item_id as string | null | undefined) ?? null])),
+        linkedStock: (linked ?? []) as any[],
+      });
+    };
+
     // ───────────────────────── LIST ─────────────────────────
     if (operation === 'list_projects') {
       if (!accessibleProjectIds.length) {
@@ -259,10 +292,21 @@ Deno.serve(async (req) => {
       // contact block the detail view carries.
       const activationByProject = await loadActivationContext(rows.map((row: any) => row.id));
 
+      // The property each row IS, as the Stock List serves it: the list draws
+      // its photograph and headline figures.
+      const stockIdByProject = await loadProjectStockIds(
+        rows.map((row: any) => row.id), activationByProject);
+      const views = await readPropertyViews(supabase, {
+        organisationId: activeOrganisationId,
+        stockItemIds: [...stockIdByProject.values()],
+      });
+
       const records = rows.map((row: any) => {
         const activation = activationByProject.get(row.id) ?? null;
+        const stockItemId = stockIdByProject.get(row.id);
         return {
           ...row,
+          property: stockItemId ? views.get(stockItemId)?.item ?? null : null,
           developer_organisation_name: organisationMap.get(row.developer_organisation_id) ?? null,
           builder_organisation_name: organisationMap.get(row.builder_organisation_id) ?? null,
           activation: activation
@@ -322,16 +366,16 @@ Deno.serve(async (req) => {
         // label — the same string the fan-out named the project with.
         activation.property_label = project.name;
       }
-      let stockItem: Record<string, unknown> | null = null;
-      if (activation?.stock_item_id) {
-        const { data: item } = await supabase
-          .from('builder_stock_items')
-          .select(STOCK_ITEM_SELECT)
-          .eq('organisation_id', activeOrganisationId)
-          .eq('id', activation.stock_item_id)
-          .maybeSingle();
-        stockItem = item ?? null;
-      }
+      // The property this project IS, read exactly as the Stock List reads
+      // it — overlay, images and the documents its own row links to.
+      const stockIdByProject = await loadProjectStockIds([project.id], activationByProject);
+      const stockItemId = stockIdByProject.get(project.id) ?? null;
+      const views = await readPropertyViews(supabase, {
+        organisationId: activeOrganisationId,
+        stockItemIds: stockItemId ? [stockItemId] : [],
+      });
+      const view = stockItemId ? views.get(stockItemId) ?? null : null;
+      const stockItem: Record<string, unknown> | null = view?.item ?? null;
 
       await logBuilderProjectActivity(supabase, req, {
         builderUserId: me.id, organisationId: activeOrganisationId,
@@ -350,6 +394,7 @@ Deno.serve(async (req) => {
         access_role: res.accessRole,
         activation,
         stock_item: stockItem,
+        property_documents: view?.documents ?? [],
       });
     }
 
@@ -542,6 +587,39 @@ Deno.serve(async (req) => {
         if (row.risk_flag) atRisk += 1;
       }
       return json({ success: true, total: (data || []).length, by_status: byStatus, at_risk: atRisk });
+    }
+
+    // ───────────────────────── PROPERTY PHOTOGRAPH ─────────────────────────
+    if (operation === 'image_url') {
+      const res = await loadProject(String(body.project_id || ''));
+      if (!res.ok) return json({ error: res.error }, res.status);
+      const imageId = String(body.image_id || '').trim();
+      if (!imageId) return json({ error: 'image_id is required' }, 400);
+
+      // Only this project's own property, in this organisation. An image id
+      // is a value the caller supplies; one belonging to any other property
+      // answers exactly as one that does not exist.
+      const activationByProject = await loadActivationContext([res.project.id]);
+      const stockItemId = (await loadProjectStockIds([res.project.id], activationByProject))
+        .get(res.project.id);
+      if (!stockItemId) return json({ error: 'Image not found' }, 404);
+      const { data: image } = await supabase
+        .from('builder_stock_item_images')
+        .select('id')
+        .eq('id', imageId)
+        .eq('stock_item_id', stockItemId)
+        .eq('organisation_id', activeOrganisationId)
+        .maybeSingle();
+      if (!image) return json({ error: 'Image not found' }, 404);
+
+      const served = await serveStockImage(supabase, {
+        imageId, organisationId: activeOrganisationId,
+      });
+      if (!served.ok) {
+        return json({ error: served.reason === 'not_found' ? 'Image not found' : 'Image not ready' },
+          served.reason === 'not_found' ? 404 : 409);
+      }
+      return json({ success: true, url: served.url, expires_in: served.expiresIn });
     }
 
     return json({ error: 'Unknown operation' }, 400);

@@ -1,7 +1,7 @@
 import { FormEvent, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft, Building2, CheckCircle2, HardHat, Home, Loader2, Save, Users } from 'lucide-react';
+import { ArrowLeft, Building2, CheckCircle2, HardHat, Home, Loader2, Save } from 'lucide-react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -23,9 +23,14 @@ import { useAcknowledgeStockSelection } from '@/lib/builderStockQueries';
 import {
   formatCollaborationTime, formatRelativeTime, type BuilderStockActivation,
 } from '@/lib/builderCollaboration';
-import type { BuilderStockItem } from '@/lib/builderStock';
+import { describeManualStats, type BuilderStockItem } from '@/lib/builderStock';
+import { PropertyDocumentsList, ProjectPropertyPicture } from '@/components/builder-portal/ProjectProperty';
+import { ProjectPartiesPanel } from '@/components/builder-portal/ProjectParties';
+import type {
+  PropertyDocumentLink,
+} from '../../../supabase/functions/_shared/builderStock/propertyDocuments.pure';
 import {
-  ACCESS_ROLE_LABELS, PARTY_ROLE_LABELS, PROJECT_STATUS_CLASSES, PROJECT_STATUS_LABELS,
+  ACCESS_ROLE_LABELS, PROJECT_STATUS_CLASSES, PROJECT_STATUS_LABELS,
   PROJECT_TYPE_LABELS, allowedProjectTransitions, formatProjectAddress, formatProjectDate,
   type BuilderProject, type BuilderProjectStatus,
 } from '@/lib/builderProjects';
@@ -39,16 +44,19 @@ const formatMeasure = (value: number | null | undefined, unit = ''): string | nu
 };
 
 /**
- * The activated property, as a record — every stated fact in its own labelled
- * row, sourced from the same Stock List projection the rest of the portal
- * reads. Rows without a value do not render; nothing here is ever invented.
+ * The activated property, as a record — its photograph, then every stated
+ * fact in its own labelled row, sourced from the same Stock List projection
+ * the rest of the portal reads. Rows without a value do not render; nothing
+ * here is ever invented. The photograph is the Stock List's own, chosen and
+ * drawn by the same code (`ProjectPropertyPicture`).
  */
 function PropertyInformationCard({
-  project, item, activation,
+  project, item, activation, documents,
 }: {
   project: BuilderProject;
   item: Partial<BuilderStockItem>;
   activation: BuilderStockActivation | null;
+  documents: PropertyDocumentLink[];
 }) {
   const location = [item.suburb, item.state, item.postcode]
     .map((part) => (part ?? '').trim()).filter(Boolean).join(' ');
@@ -71,9 +79,19 @@ function PropertyInformationCard({
     { label: 'Expected completion', value: (item.expected_completion ?? '').trim() },
     { label: 'Client reference', value: activation?.client_reference ?? '' },
   ].filter((row) => row.value);
+  // The Stock List's own sentence about where each figure came from.
+  const provenance = describeManualStats(item as BuilderStockItem).note;
+  const description = (item.description ?? '').trim();
 
   return (
-    <Card>
+    <Card className="overflow-hidden">
+      <ProjectPropertyPicture
+        projectId={project.id}
+        item={item}
+        alt={`${project.name} — the builder's photograph of this property`}
+        aspectClassName="aspect-[16/9]"
+        className="border-b border-border/60"
+      />
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-base">
           <Home className="h-4 w-4 text-primary" aria-hidden />
@@ -93,6 +111,14 @@ function PropertyInformationCard({
             </div>
           ))}
         </dl>
+        {provenance ? <p className="mt-3 text-xs text-muted-foreground">{provenance}</p> : null}
+        {description ? (
+          <div className="mt-4 space-y-1.5">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Description</p>
+            <p className="whitespace-pre-line text-sm text-foreground">{description}</p>
+          </div>
+        ) : null}
+        <PropertyDocumentsList documents={documents} className="mt-4" />
         <ActivationStockLink className="mt-4" />
       </CardContent>
     </Card>
@@ -231,10 +257,11 @@ export default function BuilderProjectDetail() {
     project, parties, status_history: history, permissions,
     developer_organisation: developer, builder_organisation: builder,
     development, access_role: accessRole,
-    activation, stock_item: stockItem,
+    activation, stock_item: stockItem, property_documents: propertyDocuments,
   } = query.data;
 
   const canEdit = permissions?.projects?.edit === true;
+  const canDelete = permissions?.projects?.delete === true;
   const transitions = allowedProjectTransitions(project.status);
 
   const handleDetailSave = async (event: FormEvent<HTMLFormElement>) => {
@@ -353,7 +380,10 @@ export default function BuilderProjectDetail() {
           {activation || stockItem ? (
             <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
               {stockItem ? (
-                <PropertyInformationCard project={project} item={stockItem} activation={activation} />
+                <PropertyInformationCard
+                  project={project} item={stockItem} activation={activation}
+                  documents={propertyDocuments ?? []}
+                />
               ) : null}
               {activation ? (
                 <ActivatedByAgencyCard projectId={project.id} activation={activation} />
@@ -463,40 +493,9 @@ export default function BuilderProjectDetail() {
         </TabsContent>
 
         <TabsContent value="parties" className="mt-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Users className="h-4 w-4 text-primary" aria-hidden />Project parties
-              </CardTitle>
-              <CardDescription>Everyone recorded against this project.</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {!parties.length ? (
-                <p className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-                  No parties recorded yet.
-                </p>
-              ) : parties.map((party) => (
-                <div key={party.id} className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-border/60 p-4">
-                  <div className="min-w-0">
-                    {/* A div, not a p: Badge renders a div, and a div inside a
-                        p is invalid HTML that the browser silently reflows. */}
-                    <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-foreground">
-                      <span className="truncate">{party.name}</span>
-                      {party.is_primary_contact ? <Badge variant="outline">Primary</Badge> : null}
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      {PARTY_ROLE_LABELS[party.role] || party.role}
-                      {party.organisation ? ` · ${party.organisation}` : ''}
-                    </p>
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    {party.email ? <p className="truncate">{party.email}</p> : null}
-                    {party.phone ? <p>{party.phone}</p> : null}
-                  </div>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
+          <ProjectPartiesPanel
+            projectId={project.id} parties={parties} canEdit={canEdit} canDelete={canDelete}
+          />
         </TabsContent>
 
         <TabsContent value="history" className="mt-4">

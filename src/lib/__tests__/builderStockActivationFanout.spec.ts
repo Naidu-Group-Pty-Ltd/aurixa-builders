@@ -353,8 +353,12 @@ describe('an activation opens a project — the notification is an entry point, 
     expect(projects).toContain('const loadActivationContext = async (');
     // The announcement read is pinned to the session's organisation.
     expect(projects).toMatch(/from\('builder_stock_selection_announcements'\)[\s\S]{0,200}\.eq\('organisation_id', activeOrganisationId\)/);
-    // The property rides the SAME projection the Stock List serves.
-    expect(projects).toContain("import { STOCK_ITEM_SELECT } from '../_shared/builderStock/projection.pure.ts';");
+    // The property rides the SAME projection the Stock List serves — now
+    // through the shared property view, which also lays the builder's own
+    // figures over it exactly as the Stock List does.
+    expect(projects).toContain("import { readPropertyViews } from '../_shared/builderStock/propertyView.ts';");
+    expect(read('supabase/functions/_shared/builderStock/propertyView.ts'))
+      .toContain("import { STOCK_IMAGE_SELECT, STOCK_ITEM_SELECT } from './projection.pure.ts';");
     expect(projects).toContain('stock_item: stockItem,');
     expect(projects).toContain('activation,');
     // The list carries the light context for its activation line.
