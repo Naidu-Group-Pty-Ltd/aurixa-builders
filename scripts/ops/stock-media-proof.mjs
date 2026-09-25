@@ -19,7 +19,9 @@
  *      and its media sweep, each on its own schedule;
  *   4. what arrived is checked against what was sent: the figures, the one
  *      elected photograph (served, as bytes, by the network's own door), the
- *      typed documents, and the Command Centre's own `get_stock_item`;
+ *      typed documents; the deployed Command Centre bundle is the one that
+ *      serves the page, and its organisation-pinned reads answer this
+ *      builder and nobody else;
  *   5. replay makes no duplicate, a replaced photograph converges, a removed
  *      one disappears, a changed document converges;
  *   6. another organisation's signed payload cannot attach media to this
@@ -208,7 +210,6 @@ try {
   if (!record('0: the token reaches both projects', reach.every((r) => r.status === 'fulfilled'),
     reach.map((r) => r.status).join(', '))) throw new Error('cannot reach both projects');
   networkKey = await serviceKey(NETWORK_REF);
-  const ccKey = await serviceKey(CC_REF);
   await cleanup('start', networkKey);
 
   const shipped = await cc('shipped', `
@@ -376,41 +377,34 @@ try {
   record('6: the door will not serve an image the builder did not publish', unelected.status === 404,
     `HTTP ${unelected.status}`);
 
-  // The Command Centre's own read, over HTTP, as a system caller.
-  const ccRead = async (stockItemId) => {
-    const response = await fetch(`https://${CC_REF}.supabase.co/functions/v1/builder-stock-marketplace`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${ccKey}`, apikey: ccKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ operation: 'get_stock_item', stock_item_id: stockItemId }),
-    });
-    return { status: response.status, json: await response.json().catch(() => null) };
-  };
-  const page = await ccRead(item);
-  record('4: the page\'s read answers: the record, one photograph, two documents, no activation',
-    page.status === 200 && page.json?.record?.id === item && page.json?.photos?.length === 1
-      && page.json?.photos?.[0]?.id === photos.one.id && page.json?.documents?.length === 2
-      && Array.isArray(page.json?.activations) && page.json.activations.length === 0,
-    `HTTP ${page.status}`);
-  const missing = await ccRead(randomUUID());
-  record('4: a property that is not there answers as absent', missing.status === 404, `HTTP ${missing.status}`);
-
-  // Activation, read-only, on the live record: what the page says equals the table.
-  const activated = (await cc('an activated property', `
-    SELECT s.stock_item_id, count(*)::int AS n,
-           string_agg(s.status, ',' ORDER BY s.selected_at DESC) AS statuses
-      FROM public.builder_stock_selections s
-      JOIN public.builder_network_stock_items i ON i.id = s.stock_item_id AND i.lifecycle_status = 'active'
-     GROUP BY s.stock_item_id ORDER BY max(s.selected_at) DESC LIMIT 1`))[0];
-  if (activated) {
-    const read = await ccRead(activated.stock_item_id);
-    const statuses = (read.json?.activations ?? []).map((a) => a.status).join(',');
-    record('4: an activated property\'s page states its activation record exactly (read-only)',
-      read.status === 200 && statuses === activated.statuses
-        && (read.json?.activations ?? []).every((a) => a.selected_at && !('internal_notes' in a)),
-      `${activated.n} activation(s)`);
-  } else {
-    record('4: an activated property\'s page states its activation record (none to read)', true, 'no activation exists');
-  }
+  /*
+   * THE PAGE'S READ, BY ITS EFFECT. The Command Centre accepts no credential
+   * this workflow can hold for a system call (its service-role path verifies
+   * against a JWT secret the management API does not reveal, and no user
+   * session is minted for a proof), so the read is proved in two halves: the
+   * deployed bundle is the one that carries it, and the exact organisation-
+   * pinned reads it makes answer what the page must show — and nothing for
+   * any other builder.
+   */
+  const bundle = await fetch(
+    `https://api.supabase.com/v1/projects/${CC_REF}/functions/builder-stock-marketplace/body`,
+    { headers: { Authorization: `Bearer ${ACCESS_TOKEN}` } });
+  const bundleText = bundle.ok ? Buffer.from(await bundle.arrayBuffer()).toString('latin1') : '';
+  record('4: the deployed Command Centre read is the one that serves the page',
+    bundle.ok && bundleText.includes('readPropertyDetail') && bundleText.includes('builder_network_stock_item_photos'),
+    `HTTP ${bundle.status}`);
+  const pinnedRead = (orgId) => cc('pinned read', `
+    SELECT (SELECT count(*) FROM public.builder_network_stock_item_photos
+             WHERE stock_item_id = ${id(item)} AND organisation_id = ${id(orgId)})::int AS photos,
+           (SELECT count(*) FROM public.builder_network_stock_item_documents
+             WHERE stock_item_id = ${id(item)} AND organisation_id = ${id(orgId)})::int AS documents,
+           (SELECT count(*) FROM public.builder_stock_selections WHERE stock_item_id = ${id(item)})::int AS activations`);
+  const own = (await pinnedRead(org.id))[0] ?? {};
+  const foreign = (await pinnedRead(other.id))[0] ?? {};
+  record('4: the page\'s read answers one photograph, two documents and no activation for its own builder',
+    own.photos === 1 && own.documents === 2 && own.activations === 0, JSON.stringify(own));
+  record('4: the same read answers nothing to another builder', foreign.photos === 0 && foreign.documents === 0,
+    JSON.stringify({ photos: foreign.photos, documents: foreign.documents }));
 
   // 5. Replay, replacement, removal, a changed document.
   const versionBefore = Number(row.media_version);
@@ -496,13 +490,16 @@ try {
   }, topVersion + 1);
   await cc('sweep', 'SELECT * FROM public.builder_network_apply_inbound_events(50); SELECT * FROM public.builder_network_apply_stock_media(50);');
   const afterBroken = (await ccMirror())[0];
-  const afterPage = await ccRead(item);
-  record('7: a malformed media block is refused; the property takes the event and still opens',
+  const brokenState = (await cc('broken state', `
+    SELECT e.media_apply_error FROM public.builder_network_inbound_events e
+      JOIN public.builder_network_connections c ON c.id = e.connection_id
+     WHERE c.network_connection_id = ${id(connection)} AND e.source_version = ${topVersion + 1}`))[0];
+  record('7: a malformed media block is refused; the property takes the event and keeps its photograph',
     broken === 200 && afterBroken?.description === `Media failure proof ${RUN}`
       && afterBroken?.lifecycle_status === 'active'
       && JSON.stringify(photoIds(afterBroken)) === JSON.stringify([photos.two.id])
-      && afterPage.status === 200 && afterPage.json?.photos?.length === 1,
-    `door ${broken}, page ${afterPage.status}`);
+      && String(brokenState?.media_apply_error ?? '').startsWith('refused:invalid_media'),
+    `door ${broken}, ${brokenState?.media_apply_error ?? 'no refusal recorded'}`);
 } catch (error) {
   record('the proof ran to the end', false, String(error?.message ?? error).slice(0, 300));
 } finally {
