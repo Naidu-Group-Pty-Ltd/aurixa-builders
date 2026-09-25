@@ -18,15 +18,17 @@
  *
  *   Lot 1447 · Nex 20 links the SAME FILE as Lot 1744 · Cura 20B, and Lot
  *   1744 already shows that brochure's photograph. Its digits are swapped
- *   too. Confirming it would put Lot 1744's Cura 20B render on a Nex 20
- *   listing: the same picture on two cards, of a different house.
+ *   too. Confirming it puts Lot 1744's Cura 20B render on a Nex 20 listing:
+ *   the same picture on two cards.
  *
- * So a transposition is a HINT for the builder and never evidence for the
- * product, and the one fact that settles the second case is checked before
- * the choice is offered and again when it is made: another listing in the
- * same stock list already uses that brochure's photograph for the lot the
- * brochure states (`brochureInUseByAnotherProperty`). A listing that merely
- * HAS that lot is a caution the builder is shown, not a refusal
+ * #106 refused the second case. The owner's rule, 25 September 2026: if the
+ * builder wants the photograph in the brochure they linked, it is allowed.
+ * So both are offered, and the fact that distinguishes them — another
+ * listing in the same stock list already shows that brochure's photograph
+ * for the lot it states (`brochureInUseByAnotherProperty`) — is a CAUTION
+ * the builder is shown beside the button and in the dialog, never a
+ * refusal. A transposition is a hint for the builder, never evidence for the
+ * product, and a listing that merely HAS the stated lot is a caution too
  * (`statedLotListing`) — a typo can land on a real lot number.
  *
  * Pure: no IO, no clock. The rows it reads are passed in.
@@ -130,7 +132,7 @@ export function sameDocument(a: string, b: string): boolean {
 
 /**
  * ANOTHER LISTING ALREADY USES THIS BROCHURE'S PHOTOGRAPH, FOR THE LOT IT
- * STATES — the one fact that makes a confirmation wrong rather than risky.
+ * STATES — the fact the builder is told before confirming (never a refusal).
  *
  * All three must hold: the other listing is live, its lot is the lot this
  * brochure's image page states, and ITS stored answer for this very document

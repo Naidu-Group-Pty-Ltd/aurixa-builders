@@ -13,9 +13,11 @@
  *      "Brochure details don't match this property", and the builder is
  *      offered "Use brochure image".
  *   2. A row linking a SIBLING's brochure — one another listing already uses
- *      the photograph of — is not offered the choice, is told which listing
- *      the brochure belongs to, and a confirmation sent anyway is refused
- *      with nothing recorded.
+ *      the photograph of — is offered the choice too, told which listing
+ *      already shows it, and confirming puts that photograph on its card
+ *      while the other listing keeps it (the owner's rule: a builder who
+ *      wants the photograph in the brochure they linked may use it). Undoing
+ *      it takes it off again.
  *   3. Confirming the builder's own brochure puts THAT brochure's photograph
  *      on the card, stamped with the confirmation, with the display checks
  *      applied as for any picture.
@@ -461,27 +463,49 @@ try {
     ownNote?.states === 'Lot 2064' && ownNote?.confirmable === true && !ownNote?.in_use_by,
     JSON.stringify({ states: ownNote?.states, confirmable: ownNote?.confirmable }));
   const siblingNote = mismatchOf(await read(sibling.id));
-  record('4: Lot 3158 is told its brochure is Lot 3185 · Halo 24\'s, and offered nothing',
-    siblingNote?.states === 'Lot 3185' && siblingNote?.confirmable === false
+  record('4: Lot 3158 is told Lot 3185 · Halo 24 already shows its brochure, and offered the choice',
+    siblingNote?.states === 'Lot 3185' && siblingNote?.confirmable === true
       && siblingNote?.in_use_by?.identity === 'Lot 3185 · Halo 24',
     JSON.stringify({ states: siblingNote?.states, confirmable: siblingNote?.confirmable,
       in_use_by: siblingNote?.in_use_by?.identity }));
 
-  // --- 5. A SIBLING'S BROCHURE IS REFUSED AT THE ACT -------------------------
-  const refused = await call('builder-portal-stock', {
+  // --- 5. THE BUILDER MAY USE A BROCHURE ANOTHER LISTING ALREADY SHOWS -------
+  const siblingConfirmed = await call('builder-portal-stock', {
     operation: 'confirm_brochure_image', stock_item_id: sibling.id,
     document_key: siblingNote?.document_key ?? siblingUrl, states: 'Lot 3185',
   }, cookie);
-  const siblingAfter = (await itemsOf(user.orgId)).find((i) => i.id === sibling.id);
-  const siblingConfirmations = await confirmationsOf(sibling.id);
-  record('5: confirming the sibling\'s brochure is refused, naming the listing that uses it',
-    refused.status === 409 && refused.json?.code === 'brochure_in_use'
-      && refused.json?.in_use_by?.identity === 'Lot 3185 · Halo 24',
-    `HTTP ${refused.status} ${refused.json?.code ?? ''} ${refused.json?.in_use_by?.identity ?? ''}`);
-  record('5: and nothing was recorded or moved',
-    siblingConfirmations.length === 0 && siblingAfter?.image_work_stage === sibling.image_work_stage
-      && !siblingAfter?.primary_image_id,
-    `${siblingConfirmations.length} confirmation(s), stage ${siblingAfter?.image_work_stage}`);
+  const siblingConfirmationId = siblingConfirmed.json?.confirmation_id;
+  record('5: confirming the sibling\'s brochure is recorded',
+    siblingConfirmed.status === 200 && !!siblingConfirmationId,
+    `HTTP ${siblingConfirmed.status} ${siblingConfirmed.text.slice(0, 120)}`);
+  if (siblingConfirmationId) {
+    const siblingApplied = await waitFor('the sibling\'s confirmed brochure', async () => {
+      const item = (await itemsOf(user.orgId)).find((i) => i.id === sibling.id);
+      const image = item?.primary_image_id ? await imageOf(item.primary_image_id) : null;
+      return { item, image, done: !!image && TERMINAL.includes(item?.image_work_stage) };
+    });
+    if (!siblingApplied.done) await explainStall(user.orgId, 'the sibling\'s confirmed brochure');
+    record('5: Lot 3158 shows that brochure\'s photograph, stamped with the confirmation',
+      siblingApplied.done === true && siblingApplied.image?.size === SIBLING_PHOTO
+        && siblingApplied.image?.confirmation === siblingConfirmationId
+        && siblingApplied.image?.processing_status === 'ready',
+      `${siblingApplied.image?.size ?? 'no picture'}, after ${Math.round(siblingApplied.ms / 1000)} s`);
+    const ownerNow = (await itemsOf(user.orgId)).find((i) => i.id === owner.id);
+    record('5: Lot 3185 keeps its own photograph',
+      ownerNow?.primary_image_id === owner.primary_image_id,
+      `${owner.primary_image_id} -> ${ownerNow?.primary_image_id ?? 'none'}`);
+    const siblingUndone = await call('builder-portal-stock', {
+      operation: 'undo_brochure_image', stock_item_id: sibling.id,
+      confirmation_id: siblingConfirmationId,
+    }, cookie);
+    const siblingAfter = (await itemsOf(user.orgId)).find((i) => i.id === sibling.id);
+    const ownerAfter = (await itemsOf(user.orgId)).find((i) => i.id === owner.id);
+    record('5: undo takes it off Lot 3158 and leaves Lot 3185 as it was',
+      siblingUndone.status === 200 && !siblingAfter?.primary_image_id
+        && ownerAfter?.primary_image_id === owner.primary_image_id,
+      `HTTP ${siblingUndone.status}, 3158 primary ${siblingAfter?.primary_image_id ?? 'none'}, `
+      + `3185 ${ownerAfter?.primary_image_id === owner.primary_image_id ? 'kept' : 'CHANGED'}`);
+  }
 
   // --- 6. THE BUILDER CONFIRMS THEIR OWN BROCHURE ---------------------------
   const confirmed = await call('builder-portal-stock', {

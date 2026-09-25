@@ -405,12 +405,16 @@ export interface StockDocumentNote {
   document_key?: string;
   /**
    * WHETHER "USE BROCHURE IMAGE" IS OFFERED. On a mismatch alone, and false
-   * wherever the product knows the answer already: the link is not one
-   * document, or another listing already uses this brochure's photograph for
-   * the lot it states (`in_use_by`). See `withConfirmationChoices`.
+   * only where the link is not one document. A brochure another listing
+   * already shows is still offered: the builder decides (`in_use_by`).
    */
   confirmable?: boolean;
-  /** The listing that already uses this brochure's photograph. Refuses the choice. */
+  /**
+   * The listing that already shows this brochure's photograph. A caution the
+   * builder is shown before confirming, never a refusal: the owner's rule is
+   * that a builder who wants the photograph in the brochure they linked may
+   * use it.
+   */
   in_use_by?: ListingReference;
   /** A listing whose lot is the one the brochure states. Cautions, never refuses. */
   stated_lot_listing?: ListingReference;
@@ -470,8 +474,10 @@ export const STOCK_BROCHURE_CONFIRMATION_COPY = {
   confirmedToastTitle: 'Brochure image confirmed',
   confirmedToastBody: (listing: string) =>
     `The image from this brochure will be added to ${listing} shortly.`,
-  inUse: (identity: string) => `This brochure belongs to ${identity} in your stock list, `
-    + 'which already uses its image, so it can\u2019t be used for this property as well.',
+  inUse: (identity: string) => `${identity} in your stock list already shows the image from `
+    + 'this brochure.',
+  inUseDialog: (identity: string) => `${identity} already shows this image. If you continue, `
+    + 'both listings will show it.',
   confirmedBy: (name: string, date: string) =>
     `Brochure image confirmed by ${name}${date ? ` on ${date}` : ''}.`,
   pending: 'Adding the image from the brochure\u2026',
@@ -659,7 +665,7 @@ export function withConfirmationChoices(
       : null;
     return {
       ...note,
-      confirmable: isConfirmableBranch(note.document_key) && !inUse,
+      confirmable: isConfirmableBranch(note.document_key),
       ...(inUse ? { in_use_by: inUse } : {}),
       ...(stated ? { stated_lot_listing: stated } : {}),
     };

@@ -56,13 +56,15 @@ describe('which mismatch offers "Use brochure image"', () => {
     expect(note.stated_lot_listing).toBeUndefined();
   });
 
-  it('refuses it where another listing already uses the brochure, and names that listing', () => {
+  it('still offers it where another listing already shows the brochure, and names that listing', () => {
+    // The owner's rule: a builder who wants the photograph in the brochure
+    // they linked may use it. The listing that already shows it is a caution.
     const [note] = withConfirmationChoices([mismatch(SIBLING, 'Lot 3185')], {
       stockItemId: 'item-3158', suburb: 'Wattlebank', listings,
     });
-    expect(note.confirmable).toBe(false);
+    expect(note.confirmable).toBe(true);
     expect(note.in_use_by).toEqual({ stock_item_id: 'item-3185', identity: 'Lot 3185 · Halo 24' });
-    // The refusal already names the listing; a caution beside it would repeat it.
+    // The in-use caution already names the listing; a second caution would repeat it.
     expect(note.stated_lot_listing).toBeUndefined();
   });
 

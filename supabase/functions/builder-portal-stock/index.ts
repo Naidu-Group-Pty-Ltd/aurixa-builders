@@ -2141,11 +2141,7 @@ Deno.serve(async (req) => {
         const status = outcome.code === 'invalid' || outcome.code === 'not_confirmable' ? 400
           : outcome.code === 'unavailable' ? 503
             : 409;
-        return json({
-          error: outcome.message,
-          code: outcome.code,
-          ...('in_use_by' in outcome && outcome.in_use_by ? { in_use_by: outcome.in_use_by } : {}),
-        }, status);
+        return json({ error: outcome.message, code: outcome.code }, status);
       }
 
       await logBuilderProjectActivity(supabase, req, {
