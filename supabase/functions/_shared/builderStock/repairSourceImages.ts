@@ -168,6 +168,12 @@ export interface RepairOutcome {
   documentRead?: 'written' | 'kinds' | 'reused';
   /** Kinds this run learned, when it learned any. */
   kindsLearned?: number;
+  /**
+   * Properties this run owed a package recovery it had no room to start, and
+   * handed to the per-item ladder instead. One owed and not handed stays owed.
+   * See `handOwedPropertiesToLadder`.
+   */
+  handedToLadder?: number;
 }
 
 interface ExistingItem {
@@ -293,9 +299,109 @@ const MAX_PACKAGE_RECOVERIES_PER_RUN = 1;
  * to place. Fitted to the production kills: a recovery that began around ten
  * seconds in ran the invocation to twenty-two. Ten seconds of headroom means
  * the run declines the bet instead of losing it, reports `incomplete`, and the
- * next tick takes it with a full budget.
+ * recovery goes where a whole budget is: the next claim, for a run scoped to
+ * one property, and the item ladder for an upload-wide run — whose next tick
+ * would otherwise spend the same preamble and decline it again (see
+ * `handOwedPropertiesToLadder`).
  */
-const PACKAGE_RECOVERY_RESERVE_MS = 10_000;
+export const PACKAGE_RECOVERY_RESERVE_MS = 10_000;
+
+/**
+ * GIVE THE LADDER WHAT THE SWEEP HAD NO ROOM FOR.
+ *
+ * The same act as a supplied picture's requeue (`attachBuilderImage`) and a
+ * provenance bump's reopen: back to `source`, due now, the failure and
+ * attempt counters cleared because the watchdog escalates on them. Then the
+ * kick, so a worker starts now rather than at the next minute.
+ *
+ * ONLY WHERE THE LADDER WILL DO THIS UPLOAD'S WORK. The ladder works a
+ * property against `sourceWorkUploadId` — its pending upload where it has
+ * one, else its own — while this sweep matches rows against the
+ * organisation's whole stock. A property whose source work is another list's
+ * would re-read that list, answer nothing this sweep owes, and be handed back
+ * on every sweep. It is left owed, exactly as it was before this existed.
+ *
+ * ONLY A PROPERTY THE LADDER HAS SETTLED. The stage is compared and set in the
+ * same statement, so one it is working now is left to finish, and one it
+ * concluded `failed` — which a person has been told about — is not reopened
+ * by a background sweep. Nothing else is written: no picture, no primary, no
+ * lifecycle, no answer. The card keeps drawing what it draws until the
+ * ladder's replacement is displayable (see the re-audit's pointer rule).
+ *
+ * IT CONVERGES because the ladder asks the same question of the same property
+ * with a whole budget: each recovery either answers its branch at the current
+ * version or counts towards that branch's bounded retirement, so a property
+ * handed over is owed only until its branches are answered.
+ */
+async function handOwedPropertiesToLadder(
+  db: any,
+  input: { organisationId: string; uploadId: string; itemIds: string[] },
+): Promise<number> {
+  const now = new Date().toISOString();
+  let handed = 0;
+  for (let index = 0; index < input.itemIds.length; index += STAGE1_CHUNK) {
+    const chunk = input.itemIds.slice(index, index + STAGE1_CHUNK);
+    /*
+     * `sourceWorkUploadId(item) === uploadId`, as two statements rather than
+     * one `.or()` string: a pending replacement of THIS list, or no pending
+     * upload and this list's own.
+     */
+    const ownedHere = [
+      (query: any) => query.eq('pending_upload_id', input.uploadId),
+      (query: any) => query.is('pending_upload_id', null).eq('upload_id', input.uploadId),
+    ];
+    for (const owned of ownedHere) {
+      const { data, error } = await owned(db.from('builder_stock_items')
+        .update({
+          image_work_stage: 'source',
+          image_work_claim_until: null,
+          image_work_next_attempt_at: now,
+          image_work_failures: 0,
+          image_work_attempts: 0,
+          image_work_updated_at: now,
+        })
+        .eq('organisation_id', input.organisationId)
+        .in('id', chunk)
+        .eq('image_work_stage', 'settled')
+        .in('lifecycle_status', PROCESSED_LIFECYCLE))
+        .select('id');
+      if (error) {
+        // Unhanded means still owed: the next sweep finds it again.
+        console.warn('[builderStock] owed properties not handed to the item ladder', {
+          phase: 'source_settlement_handover',
+          upload_id: input.uploadId,
+          message: String((error as { message?: string })?.message ?? error).slice(0, 200),
+        });
+        continue;
+      }
+      handed += (data ?? []).length;
+    }
+  }
+  if (handed > 0) {
+    // Never fatal: the properties are queued, and the minute tick reaches the
+    // same queue. A failed kick costs latency, never work.
+    try {
+      const { error: kickError } = await db
+        .rpc('builder_stock_kick_image_work', { p_upload_id: input.uploadId });
+      if (kickError) {
+        console.warn('[builderStock] handed properties queued but the ladder was not kicked', {
+          phase: 'source_settlement_handover',
+          upload_id: input.uploadId,
+          message: String(kickError.message ?? kickError).slice(0, 200),
+        });
+      }
+    } catch { /* the minute tick is the guarantee */ }
+  }
+  console.log('[builderStock] source settlement handed owed properties to the item ladder', {
+    phase: 'source_settlement_handover',
+    upload_id: input.uploadId,
+    // Owed and not handed: another list's source work, a property the ladder
+    // is already working, or one it concluded `failed`. Each stays owed.
+    owed: input.itemIds.length,
+    handed,
+  });
+  return handed;
+}
 
 async function readStage1Images(
   db: any,
@@ -1015,6 +1121,11 @@ export async function repairSourceImagesForUpload(
   /** Rows the DOCUMENT stated, matched or not — see `documentRowCount`. */
   let documentRows = 0;
   const touched = new Set<string>();
+  /**
+   * Owed a package recovery this run had no room to start. Offered to the
+   * item ladder, and never re-audited here. See the reserve below.
+   */
+  const recoveryDeferred = new Set<string>();
   // A card whose picture a lapsed confirmation supplied is re-chosen below.
   for (const itemId of lapsed.withdrawnFrom) touched.add(itemId);
   /**
@@ -1509,6 +1620,33 @@ export async function repairSourceImagesForUpload(
     if (input.deadlineAt
       && Date.now() + PACKAGE_RECOVERY_RESERVE_MS > input.deadlineAt) {
       outcome.incomplete = true;
+      /*
+       * AND THE NEXT TICK MUST ACTUALLY HAVE THE ROOM. Declining the bet is
+       * right; "the next tick takes it with a full budget" was the other half
+       * of the rule, and it is only true when the time before the first
+       * recovery is short. It is not for a linked Google Sheet, whose rows are
+       * re-read live, beside the organisation's whole stock, before the first
+       * one is reached.
+       *
+       * PRODUCTION, 24 SEPTEMBER 2026, upload `7d5b8e99`. A provenance bump
+       * left 31 of its 70 properties holding pictures under the old version,
+       * so the sweep owed each of them a recovery; every run spent more than
+       * the two seconds its twelve leave, declined the first, and logged the
+       * same `incomplete` every minute from 12:39 UTC onwards. Nothing was
+       * lost, nothing converged, and the per-item ladder — where every claim
+       * starts with a full budget, and which re-derives a property the same
+       * way — had nothing to do.
+       *
+       * So an upload-wide run that cannot start a recovery it owes offers the
+       * property to the ladder (`handOwedPropertiesToLadder` says which it
+       * takes) and keeps looking for the rest; a run for one property — the
+       * ladder's own — stops as it always did. A run that has the room
+       * behaves exactly as before.
+       */
+      if (!input.onlyItemId) {
+        recoveryDeferred.add(itemId);
+        continue;
+      }
       break;
     }
 
@@ -2045,6 +2183,14 @@ export async function repairSourceImagesForUpload(
     for (const itemId of itemIdsInOrder) touched.add(itemId);
   }
 
+  if (recoveryDeferred.size) {
+    outcome.handedToLadder = await handOwedPropertiesToLadder(db, {
+      organisationId: input.organisationId,
+      uploadId: upload.id,
+      itemIds: [...recoveryDeferred],
+    });
+  }
+
   /**
    * RE-AUDIT. Every stage-1 row already on a property this run matched is
    * checked against what the source actually says now. A row written before
@@ -2100,6 +2246,11 @@ export async function repairSourceImagesForUpload(
   }
   const pointedNow = await readPrimaryImageIds(db, [...new Set(itemIdsInOrder)]);
   for (const itemId of new Set(itemIdsInOrder)) {
+    // A property whose recovery this run did not start is not re-audited
+    // here: a run that did not look is not a run that found nothing. Whoever
+    // starts it — the ladder, or a later sweep with the room — re-audits it
+    // with the proof.
+    if (recoveryDeferred.has(itemId)) continue;
     const proven = provenByItem.get(itemId) ?? new Set<string>();
 
     for (const row of stage1ByItem.get(itemId) ?? []) {

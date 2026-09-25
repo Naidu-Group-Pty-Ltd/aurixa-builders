@@ -812,8 +812,9 @@ export async function settleUploadSourceImages(
      * marker that never advances was the only evidence either way, and it
      * cannot tell an operator whether the repair is progressing, stuck, or
      * never running. It is progressing if `rowsRead` climbs and
-     * `imagesStored` is non-zero; it is stuck if this line repeats with the
-     * same numbers.
+     * `imagesStored` is non-zero, or if it handed properties to the item
+     * ladder (`handed_to_ladder`: a recovery it owed and had no room to
+     * start); it is stuck if this line repeats with the same numbers.
      */
     console.warn('[builderStock] source image settlement incomplete', {
       upload_id: input.uploadId,
@@ -829,6 +830,7 @@ export async function settleUploadSourceImages(
       // wrong.
       package_not_identified: repair.packageNotIdentified,
       package_already_answered: repair.packageAlreadyAnswered,
+      handed_to_ladder: repair.handedToLadder ?? 0,
     });
     return {
       uploadId: input.uploadId, settled: false, eligibilitySettled, repair, eligibility,

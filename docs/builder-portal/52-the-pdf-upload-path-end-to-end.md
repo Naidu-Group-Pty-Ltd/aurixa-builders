@@ -1888,3 +1888,102 @@ of the new unit cases fail and the other 33 are guards both sides pass, and the
 sheet imports five properties of which four get no photograph, with the
 product's own refusal reading `Its first page reads "Lot 220 — LOT 212, 213,
 214,"` — the production sentence, word for word.
+
+## 24 · A version bump reaches a card that already shows a picture (the upload sweep's reserve)
+
+**Found 25 September 2026, in the settler's own logs, while proving §23 on the
+live product.** From 12:39 UTC on 24 September every settler tick logged the
+same line for one upload, a linked Google Sheet of 70 properties — `source image
+settlement incomplete`, `rows_read: 70`, `matched: 0`, `images_stored: 0` —
+which `settleSourceImages.ts` itself defines as stuck. Its properties were
+published with photographs. What never finished was the upload-level repair, and
+while it did not, the minute tick kept paying for it.
+
+`upload-settlement-state` (read-only, the pipeline's own rules at the deployed
+versions) named the rows: 37 properties ready at provenance 27, and 31 holding
+their pictures, and their brochures' answers, at 26 — each one `active/settled`,
+each one showing its picture, each one owed a package recovery by the
+upload-level repair.
+
+**Why nothing moved.** §23's migration reopens the PICTURELESS properties only;
+re-deriving one that already shows a picture is the upload sweep's job. The
+sweep runs once the item queue has drained, under a budget of its own
+(`PROVENANCE_BUDGET_MS`, 12 s), and holds 10 of those seconds back before it
+starts a package recovery (`PACKAGE_RECOVERY_RESERVE_MS`), because a recovery
+cannot be interrupted once begun — the rule of 27 August, when a run that tested
+its deadline at ten seconds ended at twenty-two to twenty-four with nothing
+stored. The rule's comment promised that "the next tick takes it with a full
+budget". For this upload that was never true: the live re-read of the sheet,
+beside a read of the organisation's whole stock, took more than the two seconds
+left before the first recovery on every tick, so every tick declined the first
+recovery it owed — and the next tick was the same tick. Nothing was lost,
+because the card's standing picture outlives its own re-derivation (the re-audit
+moves the pointer first and spares the row still drawing the card), and nothing
+converged. The per-item ladder, where every claim starts with a full budget and
+which calls the same repair for one property, had nothing to do.
+
+**The fix is the other half of the reserve rule.** Declining a recovery the run
+has no room to finish is still right. An upload-wide run that declines one now
+OFFERS THE PROPERTY TO THE LADDER — the act a supplied picture's requeue and a
+bump's reopen already perform: back to `source`, due now, the failure and
+attempt counters cleared, then `builder_stock_kick_image_work` — and keeps
+looking for the rest. A run scoped to one property (the ladder's own) stops as
+it always did, and a run that has the room behaves exactly as before. The
+`incomplete` line now carries `handed_to_ladder`, and a
+`source_settlement_handover` line says how many were owed and how many were
+taken.
+
+Three kinds of property are never taken, each compared and set in the one
+statement that moves the stage:
+
+- **One whose source work is another list's.** The sweep matches rows against
+  the organisation's whole stock, while the ladder works a property against
+  `sourceWorkUploadId` — its pending upload where it has one. Handed over, such
+  a property would be asked of the other list, answered nowhere, and handed back
+  on every sweep. Written as two statements, never an `.or()` string.
+- **One the ladder is working now** (the stage must still be `settled`), so a
+  claim in flight is never reset under itself.
+- **One the ladder concluded `failed`**, which a person has been told about. A
+  background sweep does not reopen it.
+
+Each of those stays owed, exactly as before this existed. And a property whose
+recovery the run did not start is **not re-audited** by that run: a run that did
+not look is not a run that found nothing, so none of its older pictures is
+demoted until whoever does the recovery — the ladder, or a later sweep with the
+room — re-audits it with the proof.
+
+It converges because the ladder asks the same question of the same property with
+a whole budget: each recovery either answers its branch at the current version
+or counts towards that branch's bounded retirement (`MAX_PACKAGE_ATTEMPTS`), so
+a property taken is owed only until its branches are answered. A property with
+three branches open takes three claims — one recovery per run — and a claim that
+answers "no image here" backs off at the ladder's ordinary 30 s × 2ⁿ, the path
+every newly imported property already takes.
+
+**Held out first** (invariant 7j,
+`a-version-bump-reaches-cards-that-already-show-a-picture`). The corpus sheet
+`heldout-a-row-whose-brochure-is-linked-by-a-long-signed-address` is imported
+and settled, then put in exactly the state a bump leaves — every answer and
+every picture one provenance version behind, the upload's marker behind — and
+swept in a window no recovery may start in: half the reserve, read from the
+product. Against the code before the change the gate failed on that invariant
+alone, with the production line reproduced: four rounds, `settled: false`, no
+ladder claim, the marker still 26. The invariant then gives one property another
+list's pending upload for one sweep, and asks that it be left settled and owed
+while its sibling is taken (`handedToLadder` exactly 1), and that the rounds
+still converge with the first property already in the ladder. Against this
+change without that guard the gate failed on the guard alone — the first sweep
+took both properties (`handed: 2`) and moved the other list's to `source` —
+while the bump itself converged in two rounds: eight ladder claims, the marker
+at 27, no card blanked, both photographs at their own sizes.
+
+**Named rather than hidden.** The same shape exists one step earlier. A row's
+OWN image links, as opposed to its packages, are restored under the plain
+deadline with no reserve (`Date.now() > deadlineAt`), and a source whose read
+alone spends the whole twelve seconds would stop there before its first restore.
+It has not been observed — this upload's rows carry no images of their own
+(`matched: 0`) — and it would read, on the same line, as `images_stored: 0` with
+`handed_to_ladder: 0`. It is deliberately not extended here: handing row
+restores over would move a whole bump's row-image re-derivation onto the ladder,
+where for a linked sheet or a Notion page every claim re-reads the live source,
+and for Notion the limit that binds is the provider's rate, not our budget.
