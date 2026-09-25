@@ -476,6 +476,11 @@ function text(value: unknown, max = 500): string | null {
   return trimmed.slice(0, max);
 }
 
+/** Whether `text` ended this cell before the cell did. */
+function cellWasCut(value: unknown, read: string): boolean {
+  return String(value).replace(/\s+/g, ' ').trim().length > read.length;
+}
+
 /**
  * A number, from whatever a spreadsheet cell contains. "$749,000" is 749000;
  * "3.5" is 3.5; "3+1" is 3 (the leading figure, which is what a "3+1 garage"
@@ -645,14 +650,74 @@ export function coerceAvailability(value: unknown): StockAvailability {
   return 'unknown';
 }
 
+/**
+ * The longest link this product follows, from any column: an image column's
+ * links have always been held to it, and a brochure's are now too.
+ */
+export const MAX_LINK_CHARS = 2000;
+
+/** How much of an unrecognised column's prose the audit record keeps. */
+export const UNMAPPED_PROSE_CHARS = 300;
+
 function coerceUrls(value: unknown): string[] {
   const raw = text(value, 4000);
   if (raw === null) return [];
   const out: string[] = [];
   for (const candidate of raw.split(/[\s,;|]+/)) {
-    if (/^https?:\/\/\S+$/i.test(candidate) && candidate.length <= 2000) out.push(candidate);
+    if (/^https?:\/\/\S+$/i.test(candidate) && candidate.length <= MAX_LINK_CHARS) {
+      out.push(candidate);
+    }
   }
   return out.slice(0, 12);
+}
+
+const LINK_TOKEN = /^https?:\/\//i;
+
+/**
+ * AN UNRECOGNISED CELL KEEPS ITS PROSE CLIPPED AND ITS LINKS WHOLE.
+ *
+ * `unmapped` is two things at once. It is the audit record of what a file
+ * carried that no field took, which is why its prose is clipped. And it is the
+ * only place a row's brochure, flyer or package link is kept: a column of
+ * links is not one this table maps, and `rowSourceBranches` reads the links
+ * back out of it. Clipping served the first and silently broke the second,
+ * because a link is an address and the first 300 characters of an address are
+ * a different address.
+ *
+ * PRODUCTION, 24 SEPTEMBER 2026, production-rollout run 36013693485. A
+ * `Brochure URL` column held signed links of about 500 characters. The settler
+ * asked for the 300 it had kept, was refused `InvalidJWT: Invalid Compact JWS`
+ * on every attempt, and the properties went source → fallback → source for as
+ * long as anyone watched, each lap reported as "a fault on our side". A signed
+ * storage link, a pre-signed object-store link and a shared-document link
+ * carrying its parameters all run past 300 as a matter of course.
+ *
+ * So a link is kept whole or not at all, the rule an image column's links
+ * have always had (`MAX_LINK_CHARS`). A cell with no link, or no longer than
+ * the clip, is kept exactly as it always was. Where a cell carries a link and
+ * runs past the clip, its prose is clipped as before and every link in it is
+ * kept whole, in order. A link longer than the bound is left out, and so is
+ * one the cell's own read ended (`cutByRead`): the start of a link is never
+ * kept as if it were one.
+ */
+export function keptUnmappedCell(raw: string, cutByRead = false): string {
+  if (!/https?:\/\//i.test(raw)) return raw.slice(0, UNMAPPED_PROSE_CHARS);
+  const tokens = raw.split(' ');
+  const kept: string[] = [];
+  let prose = 0;
+  tokens.forEach((token, i) => {
+    if (LINK_TOKEN.test(token)) {
+      const endedByRead = cutByRead && i === tokens.length - 1;
+      if (!endedByRead && token.length <= MAX_LINK_CHARS) kept.push(token);
+      return;
+    }
+    const room = UNMAPPED_PROSE_CHARS - prose;
+    if (room <= 0) return;
+    const word = token.slice(0, room);
+    prose += word.length + 1;
+    kept.push(word);
+  });
+  return kept.join(' ');
 }
 
 // ---------------------------------------------------------------------------
@@ -709,9 +774,12 @@ export function normaliseStockRow(
 
     if (field === null) {
       // Kept, not dropped: the audit record shows what the file carried that
-      // we did not place, which is how the alias table grows.
+      // we did not place, which is how the alias table grows. Its links are
+      // kept whole: see `keptUnmappedCell`.
       const key = String(header).slice(0, 80);
-      if (Object.keys(record.unmapped).length < 40) record.unmapped[key] = raw.slice(0, 300);
+      if (Object.keys(record.unmapped).length < 40) {
+        record.unmapped[key] = keptUnmappedCell(raw, cellWasCut(value, raw));
+      }
       continue;
     }
 
@@ -746,7 +814,9 @@ export function normaliseStockRow(
            * record that is kept for precisely this.
            */
           const key = String(header).slice(0, 80);
-          if (Object.keys(record.unmapped).length < 40) record.unmapped[key] = raw.slice(0, 300);
+          if (Object.keys(record.unmapped).length < 40) {
+            record.unmapped[key] = keptUnmappedCell(raw, cellWasCut(value, raw));
+          }
           break;
         }
         if (combined.bedrooms !== null) record.bedrooms ??= combined.bedrooms;
