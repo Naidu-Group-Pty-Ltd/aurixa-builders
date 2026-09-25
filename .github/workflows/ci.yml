@@ -37,6 +37,12 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y -q postgresql-client
       - name: baseline check
         run: npm run db:baseline:check
+      # The media block a property carries across the network is composed in
+      # SQL and its document links must be the ones the portal's TypeScript
+      # lists. Both, and the photographs it may send, are proved against a
+      # database rebuilt the same way as above.
+      - name: a property's media crosses the network intact
+        run: npm run db:media-contract:check
 
   edge:
     name: edge functions typecheck + gates

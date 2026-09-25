@@ -10,6 +10,7 @@
   "scripts": {
     "db:baseline:build": "node scripts/db/build-baseline.mjs",
     "db:baseline:check": "node scripts/db/baseline-check.mjs",
+    "db:media-contract:check": "node --experimental-strip-types --no-warnings scripts/db/media-contract-check.ts",
     "typecheck:edge": "deno check --config supabase/functions/deno.json supabase/functions/builder-*/index.ts",
     "security:portal": "node scripts/portal/security-check.mjs",
     "check:verify-jwt": "node scripts/security/check-verify-jwt-declared.mjs",
