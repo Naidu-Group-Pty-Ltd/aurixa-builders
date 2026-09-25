@@ -437,7 +437,12 @@ BEGIN
   IF v_reason IS NULL THEN
     SELECT * INTO v_existing FROM public.builder_agency_messages WHERE id = v_message_id;
     IF v_existing.id IS NOT NULL
-       AND (v_existing.conversation_id <> v_conversation_id OR v_existing.side <> 'command_centre') THEN
+       AND (v_existing.conversation_id <> v_conversation_id OR v_existing.side <> 'command_centre'
+            -- A message id is bound to what it said: a redelivery or retry that
+            -- changes the words, the name or the time is not this message.
+            OR v_existing.body <> v_body
+            OR v_existing.sender_display_name <> left(v_name, 200)
+            OR v_existing.sent_at <> v_sent) THEN
       v_reason := 'message_conflict';
     END IF;
   END IF;

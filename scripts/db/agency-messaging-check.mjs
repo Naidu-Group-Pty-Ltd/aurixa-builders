@@ -214,6 +214,24 @@ check('a replay and a retry of it converge on one message',
 check('the retry is answered again; the replay is not answered twice',
   outbox(`dedupe_key LIKE 'agency.receipt:${incoming.message_id}:%'`) === '2');
 
+{
+  const original = agencyMessage({ body: 'The original words.' });
+  land(CONN_A, 'agency.message.posted', `agency.message:${original.message_id}:1`, original);
+  sweep();
+  for (const [n, change] of [[2, { body: 'Different words.' }], [3, { sender_display_name: 'Someone Else' }],
+    [4, { sent_at: '2026-09-26T09:00:00.000000Z' }]]) {
+    land(CONN_A, 'agency.message.posted', `agency.message:${original.message_id}:${n}`, { ...original, ...change, generation: n });
+    sweep();
+    check(`a stored message id arriving with a changed ${Object.keys(change)[0]} is refused and answered as refused`,
+      sql(`SELECT message_apply_error FROM public.builder_network_inbound_events
+           WHERE dedupe_key = 'agency.message:${original.message_id}:${n}'`) === 'refused:message_conflict'
+        && outbox(`dedupe_key = 'agency.receipt:${original.message_id}:${n}' AND payload->>'outcome' = 'refused'`) === '1');
+  }
+  check('the stored message is untouched',
+    sql(`SELECT body || '|' || sender_display_name FROM public.builder_agency_messages WHERE id = ${lit(original.message_id)}`)
+      === 'The original words.|Casey Agent');
+}
+
 console.log('\nWhat is refused, and said to be');
 const refusedCases = [
   ['a conversation computed for another workspace connection', agencyMessage({ conversation_id: conversationId(CONN_B, ITEM_A1) }), 'conversation_mismatch'],
