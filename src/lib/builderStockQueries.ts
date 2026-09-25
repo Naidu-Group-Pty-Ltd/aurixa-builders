@@ -73,9 +73,14 @@ function withActingOrganisation(body: Record<string, unknown>): Record<string, u
 async function invoke<T>(body: Record<string, unknown>): Promise<T> {
   const { data, error } = await invokeBuilderFunction<T>('builder-portal-stock', withActingOrganisation(body));
   if (error) {
-    const failure = new Error(error.message) as Error & { code?: string; status?: number };
+    const failure = new Error(error.message) as Error & {
+      code?: string; status?: number; body?: unknown;
+    };
     failure.code = error.code;
     failure.status = error.status;
+    // What the refusal carried besides its words, e.g. the listing an
+    // `in_use_unacknowledged` names.
+    failure.body = data;
     throw failure;
   }
   return data as T;
@@ -571,17 +576,22 @@ export function useSetBuilderStockManualStats() {
  * is that property's although its image page states another lot. The link and
  * the lot are sent exactly as the server showed them — lookup keys, never
  * authority: the server re-reads the stored finding under them and refuses a
- * stale one, and refuses a brochure another listing already uses.
+ * stale one. `acknowledgedInUse` is the listing the builder was shown as
+ * already using this brochure; where the server finds one the builder was
+ * not shown, it names it (`in_use_unacknowledged`) and saves nothing.
  */
 export function useConfirmBrochureImage() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: { stockItemId: string; documentKey: string; states: string }) =>
+    mutationFn: (input: {
+      stockItemId: string; documentKey: string; states: string; acknowledgedInUse: string | null;
+    }) =>
       invoke<{ record: BuilderStockItem | null; confirmation_id: string }>({
         operation: 'confirm_brochure_image',
         stock_item_id: input.stockItemId,
         document_key: input.documentKey,
         states: input.states,
+        acknowledged_in_use: input.acknowledgedInUse,
       }),
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: builderStockKeys.root() }); },
   });

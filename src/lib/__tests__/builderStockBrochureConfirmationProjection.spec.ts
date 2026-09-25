@@ -16,6 +16,7 @@ import {
 import {
   keepStanding, standingUnderConfirmations, isMissingConfirmationsTable, confirmationsByItem,
 } from '../../../supabase/functions/_shared/builderStock/brochureConfirmation';
+import { inUseAcknowledged } from '../../../supabase/functions/_shared/builderStock/brochureConfirmation.pure';
 import {
   electionProtocolFor, OLDEST_PDF_ELECTION_PROTOCOL, PDF_ELECTION_PROTOCOL,
 } from '../../../supabase/functions/_shared/builderStock/pdfElectionBoundary.pure';
@@ -34,6 +35,23 @@ const mismatch = (key: string, states: string): StockDocumentNote => ({
 });
 
 const recovered = { result: 'image_recovered', provenance_version: 27 };
+
+describe('a builder confirms a brochure another listing shows only once told', () => {
+  const shows = { stock_item_id: 'item-3185', identity: 'Lot 3185 · Halo 24' };
+
+  it('needs no acknowledgement where no other listing shows it', () => {
+    expect(inUseAcknowledged(null, null)).toBe(true);
+    expect(inUseAcknowledged(null, 'item-3185')).toBe(true);
+  });
+
+  it('is told only by being shown THAT listing', () => {
+    expect(inUseAcknowledged(shows, 'item-3185')).toBe(true);
+    expect(inUseAcknowledged(shows, null)).toBe(false);
+    expect(inUseAcknowledged(shows, undefined)).toBe(false);
+    expect(inUseAcknowledged(shows, '')).toBe(false);
+    expect(inUseAcknowledged(shows, 'item-9999')).toBe(false);
+  });
+});
 
 describe('which mismatch offers "Use brochure image"', () => {
   const listings = [

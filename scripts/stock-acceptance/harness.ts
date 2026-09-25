@@ -999,9 +999,29 @@ async function exerciseConfirmation(entry: any, uploadId: string, items: any[]) 
       }
     };
 
+    /*
+     * A builder who was never shown the listing already using this brochure
+     * has not been told, so the act refuses until they have. The page's
+     * reading may have missed it (a failed read, a listing that took the
+     * photograph after the page loaded); the act re-reads, names it, and asks.
+     */
+    if (shown?.in_use_by) {
+      const unwarned = await module.confirmBrochureImage(db, {
+        organisationId: org.id, stockItemId: target.id,
+        documentReference: note.document_key, states: note.states, actor,
+      });
+      if (unwarned?.ok !== false || unwarned?.code !== 'in_use_unacknowledged'
+        || unwarned?.in_use_by?.stock_item_id !== shown.in_use_by.stock_item_id) {
+        fail(entry, `lot ${ask.lot_number} was confirmed without the builder being told `
+          + `${shown.in_use_by.identity} shows it: ${JSON.stringify(unwarned)}`);
+        continue;
+      }
+      await siblingKept('when an unwarned confirmation was refused');
+    }
     const answer = await module.confirmBrochureImage(db, {
       organisationId: org.id, stockItemId: target.id,
       documentReference: note.document_key, states: note.states, actor,
+      acknowledgedInUse: shown?.in_use_by?.stock_item_id ?? null,
     });
     const step: any = { lot: ask.lot_number, confirmed: answer };
     out.confirms.push(step);

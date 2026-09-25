@@ -2107,9 +2107,10 @@ Deno.serve(async (req) => {
      * The page sends the link and the lot it showed the builder, and both are
      * lookup keys: the act re-reads the stored refusal under that link and
      * refuses unless it is still the mismatch stating that lot, and re-reads
-     * the organisation's listings to refuse a brochure another listing
-     * already uses the photograph of. Editing stock is the permission, the
-     * same one "Add picture" asks for. See `brochureConfirmation.ts`.
+     * the organisation's listings: a brochure another listing already shows
+     * is allowed, but only once the builder has been shown that listing
+     * (`acknowledged_in_use`). Editing stock is the permission, the same one
+     * "Add picture" asks for. See `brochureConfirmation.ts`.
      */
     if (operation === 'confirm_brochure_image' || operation === 'undo_brochure_image') {
       if (!await can('edit')) {
@@ -2129,6 +2130,7 @@ Deno.serve(async (req) => {
             ? body.document_key.slice(0, 2048) : '',
           states: cleanText(body.states, 40),
           actor,
+          acknowledgedInUse: cleanText(body.acknowledged_in_use, 64) || null,
         })
         : await undoBrochureImage(supabase, {
           organisationId: activeOrganisationId,
@@ -2141,7 +2143,11 @@ Deno.serve(async (req) => {
         const status = outcome.code === 'invalid' || outcome.code === 'not_confirmable' ? 400
           : outcome.code === 'unavailable' ? 503
             : 409;
-        return json({ error: outcome.message, code: outcome.code }, status);
+        return json({
+          error: outcome.message,
+          code: outcome.code,
+          ...('in_use_by' in outcome && outcome.in_use_by ? { in_use_by: outcome.in_use_by } : {}),
+        }, status);
       }
 
       await logBuilderProjectActivity(supabase, req, {

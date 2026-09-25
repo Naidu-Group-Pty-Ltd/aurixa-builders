@@ -13,8 +13,11 @@
  * choice is still offered — the owner's rule is that a builder who wants the
  * photograph in the brochure they linked may use it — and that listing is
  * named beside the button and again in the dialog, so nobody puts one house
- * on two cards without being told. A transposition is said as a possibility,
- * never a conclusion.
+ * on two cards without being told. Where the page did not know — a read that
+ * failed, a listing that took the photograph since — the server names it
+ * (`in_use_unacknowledged`), the dialog stays open saying so, and the next
+ * press confirms knowing. A transposition is said as a possibility, never a
+ * conclusion.
  *
  * Every word is `STOCK_BROCHURE_CONFIRMATION_COPY`, the same copy the server's
  * refusals are written beside, and nothing here decides anything the server
@@ -40,6 +43,17 @@ import {
 } from '../../../supabase/functions/_shared/builderStock/brochureConfirmation.pure';
 
 type Note = NonNullable<BuilderStockItem['source_document_notes']>[number];
+type ListingReference = NonNullable<Note['in_use_by']>;
+
+/** The listing an `in_use_unacknowledged` refusal names, if that is what this is. */
+function unacknowledgedInUse(error: unknown): ListingReference | null {
+  const failure = error as { code?: unknown; body?: { in_use_by?: unknown } } | null;
+  if (failure?.code !== 'in_use_unacknowledged') return null;
+  const named = failure.body?.in_use_by as Partial<ListingReference> | undefined;
+  return named?.stock_item_id && named.identity
+    ? { stock_item_id: String(named.stock_item_id), identity: String(named.identity) }
+    : null;
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error && error.message ? error.message : 'Please try again shortly.';
@@ -62,9 +76,12 @@ export function BrochureImageChoice({
   const { toast } = useToast();
   const confirm = useConfirmBrochureImage();
   const [open, setOpen] = useState(false);
+  // A listing the server named at the act that the page had not shown.
+  const [namedAtAct, setNamedAtAct] = useState<ListingReference | null>(null);
 
   if (!note.confirmable || !note.document_key || !note.states) return null;
-  const inUseBy = note.in_use_by?.identity ?? null;
+  const inUse = namedAtAct ?? note.in_use_by ?? null;
+  const inUseBy = inUse?.identity ?? null;
 
   const statedLot = confirmedLotOf(note.states);
   const transposed = lotsShareDigits(String(item.lot_number ?? '').trim(), statedLot);
@@ -105,16 +122,26 @@ export function BrochureImageChoice({
               onClick={(event) => {
                 event.preventDefault();
                 confirm.mutate(
-                  { stockItemId: item.id, documentKey: note.document_key!, states: note.states! },
+                  {
+                    stockItemId: item.id, documentKey: note.document_key!, states: note.states!,
+                    acknowledgedInUse: inUse?.stock_item_id ?? null,
+                  },
                   {
                     onSuccess: () => {
                       setOpen(false);
+                      setNamedAtAct(null);
                       toast({
                         title: COPY.confirmedToastTitle,
                         description: COPY.confirmedToastBody(listing),
                       });
                     },
                     onError: (error) => {
+                      const named = unacknowledgedInUse(error);
+                      if (named) {
+                        // Not a failure: the builder is told, here, and decides.
+                        setNamedAtAct(named);
+                        return;
+                      }
                       setOpen(false);
                       toast({
                         title: 'The brochure image could not be used',

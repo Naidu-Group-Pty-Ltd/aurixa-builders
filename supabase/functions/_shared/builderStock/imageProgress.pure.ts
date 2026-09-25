@@ -635,9 +635,11 @@ export function brochureConfirmationStates(
  *
  * `listings` are the organisation's live listings whose lot is one a mismatch
  * states (`readListingsWithLots`). Null means they could not be read: the
- * choice is still offered where the link allows it, because the act re-reads
- * them and refuses there — the page cannot confirm anything the server has
- * not checked — and a caution the product cannot vouch for is left unsaid.
+ * choice is still offered where the link allows it, and a caution the
+ * product cannot vouch for is left unsaid here — the act re-reads them, and
+ * where another listing shows the brochure it names it and asks again
+ * (`in_use_unacknowledged`) rather than saving, so no builder confirms
+ * without having been told.
  */
 export function withConfirmationChoices(
   notes: readonly StockDocumentNote[],

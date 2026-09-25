@@ -159,6 +159,20 @@ export function brochureInUseByAnotherProperty(
 }
 
 /**
+ * HAS THE BUILDER BEEN TOLD? True where no other listing shows the brochure,
+ * or where the listing the builder was shown is the one that does. Asked at
+ * the act: a warning the page missed, or one about a different listing, has
+ * not been given.
+ */
+export function inUseAcknowledged(
+  inUseBy: ListingReference | null,
+  acknowledged: string | null | undefined,
+): boolean {
+  if (!inUseBy) return true;
+  return String(acknowledged ?? '') === inUseBy.stock_item_id;
+}
+
+/**
  * A listing in the same estate or suburb whose lot is the one the brochure
  * states. Shown to the builder before they confirm, never used to refuse: a
  * typing error can land on a lot number that really exists.
