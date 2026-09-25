@@ -32,6 +32,8 @@ const state: {
   everyStale?: boolean;
   /** The server stopped answering new pages before the list was complete. */
   everyTruncated?: boolean;
+  /** A refresh of the first page failed after it had been read once. */
+  firstStale?: boolean;
   /** The conversation's latest poll failed. */
   conversationError?: { message?: string } | null;
 } = { records: [], error: null, loading: false, conversation: null, laterPages: [], everyError: null };
@@ -42,7 +44,7 @@ const refreshed = { firstPage: 0, every: 0 };
 
 vi.mock('@/lib/builderStockQueries', () => ({
   useBuilderActivatedProperties: () => ({
-    data: state.error ? undefined : { records: state.records, pagination: { page: 1, page_size: 25, total: state.records.length, total_pages: 1 } },
+    data: state.error && !state.firstStale ? undefined : { records: state.records, pagination: { page: 1, page_size: 25, total: state.records.length, total_pages: 1 } },
     error: state.error,
     isLoading: state.loading,
     isFetching: false,
@@ -50,9 +52,9 @@ vi.mock('@/lib/builderStockQueries', () => ({
   }),
   useRefreshEveryBuilderActivatedProperty: () => async () => { refreshed.every += 1; },
   useEveryBuilderActivatedProperty: () => ({
-    data: state.error || (state.everyError && !state.everyStale) ? undefined
+    data: (state.error && !state.firstStale) || (state.everyError && !state.everyStale) ? undefined
       : { records: [...state.records, ...state.laterPages], truncated: !!state.everyTruncated },
-    error: state.error ?? state.everyError,
+    error: (state.firstStale ? null : state.error) ?? state.everyError,
     isLoading: state.loading,
     refetch: vi.fn(async () => { refreshed.every += 1; }),
   }),
@@ -128,6 +130,7 @@ beforeEach(() => {
   state.everyStale = false;
   state.everyTruncated = false;
   state.conversationError = null;
+  state.firstStale = false;
   state.records = [];
   state.error = null;
   state.loading = false;
@@ -389,6 +392,32 @@ describe('a refresh of the full list that fails', () => {
     expect(screen.getByText(/could not be refreshed/i)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /try again/i }));
     expect(refreshed.every).toBe(1);
+  });
+});
+
+describe('a refresh of the first page that fails after it was read', () => {
+  it('keeps the conversation list on the Messages tab', () => {
+    state.records = [ACTIVATION];
+    state.error = { message: 'first page refresh failed' };
+    state.firstStale = true;
+    renderAt('/builder/agencies/messages');
+    expect(screen.getByRole('listbox', { name: /conversations/i })).toBeTruthy();
+    expect(screen.queryByText(/could not be loaded just now/i)).toBeNull();
+  });
+
+  it('keeps the activations it read and says they may be out of date', () => {
+    state.records = [ACTIVATION];
+    state.error = { message: 'first page refresh failed' };
+    state.firstStale = true;
+    renderAt('/builder/agencies/activations');
+    expect(screen.queryByText(/could not be loaded just now/i)).toBeNull();
+    expect(screen.getByText(/could not be refreshed/i)).toBeTruthy();
+  });
+
+  it('a first read that fails still says so, and a refusal still says access is missing', () => {
+    state.error = { message: 'first read failed' };
+    renderAt('/builder/agencies/messages');
+    expect(screen.getByText(/could not be loaded just now/i)).toBeTruthy();
   });
 });
 

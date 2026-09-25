@@ -83,16 +83,29 @@ export default function BuilderAgencies() {
           </TabsTrigger>
         </TabsList>
 
+        {/* A read that fails blocks the page only when nothing was read:
+            a failed refresh keeps what was read, which is still true and
+            may just be behind. */}
         <TabsContent value="activations" className="mt-6">
-          {query.isLoading ? <Loading /> : query.error ? (
+          {query.isLoading ? <Loading /> : query.error && !query.data ? (
             <ReadFailure denied={denied} onRetry={() => void query.refetch()} />
           ) : (
-            <ActivatedPropertiesList records={records} />
+            <div className="space-y-3">
+              {query.error ? (
+                <div role="status" className="flex flex-wrap items-center gap-2 text-sm text-destructive">
+                  <span>Your activations could not be refreshed. This is the list as last read.</span>
+                  <Button type="button" variant="outline" size="sm" onClick={() => void query.refetch()}>Try again</Button>
+                </div>
+              ) : null}
+              <ActivatedPropertiesList records={records} />
+            </div>
           )}
         </TabsContent>
 
+        {/* The Messages tab reads the full list itself and says when that
+            fails; the first page is only its stand-in while it loads. */}
         <TabsContent value="messages" className="mt-6">
-          {query.isLoading ? <Loading /> : query.error ? (
+          {query.isLoading ? <Loading /> : query.error && !query.data ? (
             <ReadFailure denied={denied} onRetry={() => void query.refetch()} />
           ) : (
             <MessagesShell firstPage={records} />
