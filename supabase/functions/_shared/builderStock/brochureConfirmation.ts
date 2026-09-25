@@ -26,10 +26,14 @@
  *   THE PRODUCT'S DECISIVE CHECK RUNS AT THE ACT. Another live listing already
  *   using the brochure's photograph for the lot it states is re-read from the
  *   database when the builder confirms, not trusted from the page they
- *   clicked on.
+ *   clicked on. It never refuses the builder the photograph (the owner's
+ *   rule); it refuses to proceed until the builder has been TOLD, because the
+ *   page's reading can miss it — a read that failed, or a listing that took
+ *   the photograph after the page loaded.
  */
 import {
-  confirmedLotOf, isConfirmableBranch, listingIdentity, type StockRowForConfirmation,
+  brochureInUseByAnotherProperty, confirmedLotOf, inUseAcknowledged, isConfirmableBranch,
+  listingIdentity, type ListingReference, type StockRowForConfirmation,
 } from './brochureConfirmation.pure.ts';
 import {
   IDENTITY_CONFIRMATION_KEY, type IdentityConfirmationRef,
@@ -296,11 +300,15 @@ export async function readListingsWithLots(
 
 export type BrochureConfirmationRefusal =
   | 'invalid' | 'not_found' | 'busy' | 'finding_changed' | 'not_confirmable'
-  | 'unavailable';
+  | 'in_use_unacknowledged' | 'unavailable';
 
 export type ConfirmBrochureOutcome =
   | { ok: true; id: string; already: boolean }
-  | { ok: false; code: BrochureConfirmationRefusal; message: string };
+  | {
+    ok: false; code: BrochureConfirmationRefusal; message: string;
+    /** `in_use_unacknowledged` only: the listing the builder has to be told about. */
+    in_use_by?: ListingReference;
+  };
 
 export type UndoBrochureOutcome =
   | { ok: true; id: string; imagesWithdrawn: number }
@@ -315,11 +323,16 @@ export const BROCHURE_CONFIRMATION_REFUSALS: Record<BrochureConfirmationRefusal,
     + 'page to see what it says now.',
   not_confirmable: 'Only a link to a single brochure can be confirmed. Link the brochure itself '
     + 'rather than a folder.',
+  in_use_unacknowledged: 'Another listing in your stock list already shows this image. If you '
+    + 'continue, both listings will show it.',
   unavailable: 'That could not be saved just now. Try again in a minute.',
 };
 
-function refused(code: BrochureConfirmationRefusal): ConfirmBrochureOutcome {
-  return { ok: false, code, message: BROCHURE_CONFIRMATION_REFUSALS[code] };
+function refused(
+  code: BrochureConfirmationRefusal,
+  extra: { in_use_by?: ListingReference } = {},
+): ConfirmBrochureOutcome {
+  return { ok: false, code, message: BROCHURE_CONFIRMATION_REFUSALS[code], ...extra };
 }
 
 /**
@@ -337,6 +350,11 @@ export async function confirmBrochureImage(
     documentReference: string;
     states: string;
     actor: { id: string | null; name: string };
+    /**
+     * The listing the builder was shown as already using this brochure
+     * (`in_use_by.stock_item_id`), or null where they were shown none.
+     */
+    acknowledgedInUse?: string | null;
   },
 ): Promise<ConfirmBrochureOutcome> {
   const lot = confirmedLotOf(input.states);
@@ -359,10 +377,23 @@ export async function confirmBrochureImage(
   /*
    * A BROCHURE ANOTHER LISTING ALREADY SHOWS IS NOT REFUSED. #106 refused it
    * (`brochure_in_use`); the owner's rule is that a builder who wants the
-   * photograph in the brochure they linked may use it. The builder is told
-   * which listing already shows it before they confirm (`in_use_by` on the
-   * note), and the photograph still passes every display check.
+   * photograph in the brochure they linked may use it. What IS required is
+   * that they were told: the listings are re-read here, and where one shows
+   * this brochure's photograph and the builder was not shown THAT listing,
+   * the act names it and asks again rather than saving. A read that failed
+   * cannot say, so it saves nothing either.
    */
+  const listings = await readListingsWithLots(db, {
+    organisationId: input.organisationId, lots: [lot],
+  });
+  if (!listings) return refused('unavailable');
+  const inUseBy = brochureInUseByAnotherProperty(listings, {
+    stockItemId: input.stockItemId, documentReference: reference, statedLot: lot,
+  });
+  if (!inUseAcknowledged(inUseBy, input.acknowledgedInUse)) {
+    return refused('in_use_unacknowledged', { in_use_by: inUseBy! });
+  }
+
   const record = ((item.source_provenance_result as { branches?: Record<string, unknown> } | null)
     ?.branches ?? {})[reference] as { finding_evidence?: { quote?: unknown } } | undefined;
   const { data, error } = await db.rpc('builder_stock_confirm_brochure_image', {

@@ -55,6 +55,8 @@ const state = vi.hoisted(() => ({
   held: [] as unknown[],
   confirmCalls: [] as unknown[],
   undoCalls: [] as unknown[],
+  // The next confirmation's refusal, once; null confirms.
+  confirmRefusal: null as unknown,
 }));
 
 vi.mock('@/lib/builderStockQueries', () => {
@@ -97,9 +99,15 @@ vi.mock('@/lib/builderStockQueries', () => {
     useSupplyBuilderStockImage: mutation,
     useConfirmBrochureImage: () => ({
       ...idle,
-      mutate: (vars: unknown, options?: { onSuccess?: () => void }) => {
+      mutate: (
+        vars: unknown,
+        options?: { onSuccess?: () => void; onError?: (error: unknown) => void },
+      ) => {
         state.confirmCalls.push(vars);
-        options?.onSuccess?.();
+        const refusal = state.confirmRefusal;
+        state.confirmRefusal = null;
+        if (refusal) options?.onError?.(refusal);
+        else options?.onSuccess?.();
       },
     }),
     useUndoBrochureImage: () => ({
@@ -463,7 +471,9 @@ describe('the builder may use the brochure image, deliberately', () => {
   it('still offers it where another listing already shows the brochure, and says so twice', () => {
     // The owner's rule: the builder decides. Named beside the button, and
     // again in the dialog, so one house is never put on two cards unannounced.
-    draw([lot1037([{ ...confirmable, in_use_by: { identity: 'Lot 1307 · Nex 20' } } as Note])]);
+    draw([lot1037([{
+      ...confirmable, in_use_by: { stock_item_id: 'item-1307', identity: 'Lot 1307 · Nex 20' },
+    } as Note])]);
     expect(button()).not.toBeNull();
     expect(pageText()).toContain('Lot 1307 · Nex 20 in your stock list already shows the image');
     fireEvent.click(button()!);
@@ -503,8 +513,45 @@ describe('the builder may use the brochure image, deliberately', () => {
     fireEvent.click(within(screen.getByRole('alertdialog'))
       .getByRole('button', { name: 'Confirm and use image' }));
     expect(state.confirmCalls).toEqual([{
-      stockItemId: 'item-1037', documentKey: URL, states: 'Lot 1307',
+      stockItemId: 'item-1037', documentKey: URL, states: 'Lot 1307', acknowledgedInUse: null,
     }]);
+  });
+
+  it('says which listing it was told about, so the server knows the builder was told', () => {
+    state.confirmCalls = [];
+    draw([lot1037([{
+      ...confirmable, in_use_by: { stock_item_id: 'item-1307', identity: 'Lot 1307 · Nex 20' },
+    } as Note])]);
+    fireEvent.click(button()!);
+    fireEvent.click(within(screen.getByRole('alertdialog'))
+      .getByRole('button', { name: 'Confirm and use image' }));
+    expect(state.confirmCalls).toEqual([{
+      stockItemId: 'item-1037', documentKey: URL, states: 'Lot 1307', acknowledgedInUse: 'item-1307',
+    }]);
+  });
+
+  it('where the server finds a listing the page did not show, it is named and asked again', () => {
+    // The page's reading can miss it: a read that failed, or a listing that
+    // took the photograph after the page loaded. Nothing is saved until the
+    // builder has been told, and then the choice is still theirs.
+    state.confirmCalls = [];
+    state.confirmRefusal = Object.assign(new Error('Another listing already shows this image.'), {
+      code: 'in_use_unacknowledged',
+      body: { in_use_by: { stock_item_id: 'item-1307', identity: 'Lot 1307 · Nex 20' } },
+    });
+    draw([lot1037([confirmable])]);
+    fireEvent.click(button()!);
+    const confirmButton = () => within(screen.getByRole('alertdialog'))
+      .getByRole('button', { name: 'Confirm and use image' });
+    fireEvent.click(confirmButton());
+    const dialog = (screen.getByRole('alertdialog').textContent ?? '').replace(/\s+/g, ' ');
+    expect(dialog).toContain('Lot 1307 · Nex 20 already shows this image');
+    fireEvent.click(confirmButton());
+    expect(state.confirmCalls).toEqual([
+      { stockItemId: 'item-1037', documentKey: URL, states: 'Lot 1307', acknowledgedInUse: null },
+      { stockItemId: 'item-1037', documentKey: URL, states: 'Lot 1307', acknowledgedInUse: 'item-1307' },
+    ]);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
   });
 
   it('nothing is confirmed by cancelling', () => {

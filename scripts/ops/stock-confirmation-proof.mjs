@@ -470,9 +470,19 @@ try {
       in_use_by: siblingNote?.in_use_by?.identity }));
 
   // --- 5. THE BUILDER MAY USE A BROCHURE ANOTHER LISTING ALREADY SHOWS -------
+  // Only once told: a confirmation that names no listing is asked again.
+  const unwarned = await call('builder-portal-stock', {
+    operation: 'confirm_brochure_image', stock_item_id: sibling.id,
+    document_key: siblingNote?.document_key ?? siblingUrl, states: 'Lot 3185',
+  }, cookie);
+  record('5: a confirmation made without being told is asked again, naming Lot 3185 · Halo 24',
+    unwarned.status === 409 && unwarned.json?.code === 'in_use_unacknowledged'
+      && unwarned.json?.in_use_by?.identity === 'Lot 3185 · Halo 24',
+    `HTTP ${unwarned.status} ${unwarned.text.slice(0, 160)}`);
   const siblingConfirmed = await call('builder-portal-stock', {
     operation: 'confirm_brochure_image', stock_item_id: sibling.id,
     document_key: siblingNote?.document_key ?? siblingUrl, states: 'Lot 3185',
+    acknowledged_in_use: siblingNote?.in_use_by?.stock_item_id ?? null,
   }, cookie);
   const siblingConfirmationId = siblingConfirmed.json?.confirmation_id;
   record('5: confirming the sibling\'s brochure is recorded',

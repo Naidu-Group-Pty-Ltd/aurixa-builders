@@ -167,9 +167,21 @@ it is allowed.
 - The listing that already shows the photograph is named beside the button
   and again in the dialog ("both listings will show it"), so one house is
   never put on two cards without the builder being told.
-- The server no longer refuses; `brochure_in_use` is gone. Everything else
-  stands: the finding is re-read at the act, the photograph passes every
-  display check, it is stamped with the confirmation, and undo takes it down.
+- The server no longer refuses the photograph; `brochure_in_use` is gone.
+  Everything else stands: the finding is re-read at the act, the photograph
+  passes every display check, it is stamped with the confirmation, and undo
+  takes it down.
+- **Told is checked at the act, not trusted from the page** (a Codex review
+  of #110). The page can miss the listing — its read failed, or the listing
+  took the photograph after the page loaded — and #110 removed the only
+  re-check, so a builder could confirm without ever seeing the warning. The
+  confirm request now carries `acknowledged_in_use`, the listing the builder
+  was shown. The act re-reads the listings, and where one shows the brochure
+  and it is not the one acknowledged, it saves nothing and answers 409
+  `in_use_unacknowledged` naming that listing; the dialog stays open saying
+  so, and the next press confirms knowing. A listings read that fails saves
+  nothing (`unavailable`), because it cannot say. The choice is never taken
+  away — only an uninformed one.
 - The other listing keeps its photograph through the confirmation and the
   undo.
 
