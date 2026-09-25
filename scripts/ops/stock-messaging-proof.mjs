@@ -536,7 +536,12 @@ try {
 
   // Signed deliveries of the proof's own, through the same live doors.
   const deliver = async (door, connectionId, connectionSecret, eventType, payload) => {
-    const rawBody = JSON.stringify({ event_type: eventType, dedupe_key: `${TAG}:${RUN}:${randomUUID()}`, payload, source_version: 1 });
+    // A message envelope carries the key its payload implies, as the door
+    // requires; anything else keeps a run-unique key.
+    const dedupeKey = eventType === 'agency.message.posted' ? `agency.message:${payload?.message_id}:${payload?.generation}`
+      : eventType === 'agency.message.receipt' ? `agency.receipt:${payload?.message_id}:${payload?.generation}`
+      : `${TAG}:${RUN}:${randomUUID()}`;
+    const rawBody = JSON.stringify({ event_type: eventType, dedupe_key: dedupeKey, payload, source_version: 1 });
     const timestamp = String(Math.floor(Date.now() / 1000));
     const response = await fetch(door, {
       method: 'POST',

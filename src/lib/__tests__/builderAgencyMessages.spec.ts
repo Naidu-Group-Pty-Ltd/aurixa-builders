@@ -16,7 +16,7 @@ import {
   agencyMessageRefusal,
   projectAgencyMessages,
 } from '../../../supabase/functions/_shared/builderStock/agencyMessages.pure';
-import { agencyPayloadContractViolation } from '../../../supabase/functions/_shared/builderStock/agencyMessages.pure';
+import { agencyDedupeKeyFor, agencyPayloadContractViolation } from '../../../supabase/functions/_shared/builderStock/agencyMessages.pure';
 import { readAgencyConversation } from '../../../supabase/functions/_shared/builderStock/agencyMessages';
 import {
   AGENCY_CONVERSATION_CLOSED_POLL_MS, AGENCY_CONVERSATION_POLL_MS, agencyConversationPollInterval, collectEveryPage, newClientMessageId, outboundStateLabel, scrollLogToEnd,
@@ -396,5 +396,22 @@ describe('the conversation log', () => {
     scrollLogToEnd(log);
     expect(log.scrollTop).toBe(1840);
     expect(() => scrollLogToEnd(null)).not.toThrow();
+  });
+});
+
+describe('a message envelope\'s dedupe key is bound to its payload', () => {
+  const posted = { schema_version: 1, conversation_id: 'c', message_id: 'm-1', stock_item_id: 'i', body: 'Hi',
+    sender_display_name: 'A', sent_at: '2026-09-25T00:00:00Z', generation: 2 };
+  it('names the key the payload implies, and nothing for other events', () => {
+    expect(agencyDedupeKeyFor('agency.message.posted', posted)).toBe('agency.message:m-1:2');
+    expect(agencyDedupeKeyFor('agency.message.receipt', { message_id: 'm-1', generation: 3 })).toBe('agency.receipt:m-1:3');
+    expect(agencyDedupeKeyFor('stock.selection.announced', { message_id: 'm-1', generation: 1 })).toBeNull();
+  });
+  it('the door refuses a message envelope whose key is not that one, before it stores anything', () => {
+    const door = readCode('supabase/functions/builder-network-inbound/index.ts');
+    const check = door.indexOf('agencyDedupeKeyFor(');
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(door.indexOf(".from('builder_network_inbound_events')"));
+    expect(door).toMatch(/message_dedupe_key_mismatch/);
   });
 });

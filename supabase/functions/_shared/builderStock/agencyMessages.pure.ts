@@ -124,3 +124,15 @@ export function agencyPayloadContractViolation(eventType: string, payload: unkno
     .sort();
   return unexpected.length || missing.length || mistyped.length ? { unexpected, missing, mistyped } : null;
 }
+
+/**
+ * The dedupe key a message envelope must carry, derived from its payload. The
+ * door's duplicate check is a global unique key: bound to the payload, a
+ * reused key can never make a NEW message read as a redelivery of an old one.
+ */
+export function agencyDedupeKeyFor(eventType: string, payload: unknown): string | null {
+  const record = (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>;
+  if (eventType === 'agency.message.posted') return `agency.message:${String(record.message_id)}:${String(record.generation)}`;
+  if (eventType === 'agency.message.receipt') return `agency.receipt:${String(record.message_id)}:${String(record.generation)}`;
+  return null;
+}
