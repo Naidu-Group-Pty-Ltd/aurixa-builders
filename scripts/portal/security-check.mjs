@@ -100,6 +100,9 @@ const EXPECTED_FUNCTIONS = [
     // builder does reaches it, and it writes no builder-visible record other
     // than the ranking it publishes.
     'builder-ranking-recompute',
+    // The figure reader: a cron worker behind verifyInternal exactly like the
+    // settler below, writing only document_figures and empty figure columns.
+    'builder-stock-figure-reader',
     // Cron sweep behind verifyInternal; holds a service-role client and
     // crosses organisations, so it is deliberately not a portal-reachable
     // surface. Declared in config.toml and reviewed in SECURITY_REGISTRY.json,

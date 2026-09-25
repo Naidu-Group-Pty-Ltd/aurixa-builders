@@ -136,10 +136,21 @@ export function documentStanding(
   const designDiffers = !!docDesign && !!ownDesign && docDesign !== ownDesign;
   const confirmed = (property.confirmedLots ?? []).map(lotOf).filter(Boolean);
 
-  if (docLot && ownLot && (docLot === ownLot || confirmed.includes(docLot))) {
+  if (docLot && ownLot && docLot === ownLot) {
     return designDiffers
       ? { standing: 'none', reason: 'states_this_lot_under_another_design' }
       : { standing: 'this_lot', reason: 'states_this_lot' };
+  }
+  /*
+   * A LOT THE BUILDER CONFIRMED is their word that the PHOTOGRAPH is theirs,
+   * and it may be a sibling of another design they chose to show (measured:
+   * Lot 1447 · Nex 20 shows Lot 1744 · Cura 20B's). Its figures are that
+   * design's, so they count only where the document presents THIS design.
+   */
+  if (docLot && confirmed.includes(docLot)) {
+    return !designDiffers && (evidence.presentsDesign || (docDesign && docDesign === ownDesign))
+      ? { standing: 'this_lot', reason: 'states_a_confirmed_lot' }
+      : { standing: 'none', reason: 'confirmed_lot_of_another_design' };
   }
   if (designDiffers) return { standing: 'none', reason: 'another_design' };
   if (evidence.presentsDesign || (docDesign && docDesign === ownDesign)) {

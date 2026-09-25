@@ -99,6 +99,10 @@ verify_jwt = false
 verify_jwt = false
 [functions.builder-stock-image-settler]
 verify_jwt = false
+# Signed internal callers only (verifyInternal), dispatched by its own
+# self-unscheduling cron tick; reads owed properties' figures from their brochures.
+[functions.builder-stock-figure-reader]
+verify_jwt = false
 
 # The inbound Make-scenario callback: authorised by one-time capability
 # tokens minted when this product asked for the recovery, never by a JWT.

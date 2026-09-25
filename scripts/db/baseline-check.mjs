@@ -181,6 +181,7 @@ const ACTIVE_FUNCTION_DIRS = [
   'builder-portal-projects', 'builder-portal-collaboration',
   'builder-network-admin', 'builder-network-connections', 'builder-network-inbound',
   'builder-network-outbox-worker', 'builder-stock-image-settler', 'builder-stock-link-callback',
+  'builder-stock-figure-reader',
 ];
 const ACTIVE_SHARED = [
   'builderPortalAuth.ts', 'builderSessions.ts', 'authRateLimit.ts',
