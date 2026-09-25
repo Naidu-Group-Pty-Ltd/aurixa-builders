@@ -3468,6 +3468,89 @@ sheet_fixture(
         )))
 
 
+# A ROW WHOSE BROCHURE IS LINKED BY A LONG SIGNED ADDRESS.
+#
+# MEASURED 24 SEPTEMBER 2026, production-rollout run 36013693485. A stock
+# list's `Brochure URL` cells held signed links of about five hundred
+# characters, and every request the settler made for them was refused 400
+# `InvalidJWT: Invalid Compact JWS` — for an address exactly 300 characters
+# long. An unrecognised column keeps 300 characters of its cell, a brochure
+# column is unrecognised, and the first 300 characters of an address are a
+# different address. The properties went source → fallback → source for as
+# long as anyone watched, each lap reported as "a fault on our side".
+#
+# A signed storage link and a pre-signed object-store link are how a builder's
+# own systems share a file they do not make public, and both run past 300
+# characters as a matter of course. Invented hosts, invented signatures. The
+# harness answers each document at its EXACT address and at nothing else, so
+# a link that lost one character is a link nothing answers — as in production.
+def _b64url(raw):
+    import base64
+    return base64.urlsafe_b64encode(raw).rstrip(b'=').decode()
+
+
+def signed_storage_link(object_path):
+    """A stored file's link, signed the way a hosted storage API signs one.
+
+    The token carries the object's own path, so the link grows with it; this
+    one is about 520 characters.
+    """
+    import hashlib
+    compact = lambda o: json.dumps(o, separators=(',', ':')).encode()
+    header = _b64url(compact({'alg': 'ES256', 'kid': 'fixture-signing-key', 'typ': 'JWT'}))
+    payload = _b64url(compact({'url': object_path, 'iat': 1790000000, 'exp': 1790010800}))
+    signature = _b64url(hashlib.sha512(object_path.encode()).digest())
+    return (f'https://fixture-project.supabase.co/storage/v1/object/sign/{object_path}'
+            f'?token={header}.{payload}.{signature}')
+
+
+def presigned_object_link(host, key):
+    """An object-store link pre-signed with a session token: about 900 characters."""
+    import hashlib
+    token = _b64url(hashlib.sha512(f'session:{key}'.encode()).digest() * 6)
+    signature = hashlib.sha256(f'signature:{key}'.encode()).hexdigest()
+    return (f'https://{host}/{key}'
+            '?X-Amz-Algorithm=AWS4-HMAC-SHA256'
+            '&X-Amz-Credential=FIXTURE-CREDENTIAL%2F20260925%2Fap-southeast-2%2Fs3%2Faws4_request'
+            '&X-Amz-Date=20260925T010000Z&X-Amz-Expires=604800'
+            f'&X-Amz-Security-Token={token}'
+            f'&X-Amz-SignedHeaders=host&X-Amz-Signature={signature}')
+
+
+_QR_SIGNED = signed_storage_link(
+    'builder-stock-lists/stock-lists/quandong-rise/brochures/lot-4127-aster-21-brochure.pdf')
+_QR_PRESIGNED = presigned_object_link(
+    'quandong-rise-brochures.s3.ap-southeast-2.amazonaws.com',
+    'packages/2026/lot-4133-briar-19/lot-4133-briar-19-house-and-land-brochure.pdf')
+
+sheet_fixture(
+    'heldout-a-row-whose-brochure-is-linked-by-a-long-signed-address',
+    'QUANDONG RISE - STOCK LIST.csv',
+    header=_SR_HEADER,
+    rows=[
+        ['4127', 'Aster 21', '4', '2', '2', '320', '201', '$598,000',
+         'Wattlebank', 'VIC', '3977', _QR_SIGNED],
+        ['4133', 'Briar 19', '3', '2', '1', '294', '178', '$566,500',
+         'Wattlebank', 'VIC', '3977', _QR_PRESIGNED],
+    ],
+    linked={
+        _QR_SIGNED: ('LOT 4127 - ASTER 21 - BROCHURE.pdf', lot_brochure(
+            '4127', 'Quandong Crescent', 'Quandong Rise', 598000, 320, '4 Bed 2 Bath 2 Car',
+            4127, (1280, 790), plan_lot='4127', plan_design='Aster 21',
+            cover_design='Aster 21')),
+        _QR_PRESIGNED: ('LOT 4133 - BRIAR 19 - BROCHURE.pdf', lot_brochure(
+            '4133', 'Quandong Crescent', 'Quandong Rise', 566500, 294, '3 Bed 2 Bath 1 Car',
+            4133, (1160, 730), plan_lot='4133', plan_design='Briar 19',
+            cover_design='Briar 19')),
+    },
+    expect=dict(
+        properties=2,
+        # Each card leads with ITS OWN brochure's facade; the sizes prove which.
+        rows=[dict(lot_number='4127', image_size='1280x790'),
+              dict(lot_number='4133', image_size='1160x730')],
+        image='facade_page_1'))
+
+
 def write_sheets(outdir, manifest):
     import csv
     for f in SHEETS:
@@ -3479,12 +3562,15 @@ def write_sheets(outdir, manifest):
             writer.writerow(f['header'])
             writer.writerows(f['rows'])
         linked = []
-        for file_id, (filename, build) in f['linked'].items():
+        # A key is a Drive file id, answered wherever a link names that file,
+        # or a whole address, answered at that exact address and nowhere else.
+        for key, (filename, build) in f['linked'].items():
             doc = os.path.join(sub, 'linked', filename)
             c = canvas.Canvas(doc, pagesize=A4)
             build(c)
             c.save()
-            linked.append(dict(id=file_id, filename=filename,
+            at = dict(url=key) if key.startswith(('https://', 'http://')) else dict(id=key)
+            linked.append(dict(**at, filename=filename,
                                path=os.path.relpath(doc, outdir),
                                bytes=os.path.getsize(doc)))
         manifest.append(dict(name=f['name'], org=f['org'], filename=f['filename'],

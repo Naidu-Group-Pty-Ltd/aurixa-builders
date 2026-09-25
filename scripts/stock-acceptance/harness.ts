@@ -252,8 +252,11 @@ interface Entry {
   kind?: 'sheet';
   /** What the upload and the URL say the file is. `application/pdf` otherwise. */
   content_type?: string;
-  /** Each document a row links, under the Drive file id its link names. */
-  linked?: Array<{ id: string; filename: string; path: string; bytes: number }>;
+  /**
+   * Each document a row links: under the Drive file id its link names, or —
+   * for any other host — at the one whole address that reaches it.
+   */
+  linked?: Array<{ id?: string; url?: string; filename: string; path: string; bytes: number }>;
 }
 
 const manifest: Entry[] = JSON.parse(
@@ -273,15 +276,29 @@ const manifest: Entry[] = JSON.parse(
  * (`runElection`); nothing about the election itself differs.
  */
 const linkedDocuments = new Map<string, Uint8Array>();
+/*
+ * AND ANY OTHER HOST AT ITS WHOLE ADDRESS, and only there. A signed link is
+ * its own credential, so the first 300 characters of one are not a shorter
+ * way of asking for the same file — the host refuses them, and so does this.
+ * Compared as parsed addresses, so an encoding the URL parser normalises is
+ * not mistaken for a different link.
+ */
+const linkedByAddress = new Map<string, Uint8Array>();
+const addressKey = (url: string): string => {
+  try { return new URL(url).href; } catch { return url; }
+};
 for (const entry of manifest) {
   for (const doc of entry.linked ?? []) {
-    linkedDocuments.set(doc.id, await Deno.readFile(`${corpusDir}/${doc.path}`));
+    const bytes = await Deno.readFile(`${corpusDir}/${doc.path}`);
+    if (doc.url) linkedByAddress.set(addressKey(doc.url), bytes);
+    else if (doc.id) linkedDocuments.set(doc.id, bytes);
   }
 }
 let linkedFetches = 0;
 const linkedDocumentFetch: PackageFetcher = async (url: string) => {
   const id = driveFileId(url);
-  const bytes = id ? linkedDocuments.get(id) : undefined;
+  const bytes = linkedByAddress.get(addressKey(url))
+    ?? (id ? linkedDocuments.get(id) : undefined);
   if (!bytes) {
     throw Object.assign(new Error(`no linked document answers ${url}`), {
       safeMessage: 'That document could not be retrieved.',
