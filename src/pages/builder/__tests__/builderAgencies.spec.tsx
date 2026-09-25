@@ -300,6 +300,17 @@ describe('Messages', () => {
     expect(retried).toEqual(['m-unconfirmed']);
   });
 
+  it('offers no "Send again" where the reader cannot write, even on their own failed message', () => {
+    state.records = [ACTIVATION];
+    state.conversation = {
+      conversation_id: 'c', open: false, can_send: false,
+      messages: [MESSAGE({ id: 'm-failed', body: 'Did this arrive?', delivery_state: 'failed', failure_reason: 'not_delivered', can_retry: true })],
+    };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    expect(screen.getByText('Did this arrive?')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /send again/i })).toBeNull();
+  });
+
   it('a closed conversation keeps its history and cannot be written to', () => {
     state.records = [ACTIVATION];
     state.conversation = { conversation_id: 'c', open: false, can_send: false, messages: [MESSAGE({})] };

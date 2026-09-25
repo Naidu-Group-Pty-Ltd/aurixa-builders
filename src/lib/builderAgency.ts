@@ -64,12 +64,19 @@ export function outboundStateLabel(state: AgencyDeliveryState, failureReason?: s
 export const AGENCY_CONVERSATION_POLL_MS = 10_000;
 
 /**
- * An open conversation is re-read every few seconds; a closed one (withdrawn
- * activation, revoked connection) is history and is not re-read at all. Before
- * the first answer it polls, because it cannot yet know.
+ * A closed conversation is checked only this often: rarely enough to cost
+ * nothing, often enough that an agency activating the property again reopens
+ * the thread without a reload.
  */
-export function agencyConversationPollInterval(data: { open?: boolean } | undefined): number | false {
-  return data?.open === false ? false : AGENCY_CONVERSATION_POLL_MS;
+export const AGENCY_CONVERSATION_CLOSED_POLL_MS = 60_000;
+
+/**
+ * An open conversation is re-read every few seconds; a closed one (withdrawn
+ * activation, revoked connection) only once a minute, in case it reopens.
+ * Before the first answer it polls, because it cannot yet know.
+ */
+export function agencyConversationPollInterval(data: { open?: boolean } | undefined): number {
+  return data?.open === false ? AGENCY_CONVERSATION_CLOSED_POLL_MS : AGENCY_CONVERSATION_POLL_MS;
 }
 
 /**

@@ -326,7 +326,7 @@ function ThreadView({ thread }: { thread: AgencyThread }) {
         ) : (
           <div role="log" aria-label="Conversation" aria-live="polite" className="max-h-[28rem] space-y-3 overflow-y-auto pr-1">
             {messages.map((message) => (
-              <MessageBubble key={message.id} message={message} onRetry={sendAgain} retrying={retry.isPending} />
+              <MessageBubble key={message.id} message={message} canRetry={canSend && message.can_retry} onRetry={sendAgain} retrying={retry.isPending} />
             ))}
           </div>
         )}
@@ -367,9 +367,11 @@ function ThreadView({ thread }: { thread: AgencyThread }) {
 }
 
 function MessageBubble({
-  message, onRetry, retrying,
+  message, canRetry, onRetry, retrying,
 }: {
   message: AgencyMessageView;
+  /** The message's own retry flag AND whether this reader may write here now. */
+  canRetry: boolean;
   onRetry: (id: string) => void;
   retrying: boolean;
 }) {
@@ -390,7 +392,7 @@ function MessageBubble({
         <p className={cn('mt-1 flex items-center gap-2 text-xs',
           message.delivery_state === 'failed' ? 'text-destructive' : 'text-muted-foreground')}>
           <span>{outboundStateLabel(message.delivery_state, message.failure_reason)}</span>
-          {message.can_retry ? (
+          {canRetry ? (
             <Button type="button" variant="outline" size="sm" className="h-6 px-2 text-xs"
               onClick={() => onRetry(message.id)} disabled={retrying}>
               Send again

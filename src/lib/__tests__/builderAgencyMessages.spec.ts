@@ -18,7 +18,7 @@ import {
 } from '../../../supabase/functions/_shared/builderStock/agencyMessages.pure';
 import { readAgencyConversation } from '../../../supabase/functions/_shared/builderStock/agencyMessages';
 import {
-  AGENCY_CONVERSATION_POLL_MS, agencyConversationPollInterval, collectEveryPage, newClientMessageId, outboundStateLabel,
+  AGENCY_CONVERSATION_CLOSED_POLL_MS, AGENCY_CONVERSATION_POLL_MS, agencyConversationPollInterval, collectEveryPage, newClientMessageId, outboundStateLabel,
 } from '../builderAgency';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
@@ -282,10 +282,11 @@ describe('the browser\'s half', () => {
 });
 
 describe('polling and paging', () => {
-  it('polls an open conversation, and stops once the server says it is closed', () => {
+  it('polls an open conversation, and a closed one only slowly, so a re-activation still reopens it', () => {
     expect(agencyConversationPollInterval(undefined)).toBe(AGENCY_CONVERSATION_POLL_MS);
     expect(agencyConversationPollInterval({ open: true })).toBe(AGENCY_CONVERSATION_POLL_MS);
-    expect(agencyConversationPollInterval({ open: false })).toBe(false);
+    expect(agencyConversationPollInterval({ open: false })).toBe(AGENCY_CONVERSATION_CLOSED_POLL_MS);
+    expect(AGENCY_CONVERSATION_CLOSED_POLL_MS).toBeGreaterThanOrEqual(6 * AGENCY_CONVERSATION_POLL_MS);
     expect(readCode('src/lib/builderStockQueries.ts'))
       .toMatch(/refetchInterval:\s*\(query\)\s*=>\s*agencyConversationPollInterval\(query\.state\.data\)/);
   });
