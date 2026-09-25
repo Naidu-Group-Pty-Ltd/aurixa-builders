@@ -475,7 +475,12 @@ BEGIN
        AND a.status <> 'withdrawn'
      FOR SHARE OF a;
   END IF;
-  IF v_item IS NULL OR v_sent IS NULL OR NOT isfinite(v_sent) OR length(v_body) NOT BETWEEN 1 AND 4000
+  -- The time is a canonical RFC 3339 instant: a word PostgreSQL resolves in
+  -- context ('now', 'today', 'epoch') would read differently on every retry
+  -- and turn a lost-receipt recovery into a conflict.
+  IF v_item IS NULL OR v_sent IS NULL OR NOT isfinite(v_sent)
+     OR (v_payload->>'sent_at') !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'
+     OR length(v_body) NOT BETWEEN 1 AND 4000
      OR length(v_name) NOT BETWEEN 1 AND 200 THEN
     v_reason := 'invalid_message';
   ELSIF NOT EXISTS (

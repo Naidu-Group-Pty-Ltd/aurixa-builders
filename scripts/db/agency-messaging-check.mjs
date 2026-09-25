@@ -491,7 +491,7 @@ console.log('\nA generation that is not a whole number');
 }
 
 console.log('\nA time that is not a time');
-for (const when of ['infinity', '-infinity']) {
+for (const when of ['infinity', '-infinity', 'now', 'today', 'epoch', '2026-09-25']) {
   const odd = agencyMessage({ body: `Sent at ${when}.`, sent_at: when });
   land(CONN_A, 'agency.message.posted', `agency.message:${odd.message_id}:1`, odd);
   sweep();
