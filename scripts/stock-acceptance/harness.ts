@@ -87,6 +87,8 @@ import {
   READER_SWEEP_RESERVE_MS, readerSweepPending, settleReaderVersion,
 } from '../../supabase/functions/_shared/builderStock/settleReaderVersion.ts';
 import { publishUploadIfReady } from '../../supabase/functions/_shared/builderStock/itemWorkClaim.ts';
+import { PROVENANCE_VERSION } from '../../supabase/functions/_shared/builderStock/provenanceVersion.pure.ts';
+import { servableStoredImage } from '../../supabase/functions/_shared/builderStock/marketplaceEligibility.pure.ts';
 import { enforceStrictPrimaryImages } from '../../supabase/functions/_shared/builderStock/primaryImage.ts';
 /*
  * THE SWITCH THAT DECIDES WHETHER A VENDOR IS EVER ASKED, read rather than
@@ -352,6 +354,8 @@ for (const [key, legal] of [
    */
   ['name:named', 'Named Address Homes Pty Ltd'],
   ['name:nameless', 'Nameless Address Homes Pty Ltd'],
+  // AND ONE FOR 7j, whose rows it ages a version: nothing else reads them.
+  ['inv:bump', 'Version Bump Homes Pty Ltd'],
   /*
    * AND FOUR FOR THE FAULT MATRIX. Each case there imports a document the
    * main loop has already imported, and several import the SAME document
@@ -452,44 +456,57 @@ const IMAGERY_MAX_PER_ITEM = 24;
  * reach a state the rotation could not, because the flags — not the rotation —
  * are what decide whether there is work.
  */
+/**
+ * The per-item ladder, as the settler's per-item path works it: claim a
+ * property's image work, settle the claimed stage, record the completion,
+ * until nothing in the organisation is due. Returns how many claims it made.
+ * `attempts` carries the per-property bound across calls.
+ */
+async function workItemLadder(organisationId: string, attempts: Map<string, number>) {
+  let claims = 0;
+  for (let i = 0; i < IMAGERY_MAX_CLAIMS; i += 1) {
+    const claim = await claimOneImageWorkItem(db, { leaseSeconds: 120, organisationId });
+    if (!claim.available || !claim.item) break;
+    claims += 1;
+    const item = claim.item;
+    /*
+     * TERMINATION IS THE HARNESS'S PROBLEM, NOT THE ROW'S. An earlier
+     * version bounded the loop by writing `retryAfterSeconds: 3600` on any
+     * quiet pass, which parked a property for an hour on the first quiet
+     * pass of the `source` stage — the ladder never reached `eligibility`
+     * and eleven documents reported no photograph. Production does not do
+     * that: the cron comes back in a minute. So the delay is the product's
+     * own and the bound is a count this loop keeps.
+     */
+    const seen = (attempts.get(item.id) ?? 0) + 1;
+    attempts.set(item.id, seen);
+    if (seen > IMAGERY_MAX_PER_ITEM) {
+      await completeItemWork(db, item.id, {
+        result: 'acceptance harness: attempt ceiling reached',
+        progressed: false, retryAfterSeconds: 3600,
+      });
+      continue;
+    }
+    const settlement = await settleClaimedItem(db, item, {
+      deadlineAt: Date.now() + 20_000,
+    }, {
+      repairSource: (client, input) => repairSourceImagesForUpload(client, input, imageryDeps),
+    });
+    await completeItemWork(db, item.id, {
+      nextStage: settlement.nextStage,
+      result: settlement.result,
+      progressed: settlement.progressed,
+    });
+  }
+  return claims;
+}
+
 async function settleImagery(organisationId: string, uploadId: string) {
   const rounds: string[] = [];
   const attempts = new Map<string, number>();
   let previous = '';
   for (let round = 0; round < IMAGERY_MAX_ROUNDS; round += 1) {
-    for (let i = 0; i < IMAGERY_MAX_CLAIMS; i += 1) {
-      const claim = await claimOneImageWorkItem(db, { leaseSeconds: 120, organisationId });
-      if (!claim.available || !claim.item) break;
-      const item = claim.item;
-      /*
-       * TERMINATION IS THE HARNESS'S PROBLEM, NOT THE ROW'S. An earlier
-       * version bounded the loop by writing `retryAfterSeconds: 3600` on any
-       * quiet pass, which parked a property for an hour on the first quiet
-       * pass of the `source` stage — the ladder never reached `eligibility`
-       * and eleven documents reported no photograph. Production does not do
-       * that: the cron comes back in a minute. So the delay is the product's
-       * own and the bound is a count this loop keeps.
-       */
-      const seen = (attempts.get(item.id) ?? 0) + 1;
-      attempts.set(item.id, seen);
-      if (seen > IMAGERY_MAX_PER_ITEM) {
-        await completeItemWork(db, item.id, {
-          result: 'acceptance harness: attempt ceiling reached',
-          progressed: false, retryAfterSeconds: 3600,
-        });
-        continue;
-      }
-      const settlement = await settleClaimedItem(db, item, {
-        deadlineAt: Date.now() + 20_000,
-      }, {
-        repairSource: (client, input) => repairSourceImagesForUpload(client, input, imageryDeps),
-      });
-      await completeItemWork(db, item.id, {
-        nextStage: settlement.nextStage,
-        result: settlement.result,
-        progressed: settlement.progressed,
-      });
-    }
+    await workItemLadder(organisationId, attempts);
 
     // Only what is genuinely behind, exactly as the tick decides it.
     const outstanding = await readOutstandingUploads(db, { limit: 50 });
@@ -2239,6 +2256,162 @@ const invariants: Record<string, unknown> = {};
       identitySame && designHonest,
       JSON.stringify(invariants.namelessAddress));
   }
+}
+
+/* --- 7j. A VERSION BUMP REACHES A CARD THAT ALREADY SHOWS A PICTURE --------
+ *
+ * PRODUCTION, 24 SEPTEMBER 2026, upload `7d5b8e99`. #105 moved
+ * `PROVENANCE_VERSION` from 26 to 27, and 31 of a linked Google Sheet's 70
+ * properties held their pictures and their brochures' answers under 26.
+ * Re-deriving a property that already shows a picture is the UPLOAD sweep's
+ * job — a bump's migration re-opens the pictureless ones only — and the sweep
+ * holds 10 of its 12 seconds back for one package recovery. Re-reading the
+ * live sheet and the organisation's stock took longer than the other 2, so
+ * every run declined its first recovery and reported `incomplete` with the
+ * same numbers, every minute, for thirteen hours, while the per-item ladder —
+ * where every claim starts with a full budget — had nothing to do.
+ *
+ * So a settled upload is put in exactly the state a bump leaves — its answers
+ * and pictures one provenance version behind, its marker behind — and swept in
+ * a window no recovery may start in. The pictures must stay on the cards the
+ * whole time, and within a few rounds of sweep and ladder every property must
+ * hold a picture at the current version and the upload must be settled.
+ */
+{
+  const BUMP = 'inv:bump';
+  const org = orgs[BUMP];
+  const entry = manifest.find((e: any) =>
+    e.name === 'heldout-a-row-whose-brochure-is-linked-by-a-long-signed-address');
+  const out: Record<string, unknown> = {};
+  let ok = false;
+  try {
+    if (!entry) throw new Error('the long-signed-address sheet is not in the corpus');
+    const bytes = await Deno.readFile(`${corpusDir}/${entry.path}`);
+    const imported = await routeA({ ...entry, org: BUMP } as Entry, bytes, 'BUMP');
+    const uploadId = imported.uploadId;
+    await settleImagery(org.id, uploadId);
+
+    const readyNow = async (itemId: string) => {
+      const { data } = await db.from('builder_stock_item_images')
+        .select('id, storage_path, external_url, source_detail')
+        .eq('stock_item_id', itemId).eq('source_stage', 'uploaded_document')
+        .eq('processing_status', 'ready');
+      return (data ?? []).some((row: any) => servableStoredImage(row, PROVENANCE_VERSION));
+    };
+    const settledItems = await itemsFor(uploadId);
+    out.before = await Promise.all(settledItems.map(async (i: any) =>
+      ({ lot: i.lot_number, primary: !!i.primary_image_id, ready: await readyNow(i.id) })));
+    if (settledItems.length !== 2
+      || !(out.before as any[]).every((i: any) => i.primary && i.ready)) {
+      throw new Error(`the sheet did not settle first: ${JSON.stringify(out.before)}`);
+    }
+
+    // THE STATE A BUMP LEAVES: every answer and every picture one version
+    // behind, the upload's marker behind, the properties settled and showing
+    // their pictures exactly as they were.
+    const behind = PROVENANCE_VERSION - 1;
+    for (const item of settledItems) {
+      const branches = (item.source_provenance_result?.branches ?? {}) as Record<string, any>;
+      const aged = Object.fromEntries(Object.entries(branches)
+        .map(([link, answer]) => [link, { ...answer, provenance_version: behind }]));
+      await db.from('builder_stock_items')
+        .update({ source_provenance_result: { branches: aged } }).eq('id', item.id);
+      const { data: images } = await db.from('builder_stock_item_images')
+        .select('id, source_detail').eq('stock_item_id', item.id)
+        .eq('source_stage', 'uploaded_document');
+      for (const image of images ?? []) {
+        await db.from('builder_stock_item_images')
+          .update({ source_detail: { ...(image.source_detail ?? {}), provenance_version: behind } })
+          .eq('id', image.id);
+      }
+    }
+    await db.from('builder_stock_uploads')
+      .update({ source_images_settled_version: behind }).eq('id', uploadId);
+
+    /*
+     * A WINDOW NO RECOVERY MAY START IN: half the reserve the repair holds back
+     * for one, read from the product where it says so. Production reached this
+     * by a long preamble; the gate reaches it by a short tick. The question —
+     * what the sweep does when it cannot start the recovery it owes — is the
+     * same one.
+     */
+    const repairModule: any = await import(
+      '../../supabase/functions/_shared/builderStock/repairSourceImages.ts');
+    const reserve = Number(repairModule.PACKAGE_RECOVERY_RESERVE_MS ?? 10_000);
+    const rounds: unknown[] = [];
+    let blanked = 0;
+    let marker: number | null = behind;
+    const attempts = new Map<string, number>();
+
+    /*
+     * BUT NEVER A PROPERTY WHOSE SOURCE WORK IS ANOTHER LIST'S. The sweep
+     * matches rows against the organisation's whole stock, and the ladder
+     * works a property against its pending upload where it has one — so a
+     * recovery THIS upload owes, handed over for such a property, would be
+     * asked of the other list, answered nowhere, and handed back on every
+     * sweep. For one sweep the second property carries another list's pending
+     * upload: it must be left settled and owed while its sibling is handed
+     * over. Then it is released, and the rounds below must still converge —
+     * the first property now already in the ladder, which a sweep must not
+     * reset under it.
+     */
+    const [first, second] = settledItems;
+    const stageOf = async (id: string) => (await db.from('builder_stock_items')
+      .select('image_work_stage').eq('id', id).maybeSingle()).data?.image_work_stage ?? null;
+    const { error: pendingError } = await db.from('builder_stock_items')
+      .update({ pending_upload_id: crypto.randomUUID() }).eq('id', second.id);
+    if (pendingError) throw new Error(`could not give lot ${second.lot_number} another list: ${pendingError.message}`);
+    const foreignSweep: any = await settleUploadSourceImages(db, {
+      organisationId: org.id, uploadId, deadlineAt: Date.now() + reserve / 2,
+      needsProvenance: true, needsEligibility: false, needsSanitization: false,
+    }, imageryDeps);
+    blanked += (await itemsFor(uploadId)).filter((i: any) => !i.primary_image_id).length;
+    const foreign = {
+      handed: foreignSweep?.repair?.handedToLadder ?? null,
+      stages: { [first.lot_number]: await stageOf(first.id), [second.lot_number]: await stageOf(second.id) },
+    };
+    out.foreign = foreign;
+    await db.from('builder_stock_items').update({ pending_upload_id: null }).eq('id', second.id);
+    const foreignOk = foreign.handed === 1
+      && foreign.stages[first.lot_number] === 'source'
+      && foreign.stages[second.lot_number] === 'settled';
+
+    for (let round = 0; round < 4 && (marker ?? -1) < PROVENANCE_VERSION; round += 1) {
+      const sweep: any = await settleUploadSourceImages(db, {
+        organisationId: org.id, uploadId, deadlineAt: Date.now() + reserve / 2,
+        needsProvenance: true, needsEligibility: false, needsSanitization: false,
+      }, imageryDeps);
+      blanked += (await itemsFor(uploadId)).filter((i: any) => !i.primary_image_id).length;
+      const claims = await workItemLadder(org.id, attempts);
+      blanked += (await itemsFor(uploadId)).filter((i: any) => !i.primary_image_id).length;
+      const { data: up } = await db.from('builder_stock_uploads')
+        .select('source_images_settled_version').eq('id', uploadId).maybeSingle();
+      marker = up?.source_images_settled_version ?? null;
+      rounds.push({ settled: !!sweep?.settled, handed: sweep?.repair?.handedToLadder ?? null,
+        claims, marker });
+    }
+
+    const after = await itemsFor(uploadId);
+    const sizes = await Promise.all(after.map(async (i: any) => {
+      if (!i.primary_image_id) return null;
+      const { data } = await db.from('builder_stock_item_images')
+        .select('source_detail').eq('id', i.primary_image_id).maybeSingle();
+      const d = (data?.source_detail ?? {}) as any;
+      return `${d.source_width}x${d.source_height}`;
+    }));
+    Object.assign(out, {
+      rounds, blanked, marker, sizes,
+      after: await Promise.all(after.map(async (i: any) =>
+        ({ lot: i.lot_number, stage: i.image_work_stage, ready: await readyNow(i.id) }))),
+    });
+    ok = foreignOk && marker === PROVENANCE_VERSION && blanked === 0
+      && (out.after as any[]).every((i: any) => i.ready && i.stage === 'settled')
+      && sizes[0] === '1280x790' && sizes[1] === '1160x730';
+  } catch (error) {
+    out.error = String((error as Error)?.message ?? error).slice(0, 300);
+  }
+  invariants.versionBump = out;
+  invariant('a-version-bump-reaches-cards-that-already-show-a-picture', ok, JSON.stringify(out));
 }
 
 // ===========================================================================
