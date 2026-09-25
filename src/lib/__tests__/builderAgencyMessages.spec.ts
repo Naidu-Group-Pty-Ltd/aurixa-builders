@@ -308,13 +308,33 @@ describe('polling and paging', () => {
     expect(q).toMatch(/invalidateQueries\(\{\s*queryKey:\s*EVERY_ACTIVATED_PROPERTIES_KEY\s*\}\)/);
   });
 
-  it('never walks past its bound, whatever the server claims', async () => {
+  it('follows every page the server reports, past any fixed page count (an organisation with 4,000+ activations)', async () => {
+    const asked: number[] = [];
+    const all = await collectEveryPage(async (page) => {
+      asked.push(page);
+      return { records: [page], pagination: { page, page_size: 1, total: 60, total_pages: 60 } };
+    });
+    expect(asked.length).toBe(60);
+    expect(all).toEqual(Array.from({ length: 60 }, (_, i) => i + 1));
+  });
+
+  it('stops at an empty page, whatever the server claims', async () => {
+    let asked = 0;
+    const all = await collectEveryPage(async (page) => {
+      asked += 1;
+      return { records: page <= 3 ? [page] : [], pagination: { page, page_size: 1, total: 1_000_000, total_pages: 1_000_000 } };
+    });
+    expect(asked).toBe(4);
+    expect(all).toEqual([1, 2, 3]);
+  });
+
+  it('stops once it holds the count the server stated, whatever page count it claims', async () => {
     let asked = 0;
     await collectEveryPage(async (page) => {
       asked += 1;
-      return { records: [page], pagination: { page, page_size: 1, total: 1_000_000, total_pages: 1_000_000 } };
-    }, 5);
-    expect(asked).toBe(5);
+      return { records: [page, page], pagination: { page, page_size: 2, total: 6, total_pages: 1_000_000 } };
+    });
+    expect(asked).toBe(3);
   });
 });
 

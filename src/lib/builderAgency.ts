@@ -80,18 +80,22 @@ export function agencyConversationPollInterval(data: { open?: boolean } | undefi
 }
 
 /**
- * Every page of a paginated list, in order, bounded so that a server claiming
- * a million pages cannot keep the browser asking.
+ * Every page of a paginated list, in order. It follows the pages the server
+ * reports rather than a fixed count, because a conversation whose only
+ * activation sits past an arbitrary cut-off would vanish from the list with
+ * nothing saying so. It still cannot be kept asking: it stops at the first
+ * empty page and once it holds as many rows as the server said exist.
  */
 export async function collectEveryPage<T>(
-  fetchPage: (page: number) => Promise<{ records: T[]; pagination: { total_pages: number } }>,
-  maxPages = 40,
+  fetchPage: (page: number) => Promise<{ records: T[]; pagination: { total_pages: number; total?: number } }>,
 ): Promise<T[]> {
   const all: T[] = [];
-  for (let page = 1; page <= maxPages; page += 1) {
+  for (let page = 1; ; page += 1) {
     const { records, pagination } = await fetchPage(page);
+    if (records.length === 0) break;
     all.push(...records);
-    if (page >= pagination.total_pages || records.length === 0) break;
+    if (page >= pagination.total_pages) break;
+    if (typeof pagination.total === 'number' && all.length >= pagination.total) break;
   }
   return all;
 }
