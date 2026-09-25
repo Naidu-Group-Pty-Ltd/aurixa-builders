@@ -988,7 +988,8 @@ async function exerciseDocumentFigures(entry: any, uploadId: string, when: strin
     }, {
       fetchDocument: linkedDocumentFetch,
       // The worker's own function, in this process.
-      readEvidence: (bytes: Uint8Array) => evidence.readBrochureFigureEvidence(bytes),
+      readEvidence: (bytes: Uint8Array, context: unknown) =>
+        evidence.readBrochureFigureEvidence(bytes, context),
     });
     passes.push({ read: done.read, filled: done.filled });
     if (!done.read) break;

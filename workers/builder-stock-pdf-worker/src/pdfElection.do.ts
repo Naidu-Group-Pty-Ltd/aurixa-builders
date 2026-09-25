@@ -30,6 +30,7 @@ import {
 } from '../../../supabase/functions/_shared/builderStock/pdfElectionBoundary.pure.ts';
 import { electFromPdfBytes } from '../../../supabase/functions/_shared/builderStock/pdfElection.ts';
 import { readPdfPageTextResult } from '../../../supabase/functions/_shared/builderStock/pdfText.ts';
+import { readBrochureFigureEvidence } from '../../../supabase/functions/_shared/builderStock/brochureFigures.ts';
 
 /*
  * WHERE THE LANE NAME LIVES NOW.
@@ -101,6 +102,21 @@ export class PdfElection extends DurableObject {
     const bytes = new Uint8Array(await request.arrayBuffer());
     if (!bytes.length || bytes.length > MAX_DOCUMENT_BYTES) {
       return json({ error: 'bad_document', bytes: bytes.length }, 413);
+    }
+
+    /*
+     * A FIGURES READING, in the same lane and under the same one-at-a-time
+     * queue as an election, because it parses the same document. It answers
+     * with the product's reading of the text and the pictures worth
+     * recognising, and decodes none of them. See `brochureFigures.ts`.
+     */
+    if (context.purpose === 'figures') {
+      return await this.queue(async () => {
+        const read = await readBrochureFigureEvidence(bytes, { design: context.design });
+        return read.ok
+          ? json({ protocol: context.protocol, status: 'figures', evidence: read.evidence })
+          : json({ protocol: context.protocol, status: 'unreadable', reason: read.reason });
+      });
     }
 
     return await this.queue(async () => {
