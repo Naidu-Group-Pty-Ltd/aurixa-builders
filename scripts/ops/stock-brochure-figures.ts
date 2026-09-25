@@ -25,6 +25,7 @@
  */
 import { safeDetail } from '../../supabase/functions/_shared/builderStock/importTelemetry.pure.ts';
 import { fetchStockSource } from '../../supabase/functions/_shared/builderStock/fetchSource.ts';
+import { driveDownloadUrl, driveFileId } from '../../supabase/functions/_shared/builderStock/drivePackage.pure.ts';
 import { readPdfPageTexts } from '../../supabase/functions/_shared/builderStock/pdfText.ts';
 import { readPdfTextLayout } from '../../supabase/functions/_shared/builderStock/pdfTextLayout.ts';
 import { readPdfDeterministicRows } from '../../supabase/functions/_shared/builderStock/pdfDeterministicRows.pure.ts';
@@ -98,7 +99,10 @@ for (const row of rows) {
   if (!url) { console.log(`${head}: no brochure link`); continue; }
   const which = recovered[0] ? 'the brochure its photograph came from' : 'its Brochure URL column';
   try {
-    const fetched = await fetchStockSource(url) as unknown as { bytes?: Uint8Array; contentType?: string };
+    // As the ladder does (`recoverPackageImage`): a Drive link is asked for the
+    // file, not its viewer page.
+    const fileId = driveFileId(url);
+    const fetched = await fetchStockSource(fileId ? driveDownloadUrl(fileId) : url) as unknown as { bytes?: Uint8Array; contentType?: string };
     const bytes = fetched.bytes;
     if (!bytes || !(bytes[0] === 0x25 && bytes[1] === 0x50)) {
       console.log(`${head}: #${await digest(url)} (${which}) is not a PDF (${noLinks(String(fetched.contentType ?? '?'), 60)})`);
