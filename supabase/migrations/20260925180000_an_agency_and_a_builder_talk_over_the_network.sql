@@ -432,7 +432,18 @@ BEGIN
     SELECT 1 FROM public.builder_stock_selection_announcements a
      WHERE a.connection_id = v_connection.id AND a.stock_item_id = v_item
        AND a.status <> 'withdrawn') THEN
-    v_reason := 'conversation_not_open';
+    -- Closed to NEW messages. One already held here, unchanged, is this
+    -- side's own record: its retry (a receipt lost on the way back) is
+    -- acknowledged again, or the agency would record a refusal for words
+    -- this conversation keeps.
+    SELECT * INTO v_existing FROM public.builder_agency_messages WHERE id = v_message_id;
+    IF v_existing.id IS NULL
+       OR v_existing.conversation_id <> v_conversation_id OR v_existing.side <> 'command_centre'
+       OR v_existing.body <> v_body OR v_existing.sender_display_name <> left(v_name, 200)
+       OR v_existing.sent_at <> v_sent THEN
+      v_reason := 'conversation_not_open';
+    END IF;
+    v_existing := NULL;
   END IF;
 
   IF v_reason IS NULL THEN

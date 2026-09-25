@@ -253,6 +253,27 @@ check('the retry is answered again; the replay is not answered twice',
     `${a.split('\n')[0]} / ${b}`);
 }
 
+{
+  // A stored message whose receipt was lost is retried after the activation
+  // is withdrawn: it is acknowledged again; a new message is still refused.
+  const stored = agencyMessage({ body: 'Stored before the withdrawal.' });
+  land(CONN_A, 'agency.message.posted', `agency.message:${stored.message_id}:1`, stored);
+  sweep();
+  sql(`UPDATE public.builder_stock_selection_announcements SET status = 'withdrawn'
+        WHERE connection_id = ${lit(CONN_A)} AND stock_item_id = ${lit(ITEM_A1)}`);
+  land(CONN_A, 'agency.message.posted', `agency.message:${stored.message_id}:2`, { ...stored, generation: 2 });
+  const fresh = agencyMessage({ body: 'Written after the withdrawal.' });
+  land(CONN_A, 'agency.message.posted', `agency.message:${fresh.message_id}:1`, fresh);
+  sweep();
+  check('after withdrawal, a stored message\'s retry is still acknowledged, and a new message is still refused',
+    outbox(`dedupe_key = 'agency.receipt:${stored.message_id}:2' AND payload->>'outcome' = 'accepted'`) === '1'
+      && sql(`SELECT message_apply_error FROM public.builder_network_inbound_events
+              WHERE dedupe_key = 'agency.message:${fresh.message_id}:1'`) === 'refused:conversation_not_open'
+      && sql(`SELECT count(*) FROM public.builder_agency_messages WHERE id = ${lit(fresh.message_id)}`) === '0');
+  sql(`UPDATE public.builder_stock_selection_announcements SET status = 'selected'
+        WHERE connection_id = ${lit(CONN_A)} AND stock_item_id = ${lit(ITEM_A1)}`);
+}
+
 console.log('\nWhat is refused, and said to be');
 const refusedCases = [
   ['a conversation computed for another workspace connection', agencyMessage({ conversation_id: conversationId(CONN_B, ITEM_A1) }), 'conversation_mismatch'],
