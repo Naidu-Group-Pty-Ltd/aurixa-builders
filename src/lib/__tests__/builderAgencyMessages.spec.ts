@@ -1,0 +1,628 @@
+/**
+ * AGENCY MESSAGING — THE BUILDER PORTAL'S READ AND WRITE.
+ *
+ * The rows, the network contract and the delivery states are proved against a
+ * real schema by `scripts/db/agency-messaging-check.mjs`. This pins what sits
+ * in front of them: the conversation read is pinned to the session's
+ * organisation and to an activation it holds, it serves only what a builder
+ * may see (never a user id or a client key), writing needs `inventory` edit,
+ * and every identity the SQL relies on comes from the session — never from
+ * the request.
+ */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import {
+  agencyMessageRefusal,
+  projectAgencyMessages,
+} from '../../../supabase/functions/_shared/builderStock/agencyMessages.pure';
+import { agencyDedupeKeyFor, agencyPayloadContractViolation, sameAgencyEnvelope } from '../../../supabase/functions/_shared/builderStock/agencyMessages.pure';
+import { readAgencyConversation } from '../../../supabase/functions/_shared/builderStock/agencyMessages';
+import {
+  AGENCY_CONVERSATION_CLOSED_POLL_MS, accessRefused, agencyConversationRefetchInterval, retryUnlessRefused, AGENCY_CONVERSATION_POLL_MS, agencyConversationPollInterval, arrivalScrollTarget, collectEveryPage, newClientMessageId, outboundStateLabel, scrollLogToEnd,
+} from '../builderAgency';
+
+const REPO_ROOT = join(__dirname, '..', '..', '..');
+const readCode = (p: string) => readFileSync(join(REPO_ROOT, p), 'utf8')
+  .replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+
+type Row = Record<string, any>;
+function standIn(tables: Record<string, Row[]>) {
+  const log: Array<{ table: string; filters: Array<[string, string, unknown]> }> = [];
+  const from = (table: string) => {
+    const entry = { table, filters: [] as Array<[string, string, unknown]> };
+    log.push(entry);
+    let orders: Array<[string, boolean]> = [];
+    let cap = Infinity;
+    const builder: any = {
+      select() { return builder; },
+      eq(col: string, v: unknown) { entry.filters.push(['eq', col, v]); return builder; },
+      neq(col: string, v: unknown) { entry.filters.push(['neq', col, v]); return builder; },
+      in(col: string, v: unknown[]) { entry.filters.push(['in', col, v]); return builder; },
+      order(col: string, o?: { ascending?: boolean }) { orders = [...orders, [col, o?.ascending !== false]]; return builder; },
+      limit(n: number) { cap = n; return builder; },
+      maybeSingle() { return builder.then((r: any) => ({ data: r.data[0] ?? null, error: null })); },
+      then(resolve: (v: unknown) => unknown) {
+        let rows = (tables[table] ?? []).filter((row) => entry.filters.every(([op, col, v]) =>
+          op === 'eq' ? row[col] === v : op === 'neq' ? row[col] !== v : (v as unknown[]).includes(row[col])));
+        for (const [col, asc] of [...orders].reverse()) {
+          rows = [...rows].sort((a, b) => (String(a[col]) < String(b[col]) ? -1 : String(a[col]) > String(b[col]) ? 1 : 0) * (asc ? 1 : -1));
+        }
+        return Promise.resolve({ data: rows.slice(0, cap), error: null }).then(resolve);
+      },
+    };
+    return builder;
+  };
+  return { client: { from }, log };
+}
+
+const ORG = 'org-a';
+const CONN = 'conn-a';
+const ITEM = 'item-a1';
+const ME = 'user-me';
+const CONV = 'conv-a';
+
+function fixture() {
+  return {
+    workspace_connections: [
+      { id: CONN, builder_organisation_id: ORG, state: 'active' },
+      { id: 'conn-b', builder_organisation_id: 'org-b', state: 'active' },
+    ],
+    builder_stock_selection_announcements: [
+      { id: 'ann-1', connection_id: CONN, stock_item_id: ITEM, organisation_id: ORG, status: 'selected' },
+      { id: 'ann-x', connection_id: 'conn-b', stock_item_id: 'item-b1', organisation_id: 'org-b', status: 'selected' },
+    ],
+    builder_agency_conversations: [
+      { id: CONV, connection_id: CONN, stock_item_id: ITEM, organisation_id: ORG },
+      { id: 'conv-b', connection_id: 'conn-b', stock_item_id: 'item-b1', organisation_id: 'org-b' },
+    ],
+    builder_agency_messages: [
+      { id: 'm2', conversation_id: CONV, side: 'command_centre', sender_display_name: 'Casey Agent', body: 'Second',
+        sent_at: '2026-09-25T11:00:00Z', delivery_state: null, delivered_at: null, failure_reason: null,
+        sender_builder_user_id: null, client_message_id: null, delivery_generation: 1 },
+      { id: 'm1', conversation_id: CONV, side: 'builder', sender_display_name: 'Avery Builder', body: 'First',
+        sent_at: '2026-09-25T10:00:00Z', delivery_state: 'failed', delivered_at: null, failure_reason: 'not_delivered',
+        sender_builder_user_id: ME, client_message_id: 'client-1', delivery_generation: 1 },
+      { id: 'm3', conversation_id: CONV, side: 'builder', sender_display_name: 'Alex Builder', body: 'Third',
+        sent_at: '2026-09-25T12:00:00Z', delivery_state: 'delivered', delivered_at: '2026-09-25T12:00:05Z', failure_reason: null,
+        sender_builder_user_id: 'user-colleague', client_message_id: 'client-2', delivery_generation: 1 },
+      { id: 'mb', conversation_id: 'conv-b', side: 'command_centre', sender_display_name: 'Other', body: 'Not yours',
+        sent_at: '2026-09-25T09:00:00Z', delivery_state: null, delivered_at: null, failure_reason: null,
+        sender_builder_user_id: null, client_message_id: null, delivery_generation: 1 },
+    ],
+  };
+}
+
+describe('reading a conversation', () => {
+  it('opens only a conversation this organisation\'s activation stands behind', async () => {
+    const db = standIn(fixture());
+    const theirs = await readAgencyConversation(db.client, {
+      organisationId: ORG, connectionId: 'conn-b', stockItemId: 'item-b1', viewerUserId: ME,
+    });
+    expect(theirs).toEqual({ ok: false, reason: 'not_found' });
+    const announcements = db.log.find((q) => q.table === 'builder_stock_selection_announcements')!;
+    expect(announcements.filters).toContainEqual(['eq', 'organisation_id', ORG]);
+  });
+
+  it('returns the thread in the order it was written, whatever order it arrived in', async () => {
+    const db = standIn(fixture());
+    const read = await readAgencyConversation(db.client, {
+      organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME,
+    });
+    if (!read.ok) throw new Error('read failed');
+    expect(read.messages.map((m) => m.body)).toEqual(['First', 'Second', 'Third']);
+    expect(JSON.stringify(read)).not.toContain('Not yours');
+  });
+
+  it('past the cap, the thread shows the NEWEST messages, still in reading order', async () => {
+    const f = fixture();
+    const capRows = Array.from({ length: 501 }, (_, i) => ({
+      id: `m${String(i).padStart(4, '0')}`, conversation_id: CONV, side: 'command_centre',
+      sender_display_name: 'Casey Agent', body: `Message ${i}`,
+      sent_at: new Date(Date.UTC(2026, 8, 25, 0, 0, i)).toISOString(), delivery_state: null,
+      delivered_at: null, failure_reason: null, sender_builder_user_id: null, client_message_id: null, delivery_generation: 1,
+      created_at: new Date(Date.UTC(2026, 8, 25, 0, 0, i)).toISOString(),
+    })) as Row[];
+    const read = await readAgencyConversation(standIn({ ...f, builder_agency_messages: capRows }).client, {
+      organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME,
+    });
+    if (!read.ok) throw new Error('read failed');
+    expect(read.messages).toHaveLength(500);
+    expect(read.messages[0].body).toBe('Message 1');
+    expect(read.messages[499].body).toBe('Message 500');
+  });
+
+  it('past the cap, a message that arrived late with an older time still reaches the thread, in its place', async () => {
+    const f = fixture();
+    const rows: Row[] = Array.from({ length: 500 }, (_, i) => ({
+      id: `m${String(i).padStart(4, '0')}`, conversation_id: CONV, side: 'command_centre',
+      sender_display_name: 'Casey Agent', body: `Message ${i}`,
+      sent_at: new Date(Date.UTC(2026, 8, 25, 1, 0, i)).toISOString(), created_at: new Date(Date.UTC(2026, 8, 25, 1, 0, i)).toISOString(),
+      delivery_state: null, delivered_at: null, failure_reason: null, sender_builder_user_id: null, client_message_id: null, delivery_generation: 1,
+    }));
+    rows.push({
+      id: 'late', conversation_id: CONV, side: 'command_centre', sender_display_name: 'Casey Agent', body: 'Written earlier, arrived late',
+      sent_at: '2026-09-25T00:30:00.000Z', created_at: '2026-09-25T02:00:00.000Z',
+      delivery_state: null, delivered_at: null, failure_reason: null, sender_builder_user_id: null, client_message_id: null, delivery_generation: 1,
+    });
+    const read = await readAgencyConversation(standIn({ ...f, builder_agency_messages: rows }).client, {
+      organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME,
+    });
+    if (!read.ok) throw new Error('read failed');
+    expect(read.messages[0].body).toBe('Written earlier, arrived late');
+    expect(read.messages.filter((m) => m.id === 'late')).toHaveLength(1);
+    expect(read.messages[read.messages.length - 1].body).toBe('Message 499');
+  });
+
+  it('a late message stays in the thread while later messages arrive, until 500 newer ones have', async () => {
+    const f = fixture();
+    const at = (minute: number) => new Date(Date.UTC(2026, 8, 25, 1, minute)).toISOString();
+    const row = (id: string, sent: string, created: string): Row => ({
+      id, conversation_id: CONV, side: 'command_centre', sender_display_name: 'Casey Agent', body: id, sent_at: sent, created_at: created,
+      delivery_state: null, delivered_at: null, failure_reason: null, sender_builder_user_id: null, client_message_id: null, delivery_generation: 1,
+    });
+    const rows: Row[] = Array.from({ length: 500 }, (_, i) => row(`old${String(i).padStart(3, '0')}`, at(100 + i), at(100 + i)));
+    rows.push(row('late', at(0), at(700)));
+    for (let i = 0; i < 60; i += 1) rows.push(row(`after${String(i).padStart(2, '0')}`, at(800 + i), at(800 + i)));
+    const read = await readAgencyConversation(standIn({ ...f, builder_agency_messages: rows }).client, {
+      organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME,
+    });
+    if (!read.ok) throw new Error('read failed');
+    expect(read.messages).toHaveLength(500);
+    expect(read.messages[0].id).toBe('late');
+    expect(read.messages[read.messages.length - 1].id).toBe('after59');
+  });
+
+  it('a property with an activation and no messages yet is an empty, open conversation', async () => {
+    const f = fixture();
+    f.builder_agency_messages = [];
+    f.builder_agency_conversations = [];
+    const read = await readAgencyConversation(standIn(f).client, {
+      organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME,
+    });
+    expect(read).toMatchObject({ ok: true, messages: [], open: true });
+  });
+
+  it('18. polling refresh gets new messages: the next read carries what was written since the last', async () => {
+    const f = fixture();
+    const args = { organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME };
+    const first = await readAgencyConversation(standIn(f).client, args);
+    if (!first.ok) throw new Error('read failed');
+    expect(first.messages.map((m) => m.id)).not.toContain('m-new');
+    f.builder_agency_messages.push({
+      id: 'm-new', conversation_id: CONV, side: 'command_centre', sender_display_name: 'Casey Agent', body: 'Just arrived',
+      sent_at: '2026-09-25T13:00:00Z', delivery_state: null, delivered_at: null, failure_reason: null,
+      sender_builder_user_id: null, client_message_id: null, delivery_generation: 1,
+    });
+    const next = await readAgencyConversation(standIn(f).client, args);
+    if (!next.ok) throw new Error('read failed');
+    expect(next.messages.at(-1)?.body).toBe('Just arrived');
+    expect(readCode('src/lib/builderStockQueries.ts')).toMatch(/refetchInterval:\s*\(query\)\s*=>\s*agencyConversationRefetchInterval\(query\.state\)/);
+  });
+
+  it('a revoked connection is read-only, even while its activation row stands', async () => {
+    const f = fixture();
+    f.workspace_connections[0].state = 'revoked';
+    const read = await readAgencyConversation(standIn(f).client, {
+      organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME,
+    });
+    expect(read).toMatchObject({ ok: true, open: false });
+    if (read.ok) expect(read.messages.length).toBeGreaterThan(0);
+  });
+
+  it('a withdrawn activation is read-only', async () => {
+    const f = fixture();
+    f.builder_stock_selection_announcements[0].status = 'withdrawn';
+    const read = await readAgencyConversation(standIn(f).client, {
+      organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME,
+    });
+    expect(read).toMatchObject({ ok: true, open: false });
+  });
+});
+
+describe('what a message tells the reader', () => {
+  const rows = fixture().builder_agency_messages.filter((m) => m.conversation_id === CONV);
+  const projected = projectAgencyMessages(rows, ME);
+
+  it('names the actual sender on every message, and which side they are on', () => {
+    expect(projected.map((m) => [m.sender_display_name, m.side])).toEqual([
+      ['Avery Builder', 'builder'], ['Casey Agent', 'command_centre'], ['Alex Builder', 'builder'],
+    ]);
+  });
+
+  it('shows a delivery state only for what this side sent', () => {
+    expect(projected.find((m) => m.id === 'm2')!.delivery_state).toBeNull();
+    expect(projected.find((m) => m.id === 'm3')!.delivery_state).toBe('delivered');
+  });
+
+  it('offers a retry only to the writer of a failed message', () => {
+    expect(projected.find((m) => m.id === 'm1')).toMatchObject({ mine: true, can_retry: true, delivery_state: 'failed' });
+    expect(projected.find((m) => m.id === 'm3')).toMatchObject({ mine: false, can_retry: false });
+  });
+
+  it('never carries a user id or the client key', () => {
+    const text = JSON.stringify(projected);
+    expect(text).not.toContain(ME);
+    expect(text).not.toContain('user-colleague');
+    expect(text).not.toContain('client-1');
+    for (const m of projected) {
+      expect(m).not.toHaveProperty('sender_builder_user_id');
+      expect(m).not.toHaveProperty('client_message_id');
+    }
+  });
+});
+
+describe('refusals read as what they are', () => {
+  it.each([
+    ['AGENCY_CONVERSATION_NOT_FOUND', 404, 'not_found'],
+    ['AGENCY_CONVERSATION_NOT_OPEN', 409, 'conversation_not_open'],
+    ['AGENCY_MESSAGE_INVALID', 400, 'invalid_message'],
+    ['AGENCY_MESSAGE_NOT_RETRYABLE', 409, 'not_retryable'],
+    ['AGENCY_SENDER_NOT_A_MEMBER', 403, 'not_a_member'],
+    ['AGENCY_MESSAGE_ID_REUSED', 409, 'message_id_reused'],
+  ])('%s → %i', (raw, status, code) => {
+    expect(agencyMessageRefusal(`ERROR: ${raw}`)).toMatchObject({ status, code });
+  });
+  it('anything else is not the caller\'s fault', () => {
+    expect(agencyMessageRefusal('connection reset')).toBeNull();
+  });
+});
+
+describe('the edge operations', () => {
+  const stock = readCode('supabase/functions/builder-portal-stock/index.ts');
+  const op = (name: string) => {
+    const start = stock.indexOf(`operation === '${name}'`);
+    const next = stock.indexOf('operation ===', start + 20);
+    return stock.slice(start, next > 0 ? next : undefined);
+  };
+
+  it('all three exist behind the inventory gate', () => {
+    const gate = stock.indexOf("if (!await can('view'))");
+    for (const name of ['get_agency_conversation', 'send_agency_message', 'retry_agency_message']) {
+      expect(stock.indexOf(`operation === '${name}'`), name).toBeGreaterThan(gate);
+    }
+  });
+
+  it('writing needs inventory edit; reading needs only the gate', () => {
+    expect(op('send_agency_message')).toContain("await can('edit')");
+    expect(op('retry_agency_message')).toContain("await can('edit')");
+    expect(op('get_agency_conversation')).not.toContain("if (!await can('edit'))");
+  });
+
+  it('the organisation and the sender come from the session, never the body', () => {
+    for (const name of ['get_agency_conversation', 'send_agency_message', 'retry_agency_message']) {
+      const body = op(name);
+      expect(body, name).not.toMatch(/body\.(organisation_id|organisationId|sender|user_id|builder_user_id)/);
+    }
+    expect(op('send_agency_message')).toContain('_organisation_id: activeOrganisationId');
+    expect(op('send_agency_message')).toContain('_sender_builder_user_id: me.id');
+    expect(op('retry_agency_message')).toContain('_sender_builder_user_id: me.id');
+  });
+
+  it('no model, no email: a message is text between people', () => {
+    for (const name of ['send_agency_message', 'retry_agency_message']) {
+      expect(op(name)).not.toMatch(/openrouter|anthropic|openai|resend|sendEmail/i);
+    }
+  });
+});
+
+describe('the browser\'s half', () => {
+  it('mints a fresh idempotency key per message', () => {
+    const a = newClientMessageId();
+    const b = newClientMessageId();
+    expect(a).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(a).not.toBe(b);
+  });
+
+  it('names the three delivery states in words', () => {
+    expect(outboundStateLabel('queued')).toBe('Sending');
+    expect(outboundStateLabel('delivered')).toBe('Delivered');
+    expect(outboundStateLabel('failed')).toBe('Not delivered');
+    expect(outboundStateLabel('failed', 'refused:conversation_not_open')).toBe('Not delivered');
+    // Nobody refused it: the other side may have it, and we never heard back.
+    expect(outboundStateLabel('failed', 'confirmation_timeout')).toBe('Not confirmed');
+  });
+});
+
+describe('a refusal at the door says which keys were wrong', () => {
+  it('names mistyped keys (a skewed schema_version) as well as unexpected and missing ones, and never a value', () => {
+    const door = readCode('supabase/functions/builder-network-inbound/index.ts');
+    const start = door.indexOf('builder_network_inbound_message_contract_violation');
+    const block = door.slice(start, door.indexOf("'message_contract_failed'", start));
+    expect(block).toMatch(/mistyped_keys:\s*contract\.mistyped\.slice\(0,\s*20\)/);
+    expect(block).toMatch(/unexpected_keys:\s*contract\.unexpected/);
+    expect(block).toMatch(/missing_keys:\s*contract\.missing/);
+    expect(block).not.toMatch(/envelope\.payload\[/);
+  });
+});
+
+describe('following what a poll brings in', () => {
+  it('opens at the end, follows a new last message, brings a late one into view, and stays put otherwise', () => {
+    expect(arrivalScrollTarget(null, ['a', 'b'])).toBe('end');
+    expect(arrivalScrollTarget(['a', 'b'], ['a', 'b', 'c'])).toBe('end');
+    expect(arrivalScrollTarget(['a', 'c'], ['a', 'b', 'c'])).toBe('b');
+    expect(arrivalScrollTarget(['a', 'b'], ['a', 'b'])).toBeNull();
+    expect(arrivalScrollTarget(['a', 'b'], ['b'])).toBeNull();
+    // A late message and a new last one in the same poll: the late one is
+    // brought into view first, or it would be left above the reader unseen.
+    expect(arrivalScrollTarget(['a', 'c'], ['a', 'b', 'c', 'd'])).toBe('b');
+    expect(arrivalScrollTarget(['c'], ['a', 'b', 'c', 'd'])).toBe('a');
+  });
+});
+
+describe('polling and paging', () => {
+  it('polls an open conversation, and a closed one only slowly, so a re-activation still reopens it', () => {
+    expect(agencyConversationPollInterval(undefined)).toBe(AGENCY_CONVERSATION_POLL_MS);
+    expect(agencyConversationPollInterval({ open: true })).toBe(AGENCY_CONVERSATION_POLL_MS);
+    expect(agencyConversationPollInterval({ open: false })).toBe(AGENCY_CONVERSATION_CLOSED_POLL_MS);
+    expect(AGENCY_CONVERSATION_CLOSED_POLL_MS).toBeGreaterThanOrEqual(6 * AGENCY_CONVERSATION_POLL_MS);
+    expect(readCode('src/lib/builderStockQueries.ts'))
+      .toMatch(/refetchInterval:\s*\(query\)\s*=>\s*agencyConversationRefetchInterval\(query\.state\)/);
+    expect(readCode('src/lib/builderAgency.ts'))
+      .toMatch(/accessRefused\(state\.error\)\s*\?\s*false\s*:\s*agencyConversationPollInterval\(state\.data\)/);
+  });
+
+  it('collects every page, in order, and stops at the stated last page', async () => {
+    const asked: number[] = [];
+    const all = await collectEveryPage(async (page) => {
+      asked.push(page);
+      return { records: [`r${page}a`, `r${page}b`], pagination: { page, page_size: 2, total: 5, total_pages: 3 } };
+    });
+    expect(asked).toEqual([1, 2, 3]);
+    expect(all.records).toEqual(['r1a', 'r1b', 'r2a', 'r2b', 'r3a', 'r3b']);
+    expect(all.truncated).toBe(false);
+  });
+
+  it('the refresh reaches the same cache the full list is read from', () => {
+    const q = readCode('src/lib/builderStockQueries.ts');
+    expect(q).toMatch(/queryKey:\s*EVERY_ACTIVATED_PROPERTIES_KEY/);
+    expect(q).toMatch(/invalidateQueries\(\{\s*queryKey:\s*EVERY_ACTIVATED_PROPERTIES_KEY\s*\}\)/);
+  });
+
+  it('follows every page the server reports, past any fixed page count (an organisation with 4,000+ activations)', async () => {
+    const asked: number[] = [];
+    const all = await collectEveryPage(async (page) => {
+      asked.push(page);
+      return { records: [page], pagination: { page, page_size: 1, total: 60, total_pages: 60 } };
+    });
+    expect(asked.length).toBe(60);
+    expect(all.records).toEqual(Array.from({ length: 60 }, (_, i) => i + 1));
+    expect(all.truncated).toBe(false);
+  });
+
+  it('stops at an empty page, whatever the server claims', async () => {
+    let asked = 0;
+    const all = await collectEveryPage(async (page) => {
+      asked += 1;
+      return { records: page <= 3 ? [page] : [], pagination: { page, page_size: 1, total: 1_000_000, total_pages: 1_000_000 } };
+    });
+    expect(asked).toBe(4);
+    expect(all.records).toEqual([1, 2, 3]);
+  });
+
+  it('stops once it holds the count the server stated, whatever page count it claims', async () => {
+    let asked = 0;
+    await collectEveryPage(async (page) => {
+      asked += 1;
+      return { records: [page, page], pagination: { page, page_size: 2, total: 6, total_pages: 1_000_000 } };
+    });
+    expect(asked).toBe(3);
+  });
+
+  it('never walks past the page the server clamps to: a repeated page is truncation, not more rows', async () => {
+    // stockPagination answers page 500 for any request above it, so an
+    // organisation with more than 50,000 activations would otherwise get
+    // page 500 appended again and again until the count was reached.
+    const MAX = 500;
+    const asked: number[] = [];
+    const all = await collectEveryPage(async (requested) => {
+      asked.push(requested);
+      const page = Math.min(MAX, requested);
+      return { records: [`r${page}`], pagination: { page, page_size: 1, total: 60_000, total_pages: 60_000 } };
+    });
+    expect(asked.length).toBe(MAX + 1);
+    expect(all.records.length).toBe(MAX);
+    expect(new Set(all.records).size).toBe(MAX);
+    expect(all.truncated).toBe(true);
+  });
+
+  it('the server that clamps is the server this walks: the page it answered is part of the reply', () => {
+    const read = readCode('supabase/functions/_shared/builderStock/activatedProperties.ts');
+    expect(read).toMatch(/pagination:\s*\{[\s\S]*?\bpage\b/);
+    const projection = readCode('supabase/functions/_shared/builderStock/projection.pure.ts');
+    expect(projection).toMatch(/Math\.min\(500,/);
+  });
+});
+
+describe('a reader who may not write', () => {
+  it('is never offered "Send again": the read gates the retry on inventory edit', () => {
+    const stock = readCode('supabase/functions/builder-portal-stock/index.ts');
+    const start = stock.indexOf("operation === 'get_agency_conversation'");
+    const op = stock.slice(start, stock.indexOf('operation ===', start + 20));
+    expect(op).toMatch(/can_retry:\s*message\.can_retry\s*&&\s*mayEdit/);
+  });
+});
+
+describe('the exact message contract, at the door', () => {
+  const posted = {
+    schema_version: 1, conversation_id: '00000000-0000-4000-8000-00000000000c', message_id: '00000000-0000-4000-8000-00000000000d', stock_item_id: 'i', body: 'Hello',
+    sender_display_name: 'Avery', sent_at: '2026-09-25T00:00:00Z', generation: 1,
+  };
+  const receipt = { schema_version: 1, message_id: '00000000-0000-4000-8000-00000000000d', conversation_id: '00000000-0000-4000-8000-00000000000c', generation: 1, outcome: 'accepted' };
+
+  it('accepts exactly the contract\'s keys, and a receipt\'s optional reason', () => {
+    expect(agencyPayloadContractViolation('agency.message.posted', posted)).toBeNull();
+    expect(agencyPayloadContractViolation('agency.message.receipt', receipt)).toBeNull();
+    expect(agencyPayloadContractViolation('agency.message.receipt', { ...receipt, outcome: 'refused', reason: 'x' })).toBeNull();
+  });
+
+  it('refuses any key outside the contract, naming the key and never its value', () => {
+    const extra = agencyPayloadContractViolation('agency.message.posted', { ...posted, customer_details: 'Jordan Buyer, 0400 000 000' });
+    expect(extra).toMatchObject({ unexpected: ['customer_details'], missing: [] });
+    expect(JSON.stringify(extra)).not.toContain('Jordan');
+    expect(agencyPayloadContractViolation('agency.message.receipt', { ...receipt, client_id: 'x' }))
+      .toMatchObject({ unexpected: ['client_id'] });
+  });
+
+  it('refuses a payload missing a contract key, and one that is not an object', () => {
+    const { body: _omit, ...short } = posted;
+    expect(agencyPayloadContractViolation('agency.message.posted', short)).toMatchObject({ missing: ['body'] });
+    expect(agencyPayloadContractViolation('agency.message.posted', null)).not.toBeNull();
+    expect(agencyPayloadContractViolation('agency.message.posted', ['x'])).not.toBeNull();
+  });
+
+  it('has no opinion on event types that are not messages', () => {
+    expect(agencyPayloadContractViolation('stock.selection.announced', { anything: 1 })).toBeNull();
+  });
+
+  it('the door checks the contract before it stores anything', () => {
+    const door = readCode('supabase/functions/builder-network-inbound/index.ts');
+    const check = door.indexOf('agencyPayloadContractViolation(');
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(door.indexOf(".from('builder_network_inbound_events')"));
+  });
+});
+
+describe('the exact message contract: each value\'s JSON type', () => {
+  const posted = {
+    schema_version: 1, conversation_id: '00000000-0000-4000-8000-00000000000c', message_id: '00000000-0000-4000-8000-00000000000d', stock_item_id: 'i', body: 'Hello',
+    sender_display_name: 'Avery', sent_at: '2026-09-25T00:00:00Z', generation: 1,
+  };
+  it('refuses a body, a name or an id that is not a string, and a generation that is not a number', () => {
+    expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, body: { text: 'hello' } }))
+      .toMatchObject({ mistyped: ['body'] });
+    expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, sender_display_name: ['A'] }))
+      .toMatchObject({ mistyped: ['sender_display_name'] });
+    expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, generation: '1' }))
+      .toMatchObject({ mistyped: ['generation'] });
+    expect(agencyPayloadContractViolation('agency.message.receipt',
+      { schema_version: 1, message_id: '00000000-0000-4000-8000-00000000000d', conversation_id: '00000000-0000-4000-8000-00000000000c', generation: 1, outcome: 'refused', reason: 7 }))
+      .toMatchObject({ mistyped: ['reason'] });
+  });
+  it('accepts a receipt whose reason is absent or null', () => {
+    const receipt = { schema_version: 1, message_id: '00000000-0000-4000-8000-00000000000d', conversation_id: '00000000-0000-4000-8000-00000000000c', generation: 1, outcome: 'accepted' };
+    expect(agencyPayloadContractViolation('agency.message.receipt', receipt)).toBeNull();
+    expect(agencyPayloadContractViolation('agency.message.receipt', { ...receipt, reason: null })).toBeNull();
+  });
+});
+
+describe('the conversation log', () => {
+  it('is scrolled to its newest message', () => {
+    const log = { scrollTop: 0, scrollHeight: 1840 };
+    scrollLogToEnd(log);
+    expect(log.scrollTop).toBe(1840);
+    expect(() => scrollLogToEnd(null)).not.toThrow();
+  });
+});
+
+describe('a message envelope\'s dedupe key is bound to its payload', () => {
+  const posted = { schema_version: 1, conversation_id: 'c', message_id: 'm-1', stock_item_id: 'i', body: 'Hi',
+    sender_display_name: 'A', sent_at: '2026-09-25T00:00:00Z', generation: 2 };
+  it('names the key the payload implies, and nothing for other events', () => {
+    expect(agencyDedupeKeyFor('agency.message.posted', posted)).toBe('agency.message:m-1:2');
+    expect(agencyDedupeKeyFor('agency.message.receipt', { message_id: 'm-1', generation: 3 })).toBe('agency.receipt:m-1:3');
+    expect(agencyDedupeKeyFor('stock.selection.announced', { message_id: 'm-1', generation: 1 })).toBeNull();
+  });
+  it('the door refuses a message envelope whose key is not that one, before it stores anything', () => {
+    const door = readCode('supabase/functions/builder-network-inbound/index.ts');
+    const check = door.indexOf('agencyDedupeKeyFor(');
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(door.indexOf(".from('builder_network_inbound_events')"));
+    expect(door).toMatch(/message_dedupe_key_mismatch/);
+  });
+});
+
+describe('a generation is a positive whole number', () => {
+  const posted = { schema_version: 1, conversation_id: '00000000-0000-4000-8000-00000000000c', message_id: '00000000-0000-4000-8000-00000000000d', stock_item_id: 'i', body: 'Hi',
+    sender_display_name: 'A', sent_at: '2026-09-25T00:00:00Z', generation: 1 };
+  it('refuses a malformed message or conversation id, or an unknown receipt outcome, so a sweep never drops it silently', () => {
+    const id = '00000000-0000-4000-8000-0000000000aa';
+    const good = { ...posted, message_id: id, conversation_id: id };
+    expect(agencyPayloadContractViolation('agency.message.posted', good)).toBeNull();
+    expect(agencyPayloadContractViolation('agency.message.posted', { ...good, message_id: 'not-a-uuid' })).toMatchObject({ mistyped: ['message_id'] });
+    expect(agencyPayloadContractViolation('agency.message.posted', { ...good, conversation_id: '' })).toMatchObject({ mistyped: ['conversation_id'] });
+    const receipt = { schema_version: 1, message_id: id, conversation_id: id, generation: 1, outcome: 'accepted' };
+    expect(agencyPayloadContractViolation('agency.message.receipt', receipt)).toBeNull();
+    expect(agencyPayloadContractViolation('agency.message.receipt', { ...receipt, outcome: 'refused', reason: 'x' })).toBeNull();
+    expect(agencyPayloadContractViolation('agency.message.receipt', { ...receipt, outcome: 'delivered' })).toMatchObject({ mistyped: ['outcome'] });
+    expect(agencyPayloadContractViolation('agency.message.receipt', { ...receipt, message_id: 'm' })).toMatchObject({ mistyped: ['message_id'] });
+  });
+  it('refuses a schema version it cannot apply, so a skewed peer keeps retrying instead of being marked delivered', () => {
+    for (const schema_version of [2, 0, 1.5]) {
+      expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, schema_version })).toMatchObject({ mistyped: ['schema_version'] });
+      expect(agencyPayloadContractViolation('agency.message.receipt',
+        { schema_version, message_id: '00000000-0000-4000-8000-00000000000d', conversation_id: '00000000-0000-4000-8000-00000000000c', generation: 1, outcome: 'accepted' })).toMatchObject({ mistyped: ['schema_version'] });
+    }
+    expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, schema_version: 1 })).toBeNull();
+  });
+  it('refuses a fractional, zero, negative or out-of-range generation', () => {
+    for (const generation of [1.5, 0, -1, 2 ** 31]) {
+      expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, generation })).toMatchObject({ mistyped: ['generation'] });
+    }
+    expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, generation: 7 })).toBeNull();
+  });
+});
+
+describe('a duplicate message key is a duplicate only if it is the same envelope', () => {
+  const stored = { connection_id: 'conn', event_type: 'agency.message.posted',
+    payload: { message_id: 'm', generation: 1, body: 'Hello', sent_at: '2026-09-25T00:00:00Z' } };
+  it('matches the same envelope whatever the key order', () => {
+    expect(sameAgencyEnvelope(stored, { ...stored, payload: { sent_at: '2026-09-25T00:00:00Z', body: 'Hello', generation: 1, message_id: 'm' } })).toBe(true);
+  });
+  it('does not match a changed body, another connection or another type', () => {
+    expect(sameAgencyEnvelope(stored, { ...stored, payload: { ...stored.payload, body: 'Changed' } })).toBe(false);
+    expect(sameAgencyEnvelope(stored, { ...stored, connection_id: 'other' })).toBe(false);
+    expect(sameAgencyEnvelope(stored, { ...stored, event_type: 'agency.message.receipt' })).toBe(false);
+  });
+  it('the door compares a message duplicate before acknowledging it', () => {
+    const door = readCode('supabase/functions/builder-network-inbound/index.ts');
+    const dup = door.slice(door.indexOf("=== '23505'"));
+    expect(dup.indexOf('sameAgencyEnvelope(')).toBeGreaterThan(-1);
+    expect(dup.indexOf('sameAgencyEnvelope(')).toBeLessThan(dup.indexOf('duplicate: true'));
+    expect(dup).toMatch(/error: 'message_conflict' \}, 409/);
+  });
+});
+
+describe('a read the reader may no longer see', () => {
+  it('is a 401 or a 403, never a transient failure', () => {
+    expect(accessRefused({ status: 401 })).toBe(true);
+    expect(accessRefused({ status: 403 })).toBe(true);
+    expect(accessRefused({ status: 503 })).toBe(false);
+    expect(accessRefused(new Error('Failed to fetch'))).toBe(false);
+    expect(accessRefused(null)).toBe(false);
+  });
+});
+
+describe('a refusal is not retried before it is shown', () => {
+  it('retries a transient failure once and a refusal never', () => {
+    expect(retryUnlessRefused(0, { status: 503 })).toBe(true);
+    expect(retryUnlessRefused(1, { status: 503 })).toBe(false);
+    expect(retryUnlessRefused(0, { status: 401 })).toBe(false);
+    expect(retryUnlessRefused(0, { status: 403 })).toBe(false);
+  });
+
+  it('the first page, the full list and the conversation all use it', () => {
+    const q = readCode('src/lib/builderStockQueries.ts');
+    for (const hook of ['useBuilderActivatedProperties', 'useEveryBuilderActivatedProperty', 'useAgencyConversation']) {
+      const start = q.indexOf(`export function ${hook}(`);
+      expect(start).toBeGreaterThan(-1);
+      const body = q.slice(start, q.indexOf('\nexport ', start + 10));
+      expect(body).toMatch(/retry:\s*retryUnlessRefused/);
+    }
+  });
+});
+
+describe('the conversation poll after a refusal', () => {
+  it('stops, and keeps polling through a transient failure', () => {
+    const data = { open: true };
+    expect(agencyConversationRefetchInterval({ data, error: { status: 403 } })).toBe(false);
+    expect(agencyConversationRefetchInterval({ data, error: { status: 401 } })).toBe(false);
+    expect(agencyConversationRefetchInterval({ data, error: { status: 503 } })).toBe(agencyConversationPollInterval(data));
+    expect(agencyConversationRefetchInterval({ data, error: null })).toBe(agencyConversationPollInterval(data));
+  });
+
+  it('the poll reads it', () => {
+    expect(readCode('src/lib/builderStockQueries.ts'))
+      .toMatch(/refetchInterval:\s*\(query\)\s*=>\s*agencyConversationRefetchInterval\(query\.state\)/);
+  });
+});

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Handshake, Loader2, MessageSquare, RefreshCw, Send, ShieldAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -11,11 +11,16 @@ import {
   ActivationContact, ActivationProjectLink, ActivationStatusBadge,
 } from '@/components/builder-portal/StockActivation';
 import { StockPicture } from '@/components/stock/StockPicture';
-import { builderStockImageUrl, useBuilderActivatedProperties } from '@/lib/builderStockQueries';
+import {
+  builderStockImageUrl, useAgencyConversation, useBuilderActivatedProperties, useEveryBuilderActivatedProperty, useRefreshEveryBuilderActivatedProperty,
+  useRetryAgencyMessage, useSendAgencyMessage,
+} from '@/lib/builderStockQueries';
+import { useToast } from '@/hooks/use-toast';
 import { isDisplayableSourceImage, type BuilderStockImage } from '@/lib/builderStock';
 import {
   AGENCIES_PATH, activatedPropertyLocality, activatedPropertyTitle, agencyLabel,
-  agencyTabFrom, agencyThreadsFrom, type ActivatedProperty, type AgencyThread, type AgencyTab,
+  accessRefused, agencyTabFrom, agencyThreadsFrom, newClientMessageId, outboundStateLabel, arrivalScrollTarget, scrollLogToEnd, scrollMessageIntoView,
+  type ActivatedProperty, type AgencyMessageView, type AgencyThread, type AgencyTab,
 } from '@/lib/builderAgency';
 
 /**
@@ -33,26 +38,33 @@ import {
  * builder was never told (who the agency's client is). A project is linked
  * only where the builder already has project access.
  *
- * The Messages tab is a SHELL. It lists one conversation per agency and
- * property and shows each empty, with the composer disabled, because there
- * is no transport yet. It sends nothing and invents nothing.
+ * The Messages tab lists one conversation per agency and property and reads
+ * each through `get_agency_conversation`, polled while it is open. A message
+ * is written with one idempotency key (reused if the same send is repeated),
+ * shows who wrote it and — for what this side sent — whether it arrived, and
+ * a failed one stays visible with "Send again". Writing needs inventory edit
+ * and an activation that is still live; the server decides both.
  */
 export default function BuilderAgencies() {
   const params = useParams<{ tab?: string }>();
   const navigate = useNavigate();
   const tab = agencyTabFrom(params.tab);
   const query = useBuilderActivatedProperties(1);
+  const refreshEvery = useRefreshEveryBuilderActivatedProperty();
+  const refresh = () => { void query.refetch(); void refreshEvery(); };
 
   const records = query.data?.records ?? [];
   const status = (query.error as { status?: number } | null)?.status;
   const denied = status === 403;
+  // A refusal withdraws what was read; any other failure keeps it.
+  const refused = accessRefused(query.error);
 
   return (
     <BuilderPortalShell
       title="Agencies"
       description="The agencies connected to you through their Command Centre: the properties they have activated from your stock list, and your conversations with them."
       actions={(
-        <Button variant="outline" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching}>
+        <Button variant="outline" size="sm" onClick={refresh} disabled={query.isFetching}>
           <RefreshCw className={cn('mr-2 h-4 w-4', query.isFetching && 'animate-spin')} aria-hidden />
           Refresh
         </Button>
@@ -73,19 +85,32 @@ export default function BuilderAgencies() {
           </TabsTrigger>
         </TabsList>
 
+        {/* A read that fails blocks the page only when nothing was read:
+            a failed refresh keeps what was read, which is still true and
+            may just be behind. */}
         <TabsContent value="activations" className="mt-6">
-          {query.isLoading ? <Loading /> : query.error ? (
+          {query.isLoading ? <Loading /> : query.error && (!query.data || refused) ? (
             <ReadFailure denied={denied} onRetry={() => void query.refetch()} />
           ) : (
-            <ActivatedPropertiesList records={records} />
+            <div className="space-y-3">
+              {query.error ? (
+                <div role="status" className="flex flex-wrap items-center gap-2 text-sm text-destructive">
+                  <span>Your activations could not be refreshed. This is the list as last read.</span>
+                  <Button type="button" variant="outline" size="sm" onClick={() => void query.refetch()}>Try again</Button>
+                </div>
+              ) : null}
+              <ActivatedPropertiesList records={records} />
+            </div>
           )}
         </TabsContent>
 
+        {/* The Messages tab reads the full list itself and says when that
+            fails; the first page is only its stand-in while it loads. */}
         <TabsContent value="messages" className="mt-6">
-          {query.isLoading ? <Loading /> : query.error ? (
+          {query.isLoading ? <Loading /> : query.error && (!query.data || refused) ? (
             <ReadFailure denied={denied} onRetry={() => void query.refetch()} />
           ) : (
-            <MessagesShell records={records} />
+            <MessagesShell firstPage={records} />
           )}
         </TabsContent>
       </Tabs>
@@ -195,20 +220,53 @@ function ActivatedPropertiesList({ records }: { records: ActivatedProperty[] }) 
   );
 }
 
-function MessagesShell({ records }: { records: ActivatedProperty[] }) {
+function MessagesShell({ firstPage }: { firstPage: ActivatedProperty[] }) {
+  // Every activation, not just the first page the list tab shows, so no
+  // conversation is unreachable; the first page stands in until it arrives.
+  const every = useEveryBuilderActivatedProperty();
+  const records = every.data?.records ?? firstPage;
   const threads = useMemo(() => agencyThreadsFrom(records), [records]);
   const [params, setParams] = useSearchParams();
   const selectedKey = params.get('thread') ?? '';
   const selected = threads.find((thread) => thread.key === selectedKey) ?? null;
 
+  // The first page stands in only while the full list is loading. A full
+  // list that FAILED is said so: the first page is not the complete list.
+  if (every.error && (!every.data || accessRefused(every.error))) {
+    const status = (every.error as { status?: number } | null)?.status;
+    return <ReadFailure denied={status === 403} onRetry={() => void every.refetch()} />;
+  }
+
+  // A refresh that failed after the list was read once keeps the list it
+  // has, and says it may be out of date: a conversation opened since would
+  // otherwise look as though it did not exist.
+  const stale = every.error && every.data ? (
+    <div role="status" className="flex flex-wrap items-center gap-2 text-sm text-destructive">
+      <span>The conversation list could not be refreshed. This is the list as last read.</span>
+      <Button type="button" variant="outline" size="sm" onClick={() => void every.refetch()}>Try again</Button>
+    </div>
+  ) : null;
+
+  // The server stopped serving new pages before the list was complete: say
+  // so, rather than presenting the part it served as every conversation.
+  const truncated = every.data?.truncated ? (
+    <p role="status" className="text-sm text-muted-foreground">
+      Not every conversation is listed: only the first {every.data.records.length.toLocaleString('en-AU')} activations could be read.
+    </p>
+  ) : null;
+
   if (!threads.length) {
     return (
-      <Card>
-        <CardContent className="py-8 text-sm text-muted-foreground">
-          No conversations yet. A conversation opens here for each property an agency activates
-          from your stock list.
-        </CardContent>
-      </Card>
+      <div className="space-y-3">
+        {stale}
+        {truncated}
+        <Card>
+          <CardContent className="py-8 text-sm text-muted-foreground">
+            No conversations yet. A conversation opens here for each property an agency activates
+            from your stock list.
+          </CardContent>
+        </Card>
+      </div>
     );
   }
 
@@ -219,6 +277,9 @@ function MessagesShell({ records }: { records: ActivatedProperty[] }) {
   };
 
   return (
+    <div className="space-y-3">
+    {stale}
+    {truncated}
     <div className="grid gap-4 lg:grid-cols-[20rem_minmax(0,1fr)]">
       <div role="listbox" aria-label="Conversations" className="space-y-2">
         {threads.map((thread) => (
@@ -238,7 +299,7 @@ function MessagesShell({ records }: { records: ActivatedProperty[] }) {
           </button>
         ))}
       </div>
-      {selected ? <ThreadShell thread={selected} /> : (
+      {selected ? <ThreadView key={selected.key} thread={selected} /> : (
         <Card>
           <CardContent className="py-8 text-sm text-muted-foreground">
             Choose a conversation to see it.
@@ -246,10 +307,67 @@ function MessagesShell({ records }: { records: ActivatedProperty[] }) {
         </Card>
       )}
     </div>
+    </div>
   );
 }
 
-function ThreadShell({ thread }: { thread: AgencyThread }) {
+function ThreadView({ thread }: { thread: AgencyThread }) {
+  const { toast } = useToast();
+  const query = useAgencyConversation(thread.connection_id, thread.stock_item_id);
+  const send = useSendAgencyMessage(thread.connection_id, thread.stock_item_id);
+  const retry = useRetryAgencyMessage(thread.connection_id, thread.stock_item_id);
+  const [draft, setDraft] = useState('');
+  // One key per message the person writes. A send that fails in flight is
+  // repeated with the SAME key, so it can never arrive twice.
+  const [clientMessageId, setClientMessageId] = useState(newClientMessageId);
+
+  // A refusal withdraws the history and the composer; a transient failure
+  // keeps what was read.
+  const accessLost = accessRefused(query.error);
+  const conversation = accessLost ? undefined : query.data;
+  const messages = conversation?.messages ?? [];
+  const canSend = !!conversation?.can_send;
+  // Open at the newest message, and follow whatever a poll brings in, even a
+  // late message that sorts above the newest one.
+  const logRef = useRef<HTMLDivElement>(null);
+  const seenIdsRef = useRef<string[] | null>(null);
+  const idsKey = messages.map((message) => message.id).join(',');
+  useEffect(() => {
+    const ids = idsKey ? idsKey.split(',') : [];
+    const target = arrivalScrollTarget(seenIdsRef.current, ids);
+    seenIdsRef.current = ids;
+    if (target === 'end') scrollLogToEnd(logRef.current);
+    else if (target) scrollMessageIntoView(logRef.current, target);
+  }, [idsKey]);
+
+  const submit = async () => {
+    const body = draft.trim();
+    if (!body || send.isPending) return;
+    try {
+      await send.mutateAsync({ clientMessageId, body });
+      setDraft('');
+      setClientMessageId(newClientMessageId());
+    } catch (error) {
+      toast({
+        title: 'Your message was not sent',
+        description: error instanceof Error ? error.message : 'Try again shortly.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const sendAgain = async (messageId: string) => {
+    try {
+      await retry.mutateAsync(messageId);
+    } catch (error) {
+      toast({
+        title: 'That message could not be sent again',
+        description: error instanceof Error ? error.message : 'Try again shortly.',
+        variant: 'destructive',
+      });
+    }
+  };
+
   return (
     <Card>
       <CardContent className="space-y-4 py-5">
@@ -260,28 +378,108 @@ function ThreadShell({ thread }: { thread: AgencyThread }) {
             {thread.agency.contact_name ? ` · ${thread.agency.contact_name}` : ''}
           </p>
         </div>
-        <div className="rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
-          <p className="font-medium text-foreground">No messages yet.</p>
-          <p className="mt-1">
-            Messaging with agencies is not switched on yet. When it is, your conversation with this
-            agency about this property will appear here.
+
+        {/* A poll that fails after the conversation was read keeps what was
+            read: the history is still true, it may just be behind. */}
+        {accessLost ? (
+          <p className="text-sm text-muted-foreground">
+            This conversation is no longer available to you.
           </p>
-        </div>
+        ) : null}
+
+        {query.error && conversation ? (
+          <p role="status" className="text-sm text-muted-foreground">
+            This conversation could not be refreshed just now, so newer messages may be missing. It will try again shortly.
+          </p>
+        ) : null}
+
+        {query.isLoading ? <Loading /> : query.error && !conversation && !accessLost ? (
+          <p className="text-sm text-muted-foreground">
+            This conversation could not be loaded just now. It will try again shortly.
+          </p>
+        ) : accessLost ? null : messages.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
+            <p className="font-medium text-foreground">No messages yet.</p>
+            <p className="mt-1">Anything you write here is sent to {agencyLabel(thread.agency)} about this property.</p>
+          </div>
+        ) : (
+          <div ref={logRef} role="log" aria-label="Conversation" aria-live="polite" className="max-h-[28rem] space-y-3 overflow-y-auto pr-1">
+            {messages.map((message) => (
+              <MessageBubble key={message.id} message={message} canRetry={canSend && message.can_retry} onRetry={sendAgain} retrying={retry.isPending} />
+            ))}
+          </div>
+        )}
+
+        {conversation && !conversation.open ? (
+          <p className="text-sm text-muted-foreground">
+            This property is no longer activated by this agency, so the conversation is closed. Its history stays here.
+          </p>
+        ) : null}
+
         <div className="space-y-2">
           <Textarea
             aria-label="Message"
-            placeholder="Messaging is not available yet"
-            disabled
+            placeholder={canSend ? 'Write a message' : 'You cannot write in this conversation'}
+            value={draft}
+            maxLength={4000}
+            onChange={(event) => {
+              // Different text is a different message: the key a failed send
+              // is repeated under belongs to the text it was sent with.
+              setDraft(event.target.value);
+              setClientMessageId(newClientMessageId());
+            }}
+            disabled={!canSend || send.isPending}
             rows={3}
           />
           <div className="flex justify-end">
-            <Button type="button" disabled>
-              <Send className="mr-2 h-4 w-4" aria-hidden />
+            <Button type="button" onClick={() => void submit()} disabled={!canSend || send.isPending || !draft.trim()}>
+              {send.isPending
+                ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+                : <Send className="mr-2 h-4 w-4" aria-hidden />}
               Send
             </Button>
           </div>
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function MessageBubble({
+  message, canRetry, onRetry, retrying,
+}: {
+  message: AgencyMessageView;
+  /** The message's own retry flag AND whether this reader may write here now. */
+  canRetry: boolean;
+  onRetry: (id: string) => void;
+  retrying: boolean;
+}) {
+  const ours = message.side === 'builder';
+  return (
+    <article
+      data-message-id={message.id}
+      className={cn(
+        'max-w-[85%] rounded-lg border px-3 py-2 text-sm',
+        ours ? 'ml-auto border-primary/30 bg-primary/5' : 'mr-auto border-border bg-card',
+      )}
+    >
+      <p className="text-xs text-muted-foreground">
+        <span className="font-medium text-foreground">{message.sender_display_name}</span>
+        {' · '}{ours ? 'Your team' : 'Agency'}{' · '}{when(message.sent_at)}
+      </p>
+      <p className="mt-1 whitespace-pre-wrap break-words text-foreground">{message.body}</p>
+      {message.delivery_state ? (
+        <p className={cn('mt-1 flex items-center gap-2 text-xs',
+          message.delivery_state === 'failed' ? 'text-destructive' : 'text-muted-foreground')}>
+          <span>{outboundStateLabel(message.delivery_state, message.failure_reason)}</span>
+          {canRetry ? (
+            <Button type="button" variant="outline" size="sm" className="h-6 px-2 text-xs"
+              onClick={() => onRetry(message.id)} disabled={retrying}>
+              Send again
+            </Button>
+          ) : null}
+        </p>
+      ) : null}
+    </article>
   );
 }

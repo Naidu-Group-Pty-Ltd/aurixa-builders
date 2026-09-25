@@ -18,7 +18,9 @@ import type {
   BuilderStockItem, BuilderStockSelectionForBuilder, BuilderStockUpload,
   ManualStatField, StatedLocationField,
 } from '@/lib/builderStock';
-import type { ActivatedProperty } from '@/lib/builderAgency';
+import {
+  agencyConversationPollInterval, agencyConversationRefetchInterval, collectEveryPage, retryUnlessRefused, type ActivatedProperty, type AgencyConversation, type AgencyMessageView,
+} from '@/lib/builderAgency';
 
 export const builderStockKeys = {
   root: () => ['builder', 'stock'] as const,
@@ -28,6 +30,8 @@ export const builderStockKeys = {
   item: (id: string) => ['builder', 'stock', 'item', id] as const,
   selections: (page: number) => ['builder', 'stock', 'selections', page] as const,
   activatedProperties: (page: number) => ['builder', 'stock', 'activated-properties', page] as const,
+  agencyConversation: (connectionId: string, stockItemId: string) =>
+    ['builder', 'stock', 'agency-conversation', connectionId, stockItemId] as const,
 };
 
 export interface StockFilters {
@@ -228,6 +232,78 @@ export function useBuilderActivatedProperties(page = 1) {
     queryKey: builderStockKeys.activatedProperties(page),
     queryFn: () => invoke<Paginated<ActivatedProperty>>({
       operation: 'list_activated_properties', page, page_size: 25,
+    }),
+    retry: retryUnlessRefused,
+  });
+}
+
+/**
+ * Every activation, across every page — what the Messages tab offers
+ * conversations from, so a conversation is never unreachable because its
+ * activation sits past the first page of the list.
+ */
+const EVERY_ACTIVATED_PROPERTIES_KEY = [...builderStockKeys.activatedProperties(0), 'every'] as const;
+
+export function useEveryBuilderActivatedProperty() {
+  return useQuery({
+    queryKey: EVERY_ACTIVATED_PROPERTIES_KEY,
+    queryFn: () => collectEveryPage((page) => invoke<Paginated<ActivatedProperty>>({
+      operation: 'list_activated_properties', page, page_size: 100,
+    })),
+    retry: retryUnlessRefused,
+  });
+}
+
+/** The page's Refresh: re-read the full list the Messages tab is built from. */
+export function useRefreshEveryBuilderActivatedProperty() {
+  const queryClient = useQueryClient();
+  return () => queryClient.invalidateQueries({ queryKey: EVERY_ACTIVATED_PROPERTIES_KEY });
+}
+
+/**
+ * One conversation with an agency, re-read every few seconds while it is open
+ * and the tab is visible. Polling is the whole transport on this side: the
+ * page is correct without anything pushed to it.
+ */
+export function useAgencyConversation(connectionId: string | null, stockItemId: string | null) {
+  return useQuery({
+    queryKey: builderStockKeys.agencyConversation(connectionId ?? '', stockItemId ?? ''),
+    enabled: !!connectionId && !!stockItemId,
+    queryFn: () => invoke<AgencyConversation>({
+      operation: 'get_agency_conversation', connection_id: connectionId, stock_item_id: stockItemId,
+    }),
+    refetchInterval: (query) => agencyConversationRefetchInterval(query.state),
+    refetchIntervalInBackground: false,
+    retry: retryUnlessRefused,
+  });
+}
+
+/**
+ * Send one message. The caller mints `clientMessageId` once per message and
+ * passes the SAME id to any retry of the same send, which is what makes a
+ * timeout safe to retry.
+ */
+export function useSendAgencyMessage(connectionId: string, stockItemId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { clientMessageId: string; body: string }) =>
+      invoke<{ message: AgencyMessageView | null }>({
+        operation: 'send_agency_message', connection_id: connectionId, stock_item_id: stockItemId,
+        client_message_id: input.clientMessageId, body: input.body,
+      }),
+    onSettled: () => queryClient.invalidateQueries({
+      queryKey: builderStockKeys.agencyConversation(connectionId, stockItemId),
+    }),
+  });
+}
+
+export function useRetryAgencyMessage(connectionId: string, stockItemId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (messageId: string) =>
+      invoke<{ message: AgencyMessageView | null }>({ operation: 'retry_agency_message', message_id: messageId }),
+    onSettled: () => queryClient.invalidateQueries({
+      queryKey: builderStockKeys.agencyConversation(connectionId, stockItemId),
     }),
   });
 }

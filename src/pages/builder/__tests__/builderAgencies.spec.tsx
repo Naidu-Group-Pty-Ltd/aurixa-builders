@@ -25,17 +25,62 @@ const state: {
   records: any[];
   error: { status?: number; message?: string } | null;
   loading: boolean;
-} = { records: [], error: null, loading: false };
+  conversation: any;
+  laterPages: any[];
+  everyError: { status?: number; message?: string } | null;
+  /** A refresh that failed after the full list had been read once. */
+  everyStale?: boolean;
+  /** The server stopped answering new pages before the list was complete. */
+  everyTruncated?: boolean;
+  /** A refresh of the first page failed after it had been read once. */
+  firstStale?: boolean;
+  /** The conversation's latest poll failed. */
+  conversationError?: { message?: string; status?: number } | null;
+} = { records: [], error: null, loading: false, conversation: null, laterPages: [], everyError: null };
+const sent: Array<{ clientMessageId: string; body: string }> = [];
+const sendFailures = { remaining: 0 };
+const retried: string[] = [];
+const refreshed = { firstPage: 0, every: 0 };
 
 vi.mock('@/lib/builderStockQueries', () => ({
   useBuilderActivatedProperties: () => ({
-    data: state.error ? undefined : { records: state.records, pagination: { page: 1, page_size: 25, total: state.records.length, total_pages: 1 } },
+    data: state.error && !state.firstStale ? undefined : { records: state.records, pagination: { page: 1, page_size: 25, total: state.records.length, total_pages: 1 } },
     error: state.error,
     isLoading: state.loading,
     isFetching: false,
-    refetch: vi.fn(),
+    refetch: vi.fn(async () => { refreshed.firstPage += 1; }),
+  }),
+  useRefreshEveryBuilderActivatedProperty: () => async () => { refreshed.every += 1; },
+  useEveryBuilderActivatedProperty: () => ({
+    data: (state.error && !state.firstStale) || (state.everyError && !state.everyStale) ? undefined
+      : { records: [...state.records, ...state.laterPages], truncated: !!state.everyTruncated },
+    error: (state.firstStale ? null : state.error) ?? state.everyError,
+    isLoading: state.loading,
+    refetch: vi.fn(async () => { refreshed.every += 1; }),
   }),
   builderStockImageUrl: vi.fn(async () => null),
+  useAgencyConversation: () => ({
+    data: state.conversation ?? undefined, error: state.conversationError ?? null, isLoading: false, isFetching: false,
+  }),
+  useSendAgencyMessage: () => ({
+    isPending: false,
+    mutateAsync: vi.fn(async (input: { clientMessageId: string; body: string }) => {
+      sent.push(input);
+      if (sendFailures.remaining > 0) { sendFailures.remaining -= 1; throw new Error('network'); }
+      return { message: null };
+    }),
+  }),
+  useRetryAgencyMessage: () => ({
+    isPending: false,
+    mutateAsync: vi.fn(async (id: string) => { retried.push(id); return { message: null }; }),
+  }),
+}));
+
+const scrolled: unknown[] = [];
+vi.mock('@/lib/builderAgency', async (original) => ({
+  ...(await original<typeof import('@/lib/builderAgency')>()),
+  scrollLogToEnd: (log: unknown) => { scrolled.push(log); },
+  scrollMessageIntoView: (_log: unknown, id: string) => { scrolled.push(`message:${id}`); },
 }));
 
 import BuilderAgencies from '../BuilderAgencies';
@@ -79,9 +124,27 @@ function renderAt(path: string) {
 }
 
 beforeEach(() => {
+  refreshed.firstPage = 0;
+  refreshed.every = 0;
+  state.everyError = null;
+  state.everyStale = false;
+  state.everyTruncated = false;
+  state.conversationError = null;
+  state.firstStale = false;
   state.records = [];
   state.error = null;
   state.loading = false;
+  state.conversation = null;
+  sent.length = 0;
+  state.laterPages = [];
+  sendFailures.remaining = 0;
+  retried.length = 0;
+});
+
+const MESSAGE = (overrides: Record<string, unknown>) => ({
+  id: 'm', side: 'builder', sender_display_name: 'Bailey Builder', body: 'Hello',
+  sent_at: '2026-09-25T10:00:00Z', delivery_state: 'delivered', delivered_at: '2026-09-25T10:00:05Z',
+  failure_reason: null, mine: true, can_retry: false, ...overrides,
 });
 
 describe('navigation', () => {
@@ -160,19 +223,128 @@ describe('Activated Properties', () => {
   });
 });
 
-describe('Messages shell', () => {
-  it('lists one conversation per agency and property, with no messages it did not receive', () => {
+describe('Messages', () => {
+  it('lists one conversation per agency and property', () => {
     state.records = [ACTIVATION, { ...ACTIVATION, id: 'ann-a1-again' }];
     renderAt('/builder/agencies/messages');
     expect(screen.getByRole('tab', { name: /messages/i })).toHaveAttribute('aria-selected', 'true');
-    const conversations = screen.getAllByRole('option');
-    expect(conversations).toHaveLength(1);
-    fireEvent.click(conversations[0]);
+    expect(screen.getAllByRole('option')).toHaveLength(1);
+  });
+
+  it('offers a conversation from beyond the first page of activations', () => {
+    state.records = [ACTIVATION];
+    state.laterPages = [{ ...ACTIVATION, id: 'ann-z', connection_id: 'conn-z', stock_item_id: 'item-z',
+      agency: { ...ACTIVATION.agency, name: 'Page Two Agency' } }];
+    state.conversation = { conversation_id: null, open: true, can_send: true, messages: [] };
+    renderAt('/builder/agencies/messages?thread=conn-z:item-z');
+    expect(screen.getAllByRole('option')).toHaveLength(2);
+    expect(screen.getByRole('option', { name: /page two agency/i })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('an open conversation with nothing in it says so, and can be written to', () => {
+    state.records = [ACTIVATION];
+    state.conversation = { conversation_id: null, open: true, can_send: true, messages: [] };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
     expect(screen.getByText(/no messages yet/i)).toBeInTheDocument();
-    expect(screen.getAllByText('Example Agency').length).toBeGreaterThan(0);
-    const composer = screen.getByRole('textbox', { name: /message/i });
-    expect(composer).toBeDisabled();
-    expect(screen.getByRole('button', { name: /send/i })).toBeDisabled();
+    expect(screen.getByRole('textbox', { name: /message/i })).not.toBeDisabled();
+  });
+
+  it('shows each message with its actual sender and, for ours, whether it arrived', () => {
+    state.records = [ACTIVATION];
+    state.conversation = {
+      conversation_id: 'c', open: true, can_send: true,
+      messages: [
+        MESSAGE({ id: 'm1', side: 'command_centre', sender_display_name: 'Casey Agent', body: 'Is it available?', delivery_state: null, mine: false }),
+        MESSAGE({ id: 'm2', body: 'Yes it is.', delivery_state: 'delivered' }),
+        MESSAGE({ id: 'm3', sender_display_name: 'Alex Builder', body: 'Brochure attached tomorrow.', delivery_state: 'queued', mine: false }),
+      ],
+    };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    const thread = screen.getByRole('log');
+    const items = within(thread).getAllByRole('article');
+    expect(items.map((item) => item.textContent)).toEqual([
+      expect.stringContaining('Casey Agent'), expect.stringContaining('Bailey Builder'), expect.stringContaining('Alex Builder'),
+    ]);
+    expect(within(items[1]).getByText('Delivered')).toBeInTheDocument();
+    expect(within(items[2]).getByText('Sending')).toBeInTheDocument();
+    expect(within(items[0]).queryByText(/delivered|sending/i)).toBeNull();
+  });
+
+  it('a failed message stays visible and its writer can send it again', () => {
+    state.records = [ACTIVATION];
+    state.conversation = {
+      conversation_id: 'c', open: true, can_send: true,
+      messages: [MESSAGE({ id: 'm-failed', body: 'Did this arrive?', delivery_state: 'failed', failure_reason: 'not_delivered', can_retry: true })],
+    };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    expect(screen.getByText('Did this arrive?')).toBeInTheDocument();
+    expect(screen.getByText('Not delivered')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /send again/i }));
+    expect(retried).toEqual(['m-failed']);
+  });
+
+  it('sends what was typed with one idempotency key, and keeps the key if the send is repeated', async () => {
+    state.records = [ACTIVATION];
+    state.conversation = { conversation_id: null, open: true, can_send: true, messages: [] };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    fireEvent.change(screen.getByRole('textbox', { name: /message/i }), { target: { value: '  Hello agency  ' } });
+    fireEvent.click(screen.getByRole('button', { name: /^send$/i }));
+    await screen.findByRole('textbox', { name: /message/i });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].body).toBe('Hello agency');
+    expect(sent[0].clientMessageId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('repeats a send that failed in flight under the same key, and mints a new key once the text changes', async () => {
+    state.records = [ACTIVATION];
+    state.conversation = { conversation_id: null, open: true, can_send: true, messages: [] };
+    sendFailures.remaining = 2;
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    const box = screen.getByRole('textbox', { name: /message/i });
+    fireEvent.change(box, { target: { value: 'Is lot 12 still available?' } });
+    fireEvent.click(screen.getByRole('button', { name: /^send$/i }));
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: /^send$/i }));
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1].clientMessageId).toBe(sent[0].clientMessageId);
+    fireEvent.change(box, { target: { value: 'Is lot 14 still available?' } });
+    fireEvent.click(screen.getByRole('button', { name: /^send$/i }));
+    await vi.waitFor(() => expect(sent).toHaveLength(3));
+    expect(sent[2].clientMessageId).not.toBe(sent[0].clientMessageId);
+    expect(sent[2].body).toBe('Is lot 14 still available?');
+  });
+
+  it('a message whose confirmation never came back says so, and its writer can send it again', () => {
+    state.records = [ACTIVATION];
+    state.conversation = {
+      conversation_id: 'c', open: true, can_send: true,
+      messages: [MESSAGE({ id: 'm-unconfirmed', body: 'Price still current?', delivery_state: 'failed', failure_reason: 'confirmation_timeout', can_retry: true })],
+    };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    expect(screen.getByText('Not confirmed')).toBeInTheDocument();
+    expect(screen.queryByText('Not delivered')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /send again/i }));
+    expect(retried).toEqual(['m-unconfirmed']);
+  });
+
+  it('offers no "Send again" where the reader cannot write, even on their own failed message', () => {
+    state.records = [ACTIVATION];
+    state.conversation = {
+      conversation_id: 'c', open: false, can_send: false,
+      messages: [MESSAGE({ id: 'm-failed', body: 'Did this arrive?', delivery_state: 'failed', failure_reason: 'not_delivered', can_retry: true })],
+    };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    expect(screen.getByText('Did this arrive?')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /send again/i })).toBeNull();
+  });
+
+  it('a closed conversation keeps its history and cannot be written to', () => {
+    state.records = [ACTIVATION];
+    state.conversation = { conversation_id: 'c', open: false, can_send: false, messages: [MESSAGE({})] };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    expect(screen.getByText('Hello')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: /message/i })).toBeDisabled();
+    expect(screen.getByText(/no longer activated/i)).toBeInTheDocument();
   });
 
   it('tells an organisation with no activations that there is nobody to message yet', () => {
@@ -181,10 +353,176 @@ describe('Messages shell', () => {
     expect(screen.queryByRole('textbox', { name: /message/i })).toBeNull();
   });
 
-  it('sends nothing anywhere: no mutation, no model, no email', () => {
+  it('no model and no email: a message is text between people', () => {
     const page = code('src/pages/builder/BuilderAgencies.tsx');
-    expect(page).not.toMatch(/useMutation|mutateAsync|invoke\(/);
     expect(page).not.toMatch(/openrouter|anthropic|openai|claude/i);
-    expect(page).not.toMatch(/mailto:.*send|sendEmail/);
+    expect(page).not.toMatch(/sendEmail|resend/i);
+  });
+});
+
+describe('the page\'s Refresh', () => {
+  it('re-reads the full conversation list as well as the first page, so a new activation appears in Messages', () => {
+    state.records = [ACTIVATION];
+    renderAt('/builder/agencies/messages');
+    fireEvent.click(screen.getByRole('button', { name: /^refresh$/i }));
+    expect(refreshed.firstPage).toBe(1);
+    expect(refreshed.every).toBe(1);
+  });
+});
+
+describe('the full conversation list, when it cannot be read', () => {
+  it('says so and offers a retry, rather than presenting the first page as complete', () => {
+    state.records = [ACTIVATION];
+    state.everyError = { message: 'page 2 failed' };
+    renderAt('/builder/agencies/messages');
+    expect(screen.queryByRole('listbox', { name: /conversations/i })).toBeNull();
+    expect(screen.getByText(/could not be loaded/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }));
+    expect(refreshed.every).toBe(1);
+  });
+});
+
+describe('a refresh of the full list that fails', () => {
+  it('keeps the list it read last, says it could not be refreshed, and offers a retry', () => {
+    state.records = [ACTIVATION];
+    state.everyError = { message: 'refresh failed' };
+    state.everyStale = true;
+    renderAt('/builder/agencies/messages');
+    expect(screen.getByRole('listbox', { name: /conversations/i })).toBeTruthy();
+    expect(screen.getByText(/could not be refreshed/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }));
+    expect(refreshed.every).toBe(1);
+  });
+});
+
+describe('a refresh of the first page that fails after it was read', () => {
+  it('keeps the conversation list on the Messages tab', () => {
+    state.records = [ACTIVATION];
+    state.error = { message: 'first page refresh failed' };
+    state.firstStale = true;
+    renderAt('/builder/agencies/messages');
+    expect(screen.getByRole('listbox', { name: /conversations/i })).toBeTruthy();
+    expect(screen.queryByText(/could not be loaded just now/i)).toBeNull();
+  });
+
+  it('keeps the activations it read and says they may be out of date', () => {
+    state.records = [ACTIVATION];
+    state.error = { message: 'first page refresh failed' };
+    state.firstStale = true;
+    renderAt('/builder/agencies/activations');
+    expect(screen.queryByText(/could not be loaded just now/i)).toBeNull();
+    expect(screen.getByText(/could not be refreshed/i)).toBeTruthy();
+  });
+
+  it('a refresh REFUSED after the list was read withdraws it on both tabs', () => {
+    for (const path of ['/builder/agencies/messages', '/builder/agencies/activations']) {
+      state.records = [ACTIVATION];
+      state.error = { status: 403, message: 'You do not have access to stock' };
+      state.firstStale = true;
+      const view = renderAt(path);
+      expect(screen.queryByRole('listbox', { name: /conversations/i })).toBeNull();
+      expect(screen.getByText(/do not have access/i)).toBeTruthy();
+      view.unmount();
+    }
+  });
+
+  it('a first read that fails still says so, and a refusal still says access is missing', () => {
+    state.error = { message: 'first read failed' };
+    renderAt('/builder/agencies/messages');
+    expect(screen.getByText(/could not be loaded just now/i)).toBeTruthy();
+  });
+});
+
+describe('a poll of an open conversation that fails', () => {
+  it('keeps the history it already read and says it may be out of date', () => {
+    state.records = [ACTIVATION];
+    state.conversation = {
+      conversation_id: 'c', open: true, can_send: true,
+      messages: [MESSAGE({ id: 'm1', body: 'Already read.', delivery_state: 'delivered' })],
+    };
+    state.conversationError = { message: 'poll failed' };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    expect(screen.getByRole('log', { name: /conversation/i })).toBeTruthy();
+    expect(screen.getByText('Already read.')).toBeTruthy();
+    expect(screen.getByText(/could not be refreshed/i)).toBeTruthy();
+    expect(screen.queryByText(/could not be loaded just now/i)).toBeNull();
+  });
+
+  it.each([401, 403])('a poll refused with %i withdraws the history and the composer', (status) => {
+    state.records = [ACTIVATION];
+    state.conversation = {
+      conversation_id: 'c', open: true, can_send: true,
+      messages: [MESSAGE({ id: 'm1', body: 'Already read.', delivery_state: 'delivered' })],
+    };
+    state.conversationError = { status, message: 'refused' };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    expect(screen.queryByRole('log', { name: /conversation/i })).toBeNull();
+    expect(screen.queryByText('Already read.')).toBeNull();
+    expect(screen.queryByText(/could not be refreshed/i)).toBeNull();
+    expect(screen.getByText(/no longer available to you/i)).toBeTruthy();
+    expect((screen.getByRole('textbox', { name: /message/i }) as HTMLTextAreaElement).disabled).toBe(true);
+  });
+
+  it('with nothing read yet, says it could not be loaded', () => {
+    state.records = [ACTIVATION];
+    state.conversation = null;
+    state.conversationError = { message: 'first read failed' };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    expect(screen.getByText(/could not be loaded just now/i)).toBeTruthy();
+  });
+});
+
+describe('a full list the server would not finish', () => {
+  it('lists what it read and says the list is incomplete', () => {
+    state.records = [ACTIVATION];
+    state.everyTruncated = true;
+    renderAt('/builder/agencies/messages');
+    expect(screen.getByRole('listbox', { name: /conversations/i })).toBeTruthy();
+    expect(screen.getByText(/not every conversation is listed/i)).toBeTruthy();
+  });
+});
+
+describe('the conversation log follows its newest message', () => {
+  it('opens at the end, and moves to the end again when a poll brings in a message', () => {
+    scrolled.length = 0;
+    state.records = [ACTIVATION];
+    state.conversation = {
+      conversation_id: 'c', open: true, can_send: true,
+      messages: [MESSAGE({ id: 'm1', body: 'First.', delivery_state: 'delivered' })],
+    };
+    const tree = () => (
+      <MemoryRouter initialEntries={['/builder/agencies/messages?thread=conn-a:item-a1']}>
+        <Routes><Route path="/builder/agencies/:tab" element={<BuilderAgencies />} /></Routes>
+      </MemoryRouter>
+    );
+    const view = render(tree());
+    const log = screen.getByRole('log');
+    expect(scrolled).toContain(log);
+    const before = scrolled.length;
+    state.conversation = { ...state.conversation, messages: [...state.conversation.messages,
+      MESSAGE({ id: 'm2', body: 'Arrived by poll.', delivery_state: 'delivered' })] };
+    view.rerender(tree());
+    expect(scrolled.length).toBeGreaterThan(before);
+    expect(scrolled[scrolled.length - 1]).toBe(screen.getByRole('log'));
+  });
+
+  it('brings a late message into view when the poll sorts it above the newest one', () => {
+    scrolled.length = 0;
+    state.records = [ACTIVATION];
+    state.conversation = {
+      conversation_id: 'c', open: true, can_send: true,
+      messages: [MESSAGE({ id: 'm1', body: 'First.', delivery_state: 'delivered' }),
+        MESSAGE({ id: 'm3', body: 'Newest.', delivery_state: 'delivered' })],
+    };
+    const tree = () => (
+      <MemoryRouter initialEntries={['/builder/agencies/messages?thread=conn-a:item-a1']}>
+        <Routes><Route path="/builder/agencies/:tab" element={<BuilderAgencies />} /></Routes>
+      </MemoryRouter>
+    );
+    const view = render(tree());
+    state.conversation = { ...state.conversation, messages: [state.conversation.messages[0],
+      MESSAGE({ id: 'm2', body: 'Arrived late.', delivery_state: 'delivered' }), state.conversation.messages[1]] };
+    view.rerender(tree());
+    expect(scrolled[scrolled.length - 1]).toBe('message:m2');
   });
 });

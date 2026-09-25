@@ -32,6 +32,7 @@ import {
   assertPayloadCrossesClean,
 } from '../_shared/builderNetworkPrivacy.pure.ts';
 import { buildStamp } from '../_shared/builderNetworkStamp.pure.ts';
+import { agencyDedupeKeyFor, agencyPayloadContractViolation, sameAgencyEnvelope } from '../_shared/builderStock/agencyMessages.pure.ts';
 
 const MAX_BODY_BYTES = 256 * 1024;
 
@@ -111,6 +112,36 @@ Deno.serve(async (req) => {
       throw violation;
     }
 
+    // A message event carries exactly its contract's keys and nothing else:
+    // refused here, before anything is stored, naming the keys and never a value.
+    const contract = agencyPayloadContractViolation(eventType, envelope.payload ?? {});
+    if (contract) {
+      await supabase.from('portal_operational_events').insert({
+        event_name: 'builder_network_inbound_message_contract_violation',
+        severity: 'warning',
+        request_id: dedupeKey,
+        actor_type: 'system',
+        portal: 'builder',
+        success: false,
+        metadata: {
+          connection_id: connection.id,
+          event_type: eventType,
+          unexpected_keys: contract.unexpected.slice(0, 20),
+          missing_keys: contract.missing.slice(0, 20),
+          // A key present with the wrong type or value, e.g. a schema_version
+          // this side cannot apply: the only trace of a skewed peer.
+          mistyped_keys: contract.mistyped.slice(0, 20),
+        },
+      });
+      return json({ error: 'message_contract_failed' }, 422);
+    }
+    // And its dedupe key is the one its payload implies: a reused key would
+    // otherwise answer a NEW message as a duplicate and store nothing.
+    const expectedKey = agencyDedupeKeyFor(eventType, envelope.payload ?? {});
+    if (expectedKey !== null && dedupeKey !== expectedKey) {
+      return json({ error: 'message_dedupe_key_mismatch' }, 422);
+    }
+
     const { error: insertError } = await supabase
       .from('builder_network_inbound_events')
       .insert({
@@ -122,6 +153,15 @@ Deno.serve(async (req) => {
       });
     if (insertError) {
       if (String(insertError.code) === '23505') {
+        // A message key is a duplicate only if it is the SAME envelope: the
+        // same key carrying other content is a conflict, never acknowledged.
+        if (expectedKey !== null) {
+          const { data: stored } = await supabase.from('builder_network_inbound_events')
+            .select('connection_id, event_type, payload').eq('dedupe_key', dedupeKey).maybeSingle();
+          if (!stored || !sameAgencyEnvelope(stored, { connection_id: connection.id, event_type: eventType, payload: envelope.payload ?? {} })) {
+            return json({ error: 'message_conflict' }, 409);
+          }
+        }
         // Redelivery of something already landed: the 200 the sender lost.
         return json({ accepted: true, duplicate: true });
       }
@@ -138,6 +178,15 @@ Deno.serve(async (req) => {
       .rpc('builder_network_apply_inbound_events', { _limit: 25 });
     if (applyError) {
       console.error('[builder-network-inbound] opportunistic apply failed', applyError.message);
+    }
+    // Messages have their own lane and sweep; the same opportunism, the same
+    // rule: a failure here costs latency, never the delivery.
+    if (eventType === 'agency.message.posted' || eventType === 'agency.message.receipt') {
+      const { error: messageError } = await supabase
+        .rpc('builder_agency_apply_message_events', { _limit: 25 });
+      if (messageError) {
+        console.error('[builder-network-inbound] opportunistic message apply failed', messageError.message);
+      }
     }
 
     // The stamp says WHETHER; source_version says WHAT. Monotonic: an

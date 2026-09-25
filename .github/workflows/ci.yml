@@ -43,6 +43,11 @@ jobs:
       # database rebuilt the same way as above.
       - name: a property's media crosses the network intact
         run: npm run db:media-contract:check
+      # Agency messaging's network half: posting, retrying, receipts, the
+      # message lane, refusals across organisations and connections, one poison
+      # message never blocking the next, and the order a thread settles in.
+      - name: agency messages cross the network once, and say whether they arrived
+        run: npm run db:agency-messaging:check
 
   edge:
     name: edge functions typecheck + gates

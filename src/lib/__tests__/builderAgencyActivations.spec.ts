@@ -348,15 +348,16 @@ describe('the edge operation', () => {
 });
 
 describe('the Messages shell', () => {
-  it('has one thread per agency and property, and no message it did not receive', async () => {
+  it('has one thread per agency and property, and carries no message of its own', async () => {
     const { result } = await readAsOrgA();
     if (!result.ok) throw new Error('read failed');
     const threads = agencyThreadsFrom([...result.records, ...result.records]);
     expect(threads).toHaveLength(2);
     expect(new Set(threads.map((t) => t.key)).size).toBe(2);
+    // A thread is a relationship, not a message store: its messages are read
+    // from the conversation itself, so the list can invent none.
     for (const thread of threads) {
-      expect(thread.messages).toEqual([]);
-      expect(thread.transport).toBe('not_connected');
+      expect(thread).not.toHaveProperty('messages');
     }
     expect(threads.map((t) => t.key)).toEqual([
       agencyThreadKey({ connection_id: CONN_A, stock_item_id: 'item-a2' }),
