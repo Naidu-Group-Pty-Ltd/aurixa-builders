@@ -137,6 +137,28 @@ const readerState = await sql('reader state', `
          (select count(*)::int from cron.job where jobname = 'read-builder-stock-document-figures') as tick_scheduled`);
 console.log('reader state:', JSON.stringify(readerState[0]));
 
+// What a property's gallery could hold: its stored images by what the source
+// said each one IS, and how many properties hold more than one.
+const gallery = await sql('gallery census', `
+  select m.source_stage, m.verification_status, m.processing_status,
+         coalesce(m.source_detail->>'role', '(none)') as role,
+         (m.storage_path is not null or m.external_url is not null) as has_bytes,
+         coalesce(m.source_detail->'marketplace'->>'state', '(unjudged)') as marketplace,
+         count(*)::int as images, count(distinct m.stock_item_id)::int as properties
+  from builder_stock_item_images m join builder_stock_items i on i.id = m.stock_item_id
+  where i.${LIVE}
+  group by 1,2,3,4,5,6 order by 7 desc`);
+console.log('\nGALLERY CENSUS (stage, verification, processing, role, bytes, marketplace)');
+for (const row of gallery) console.log(JSON.stringify(row));
+const perItem = await sql('images per property', `
+  select n as builder_images, count(*)::int as properties from (
+    select i.id, count(m.id) filter (where m.source_stage = 'uploaded_document'
+      and m.processing_status = 'ready'
+      and (m.storage_path is not null or m.external_url is not null)) as n
+    from builder_stock_items i left join builder_stock_item_images m on m.stock_item_id = i.id
+    where i.${LIVE} group by i.id) q group by 1 order by 1`);
+console.log('ready builder images per property:', JSON.stringify(perItem));
+
 const byUpload = await sql('by upload', `
   select i.organisation_id::text as org, i.upload_id::text as upload,
          u.source_type, u.detected_content_type, u.parse_strategy,
