@@ -232,6 +232,27 @@ check('the retry is answered again; the replay is not answered twice',
       === 'The original words.|Casey Agent');
 }
 
+{
+  // Two sweeps apply two envelopes naming one message id, with different
+  // content, at the same moment: the loser must not acknowledge what it could
+  // not store.
+  const racer = agencyMessage({ body: 'Racer A.' });
+  land(CONN_A, 'agency.message.posted', `agency.message:${racer.message_id}:1`, racer);
+  land(CONN_A, 'agency.message.posted', `agency.message:${racer.message_id}:2`, { ...racer, body: 'Racer B.', generation: 2 });
+  const eventOf = (n) => sql(`SELECT id FROM public.builder_network_inbound_events WHERE dedupe_key = 'agency.message:${racer.message_id}:${n}'`);
+  const [e1, e2] = [eventOf(1), eventOf(2)];
+  const first = sqlAsync(`BEGIN; SELECT public.builder_agency_apply_message_event('${e1}'); SELECT pg_sleep(1.5); COMMIT;`);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const second = sqlAsync(`SELECT public.builder_agency_apply_message_event('${e2}')`);
+  const [a, b] = await Promise.all([first, second]);
+  sql(`UPDATE public.builder_network_inbound_events SET message_applied_at = now() WHERE id IN ('${e1}', '${e2}')`);
+  check('two concurrent envelopes for one message id: the loser with different content is refused, not acknowledged',
+    a.split('\n')[0] === 'applied' && b === 'refused:message_conflict'
+      && sql(`SELECT body FROM public.builder_agency_messages WHERE id = ${lit(racer.message_id)}`) === 'Racer A.'
+      && outbox(`dedupe_key = 'agency.receipt:${racer.message_id}:2' AND payload->>'outcome' = 'refused'`) === '1',
+    `${a.split('\n')[0]} / ${b}`);
+}
+
 console.log('\nWhat is refused, and said to be');
 const refusedCases = [
   ['a conversation computed for another workspace connection', agencyMessage({ conversation_id: conversationId(CONN_B, ITEM_A1) }), 'conversation_mismatch'],

@@ -354,6 +354,7 @@ DECLARE
   v_reason text;
   v_existing public.builder_agency_messages%ROWTYPE;
   v_outcome text;
+  v_inserted integer := 0;
 BEGIN
   SELECT * INTO v_event FROM public.builder_network_inbound_events WHERE id = _event_id;
   v_payload := COALESCE(v_event.payload, '{}'::jsonb);
@@ -464,6 +465,30 @@ BEGIN
       id, conversation_id, side, sender_display_name, body, sent_at, received_at)
     VALUES (v_message_id, v_conversation_id, 'command_centre', left(v_name, 200), v_body, v_sent, now())
     ON CONFLICT (id) DO NOTHING;
+    GET DIAGNOSTICS v_inserted = ROW_COUNT;
+    IF v_inserted = 0 THEN
+      -- Another sweep stored this id between the lookup and the insert. What
+      -- it stored is this message only if it says the same thing; otherwise
+      -- the answer is a refusal, never an acknowledgement of words not kept.
+      SELECT * INTO v_existing FROM public.builder_agency_messages WHERE id = v_message_id;
+      IF v_existing.conversation_id <> v_conversation_id OR v_existing.side <> 'command_centre'
+         OR v_existing.body <> v_body OR v_existing.sender_display_name <> left(v_name, 200)
+         OR v_existing.sent_at <> v_sent THEN
+        v_reason := 'message_conflict';
+      END IF;
+    END IF;
+  END IF;
+
+  IF v_reason IS NOT NULL THEN
+    PERFORM public.builder_agency_enqueue(v_connection.id, 'agency.message.receipt',
+      'agency.receipt:' || v_message_id || ':' || v_generation,
+      jsonb_build_object('schema_version', 1, 'message_id', v_message_id,
+        'conversation_id', v_conversation_id, 'generation', v_generation,
+        'outcome', 'refused', 'reason', v_reason));
+    RETURN 'refused:' || v_reason;
+  END IF;
+
+  IF v_inserted > 0 THEN
     UPDATE public.builder_agency_conversations
        SET last_message_at = GREATEST(COALESCE(last_message_at, '-infinity'), v_sent)
      WHERE id = v_conversation_id;
