@@ -307,6 +307,18 @@ GRANT EXECUTE ON FUNCTION public.builder_stock_document_figures_tick() TO servic
 REVOKE ALL ON FUNCTION public.ensure_builder_stock_document_figures_scheduled() FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.ensure_builder_stock_document_figures_scheduled() TO service_role;
 
+-- Every helper too: a new function is executable by PUBLIC by default.
+REVOKE ALL ON FUNCTION public.builder_stock_jsonb_values_are_numbers(jsonb) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.builder_stock_jsonb_values_are_numbers(jsonb) TO service_role;
+REVOKE ALL ON FUNCTION public.builder_stock_document_figures_version() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.builder_stock_document_figures_version() TO service_role;
+REVOKE ALL ON FUNCTION public.builder_stock_document_figures_document(jsonb) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.builder_stock_document_figures_document(jsonb) TO service_role;
+REVOKE ALL ON FUNCTION public.builder_stock_document_figures_owed(public.builder_stock_items, integer) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.builder_stock_document_figures_owed(public.builder_stock_items, integer) TO service_role;
+REVOKE ALL ON FUNCTION public.builder_stock_arm_document_figures() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.builder_stock_arm_document_figures() TO service_role;
+
 -- The properties already settled are owed now; arm the tick once for them.
 SELECT public.ensure_builder_stock_document_figures_scheduled();
 
