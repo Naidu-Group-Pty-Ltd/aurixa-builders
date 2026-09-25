@@ -8,11 +8,13 @@
  * "Lot 1307" — and only the person holding the sheet can tell which.
  *
  * So the builder is offered one choice, BESIDE the explanation rather than
- * instead of it, behind a confirmation that names both identities. It is not
- * offered where the server already knows the brochure is another listing's own
- * (`in_use_by`): that listing is named instead. A transposition is said as a
- * possibility, never a conclusion, because the sibling whose brochure was
- * linked on the wrong row very often has the same digits too.
+ * instead of it, behind a confirmation that names both identities. Where
+ * another listing already shows this brochure's photograph (`in_use_by`) the
+ * choice is still offered — the owner's rule is that a builder who wants the
+ * photograph in the brochure they linked may use it — and that listing is
+ * named beside the button and again in the dialog, so nobody puts one house
+ * on two cards without being told. A transposition is said as a possibility,
+ * never a conclusion.
  *
  * Every word is `STOCK_BROCHURE_CONFIRMATION_COPY`, the same copy the server's
  * refusals are written beside, and nothing here decides anything the server
@@ -44,8 +46,9 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * The choice on one mismatch: the button and its confirmation, or — where
- * another listing already uses this brochure's photograph — that listing named.
+ * The choice on one mismatch: the button and its confirmation, with the
+ * listing that already shows this brochure's photograph named where there is
+ * one.
  */
 export function BrochureImageChoice({
   item,
@@ -60,12 +63,8 @@ export function BrochureImageChoice({
   const confirm = useConfirmBrochureImage();
   const [open, setOpen] = useState(false);
 
-  if (note.in_use_by?.identity) {
-    return (
-      <p className="mt-1 text-foreground/80">{COPY.inUse(note.in_use_by.identity)}</p>
-    );
-  }
   if (!note.confirmable || !note.document_key || !note.states) return null;
+  const inUseBy = note.in_use_by?.identity ?? null;
 
   const statedLot = confirmedLotOf(note.states);
   const transposed = lotsShareDigits(String(item.lot_number ?? '').trim(), statedLot);
@@ -73,6 +72,7 @@ export function BrochureImageChoice({
 
   return (
     <>
+      {inUseBy ? <p className="mt-1 text-foreground/80">{COPY.inUse(inUseBy)}</p> : null}
       <Button
         type="button"
         variant="outline"
@@ -89,8 +89,9 @@ export function BrochureImageChoice({
             <AlertDialogDescription asChild>
               <div className="space-y-2">
                 <p>{COPY.dialogBody(note.states, listing)}</p>
+                {inUseBy ? <p>{COPY.inUseDialog(inUseBy)}</p> : null}
                 {transposed ? <p>{COPY.transposed}</p> : null}
-                {note.stated_lot_listing?.identity ? (
+                {!inUseBy && note.stated_lot_listing?.identity ? (
                   <p>{COPY.statedLotListing(note.stated_lot_listing.identity)}</p>
                 ) : null}
                 <p>{COPY.checks}</p>

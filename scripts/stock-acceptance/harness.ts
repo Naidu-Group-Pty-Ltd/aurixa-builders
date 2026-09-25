@@ -236,8 +236,15 @@ interface Expect {
    * another listing already uses that brochure. See 6e1b.
    */
   confirmation?: {
-    confirms?: Array<{ lot_number: string; states: string; image_size: string }>;
-    refuses?: Array<{ lot_number: string; states: string; in_use_by: string }>;
+    /**
+     * `in_use_by`: another listing already shows this brochure's photograph.
+     * The choice is still offered, naming it, and `sibling` must keep its own
+     * photograph through the confirmation and the undo.
+     */
+    confirms?: Array<{
+      lot_number: string; states: string; image_size: string;
+      in_use_by?: string; sibling?: string;
+    }>;
   };
 }
 interface Entry {
@@ -932,7 +939,7 @@ async function itemsFor(uploadId: string) {
  * makes this fixture a held-out test of the product rather than of the harness.
  */
 async function exerciseConfirmation(entry: any, uploadId: string, items: any[]) {
-  const out: any = { confirms: [], refuses: [] };
+  const out: any = { confirms: [] };
   const module: any = await import(
     '../../supabase/functions/_shared/builderStock/brochureConfirmation.ts').catch(() => null);
   if (!module?.confirmBrochureImage || !module?.undoBrochureImage) {
@@ -949,37 +956,6 @@ async function exerciseConfirmation(entry: any, uploadId: string, items: any[]) 
   const mismatch = (row: any) => stockDocumentNotes(row?.source_provenance_result)
     .find((note: any) => note.finding === 'identity_mismatch') as any ?? null;
 
-  for (const ask of entry.expect.confirmation.refuses ?? []) {
-    const target = item(ask.lot_number);
-    if (!target) { fail(entry, `no property for lot ${ask.lot_number}`); continue; }
-    const before = await reread(target.id);
-    const note = mismatch(before);
-    if (note?.states !== ask.states) {
-      fail(entry, `lot ${ask.lot_number} does not read as a mismatch stating ${ask.states}: `
-        + JSON.stringify(note));
-      continue;
-    }
-    const answer = await module.confirmBrochureImage(db, {
-      organisationId: org.id, stockItemId: target.id,
-      documentReference: note.document_key, states: note.states, actor,
-    });
-    out.refuses.push({ lot: ask.lot_number, answer });
-    if (answer?.ok || answer?.code !== 'brochure_in_use') {
-      fail(entry, `a sibling's brochure was not refused for lot ${ask.lot_number}: `
-        + JSON.stringify(answer));
-    } else if (answer?.in_use_by?.identity !== ask.in_use_by) {
-      fail(entry, `the refusal named ${JSON.stringify(answer?.in_use_by)} rather than ${ask.in_use_by}`);
-    }
-    const after = await reread(target.id);
-    if (after.image_work_stage !== before.image_work_stage || after.primary_image_id) {
-      fail(entry, `a refused confirmation moved lot ${ask.lot_number}: `
-        + `${before.image_work_stage} -> ${after.image_work_stage}, primary ${after.primary_image_id}`);
-    }
-    const { count } = await db.from('builder_stock_identity_confirmations')
-      .select('id', { count: 'exact', head: true }).eq('stock_item_id', target.id);
-    if (count) fail(entry, `a refused confirmation was recorded for lot ${ask.lot_number}`);
-  }
-
   for (const ask of entry.expect.confirmation.confirms ?? []) {
     const target = item(ask.lot_number);
     if (!target) { fail(entry, `no property for lot ${ask.lot_number}`); continue; }
@@ -989,6 +965,40 @@ async function exerciseConfirmation(entry: any, uploadId: string, items: any[]) 
         + JSON.stringify(note));
       continue;
     }
+    /*
+     * WHAT THE BUILDER IS SHOWN, as the stock list projects it: the choice is
+     * offered, and where another listing already shows this brochure's
+     * photograph, that listing is named beside it.
+     */
+    const projection: any = await import(
+      '../../supabase/functions/_shared/builderStock/imageProgress.pure.ts');
+    const lots = [String(note.states).replace(/^Lot\s+/i, '')];
+    const listings = await module.readListingsWithLots(db, { organisationId: org.id, lots });
+    const shown = projection.withConfirmationChoices([note], {
+      stockItemId: target.id, suburb: target.suburb,
+      developmentName: target.development_name, listings,
+    })[0];
+    if (shown?.confirmable !== true) {
+      fail(entry, `lot ${ask.lot_number} is not offered "Use brochure image": ${JSON.stringify(shown)}`);
+    }
+    if ((shown?.in_use_by?.identity ?? undefined) !== ask.in_use_by) {
+      fail(entry, `lot ${ask.lot_number} names ${JSON.stringify(shown?.in_use_by ?? null)} `
+        + `as using this brochure, not ${JSON.stringify(ask.in_use_by ?? null)}`);
+    }
+    const siblingRow = ask.sibling ? item(ask.sibling) : null;
+    if (ask.sibling && !siblingRow) fail(entry, `no property for lot ${ask.sibling}`);
+    const siblingPrimary = siblingRow ? (await reread(siblingRow.id))?.primary_image_id ?? null : null;
+    if (siblingRow && !siblingPrimary) {
+      fail(entry, `lot ${ask.sibling} shows no photograph before the confirmation`);
+    }
+    const siblingKept = async (when: string) => {
+      if (!siblingRow) return;
+      const now = (await reread(siblingRow.id))?.primary_image_id ?? null;
+      if (now !== siblingPrimary) {
+        fail(entry, `lot ${ask.sibling} lost its photograph ${when}: ${siblingPrimary} -> ${now}`);
+      }
+    };
+
     const answer = await module.confirmBrochureImage(db, {
       organisationId: org.id, stockItemId: target.id,
       documentReference: note.document_key, states: note.states, actor,
@@ -1026,6 +1036,8 @@ async function exerciseConfirmation(entry: any, uploadId: string, items: any[]) 
       }
     }
 
+    await siblingKept('when this card took its brochure');
+
     const undone = await module.undoBrochureImage(db, {
       organisationId: org.id, stockItemId: target.id, confirmationId: answer.id, actor,
     });
@@ -1050,6 +1062,7 @@ async function exerciseConfirmation(entry: any, uploadId: string, items: any[]) 
       fail(entry, `after the undo, lot ${ask.lot_number} no longer reads as the mismatch it was: `
         + JSON.stringify(again));
     }
+    await siblingKept('when this card gave its brochure back');
   }
   return out;
 }

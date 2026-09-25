@@ -460,14 +460,16 @@ describe('the builder may use the brochure image, deliberately', () => {
     expect(button()).toBeNull();
   });
 
-  it('does not offer it where the brochure is another listing\'s own', () => {
-    draw([lot1037([{
-      ...confirmable, confirmable: false, in_use_by: { identity: 'Lot 1307 · Nex 20' },
-    } as Note])]);
-    expect(button()).toBeNull();
-    const text = pageText();
-    expect(text).toContain('Lot 1307 · Nex 20');
-    expect(text).toContain('already uses');
+  it('still offers it where another listing already shows the brochure, and says so twice', () => {
+    // The owner's rule: the builder decides. Named beside the button, and
+    // again in the dialog, so one house is never put on two cards unannounced.
+    draw([lot1037([{ ...confirmable, in_use_by: { identity: 'Lot 1307 · Nex 20' } } as Note])]);
+    expect(button()).not.toBeNull();
+    expect(pageText()).toContain('Lot 1307 · Nex 20 in your stock list already shows the image');
+    fireEvent.click(button()!);
+    const dialog = (screen.getByRole('alertdialog').textContent ?? '').replace(/\s+/g, ' ');
+    expect(dialog).toContain('Lot 1307 · Nex 20 already shows this image');
+    expect(dialog).toContain('both listings will show it');
   });
 
   it('asks first, naming both identities', () => {

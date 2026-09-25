@@ -29,8 +29,7 @@
  *   clicked on.
  */
 import {
-  brochureInUseByAnotherProperty, confirmedLotOf, isConfirmableBranch, listingIdentity,
-  type ListingReference, type StockRowForConfirmation,
+  confirmedLotOf, isConfirmableBranch, listingIdentity, type StockRowForConfirmation,
 } from './brochureConfirmation.pure.ts';
 import {
   IDENTITY_CONFIRMATION_KEY, type IdentityConfirmationRef,
@@ -297,14 +296,11 @@ export async function readListingsWithLots(
 
 export type BrochureConfirmationRefusal =
   | 'invalid' | 'not_found' | 'busy' | 'finding_changed' | 'not_confirmable'
-  | 'brochure_in_use' | 'unavailable';
+  | 'unavailable';
 
 export type ConfirmBrochureOutcome =
   | { ok: true; id: string; already: boolean }
-  | {
-    ok: false; code: BrochureConfirmationRefusal; message: string;
-    in_use_by?: ListingReference;
-  };
+  | { ok: false; code: BrochureConfirmationRefusal; message: string };
 
 export type UndoBrochureOutcome =
   | { ok: true; id: string; imagesWithdrawn: number }
@@ -319,16 +315,11 @@ export const BROCHURE_CONFIRMATION_REFUSALS: Record<BrochureConfirmationRefusal,
     + 'page to see what it says now.',
   not_confirmable: 'Only a link to a single brochure can be confirmed. Link the brochure itself '
     + 'rather than a folder.',
-  brochure_in_use: 'This brochure already gives another property in your stock list its image, '
-    + 'so it can’t be used for this property as well.',
   unavailable: 'That could not be saved just now. Try again in a minute.',
 };
 
-function refused(
-  code: BrochureConfirmationRefusal,
-  extra: { in_use_by?: ListingReference } = {},
-): ConfirmBrochureOutcome {
-  return { ok: false, code, message: BROCHURE_CONFIRMATION_REFUSALS[code], ...extra };
+function refused(code: BrochureConfirmationRefusal): ConfirmBrochureOutcome {
+  return { ok: false, code, message: BROCHURE_CONFIRMATION_REFUSALS[code] };
 }
 
 /**
@@ -365,15 +356,13 @@ export async function confirmBrochureImage(
     return refused('not_found');
   }
 
-  const listings = await readListingsWithLots(db, {
-    organisationId: input.organisationId, lots: [lot],
-  });
-  if (!listings) return refused('unavailable');
-  const inUseBy = brochureInUseByAnotherProperty(listings, {
-    stockItemId: input.stockItemId, documentReference: reference, statedLot: lot,
-  });
-  if (inUseBy) return refused('brochure_in_use', { in_use_by: inUseBy });
-
+  /*
+   * A BROCHURE ANOTHER LISTING ALREADY SHOWS IS NOT REFUSED. #106 refused it
+   * (`brochure_in_use`); the owner's rule is that a builder who wants the
+   * photograph in the brochure they linked may use it. The builder is told
+   * which listing already shows it before they confirm (`in_use_by` on the
+   * note), and the photograph still passes every display check.
+   */
   const record = ((item.source_provenance_result as { branches?: Record<string, unknown> } | null)
     ?.branches ?? {})[reference] as { finding_evidence?: { quote?: unknown } } | undefined;
   const { data, error } = await db.rpc('builder_stock_confirm_brochure_image', {

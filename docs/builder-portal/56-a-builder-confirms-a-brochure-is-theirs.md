@@ -21,23 +21,24 @@ Both refusals state a lot whose digits are this listing's in a different
 order. So a transposition is a hint for the builder and never evidence for
 the product. The one fact that tells the two cases apart is checked by the
 product: **another live listing already uses this brochure's photograph for
-the lot the brochure states** (`brochureInUseByAnotherProperty`).
+the lot the brochure states** (`brochureInUseByAnotherProperty`). Since
+25 September 2026 that fact is a **caution, not a refusal** (§8).
 
 ## 2. What the builder sees
 
 On a mismatch notice, beside the explanation and never instead of it:
 
-- **Use brochure image**, when the link is one document and no other listing
-  uses its photograph. It opens a confirmation that names both identities
+- **Use brochure image**, whenever the link is one document. It opens a confirmation that names both identities
   ("The brochure's image page identifies Lot 1307, but this listing is Lot 1037
   · VANTA 20"). Where the digits are transposed it says that is often a typing
   error, in the brochure or in the stock list. Where another listing has the
   stated lot it says so. The dialog also says the image still has to pass the
   usual photo checks, and that the confirmation can be undone.
-- **The listing's name, and no button**, when another listing already uses the
-  brochure's photograph: "This brochure belongs to Lot 1744 · Cura 20B in your
-  stock list, which already uses its image, so it can't be used for this
-  property as well."
+- **The listing that already shows it, beside the button**, when another
+  listing already uses the brochure's photograph: "Lot 1744 · Cura 20B in your
+  stock list already shows the image from this brochure." The dialog repeats
+  it: "Lot 1744 · Cura 20B already shows this image. If you continue, both
+  listings will show it."
 
 A confirmed brochure is drawn as the confirmation, with the undo: "Brochure
 image confirmed by *name* on *date*", followed by what became of it. That is
@@ -69,7 +70,6 @@ A confirmation is refused when:
 
 | code | why |
 |---|---|
-| `brochure_in_use` | another live listing already uses this brochure's photograph for the lot it states. Re-read from the database at the moment of the act, not trusted from the page |
 | `finding_changed` | the stored answer under that link is no longer the mismatch stating that lot (re-read, replaced, or already answered under a confirmation) |
 | `not_confirmable` | the link is a folder, whose file is chosen by the listing's own lot, so "the brochure" there is no one file |
 | `busy` | a worker holds the property's claim; the completion would overwrite the requeue |
@@ -145,10 +145,36 @@ Three layers cover that:
   and the sibling itself.
 - The acceptance gate over real PostgreSQL, PostgREST and the settler: the own
   brochure is confirmed, its photograph served at its own size and stamped;
-  undo takes it down and the notice returns. The sibling's is refused naming
-  "Lot 3185 · Halo 24", with nothing moved and nothing recorded.
+  undo takes it down and the notice returns. The sibling's is offered naming
+  "Lot 3185 · Halo 24"; confirmed, it shows Lot 3185's photograph, Lot 3185
+  keeps its own, and undo takes it off again (§8).
 - The worker canary: protocol 2 still elected and answered in 2, a confirmed
   request answered in 3, a malformed confirmation refused 400.
 - `stock-source-forensics` has an **as-confirmed** pass: on a real brochure it
   prints whether the builder would be offered the choice, and what the settler
   would elect once they took it. It is read-only.
+
+## 8. A brochure another listing already shows is the builder's call
+
+**Changed 25 September 2026, on the owner's instruction.** #106 refused a
+confirmation where another live listing already shows the brochure's
+photograph for the lot it states (`brochure_in_use`), so Lot 1447 · Nex 20,
+which links Lot 1744 · Cura 20B's brochure, was offered nothing. The owner's
+rule is that if the builder wants the photograph in the brochure they linked,
+it is allowed.
+
+- The choice is offered on every mismatch whose link is one document.
+- The listing that already shows the photograph is named beside the button
+  and again in the dialog ("both listings will show it"), so one house is
+  never put on two cards without the builder being told.
+- The server no longer refuses; `brochure_in_use` is gone. Everything else
+  stands: the finding is re-read at the act, the photograph passes every
+  display check, it is stamped with the confirmation, and undo takes it down.
+- The other listing keeps its photograph through the confirmation and the
+  undo.
+
+Held out first: the Saltbush Rise fixture's sibling row now expects to be
+offered the choice, to show Lot 3185's photograph (1200×760) once confirmed,
+and to lose it on undo while Lot 3185 keeps its own. Against #106's code it
+failed ("not offered", then `brochure_in_use`); with the change it passes.
+The live proof (`stock-confirmation-proof`) asserts the same on production.
