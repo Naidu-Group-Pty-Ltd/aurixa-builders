@@ -220,6 +220,12 @@ export interface BuilderStockItem {
    * nothing, and nothing means "not stated".
    */
   manual_location?: StatedLocation | null;
+  /**
+   * The figures this property's own brochure supplied where its stock list
+   * was silent (`brochureFigures.pure.ts`). Absent on a deployment whose
+   * projection predates it, which reads exactly as before.
+   */
+  document_figure_fields?: string[];
   stated_address_line?: string | null;
   stated_suburb?: string | null;
   stated_state?: string | null;
@@ -1095,6 +1101,12 @@ export function describeManualStats(item: BuilderStockItem): ManualStatsReading 
   const sentences: string[] = [];
   if (missingLabels.length) {
     sentences.push(`Not specified in your stock list: ${sentenceList(missingLabels)}.`);
+  }
+  const fromBrochure = MANUAL_STAT_FIELDS
+    .filter((field) => (item.document_figure_fields ?? []).includes(field) && !stated.includes(field))
+    .map(labelOf);
+  if (fromBrochure.length) {
+    sentences.push(`Read from the brochure: ${sentenceList(fromBrochure)}.`);
   }
   if (statedLabels.length) {
     sentences.push(`Supplied by you: ${sentenceList(statedLabels)}.`);

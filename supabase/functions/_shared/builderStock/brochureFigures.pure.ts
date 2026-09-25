@@ -301,3 +301,28 @@ export function retryDelaySeconds(attempts: number): number {
 
 /** After this many reads that learned nothing, a document is left alone. */
 export const MAX_DOCUMENT_FIGURE_ATTEMPTS = 6;
+
+/**
+ * WHICH OF A PROPERTY'S FIGURES ITS BROCHURE SUPPLIED, for the builder's own
+ * screen: a figure the stock list did not state, that the brochure did, and
+ * that the property still carries. A figure the builder typed in is theirs,
+ * whatever else also states it, so `stated` removes it.
+ */
+export function figuresSuppliedByDocument(input: {
+  documentFigures: unknown;
+  row: Record<string, unknown>;
+  sourceRow: Record<string, unknown> | null | undefined;
+  stated?: readonly string[];
+}): DocumentFigureField[] {
+  const record = readDocumentFiguresRecord(input.documentFigures);
+  if (!record || record.state !== 'read') return [];
+  const stated = new Set(input.stated ?? []);
+  return DOCUMENT_FIGURE_FIELDS.filter((field) => {
+    const value = record.values?.[field];
+    if (typeof value !== 'number' || stated.has(field)) return false;
+    const listed = input.sourceRow?.[field];
+    if (listed !== null && listed !== undefined && listed !== '') return false;
+    const held = Number(input.row[field]);
+    return Number.isFinite(held) && held === value;
+  });
+}

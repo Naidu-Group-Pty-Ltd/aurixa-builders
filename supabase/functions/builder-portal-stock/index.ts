@@ -123,8 +123,9 @@ import {
   STOCK_ITEM_SELECT, STOCK_UPLOAD_SELECT, stockPagination,
 } from '../_shared/builderStock/projection.pure.ts';
 import {
-  applyManualStatsToAll, parseManualStats, readManualStats,
+  applyManualStatsToAll, manualStatFields, parseManualStats, readManualStats,
 } from '../_shared/builderStock/manualStats.pure.ts';
+import { figuresSuppliedByDocument } from '../_shared/builderStock/brochureFigures.pure.ts';
 import {
   applyStatedLocation, parseStatedLocation, readStatedLocation,
 } from '../_shared/builderStock/statedLocation.pure.ts';
@@ -2702,7 +2703,9 @@ async function decorateItems(
    * so, rather than reading "pending" about a brochure nothing will read.
    */
   const linkedByItem = new Map<string, Set<string>>();
+  const sourceRowByItem = new Map<string, Record<string, unknown> | null>();
   for (const row of rows ?? []) {
+    sourceRowByItem.set(String(row.id), (row?.source_row as Record<string, unknown> | null) ?? null);
     const unmapped = (row?.source_row as { unmapped?: Record<string, string> } | null)?.unmapped;
     linkedByItem.set(String(row.id), new Set(rowSourceBranches(
       unmappedWithRecoveredLinks(unmapped, row?.source_row as Record<string, unknown> | null))
@@ -2767,6 +2770,17 @@ async function decorateItems(
   return items.map((item) => ({
     ...item,
     images: imagesByItem.get(item.id) ?? [],
+    /*
+     * The figures this property's own brochure supplied where its stock list
+     * was silent, so the card can say where they came from. See
+     * `brochureFigures.pure.ts`.
+     */
+    document_figure_fields: figuresSuppliedByDocument({
+      documentFigures: item.document_figures,
+      row: item,
+      sourceRow: sourceRowByItem.get(String(item.id)),
+      stated: manualStatFields(item),
+    }),
     /*
      * How many builder documents this property's own row attaches. Zero is the
      * one reason for a missing picture that the builder can fix, and it is a

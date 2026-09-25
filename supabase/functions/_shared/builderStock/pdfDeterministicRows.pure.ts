@@ -130,7 +130,7 @@ import { headerScore, keyRowsByHeader } from './table.pure.ts';
 import {
   bedroomsFromPlan, bindCountRow, countRoomsNamed, type PlanRoomCounts,
 } from './floorPlanCounts.pure.ts';
-import { readAreaScheduleTotal } from './areaSchedule.pure.ts';
+import { readAreaScheduleTotal, readAreaScheduleTotalFromLines } from './areaSchedule.pure.ts';
 import { statesAreaInAnotherUnit } from './areaUnits.pure.ts';
 import {
   MEASURED_FIELDS, settleMeasurement, type MeasurementStatement,
@@ -6269,7 +6269,9 @@ export function readPdfBrochure(
    * document that prices nothing or whose schedule sits on another page.
    */
   if (!claimed.has('building_size_sqm') && !disputed.has('building_size_sqm')) {
-    const schedule = readAreaScheduleTotal(pages);
+    // The positioned schedule first; where the page sets its labels and its
+    // values apart, the stricter flat-text pairing (`areaSchedule.pure.ts`).
+    const schedule = readAreaScheduleTotal(pages) ?? readAreaScheduleTotalFromLines(pageTexts);
     if (schedule && acceptFieldValue('building_size_sqm', schedule.value, 'label').accepted) {
       claimed.set('building_size_sqm', schedule.value);
       readBy.set('building_size_sqm', 'area_schedule');

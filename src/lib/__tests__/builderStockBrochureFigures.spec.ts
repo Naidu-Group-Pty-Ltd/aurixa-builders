@@ -233,3 +233,66 @@ describe('a read that learned nothing', () => {
     expect(retryDelaySeconds(20)).toBe(24 * 3600);
   });
 });
+
+describe('an area schedule whose labels and values the page sets apart', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const load = () => import('../../../supabase/functions/_shared/builderStock/areaSchedule.pure');
+
+  it('pairs a run of labels with a run of values only where the values prove it', async () => {
+    const { readAreaScheduleTotalFromLines } = await load();
+    // Measured: the production VG18 cover.
+    const vg18 = ['House Specifications', 'Ground Floor:', 'Garage:', 'Porch:', 'Total:',
+      'Lot Size', '313m2', 'Exposed aggregate paving', '132.75m2', '36.05m2', '4.04m2', '172.84m2']
+      .join('\n');
+    expect(readAreaScheduleTotalFromLines([vg18])).toEqual({ value: '172.84m2', parts: 3 });
+    // The same lists whose parts do not add to the total are not a schedule.
+    expect(readAreaScheduleTotalFromLines([vg18.replace('4.04m2', '9.04m2')])).toBeNull();
+    // Nor are lists of different lengths.
+    expect(readAreaScheduleTotalFromLines([vg18.replace('4.04m2\n', '')])).toBeNull();
+  });
+
+  it('reads the inline form under the same proof, and a land or price list never', async () => {
+    const { readAreaScheduleTotalFromLines } = await load();
+    const inline = 'Ground Floor: 132.75m2\nGarage: 36.05m2\nPorch: 4.04m2\nTotal: 172.84m2';
+    expect(readAreaScheduleTotalFromLines([inline])?.value).toBe('172.84m2');
+    expect(readAreaScheduleTotalFromLines(['Lot 1: 300m2\nLot 2: 320m2\nTotal: 620m2'])).toBeNull();
+    // Two different schedules in one document state no one total.
+    const other = inline.replace('132.75', '140.75').replace('172.84', '180.84');
+    expect(readAreaScheduleTotalFromLines([inline, other])).toBeNull();
+  });
+});
+
+describe('the builder is told which figures the brochure supplied', () => {
+  const record = {
+    v: 1, document: 'https://drive.google.com/file/d/x/view', state: 'read',
+    values: { building_size_sqm: 172.84, car_spaces: 2, land_size_sqm: 300 },
+    read_at: '2026-09-25T00:00:00Z',
+  };
+
+  it('names a figure the stock list did not state and the property still carries', async () => {
+    const { figuresSuppliedByDocument } = await import(
+      '../../../supabase/functions/_shared/builderStock/brochureFigures.pure');
+    expect(figuresSuppliedByDocument({
+      documentFigures: record,
+      row: { building_size_sqm: '172.84', car_spaces: 2, land_size_sqm: 313 },
+      // The sheet stated its own car count; the land now differs.
+      sourceRow: { car_spaces: 2, building_size_sqm: null },
+    })).toEqual(['building_size_sqm']);
+    // A figure the builder typed in is theirs.
+    expect(figuresSuppliedByDocument({
+      documentFigures: record, row: { building_size_sqm: 172.84 }, sourceRow: {},
+      stated: ['building_size_sqm'],
+    })).toEqual([]);
+  });
+
+  it('says so on the card, beside what the stock list did not specify', async () => {
+    const { describeManualStats } = await import('@/lib/builderStock');
+    const reading = describeManualStats({
+      id: 'x', suburb: 'Tarneit', bedrooms: 4, bathrooms: 2, car_spaces: null,
+      building_size_sqm: 172.84, land_size_sqm: 313,
+      document_figure_fields: ['building_size_sqm'],
+    } as never);
+    expect(reading.note).toContain('Not specified in your stock list: car spaces.');
+    expect(reading.note).toMatch(/Read from the brochure: home/);
+  });
+});
