@@ -13,7 +13,7 @@
  *
  * Same env contract: LOCAL_PG_HOST / LOCAL_PG_PORT / LOCAL_PG_USER.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { randomUUID, createHash } from 'node:crypto';
 import { readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -31,6 +31,11 @@ const psql = (args) => execFileSync('psql', [...conn, '-v', 'ON_ERROR_STOP=1', .
   encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
 });
 const sql = (statement) => psql(['-d', DB, '-qAt', '-c', statement]).trim();
+/** The same, in its own session without blocking this one — for races. */
+const sqlAsync = (statement) => new Promise((resolve, reject) => {
+  execFile('psql', [...conn, '-v', 'ON_ERROR_STOP=1', '-d', DB, '-qAt', '-c', statement], { encoding: 'utf8' },
+    (error, stdout, stderr) => (error ? reject(new Error(stderr || error.message)) : resolve(stdout.trim())));
+});
 const lit = (v) => (v === null || v === undefined ? 'NULL' : `'${String(v).replace(/'/g, "''")}'`);
 const json = (v) => `${lit(JSON.stringify(v))}::jsonb`;
 function refusal(statement) {
@@ -148,6 +153,21 @@ check('the same send again (a lost response) is the same message and no second e
 check('the same key with different text is refused, never answered with the original',
   /AGENCY_MESSAGE_ID_REUSED/.test(refusal(`SELECT public.builder_agency_post_message(${lit(ORG_A)}, ${lit(CONN_A)}, ${lit(ITEM_A1)}, ${lit(USER_A)}, ${lit(client1)}, 'We can hold it until Monday.')`) ?? '')
     && outbox(`event_type = 'agency.message.posted'`) === '1');
+{
+  // Two real sessions send one message at once: the first holds its row
+  // uncommitted, the second misses it at the lookup and waits on the unique
+  // index until the first commits — a double click or a retried request.
+  const key = randomUUID();
+  const send = `SELECT id FROM public.builder_agency_post_message(${lit(ORG_A)}, ${lit(CONN_A)}, ${lit(ITEM_A1)},
+    ${lit(USER_A)}, ${lit(key)}, 'Raced send.')`;
+  const first = sqlAsync(`BEGIN; ${send}; SELECT pg_sleep(1.5); COMMIT;`);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const second = sqlAsync(send).catch((error) => `refused: ${String(error.message).slice(0, 120)}`);
+  const [a, b] = await Promise.all([first, second]);
+  check('two overlapping sends of one message: the one that loses the race returns the winner\'s message',
+    b === a.split('\n')[0] && sql(`SELECT count(*) FROM public.builder_agency_messages WHERE client_message_id = ${lit(key)}`) === '1',
+    b);
+}
 const second = post(ORG_A, CONN_A, ITEM_A1, USER_A2, randomUUID(), 'Adding the brochure link tomorrow.');
 check('a colleague writes into the SAME conversation, as themselves',
   sql(`SELECT count(DISTINCT conversation_id) || '|' || string_agg(sender_display_name, ',' ORDER BY sent_at)

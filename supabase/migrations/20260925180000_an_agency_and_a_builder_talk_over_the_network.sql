@@ -251,11 +251,27 @@ BEGIN
   ON CONFLICT (id) DO NOTHING;
 
   v_id := gen_random_uuid();
-  INSERT INTO public.builder_agency_messages(
-    id, conversation_id, side, sender_builder_user_id, client_message_id,
-    sender_display_name, body, sent_at, delivery_state, delivery_generation)
-  VALUES (v_id, v_conversation, 'builder', _sender_builder_user_id, _client_message_id,
-          left(v_name, 200), v_body, clock_timestamp(), 'queued', 1);
+  BEGIN
+    INSERT INTO public.builder_agency_messages(
+      id, conversation_id, side, sender_builder_user_id, client_message_id,
+      sender_display_name, body, sent_at, delivery_state, delivery_generation)
+    VALUES (v_id, v_conversation, 'builder', _sender_builder_user_id, _client_message_id,
+            left(v_name, 200), v_body, clock_timestamp(), 'queued', 1);
+  EXCEPTION WHEN unique_violation THEN
+    -- Two overlapping sends of one message (a double click, a retried request):
+    -- the other committed first. Its row IS this send; answer with it.
+    SELECT * INTO v_existing FROM public.builder_agency_messages m
+     WHERE m.sender_builder_user_id = _sender_builder_user_id
+       AND m.client_message_id = _client_message_id;
+    IF v_existing.id IS NULL THEN
+      RAISE;
+    END IF;
+    IF v_existing.conversation_id <> v_conversation OR v_existing.body <> v_body THEN
+      RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'AGENCY_MESSAGE_ID_REUSED';
+    END IF;
+    RETURN NEXT v_existing;
+    RETURN;
+  END;
 
   UPDATE public.builder_agency_conversations
      SET last_message_at = GREATEST(COALESCE(last_message_at, '-infinity'), now())
