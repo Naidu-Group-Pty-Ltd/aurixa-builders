@@ -150,6 +150,19 @@ name: Production rollout
 #            refusing a foreign image and another organisation; and a party
 #            added, edited and removed with project access unchanged. Deletes
 #            every row, object, workspace and connection it made.
+#   stock-agencies-proof
+#            proves the Builder Portal's Agencies area on the live product: the
+#            same organisations of the run's own and SALTBUSH RISE import as
+#            stock-project-proof, an activation delivered through the live
+#            network door (carrying a client label the area must never show; a
+#            payload naming a client refused at the door), then
+#            list_activated_properties for the organisation's builder — its
+#            property, design, photograph (bytes served), agency, contact and
+#            project link, and nothing withheld — and for another organisation,
+#            before and after being listed as a party on the project: nothing.
+#            Also checks the deployed portal serves the route and bundles the
+#            area, and counts (read-only) real activations holding a client
+#            label. Deletes every row, object, workspace and connection it made.
 #   stock-media-proof
 #            proves a property's photographs and documents reach the Command
 #            Centre over the real signed path: a never-activated organisation of
@@ -207,11 +220,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-media-proof | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-media-proof, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1)'
         required: false
@@ -319,6 +332,7 @@ jobs:
             stock-scan-proof)     node scripts/ops/stock-scan-proof.mjs ;;
             stock-confirmation-proof) node scripts/ops/stock-confirmation-proof.mjs ;;
             stock-project-proof) node scripts/ops/stock-project-proof.mjs ;;
+            stock-agencies-proof) node scripts/ops/stock-agencies-proof.mjs ;;
             stock-media-proof)   node scripts/ops/stock-media-proof.mjs ;;
             stock-overlay-audit)  deno run -A --config supabase/functions/deno.json scripts/ops/stock-overlay-audit.ts ;;
             upload-settlement-state)

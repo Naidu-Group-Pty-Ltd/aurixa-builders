@@ -3,7 +3,7 @@ import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-do
 import {
   ArrowLeft, Bell, Boxes, Building2, ClipboardList, FileText, Hammer, HardHat, History,
   KanbanSquare, LayoutDashboard, ListChecks, LogOut, Menu, MessageSquare, Receipt,
-  Settings as SettingsIcon, Shield, ShieldCheck, X,
+  Settings as SettingsIcon, Shield, ShieldCheck, X, Handshake,
 } from 'lucide-react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -21,6 +21,7 @@ import { useWhiteLabel } from '@/contexts/WhiteLabelContext';
 import { cn } from '@/lib/utils';
 import { accessRoleLabel } from '@/lib/builderAccessTerms';
 import { isWithdrawnBuilderPath } from '@/lib/builderHiddenSections.pure';
+import { builderNavItemVisible } from './builderNavVisibility.pure';
 import { useBuilderPortalAuth } from '@/hooks/useBuilderPortalAuth';
 import { BuilderNotificationBell } from './BuilderNotificationBell';
 import { BuilderPortalUserCard } from './ui/BuilderPortalUserCard';
@@ -58,6 +59,11 @@ interface BuilderNavItem {
   available: boolean;
   /** Present only on the flag-gated AML compliance entry. */
   complianceGated?: boolean;
+  /**
+   * The organisation permission its page is read under. Drawn only where the
+   * user's server-resolved matrix grants `view` — see builderNavVisibility.
+   */
+  permission?: string;
 }
 
 const NAV: BuilderNavItem[] = [
@@ -71,6 +77,10 @@ const NAV: BuilderNavItem[] = [
   { to: '/builder/projects', label: 'Projects', icon: Building2, available: true },
   { to: '/builder/inventory', label: 'Inventory', icon: Boxes, available: true },
   { to: '/builder/stock', label: 'Stock List', icon: ClipboardList, available: true },
+  // The connected Command Centre workspaces: what they activated, and the
+  // conversations about it. Read under `inventory`, like the Stock List's
+  // own activations, so it is offered to exactly the people who see those.
+  { to: '/builder/agencies', label: 'Agencies', icon: Handshake, available: true, permission: 'inventory' },
   { to: '/builder/transactions', label: 'Transactions', icon: Receipt, available: true },
   { to: '/builder/pipeline', label: 'Pipeline', icon: KanbanSquare, available: true },
   { to: '/builder/construction', label: 'Construction', icon: Hammer, available: true },
@@ -97,10 +107,12 @@ function tourAnchor(to: string): string {
 
 /** One flat navigation list, matching the Solicitor sidebar. */
 function SidebarNav({ pathname, showCompliance, onNavigate }: { pathname: string; showCompliance?: boolean; onNavigate?: () => void }) {
+  const { can } = useBuilderPortalAuth();
   return (
     <TooltipProvider delayDuration={200}>
       <nav aria-label="Builder portal" className="space-y-1 px-3">
-        {NAV.map(({ to, label, icon: Icon, exact, available, complianceGated }) => {
+        {NAV.map((item) => {
+          const { to, label, icon: Icon, exact, available } = item;
           /*
            * Withdrawn from this portal entirely — see
            * `builderHiddenSections.pure.ts`. The entry stays in NAV and is
@@ -113,8 +125,8 @@ function SidebarNav({ pathname, showCompliance, onNavigate }: { pathname: string
            * fell into was two navigation surfaces built from two lists.
            */
           if (isWithdrawnBuilderPath(to)) return null;
-          // Flag-gated entry: absent until the compliance surface is enabled.
-          if (complianceGated && !showCompliance) return null;
+          // Flag-gated and permission-gated entries: absent until they apply.
+          if (!builderNavItemVisible(item, { can, showCompliance: !!showCompliance })) return null;
           if (!available) {
             return (
               <Tooltip key={to}>

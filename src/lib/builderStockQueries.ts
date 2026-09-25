@@ -18,6 +18,7 @@ import type {
   BuilderStockItem, BuilderStockSelectionForBuilder, BuilderStockUpload,
   ManualStatField, StatedLocationField,
 } from '@/lib/builderStock';
+import type { ActivatedProperty } from '@/lib/builderAgency';
 
 export const builderStockKeys = {
   root: () => ['builder', 'stock'] as const,
@@ -26,6 +27,7 @@ export const builderStockKeys = {
   held: (uploadId: string) => ['builder', 'stock', 'held', uploadId] as const,
   item: (id: string) => ['builder', 'stock', 'item', id] as const,
   selections: (page: number) => ['builder', 'stock', 'selections', page] as const,
+  activatedProperties: (page: number) => ['builder', 'stock', 'activated-properties', page] as const,
 };
 
 export interface StockFilters {
@@ -212,6 +214,20 @@ export function useBuilderStockSelections(page = 1) {
     queryKey: builderStockKeys.selections(page),
     queryFn: () => invoke<Paginated<BuilderStockSelectionForBuilder>>({
       operation: 'list_selections', page, page_size: 20,
+    }),
+  });
+}
+
+/**
+ * The Agencies page's Activated Properties — the organisation's activations,
+ * each with its property, elected photograph, agency and project link. Read
+ * on mount and on focus like the rest of the portal; nothing here polls.
+ */
+export function useBuilderActivatedProperties(page = 1) {
+  return useQuery({
+    queryKey: builderStockKeys.activatedProperties(page),
+    queryFn: () => invoke<Paginated<ActivatedProperty>>({
+      operation: 'list_activated_properties', page, page_size: 25,
     }),
   });
 }

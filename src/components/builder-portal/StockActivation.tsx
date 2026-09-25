@@ -60,7 +60,7 @@ export function ActivationAgencyLine({
 export function ActivationContact({
   activation, dense, className,
 }: {
-  activation: BuilderStockActivation;
+  activation: Pick<BuilderStockActivation, 'contact_name' | 'contact_email' | 'contact_phone'>;
   dense?: boolean;
   className?: string;
 }) {
