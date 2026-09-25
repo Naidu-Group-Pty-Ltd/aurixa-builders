@@ -167,7 +167,12 @@ check('the same key with different text is refused, never answered with the orig
   check('two overlapping sends of one message: the one that loses the race returns the winner\'s message',
     b === a.split('\n')[0] && sql(`SELECT count(*) FROM public.builder_agency_messages WHERE client_message_id = ${lit(key)}`) === '1',
     b);
+  check('…and exactly one generation-1 event crosses for it',
+    outbox(`dedupe_key = 'agency.message:${a.split('\n')[0]}:1'`) === '1'
+      && outbox(`dedupe_key LIKE 'agency.message:${a.split('\n')[0]}:%'`) === '1');
 }
+check('the same key against another conversation is refused, never answered with the first',
+  /AGENCY_MESSAGE_ID_REUSED/.test(refusal(`SELECT public.builder_agency_post_message(${lit(ORG_A)}, ${lit(CONN_A)}, ${lit(ITEM_A2)}, ${lit(USER_A)}, ${lit(client1)}, 'We can hold it until Friday.')`) ?? ''));
 const second = post(ORG_A, CONN_A, ITEM_A1, USER_A2, randomUUID(), 'Adding the brochure link tomorrow.');
 check('a colleague writes into the SAME conversation, as themselves',
   sql(`SELECT count(DISTINCT conversation_id) || '|' || string_agg(sender_display_name, ',' ORDER BY sent_at)
