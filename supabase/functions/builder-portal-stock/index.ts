@@ -43,8 +43,10 @@ import {
   resolveBuilderSession,
   builderGovernanceError,
   builderCan,
+  listAccessibleBuilderProjectIds,
   logBuilderProjectActivity,
 } from '../_shared/builderPortalAuth.ts';
+import { readActivatedProperties } from '../_shared/builderStock/activatedProperties.ts';
 import {
   MAX_STOCK_FILE_BYTES, STOCK_LIST_BUCKET, STOCK_IMAGE_BUCKET,
   STOCK_LIST_STORAGE_PREFIX, STOCK_ALLOWED_DECLARED_MIME,
@@ -2501,6 +2503,27 @@ Deno.serve(async (req) => {
           total_pages: Math.max(1, Math.ceil((count ?? 0) / pageSize)),
         },
       });
+    }
+
+    /*
+     * The Agencies page's Activated Properties. The same activations the list
+     * above serves, behind the same gate, read through one module so the
+     * organisation pin, the project-access rule and what is withheld (the
+     * client label, the Command Centre's selection ref) are decided once.
+     */
+    if (operation === 'list_activated_properties') {
+      const { page, pageSize } = stockPagination(body);
+      const read = await readActivatedProperties(supabase, {
+        organisationId: activeOrganisationId,
+        page,
+        pageSize,
+        listAccessibleProjectIds: () =>
+          listAccessibleBuilderProjectIds(supabase, me.id, activeOrganisationId, 'projects'),
+      });
+      if (!read.ok) {
+        return json({ success: false, error: 'activations_could_not_be_read' }, 503);
+      }
+      return json({ success: true, records: read.records, pagination: read.pagination });
     }
 
     if (operation === 'acknowledge_selection') {

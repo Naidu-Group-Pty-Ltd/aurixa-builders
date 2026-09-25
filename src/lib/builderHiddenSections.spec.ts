@@ -47,7 +47,7 @@ describe('withdrawn builder sections — the set itself', () => {
 
   it('leaves every offered section alone', () => {
     for (const path of [
-      '/builder', '/builder/projects', '/builder/stock', '/builder/messages',
+      '/builder', '/builder/projects', '/builder/stock', '/builder/agencies', '/builder/messages',
       '/builder/tasks', '/builder/notifications', '/builder/activity',
       '/builder/settings', '/builder/compliance',
     ]) {
@@ -85,26 +85,28 @@ describe('withdrawn builder sections — every door asks the same list', () => {
     expect(layout.match(/<SidebarNav/g)?.length).toBe(2);
   });
 
-  it('leaves the builder portal exactly nine navigation entries', () => {
+  it('leaves the builder portal exactly ten navigation entries', () => {
     /*
      * The real NAV routes, put through the real predicate. Everything else
      * here checks that a surface CONSULTS the module; this checks the answer
      * it gets, which is what an operator actually sees.
      *
      * Compliance is flag-gated on top of this and absent wherever the flag is
-     * off, so nine is the ceiling rather than the count on every deployment.
+     * off, and Agencies is drawn only for a user who may view the organisation's
+     * activations, so ten is the ceiling rather than the count every user sees.
      */
     const layout = read('src/components/builder-portal/BuilderPortalLayout.tsx');
     const nav = layout.slice(layout.indexOf('const NAV'), layout.indexOf('function tourAnchor'));
     const routes = [...nav.matchAll(/to: '(\/builder[a-z/]*)'/g)].map((m) => m[1]);
 
-    expect(routes).toHaveLength(14);
+    expect(routes).toHaveLength(15);
     const shown = routes.filter((to) => !isWithdrawnBuilderPath(to));
     expect(shown).toEqual([
       '/builder',
       '/builder/compliance',
       '/builder/projects',
       '/builder/stock',
+      '/builder/agencies',
       '/builder/messages',
       '/builder/tasks',
       '/builder/notifications',
