@@ -200,8 +200,13 @@ export function arrivalScrollTarget(previousIds: readonly string[] | null, ids: 
   const seen = new Set(previousIds);
   const arrived = ids.filter((id) => !seen.has(id));
   if (!arrived.length) return null;
-  if (arrived.includes(ids[ids.length - 1])) return 'end';
-  return arrived[0];
+  // A message that sorts above the newest one already seen is a late arrival,
+  // and it wins even when the same poll also brought a new last message:
+  // following the end would leave it above the reader, unseen.
+  let lastSeenIndex = -1;
+  ids.forEach((id, index) => { if (seen.has(id)) lastSeenIndex = index; });
+  const late = arrived.find((id) => ids.indexOf(id) < lastSeenIndex);
+  return late ?? 'end';
 }
 
 /** Brings one message of a log into view, by the id it is drawn with. */

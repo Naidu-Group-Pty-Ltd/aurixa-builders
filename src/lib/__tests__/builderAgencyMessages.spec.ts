@@ -343,6 +343,10 @@ describe('following what a poll brings in', () => {
     expect(arrivalScrollTarget(['a', 'c'], ['a', 'b', 'c'])).toBe('b');
     expect(arrivalScrollTarget(['a', 'b'], ['a', 'b'])).toBeNull();
     expect(arrivalScrollTarget(['a', 'b'], ['b'])).toBeNull();
+    // A late message and a new last one in the same poll: the late one is
+    // brought into view first, or it would be left above the reader unseen.
+    expect(arrivalScrollTarget(['a', 'c'], ['a', 'b', 'c', 'd'])).toBe('b');
+    expect(arrivalScrollTarget(['c'], ['a', 'b', 'c', 'd'])).toBe('a');
   });
 });
 
