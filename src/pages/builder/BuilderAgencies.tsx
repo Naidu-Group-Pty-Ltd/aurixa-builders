@@ -361,7 +361,15 @@ function ThreadView({ thread }: { thread: AgencyThread }) {
           </p>
         </div>
 
-        {query.isLoading ? <Loading /> : query.error ? (
+        {/* A poll that fails after the conversation was read keeps what was
+            read: the history is still true, it may just be behind. */}
+        {query.error && conversation ? (
+          <p role="status" className="text-sm text-muted-foreground">
+            This conversation could not be refreshed just now, so newer messages may be missing. It will try again shortly.
+          </p>
+        ) : null}
+
+        {query.isLoading ? <Loading /> : query.error && !conversation ? (
           <p className="text-sm text-muted-foreground">
             This conversation could not be loaded just now. It will try again shortly.
           </p>

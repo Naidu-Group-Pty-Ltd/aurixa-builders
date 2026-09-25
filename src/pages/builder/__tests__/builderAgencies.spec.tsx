@@ -32,6 +32,8 @@ const state: {
   everyStale?: boolean;
   /** The server stopped answering new pages before the list was complete. */
   everyTruncated?: boolean;
+  /** The conversation's latest poll failed. */
+  conversationError?: { message?: string } | null;
 } = { records: [], error: null, loading: false, conversation: null, laterPages: [], everyError: null };
 const sent: Array<{ clientMessageId: string; body: string }> = [];
 const sendFailures = { remaining: 0 };
@@ -56,7 +58,7 @@ vi.mock('@/lib/builderStockQueries', () => ({
   }),
   builderStockImageUrl: vi.fn(async () => null),
   useAgencyConversation: () => ({
-    data: state.conversation ?? undefined, error: null, isLoading: false, isFetching: false,
+    data: state.conversation ?? undefined, error: state.conversationError ?? null, isLoading: false, isFetching: false,
   }),
   useSendAgencyMessage: () => ({
     isPending: false,
@@ -125,6 +127,7 @@ beforeEach(() => {
   state.everyError = null;
   state.everyStale = false;
   state.everyTruncated = false;
+  state.conversationError = null;
   state.records = [];
   state.error = null;
   state.loading = false;
@@ -386,6 +389,30 @@ describe('a refresh of the full list that fails', () => {
     expect(screen.getByText(/could not be refreshed/i)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /try again/i }));
     expect(refreshed.every).toBe(1);
+  });
+});
+
+describe('a poll of an open conversation that fails', () => {
+  it('keeps the history it already read and says it may be out of date', () => {
+    state.records = [ACTIVATION];
+    state.conversation = {
+      conversation_id: 'c', open: true, can_send: true,
+      messages: [MESSAGE({ id: 'm1', body: 'Already read.', delivery_state: 'delivered' })],
+    };
+    state.conversationError = { message: 'poll failed' };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    expect(screen.getByRole('log', { name: /conversation/i })).toBeTruthy();
+    expect(screen.getByText('Already read.')).toBeTruthy();
+    expect(screen.getByText(/could not be refreshed/i)).toBeTruthy();
+    expect(screen.queryByText(/could not be loaded just now/i)).toBeNull();
+  });
+
+  it('with nothing read yet, says it could not be loaded', () => {
+    state.records = [ACTIVATION];
+    state.conversation = null;
+    state.conversationError = { message: 'first read failed' };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    expect(screen.getByText(/could not be loaded just now/i)).toBeTruthy();
   });
 });
 
