@@ -92,6 +92,9 @@ export interface AgencyContractViolation {
   mistyped: string[];
 }
 
+/** The message schema version both sides write and apply. */
+export const AGENCY_MESSAGE_SCHEMA_VERSION = 1;
+
 /** Each key's JSON type. `reason` alone may also be null. */
 const KEY_TYPES: Record<string, 'string' | 'number'> = {
   body: 'string', sender_display_name: 'string', sent_at: 'string', message_id: 'string',
@@ -121,6 +124,10 @@ export function agencyPayloadContractViolation(eventType: string, payload: unkno
     .filter((key) => allowed.has(key))
     .filter((key) => !(key === 'reason' && record[key] === null))
     .filter((key) => typeof record[key] !== KEY_TYPES[key]
+      // The one schema version the apply step can read. Refused at the door,
+      // a skewed peer's message stays pending and is retried, never marked
+      // delivered only to be dropped where no receipt can follow.
+      || (key === 'schema_version' && record[key] !== AGENCY_MESSAGE_SCHEMA_VERSION)
       // A generation is a positive whole number within an integer's range.
       || (key === 'generation' && !(Number.isInteger(record[key]) && (record[key] as number) >= 1
         && (record[key] as number) <= 2_147_483_647)))

@@ -439,6 +439,14 @@ describe('a message envelope\'s dedupe key is bound to its payload', () => {
 describe('a generation is a positive whole number', () => {
   const posted = { schema_version: 1, conversation_id: 'c', message_id: 'm', stock_item_id: 'i', body: 'Hi',
     sender_display_name: 'A', sent_at: '2026-09-25T00:00:00Z', generation: 1 };
+  it('refuses a schema version it cannot apply, so a skewed peer keeps retrying instead of being marked delivered', () => {
+    for (const schema_version of [2, 0, 1.5]) {
+      expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, schema_version })).toMatchObject({ mistyped: ['schema_version'] });
+      expect(agencyPayloadContractViolation('agency.message.receipt',
+        { schema_version, message_id: 'm', conversation_id: 'c', generation: 1, outcome: 'accepted' })).toMatchObject({ mistyped: ['schema_version'] });
+    }
+    expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, schema_version: 1 })).toBeNull();
+  });
   it('refuses a fractional, zero, negative or out-of-range generation', () => {
     for (const generation of [1.5, 0, -1, 2 ** 31]) {
       expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, generation })).toMatchObject({ mistyped: ['generation'] });
