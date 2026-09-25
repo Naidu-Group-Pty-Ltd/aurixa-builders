@@ -110,6 +110,33 @@ const totals = await sql('totals', `
 console.log('\nTOTALS (live = active or staged)');
 console.log(JSON.stringify(totals[0]));
 
+// What the brochure-figure reader (doc 57) has done: its records by state,
+// standing and reason, how many columns it filled, what is still owed, and
+// whether its minute tick is scheduled. Read before the per-row detail so a
+// run that is still working says so.
+const figureReader = await sql('document figures', `
+  select coalesce(document_figures->>'state', '(not read)') as state,
+         document_figures->>'standing' as standing,
+         document_figures->>'reason' as reason,
+         document_figures->>'read_by' as read_by,
+         count(*)::int as properties,
+         sum((select count(*) from jsonb_object_keys(coalesce(document_figures->'values','{}'::jsonb))))::int as values_stated
+  from builder_stock_items where ${LIVE}
+  group by 1,2,3,4 order by 5 desc`);
+console.log('\nBROCHURE FIGURE READER (by state, standing, reason, read_by)');
+for (const row of figureReader) console.log(JSON.stringify(row));
+const filledBy = await sql('filled columns', `
+  select v.key as column_name,
+         count(*)::int as brochure_states_it,
+         count(*) filter (where (to_jsonb(i) -> v.key) = v.value)::int as row_holds_that_value
+  from builder_stock_items i, jsonb_each(coalesce(i.document_figures->'values','{}'::jsonb)) v
+  where i.${LIVE} group by 1 order by 1`);
+console.log('figures a brochure stated, and rows now holding exactly that value:', JSON.stringify(filledBy));
+const readerState = await sql('reader state', `
+  select public.builder_stock_document_figures_pending() as owed,
+         (select count(*)::int from cron.job where jobname = 'read-builder-stock-document-figures') as tick_scheduled`);
+console.log('reader state:', JSON.stringify(readerState[0]));
+
 const byUpload = await sql('by upload', `
   select i.organisation_id::text as org, i.upload_id::text as upload,
          u.source_type, u.detected_content_type, u.parse_strategy,
