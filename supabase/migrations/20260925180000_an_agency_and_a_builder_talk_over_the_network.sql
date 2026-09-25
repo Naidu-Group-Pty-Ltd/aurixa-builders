@@ -605,6 +605,16 @@ BEGIN
       FROM public.builder_network_inbound_events e
      WHERE e.message_applied_at IS NULL
        AND e.event_type IN ('agency.message.posted', 'agency.message.receipt')
+       -- A message never overtakes the activation it depends on: the door's
+       -- 200 means an activation LANDED, not that the main sweep applied it,
+       -- so a posted message waits (unconsumed, no attempt spent) while an
+       -- activation that landed before it on the same connection is still
+       -- unapplied, instead of being refused as not open.
+       AND NOT (e.event_type = 'agency.message.posted' AND EXISTS (
+         SELECT 1 FROM public.builder_network_inbound_events p
+          WHERE p.connection_id = e.connection_id AND p.processed_at IS NULL
+            AND p.event_type LIKE 'stock.selection.%'
+            AND (p.received_at, p.id) < (e.received_at, e.id)))
      ORDER BY e.received_at, e.id
      LIMIT greatest(1, least(_limit, 500))
      FOR UPDATE SKIP LOCKED

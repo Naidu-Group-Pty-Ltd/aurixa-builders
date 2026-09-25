@@ -450,6 +450,26 @@ console.log('\nA lost response, retried after the connection is revoked');
     /AGENCY_MESSAGE_ID_REUSED/.test(edited ?? '') && /AGENCY_CONVERSATION_NOT_FOUND/.test(fresh ?? ''));
 }
 
+console.log('\nA message never overtakes the activation it depends on');
+{
+  const ITEM_A3 = randomUUID();
+  sql(`INSERT INTO public.builder_stock_items(id, organisation_id, lot_number, address_line, lifecycle_status)
+       VALUES (${lit(ITEM_A3)}, ${lit(ORG_A)}, '103', '3 Check Street', 'active')`);
+  const ref = randomUUID();
+  land(CONN_A, 'stock.selection.announced', `stock.selection:${ref}:1`,
+    { remote_selection_ref: ref, stock_item_id: ITEM_A3, status: 'selected' });
+  const early = agencyMessage({ stock_item_id: ITEM_A3, conversation_id: conversationId(CONN_A, ITEM_A3), body: 'Arrived right behind the activation.' });
+  land(CONN_A, 'agency.message.posted', `agency.message:${early.message_id}:1`, early);
+  sweep();
+  check('a message landed behind an unapplied activation waits, unconsumed, spending no attempt',
+    sql(`SELECT (message_applied_at IS NULL) || '|' || message_apply_attempts FROM public.builder_network_inbound_events
+         WHERE dedupe_key = 'agency.message:${early.message_id}:1'`) === 'true|0');
+  mainSweep();
+  sweep();
+  check('…and is applied once the activation is',
+    sql(`SELECT count(*) FROM public.builder_agency_messages WHERE id = ${lit(early.message_id)}`) === '1');
+}
+
 console.log('\nA time that is not a time');
 for (const when of ['infinity', '-infinity']) {
   const odd = agencyMessage({ body: `Sent at ${when}.`, sent_at: when });

@@ -62,6 +62,8 @@ Both main inbound sweeps refuse an event type they do not handle, and the refusa
 - It runs each minute, and the network door also runs it once when an envelope lands.
 - The main, media and rank sweeps are unchanged.
 
+**Order behind the activation.** The door's 200 means an activation landed, not that the main sweep applied it. A posted message therefore waits in the message lane (unconsumed, spending no attempt) while an activation that landed before it on the same connection is still unapplied, instead of being refused as not open.
+
 **Failure handling.** One message that cannot be applied is retried on later sweeps. After five attempts it is dead-lettered with a critical operational event. It never blocks the messages after it: each claim takes its own row with `SKIP LOCKED`, and each row runs in its own exception block.
 
 **Ordering.** Both ends sort by `(sent_at, id)`, using the writing side's server clock with the id as tie-breaker. Messages that arrive out of order settle into the order they were written.
