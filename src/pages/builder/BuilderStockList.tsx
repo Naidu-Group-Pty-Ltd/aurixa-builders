@@ -37,8 +37,11 @@ import {
 import { StockPicture } from '@/components/stock/StockPicture';
 import { BuilderStockFiguresButton } from '@/components/builder-portal/BuilderStockFigures';
 import {
-  BrochureConfirmations, BrochureImageChoice,
+  BrochureConfirmations,
 } from '@/components/builder-portal/BrochureConfirmation';
+import {
+  DocumentMismatchCallout, DocumentNotesPanel, isDrawableMismatch,
+} from '@/components/builder-portal/StockDocumentNotes';
 import { AU_LOCALE } from '@/lib/aml/displayDate';
 import { BuilderSchedule } from '@/components/builder-portal/ui/BuilderSchedule';
 import { useDebounce } from '@/hooks/useDebounce';
@@ -63,7 +66,6 @@ import {
 import {
   countArrivingUploads, countWorkingImages, stockImageProgress, FAILED_WORK_STAGE,
   hasDocumentIdentityMismatch,
-  STOCK_DOCUMENT_MISMATCH_COPY,
   STOCK_IMAGE_PROGRESS_BADGE, STOCK_IMAGE_PROGRESS_DETAIL, STOCK_IMAGE_PROGRESS_LABEL,
 } from '../../../supabase/functions/_shared/builderStock/imageProgress.pure';
 import {
@@ -1858,85 +1860,22 @@ function ImageSources({ item, showLabels = false }: { item: BuilderStockItem; sh
         reaches here.
       */}
       {!image && notes.length ? (
-        <ul className="w-full space-y-1 text-[11px] leading-snug text-muted-foreground">
-          {notes.map((note) => (
-            <li key={`${note.document}-${note.detail}`} className="min-w-0">
-              {note.finding === 'identity_mismatch' && note.states ? (
-                /*
-                  THE ONE FINDING A BUILDER CAN FIX IN A MINUTE, DRAWN AS
-                  SUCH.
-
-                  A brochure that is simply the wrong file read identically
-                  to a brochure with no photograph in it — one line of grey
-                  prose under a chip saying "No picture found" — and the two
-                  ask for opposite things. This one asks for a corrected
-                  link, so it is given a heading, the two identities side by
-                  side, and the step to take. It is drawn under the status
-                  chip and never in a tooltip: a reason nobody can see is a
-                  reason nobody acts on.
-
-                  The class comes from the server as a code. Nothing here
-                  reads the sentence to decide what to draw, and nothing here
-                  makes a second judgement about which property a document
-                  belongs to — see `statedOtherLotDesignation`.
-                */
-                <div className="rounded-md border border-warning/40 bg-warning/5 px-2 py-1.5">
-                  <p className="flex items-start gap-1 font-medium text-foreground">
-                    <AlertTriangle
-                      className="mt-px h-3 w-3 shrink-0 text-warning"
-                      aria-hidden
-                    />
-                    <span>{STOCK_DOCUMENT_MISMATCH_COPY.heading}</span>
-                  </p>
-                  <p className="mt-0.5">{STOCK_DOCUMENT_MISMATCH_COPY.body}</p>
-                  <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-0.5">
-                    {listingIdentity ? (
-                      <>
-                        <dt className="text-muted-foreground">
-                          {STOCK_DOCUMENT_MISMATCH_COPY.listingLabel}
-                        </dt>
-                        <dd className="min-w-0 font-medium text-foreground">
-                          {listingIdentity}
-                        </dd>
-                      </>
-                    ) : null}
-                    <dt className="text-muted-foreground">
-                      {STOCK_DOCUMENT_MISMATCH_COPY.documentLabel}
-                    </dt>
-                    <dd className="min-w-0 font-medium text-foreground">
-                      {note.states}
-                      {note.quote ? (
-                        <span className="font-normal text-muted-foreground">
-                          {` \u2014 \u201c${note.quote}\u201d`}
-                        </span>
-                      ) : null}
-                    </dd>
-                  </dl>
-                  <p className="mt-1">{STOCK_DOCUMENT_MISMATCH_COPY.action}</p>
-                  <p className="mt-1 text-muted-foreground/80">{note.document}</p>
-                  {/*
-                    AND THE ONE CHOICE THE BUILDER HAS BEYOND FIXING THE
-                    SHEET: this brochure IS theirs, whatever its cover says.
-                    Offered only where the server allows it, behind a
-                    confirmation naming both identities — see
-                    `BrochureConfirmation.tsx`.
-                  */}
-                  <BrochureImageChoice
-                    item={item}
-                    note={note}
-                    listingIdentity={listingIdentity}
-                  />
-                </div>
-              ) : (
-                <>
-                  <span className="font-medium text-foreground/80">{note.document}</span>
-                  {': '}
-                  {note.detail}
-                </>
-              )}
-            </li>
+        <div className="flex w-full flex-col gap-2">
+          {/*
+            The mismatch leads: it is the one note that asks the builder to
+            do something. The rest explain, under one heading, why a link gave
+            no photograph. See `StockDocumentNotes.tsx`.
+          */}
+          {notes.filter(isDrawableMismatch).map((note) => (
+            <DocumentMismatchCallout
+              key={`${note.document}-${note.detail}`}
+              item={item}
+              note={note}
+              listingIdentity={listingIdentity}
+            />
           ))}
-        </ul>
+          <DocumentNotesPanel notes={notes.filter((note) => !isDrawableMismatch(note))} />
+        </div>
       ) : null}
 
       {/*
