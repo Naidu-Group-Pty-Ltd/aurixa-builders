@@ -111,6 +111,16 @@ export async function collectEveryPage<T>(
   return { records: all, truncated: false };
 }
 
+/**
+ * A refusal (signed out, access withdrawn) says the reader may no longer see
+ * what was read: unlike a transient failure, it must not stay on screen.
+ */
+export function accessRefused(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const status = (error as { status?: number }).status;
+  return status === 401 || status === 403;
+}
+
 export const AGENCIES_PATH = '/builder/agencies';
 export const AGENCY_TABS = ['activations', 'messages'] as const;
 export type AgencyTab = typeof AGENCY_TABS[number];

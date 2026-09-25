@@ -35,7 +35,7 @@ const state: {
   /** A refresh of the first page failed after it had been read once. */
   firstStale?: boolean;
   /** The conversation's latest poll failed. */
-  conversationError?: { message?: string } | null;
+  conversationError?: { message?: string; status?: number } | null;
 } = { records: [], error: null, loading: false, conversation: null, laterPages: [], everyError: null };
 const sent: Array<{ clientMessageId: string; body: string }> = [];
 const sendFailures = { remaining: 0 };
@@ -414,6 +414,18 @@ describe('a refresh of the first page that fails after it was read', () => {
     expect(screen.getByText(/could not be refreshed/i)).toBeTruthy();
   });
 
+  it('a refresh REFUSED after the list was read withdraws it on both tabs', () => {
+    for (const path of ['/builder/agencies/messages', '/builder/agencies/activations']) {
+      state.records = [ACTIVATION];
+      state.error = { status: 403, message: 'You do not have access to stock' };
+      state.firstStale = true;
+      const view = renderAt(path);
+      expect(screen.queryByRole('listbox', { name: /conversations/i })).toBeNull();
+      expect(screen.getByText(/do not have access/i)).toBeTruthy();
+      view.unmount();
+    }
+  });
+
   it('a first read that fails still says so, and a refusal still says access is missing', () => {
     state.error = { message: 'first read failed' };
     renderAt('/builder/agencies/messages');
@@ -434,6 +446,21 @@ describe('a poll of an open conversation that fails', () => {
     expect(screen.getByText('Already read.')).toBeTruthy();
     expect(screen.getByText(/could not be refreshed/i)).toBeTruthy();
     expect(screen.queryByText(/could not be loaded just now/i)).toBeNull();
+  });
+
+  it.each([401, 403])('a poll refused with %i withdraws the history and the composer', (status) => {
+    state.records = [ACTIVATION];
+    state.conversation = {
+      conversation_id: 'c', open: true, can_send: true,
+      messages: [MESSAGE({ id: 'm1', body: 'Already read.', delivery_state: 'delivered' })],
+    };
+    state.conversationError = { status, message: 'refused' };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    expect(screen.queryByRole('log', { name: /conversation/i })).toBeNull();
+    expect(screen.queryByText('Already read.')).toBeNull();
+    expect(screen.queryByText(/could not be refreshed/i)).toBeNull();
+    expect(screen.getByText(/no longer available to you/i)).toBeTruthy();
+    expect((screen.getByRole('textbox', { name: /message/i }) as HTMLTextAreaElement).disabled).toBe(true);
   });
 
   it('with nothing read yet, says it could not be loaded', () => {

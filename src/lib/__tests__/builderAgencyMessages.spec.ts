@@ -19,7 +19,7 @@ import {
 import { agencyDedupeKeyFor, agencyPayloadContractViolation, sameAgencyEnvelope } from '../../../supabase/functions/_shared/builderStock/agencyMessages.pure';
 import { readAgencyConversation } from '../../../supabase/functions/_shared/builderStock/agencyMessages';
 import {
-  AGENCY_CONVERSATION_CLOSED_POLL_MS, AGENCY_CONVERSATION_POLL_MS, agencyConversationPollInterval, arrivalScrollTarget, collectEveryPage, newClientMessageId, outboundStateLabel, scrollLogToEnd,
+  AGENCY_CONVERSATION_CLOSED_POLL_MS, accessRefused, AGENCY_CONVERSATION_POLL_MS, agencyConversationPollInterval, arrivalScrollTarget, collectEveryPage, newClientMessageId, outboundStateLabel, scrollLogToEnd,
 } from '../builderAgency';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
@@ -578,5 +578,15 @@ describe('a duplicate message key is a duplicate only if it is the same envelope
     expect(dup.indexOf('sameAgencyEnvelope(')).toBeGreaterThan(-1);
     expect(dup.indexOf('sameAgencyEnvelope(')).toBeLessThan(dup.indexOf('duplicate: true'));
     expect(dup).toMatch(/error: 'message_conflict' \}, 409/);
+  });
+});
+
+describe('a read the reader may no longer see', () => {
+  it('is a 401 or a 403, never a transient failure', () => {
+    expect(accessRefused({ status: 401 })).toBe(true);
+    expect(accessRefused({ status: 403 })).toBe(true);
+    expect(accessRefused({ status: 503 })).toBe(false);
+    expect(accessRefused(new Error('Failed to fetch'))).toBe(false);
+    expect(accessRefused(null)).toBe(false);
   });
 });

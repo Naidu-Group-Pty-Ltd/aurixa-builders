@@ -19,7 +19,7 @@ import { useToast } from '@/hooks/use-toast';
 import { isDisplayableSourceImage, type BuilderStockImage } from '@/lib/builderStock';
 import {
   AGENCIES_PATH, activatedPropertyLocality, activatedPropertyTitle, agencyLabel,
-  agencyTabFrom, agencyThreadsFrom, newClientMessageId, outboundStateLabel, arrivalScrollTarget, scrollLogToEnd, scrollMessageIntoView,
+  accessRefused, agencyTabFrom, agencyThreadsFrom, newClientMessageId, outboundStateLabel, arrivalScrollTarget, scrollLogToEnd, scrollMessageIntoView,
   type ActivatedProperty, type AgencyMessageView, type AgencyThread, type AgencyTab,
 } from '@/lib/builderAgency';
 
@@ -56,6 +56,8 @@ export default function BuilderAgencies() {
   const records = query.data?.records ?? [];
   const status = (query.error as { status?: number } | null)?.status;
   const denied = status === 403;
+  // A refusal withdraws what was read; any other failure keeps it.
+  const refused = accessRefused(query.error);
 
   return (
     <BuilderPortalShell
@@ -87,7 +89,7 @@ export default function BuilderAgencies() {
             a failed refresh keeps what was read, which is still true and
             may just be behind. */}
         <TabsContent value="activations" className="mt-6">
-          {query.isLoading ? <Loading /> : query.error && !query.data ? (
+          {query.isLoading ? <Loading /> : query.error && (!query.data || refused) ? (
             <ReadFailure denied={denied} onRetry={() => void query.refetch()} />
           ) : (
             <div className="space-y-3">
@@ -105,7 +107,7 @@ export default function BuilderAgencies() {
         {/* The Messages tab reads the full list itself and says when that
             fails; the first page is only its stand-in while it loads. */}
         <TabsContent value="messages" className="mt-6">
-          {query.isLoading ? <Loading /> : query.error && !query.data ? (
+          {query.isLoading ? <Loading /> : query.error && (!query.data || refused) ? (
             <ReadFailure denied={denied} onRetry={() => void query.refetch()} />
           ) : (
             <MessagesShell firstPage={records} />
@@ -230,7 +232,7 @@ function MessagesShell({ firstPage }: { firstPage: ActivatedProperty[] }) {
 
   // The first page stands in only while the full list is loading. A full
   // list that FAILED is said so: the first page is not the complete list.
-  if (every.error && !every.data) {
+  if (every.error && (!every.data || accessRefused(every.error))) {
     const status = (every.error as { status?: number } | null)?.status;
     return <ReadFailure denied={status === 403} onRetry={() => void every.refetch()} />;
   }
@@ -319,7 +321,10 @@ function ThreadView({ thread }: { thread: AgencyThread }) {
   // repeated with the SAME key, so it can never arrive twice.
   const [clientMessageId, setClientMessageId] = useState(newClientMessageId);
 
-  const conversation = query.data;
+  // A refusal withdraws the history and the composer; a transient failure
+  // keeps what was read.
+  const accessLost = accessRefused(query.error);
+  const conversation = accessLost ? undefined : query.data;
   const messages = conversation?.messages ?? [];
   const canSend = !!conversation?.can_send;
   // Open at the newest message, and follow whatever a poll brings in, even a
@@ -376,17 +381,23 @@ function ThreadView({ thread }: { thread: AgencyThread }) {
 
         {/* A poll that fails after the conversation was read keeps what was
             read: the history is still true, it may just be behind. */}
+        {accessLost ? (
+          <p className="text-sm text-muted-foreground">
+            This conversation is no longer available to you.
+          </p>
+        ) : null}
+
         {query.error && conversation ? (
           <p role="status" className="text-sm text-muted-foreground">
             This conversation could not be refreshed just now, so newer messages may be missing. It will try again shortly.
           </p>
         ) : null}
 
-        {query.isLoading ? <Loading /> : query.error && !conversation ? (
+        {query.isLoading ? <Loading /> : query.error && !conversation && !accessLost ? (
           <p className="text-sm text-muted-foreground">
             This conversation could not be loaded just now. It will try again shortly.
           </p>
-        ) : messages.length === 0 ? (
+        ) : accessLost ? null : messages.length === 0 ? (
           <div className="rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
             <p className="font-medium text-foreground">No messages yet.</p>
             <p className="mt-1">Anything you write here is sent to {agencyLabel(thread.agency)} about this property.</p>
