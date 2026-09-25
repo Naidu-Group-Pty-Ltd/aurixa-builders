@@ -301,6 +301,12 @@ describe('polling and paging', () => {
     expect(all).toEqual(['r1a', 'r1b', 'r2a', 'r2b', 'r3a', 'r3b']);
   });
 
+  it('the refresh reaches the same cache the full list is read from', () => {
+    const q = readCode('src/lib/builderStockQueries.ts');
+    expect(q).toMatch(/queryKey:\s*EVERY_ACTIVATED_PROPERTIES_KEY/);
+    expect(q).toMatch(/invalidateQueries\(\{\s*queryKey:\s*EVERY_ACTIVATED_PROPERTIES_KEY\s*\}\)/);
+  });
+
   it('never walks past its bound, whatever the server claims', async () => {
     let asked = 0;
     await collectEveryPage(async (page) => {

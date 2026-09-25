@@ -70,7 +70,7 @@ Both main inbound sweeps refuse an event type they do not handle, and the refusa
 
 A signed payload is not authority. When a message event is applied, all of these are checked against the rows:
 
-- the connection is active;
+- the connection is active (for new content; a receipt that landed before a revocation still settles the message it answers, since it carries no content);
 - the property belongs to the connection's builder;
 - the conversation id equals the derivation for this connection and property;
 - the activation is live;

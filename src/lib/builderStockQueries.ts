@@ -241,13 +241,21 @@ export function useBuilderActivatedProperties(page = 1) {
  * conversations from, so a conversation is never unreachable because its
  * activation sits past the first page of the list.
  */
+const EVERY_ACTIVATED_PROPERTIES_KEY = [...builderStockKeys.activatedProperties(0), 'every'] as const;
+
 export function useEveryBuilderActivatedProperty() {
   return useQuery({
-    queryKey: [...builderStockKeys.activatedProperties(0), 'every'],
+    queryKey: EVERY_ACTIVATED_PROPERTIES_KEY,
     queryFn: () => collectEveryPage((page) => invoke<Paginated<ActivatedProperty>>({
       operation: 'list_activated_properties', page, page_size: 100,
     })),
   });
+}
+
+/** The page's Refresh: re-read the full list the Messages tab is built from. */
+export function useRefreshEveryBuilderActivatedProperty() {
+  const queryClient = useQueryClient();
+  return () => queryClient.invalidateQueries({ queryKey: EVERY_ACTIVATED_PROPERTIES_KEY });
 }
 
 /**

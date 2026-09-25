@@ -31,6 +31,7 @@ const state: {
 const sent: Array<{ clientMessageId: string; body: string }> = [];
 const sendFailures = { remaining: 0 };
 const retried: string[] = [];
+const refreshed = { firstPage: 0, every: 0 };
 
 vi.mock('@/lib/builderStockQueries', () => ({
   useBuilderActivatedProperties: () => ({
@@ -38,8 +39,9 @@ vi.mock('@/lib/builderStockQueries', () => ({
     error: state.error,
     isLoading: state.loading,
     isFetching: false,
-    refetch: vi.fn(),
+    refetch: vi.fn(async () => { refreshed.firstPage += 1; }),
   }),
+  useRefreshEveryBuilderActivatedProperty: () => async () => { refreshed.every += 1; },
   useEveryBuilderActivatedProperty: () => ({
     data: state.error ? undefined : [...state.records, ...state.laterPages],
     error: state.error,
@@ -104,6 +106,8 @@ function renderAt(path: string) {
 }
 
 beforeEach(() => {
+  refreshed.firstPage = 0;
+  refreshed.every = 0;
   state.records = [];
   state.error = null;
   state.loading = false;
@@ -330,5 +334,15 @@ describe('Messages', () => {
     const page = code('src/pages/builder/BuilderAgencies.tsx');
     expect(page).not.toMatch(/openrouter|anthropic|openai|claude/i);
     expect(page).not.toMatch(/sendEmail|resend/i);
+  });
+});
+
+describe('the page\'s Refresh', () => {
+  it('re-reads the full conversation list as well as the first page, so a new activation appears in Messages', () => {
+    state.records = [ACTIVATION];
+    renderAt('/builder/agencies/messages');
+    fireEvent.click(screen.getByRole('button', { name: /^refresh$/i }));
+    expect(refreshed.firstPage).toBe(1);
+    expect(refreshed.every).toBe(1);
   });
 });

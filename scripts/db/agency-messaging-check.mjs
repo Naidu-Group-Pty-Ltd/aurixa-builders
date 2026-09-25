@@ -425,6 +425,25 @@ sweep();
 check('a delivered message never times out, and an old generation cannot time out the current one',
   sql(`SELECT delivery_state FROM public.builder_agency_messages WHERE id = ${lit(lost)}`) === 'delivered');
 
+console.log('\nA receipt that landed before the connection was revoked');
+const beforeRevoke = post(ORG_A, CONN_A, ITEM_A1, USER_A, randomUUID(), 'Sent just before the revocation.');
+sql(`UPDATE public.builder_network_outbox SET status = 'delivered', delivered_at = now() WHERE dedupe_key = 'agency.message:${beforeRevoke}:1'`);
+receipt(beforeRevoke, 1, 'accepted');
+const landedBeforeRevoke = agencyMessage({ body: 'Landed just before the revocation.' });
+land(CONN_A, 'agency.message.posted', `agency.message:${landedBeforeRevoke.message_id}:1`, landedBeforeRevoke);
+sql(`UPDATE public.workspace_connections SET state = 'revoked', revoked_at = now() WHERE id = ${lit(CONN_A)}`);
+try {
+  sweep();
+  check('an accepted receipt that landed before the revocation still marks the message delivered',
+    sql(`SELECT delivery_state FROM public.builder_agency_messages WHERE id = ${lit(beforeRevoke)}`) === 'delivered');
+  check('new content that landed before the revocation is still refused, and stored nowhere',
+    sql(`SELECT message_apply_error FROM public.builder_network_inbound_events
+         WHERE dedupe_key = 'agency.message:${landedBeforeRevoke.message_id}:1'`) === 'refused:connection_not_active'
+      && sql(`SELECT count(*) FROM public.builder_agency_messages WHERE id = ${lit(landedBeforeRevoke.message_id)}`) === '0');
+} finally {
+  sql(`UPDATE public.workspace_connections SET state = 'active', revoked_at = NULL WHERE id = ${lit(CONN_A)}`);
+}
+
 console.log('\nOne bad message never blocks the next');
 sql(`CREATE OR REPLACE FUNCTION public._check_poison() RETURNS trigger LANGUAGE plpgsql AS $$
      BEGIN IF NEW.body = 'poison' THEN RAISE EXCEPTION 'simulated fault'; END IF; RETURN NEW; END $$;

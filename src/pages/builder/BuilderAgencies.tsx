@@ -12,7 +12,7 @@ import {
 } from '@/components/builder-portal/StockActivation';
 import { StockPicture } from '@/components/stock/StockPicture';
 import {
-  builderStockImageUrl, useAgencyConversation, useBuilderActivatedProperties, useEveryBuilderActivatedProperty,
+  builderStockImageUrl, useAgencyConversation, useBuilderActivatedProperties, useEveryBuilderActivatedProperty, useRefreshEveryBuilderActivatedProperty,
   useRetryAgencyMessage, useSendAgencyMessage,
 } from '@/lib/builderStockQueries';
 import { useToast } from '@/hooks/use-toast';
@@ -50,6 +50,8 @@ export default function BuilderAgencies() {
   const navigate = useNavigate();
   const tab = agencyTabFrom(params.tab);
   const query = useBuilderActivatedProperties(1);
+  const refreshEvery = useRefreshEveryBuilderActivatedProperty();
+  const refresh = () => { void query.refetch(); void refreshEvery(); };
 
   const records = query.data?.records ?? [];
   const status = (query.error as { status?: number } | null)?.status;
@@ -60,7 +62,7 @@ export default function BuilderAgencies() {
       title="Agencies"
       description="The agencies connected to you through their Command Centre: the properties they have activated from your stock list, and your conversations with them."
       actions={(
-        <Button variant="outline" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching}>
+        <Button variant="outline" size="sm" onClick={refresh} disabled={query.isFetching}>
           <RefreshCw className={cn('mr-2 h-4 w-4', query.isFetching && 'animate-spin')} aria-hidden />
           Refresh
         </Button>
