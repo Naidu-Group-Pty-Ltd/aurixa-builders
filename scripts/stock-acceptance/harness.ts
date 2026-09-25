@@ -2342,6 +2342,40 @@ const invariants: Record<string, unknown> = {};
     let blanked = 0;
     let marker: number | null = behind;
     const attempts = new Map<string, number>();
+
+    /*
+     * BUT NEVER A PROPERTY WHOSE SOURCE WORK IS ANOTHER LIST'S. The sweep
+     * matches rows against the organisation's whole stock, and the ladder
+     * works a property against its pending upload where it has one — so a
+     * recovery THIS upload owes, handed over for such a property, would be
+     * asked of the other list, answered nowhere, and handed back on every
+     * sweep. For one sweep the second property carries another list's pending
+     * upload: it must be left settled and owed while its sibling is handed
+     * over. Then it is released, and the rounds below must still converge —
+     * the first property now already in the ladder, which a sweep must not
+     * reset under it.
+     */
+    const [first, second] = settledItems;
+    const stageOf = async (id: string) => (await db.from('builder_stock_items')
+      .select('image_work_stage').eq('id', id).maybeSingle()).data?.image_work_stage ?? null;
+    const { error: pendingError } = await db.from('builder_stock_items')
+      .update({ pending_upload_id: crypto.randomUUID() }).eq('id', second.id);
+    if (pendingError) throw new Error(`could not give lot ${second.lot_number} another list: ${pendingError.message}`);
+    const foreignSweep: any = await settleUploadSourceImages(db, {
+      organisationId: org.id, uploadId, deadlineAt: Date.now() + reserve / 2,
+      needsProvenance: true, needsEligibility: false, needsSanitization: false,
+    }, imageryDeps);
+    blanked += (await itemsFor(uploadId)).filter((i: any) => !i.primary_image_id).length;
+    const foreign = {
+      handed: foreignSweep?.repair?.handedToLadder ?? null,
+      stages: { [first.lot_number]: await stageOf(first.id), [second.lot_number]: await stageOf(second.id) },
+    };
+    out.foreign = foreign;
+    await db.from('builder_stock_items').update({ pending_upload_id: null }).eq('id', second.id);
+    const foreignOk = foreign.handed === 1
+      && foreign.stages[first.lot_number] === 'source'
+      && foreign.stages[second.lot_number] === 'settled';
+
     for (let round = 0; round < 4 && (marker ?? -1) < PROVENANCE_VERSION; round += 1) {
       const sweep: any = await settleUploadSourceImages(db, {
         organisationId: org.id, uploadId, deadlineAt: Date.now() + reserve / 2,
@@ -2370,7 +2404,7 @@ const invariants: Record<string, unknown> = {};
       after: await Promise.all(after.map(async (i: any) =>
         ({ lot: i.lot_number, stage: i.image_work_stage, ready: await readyNow(i.id) }))),
     });
-    ok = marker === PROVENANCE_VERSION && blanked === 0
+    ok = foreignOk && marker === PROVENANCE_VERSION && blanked === 0
       && (out.after as any[]).every((i: any) => i.ready && i.stage === 'settled')
       && sizes[0] === '1280x790' && sizes[1] === '1160x730';
   } catch (error) {
