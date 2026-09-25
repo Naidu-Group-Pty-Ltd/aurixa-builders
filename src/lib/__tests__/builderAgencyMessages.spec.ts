@@ -309,3 +309,12 @@ describe('polling and paging', () => {
     expect(asked).toBe(5);
   });
 });
+
+describe('a reader who may not write', () => {
+  it('is never offered "Send again": the read gates the retry on inventory edit', () => {
+    const stock = readCode('supabase/functions/builder-portal-stock/index.ts');
+    const start = stock.indexOf("operation === 'get_agency_conversation'");
+    const op = stock.slice(start, stock.indexOf('operation ===', start + 20));
+    expect(op).toMatch(/can_retry:\s*message\.can_retry\s*&&\s*mayEdit/);
+  });
+});

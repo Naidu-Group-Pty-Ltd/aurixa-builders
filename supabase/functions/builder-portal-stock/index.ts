@@ -2561,12 +2561,15 @@ Deno.serve(async (req) => {
           ? notFoundHere('That conversation')
           : json({ success: false, error: 'conversation_could_not_be_read' }, 503);
       }
+      const mayEdit = await can('edit');
       return json({
         success: true,
         conversation_id: read.conversation_id,
         open: read.open,
-        can_send: read.open && await can('edit'),
-        messages: read.messages,
+        can_send: read.open && mayEdit,
+        // The retry operation needs inventory edit, so a reader without it is
+        // never offered "Send again".
+        messages: read.messages.map((message) => ({ ...message, can_retry: message.can_retry && mayEdit })),
       });
     }
 
