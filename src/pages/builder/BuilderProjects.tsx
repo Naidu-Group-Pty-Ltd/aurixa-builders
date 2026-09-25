@@ -16,11 +16,32 @@ import { BuilderPortalShell } from '@/components/builder-portal/BuilderPortalShe
 import { BuilderPortalMetricCard } from '@/components/builder-portal/ui/BuilderPortalMetricCard';
 import { useDebounce } from '@/hooks/useDebounce';
 import { useBuilderProjects } from '@/lib/builderQueries';
+import { ProjectPropertyPicture } from '@/components/builder-portal/ProjectProperty';
+import {
+  stockItemConfiguration, stockItemPrice, type BuilderStockItem,
+} from '@/lib/builderStock';
 import {
   PROJECT_STATUS_CLASSES, PROJECT_STATUS_LABELS, PROJECT_STATUS_ORDER,
   PROJECT_TYPE_LABELS, countdownLabel, formatProjectAddress, formatProjectDate,
   type BuilderProjectStatus,
 } from '@/lib/builderProjects';
+
+/** The row's headline figures: price, layout, home and land size. */
+function propertyLine(item: Partial<BuilderStockItem> | null | undefined): string | null {
+  if (!item) return null;
+  const size = (value: unknown, label: string) => {
+    const parsed = Number(value);
+    return value !== null && value !== undefined && Number.isFinite(parsed)
+      ? `${parsed.toLocaleString('en-AU')} m² ${label}` : null;
+  };
+  const parts = [
+    stockItemPrice(item as BuilderStockItem),
+    stockItemConfiguration(item as BuilderStockItem),
+    size(item.building_size_sqm, 'home'),
+    size(item.land_size_sqm, 'land'),
+  ].filter(Boolean);
+  return parts.length ? parts.join(' · ') : null;
+}
 
 /**
  * External Builder Portal project list. Mirrors `SolicitorMatters`:
@@ -131,13 +152,25 @@ export default function BuilderProjects() {
                 <TableBody>
                   {records.map((project) => {
                     const countdown = countdownLabel(project.estimated_completion_date);
+                    const figures = propertyLine(project.property);
                     return (
                       <TableRow key={project.id}>
                         <TableCell>
                           <Link
                             to={`/builder/projects/${project.id}`}
-                            className="block rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            className="flex items-start gap-3 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                           >
+                            {project.property ? (
+                              <ProjectPropertyPicture
+                                projectId={project.id}
+                                item={project.property}
+                                alt=""
+                                aspectClassName="aspect-[4/3]"
+                                className="w-16 shrink-0 overflow-hidden rounded-md border border-border/60 sm:w-24"
+                                emptyLabel="No photo"
+                              />
+                            ) : null}
+                            <span className="min-w-0">
                             <span className="flex items-center gap-2 font-medium">
                               {project.name}
                               {project.risk_flag ? (
@@ -161,6 +194,10 @@ export default function BuilderProjects() {
                                 {project.activation.status === 'selected' ? ' · awaiting acknowledgement' : ''}
                               </span>
                             ) : null}
+                            {figures ? (
+                              <span className="mt-0.5 block text-xs text-foreground/80">{figures}</span>
+                            ) : null}
+                            </span>
                           </Link>
                         </TableCell>
                         <TableCell className="hidden md:table-cell">

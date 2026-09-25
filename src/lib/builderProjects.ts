@@ -5,6 +5,7 @@
  * mirrors `_shared/legalMatters.ts`.
  */
 import type { BuilderActivationStatus } from '@/lib/builderCollaboration';
+import type { BuilderStockItem } from '@/lib/builderStock';
 
 export type BuilderProjectStatus =
   | 'planning' | 'pre_sales' | 'approved' | 'under_construction'
@@ -62,7 +63,11 @@ export interface BuilderProject {
     status: BuilderActivationStatus;
     agency_name: string | null;
     acknowledged_at: string | null;
-  } | null;
+  } | null;  /**
+   * The Stock List property this project IS, served by the list endpoint with
+   * its images, so the row draws the same photograph the Stock List does.
+   */
+  property?: Partial<BuilderStockItem> | null;
 }
 
 export interface BuilderProjectParty {

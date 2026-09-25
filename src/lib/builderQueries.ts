@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { invokeBuilderFunction } from '@/lib/builderPortal';
+import type { PropertyDocumentLink } from '../../supabase/functions/_shared/builderStock/propertyDocuments.pure';
 import type {
   BuilderProject, BuilderProjectParty, BuilderProjectStatusHistoryEntry,
 } from '@/lib/builderProjects';
@@ -103,6 +104,8 @@ export interface ProjectDetail {
   activation: BuilderStockActivation | null;
   /** The activated property, projected exactly as the Stock List serves it. */
   stock_item: Partial<BuilderStockItem> | null;
+  /** The documents the property's own stock row links to. */
+  property_documents?: PropertyDocumentLink[];
 }
 
 export class BuilderPortalRequestError extends Error {
@@ -165,6 +168,24 @@ export function useBuilderProject(projectId: string) {
     enabled: Boolean(projectId),
     retry: retryBuilderQuery,
   });
+}
+
+/**
+ * A short-lived URL for a photograph of a project's own property.
+ *
+ * Served by `builder-portal-projects` rather than the Stock List endpoint,
+ * because project access — not the inventory permission — is what opens a
+ * project. A failure is `null`, which the picture draws as unavailable.
+ */
+export async function builderProjectImageUrl(projectId: string, imageId: string): Promise<string | null> {
+  try {
+    const data = await invoke('builder-portal-projects', {
+      operation: 'image_url', project_id: projectId, image_id: imageId,
+    }) as { url?: string };
+    return data?.url ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export function useBuilderProjectStats() {

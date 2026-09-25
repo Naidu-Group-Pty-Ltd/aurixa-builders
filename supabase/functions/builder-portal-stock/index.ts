@@ -2658,7 +2658,7 @@ async function decorateItems(
      * "No image yet", which reads as something the product is still doing.
      */
     supabase.from('builder_stock_items')
-      .select('id, source_row, source_provenance_result')
+      .select('id, source_row, source_provenance_result, document_figures')
       .in('id', ids)
       .eq('organisation_id', organisationId),
   ]);
@@ -2704,8 +2704,16 @@ async function decorateItems(
    */
   const linkedByItem = new Map<string, Set<string>>();
   const sourceRowByItem = new Map<string, Record<string, unknown> | null>();
+  /*
+   * What this property's own brochure stated, read HERE rather than added to
+   * `STOCK_ITEM_SELECT` (a disclosure boundary). It was read from the item
+   * before, which that select never carried, so "Read from the brochure"
+   * could not appear on any card.
+   */
+  const documentFiguresByItem = new Map<string, unknown>();
   for (const row of rows ?? []) {
     sourceRowByItem.set(String(row.id), (row?.source_row as Record<string, unknown> | null) ?? null);
+    documentFiguresByItem.set(String(row.id), (row as { document_figures?: unknown })?.document_figures ?? null);
     const unmapped = (row?.source_row as { unmapped?: Record<string, string> } | null)?.unmapped;
     linkedByItem.set(String(row.id), new Set(rowSourceBranches(
       unmappedWithRecoveredLinks(unmapped, row?.source_row as Record<string, unknown> | null))
@@ -2776,7 +2784,7 @@ async function decorateItems(
      * `brochureFigures.pure.ts`.
      */
     document_figure_fields: figuresSuppliedByDocument({
-      documentFigures: item.document_figures,
+      documentFigures: documentFiguresByItem.get(String(item.id)) ?? null,
       row: item,
       sourceRow: sourceRowByItem.get(String(item.id)),
       stated: manualStatFields(item),

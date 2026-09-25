@@ -137,6 +137,19 @@ name: Production rollout
 #            listing that uses it, confirming puts the brochure's own photograph
 #            on the card stamped with the confirmation, and undoing takes it down
 #            and brings the notice back. Deletes every row and object it made.
+#   stock-project-proof
+#            proves an activated property's PROJECT page on the live product: a
+#            stock list (the gate's own SALTBUSH RISE brochure, digest-pinned)
+#            imported in an organisation of the run's own, detached from the
+#            network, whose property reads its photograph; an activation
+#            delivered through the live network door over a proof-only
+#            workspace connection (production-smoke's precedent) opening a
+#            project; get_project and list_projects carrying the property with
+#            its photograph, every figure equal to the Stock List's own read and
+#            its brochure link; image_url serving the photograph's bytes and
+#            refusing a foreign image and another organisation; and a party
+#            added, edited and removed with project access unchanged. Deletes
+#            every row, object, workspace and connection it made.
 #   upload-settlement-state
 #            read-only: why an upload's image settlement does not finish. For
 #            each property carrying the upload, judged by the pipeline's own
@@ -182,11 +195,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1)'
         required: false
@@ -293,6 +306,7 @@ jobs:
             stock-reading-trace)  deno run -A --config supabase/functions/deno.json scripts/ops/stock-reading-trace.ts ;;
             stock-scan-proof)     node scripts/ops/stock-scan-proof.mjs ;;
             stock-confirmation-proof) node scripts/ops/stock-confirmation-proof.mjs ;;
+            stock-project-proof) node scripts/ops/stock-project-proof.mjs ;;
             stock-overlay-audit)  deno run -A --config supabase/functions/deno.json scripts/ops/stock-overlay-audit.ts ;;
             upload-settlement-state)
                                   deno run -A --config supabase/functions/deno.json scripts/ops/stock-upload-settlement-state.ts ;;
