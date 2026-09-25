@@ -282,6 +282,18 @@ describe('the browser\'s half', () => {
   });
 });
 
+describe('a refusal at the door says which keys were wrong', () => {
+  it('names mistyped keys (a skewed schema_version) as well as unexpected and missing ones, and never a value', () => {
+    const door = readCode('supabase/functions/builder-network-inbound/index.ts');
+    const start = door.indexOf('builder_network_inbound_message_contract_violation');
+    const block = door.slice(start, door.indexOf("'message_contract_failed'", start));
+    expect(block).toMatch(/mistyped_keys:\s*contract\.mistyped\.slice\(0,\s*20\)/);
+    expect(block).toMatch(/unexpected_keys:\s*contract\.unexpected/);
+    expect(block).toMatch(/missing_keys:\s*contract\.missing/);
+    expect(block).not.toMatch(/envelope\.payload\[/);
+  });
+});
+
 describe('following what a poll brings in', () => {
   it('opens at the end, follows a new last message, brings a late one into view, and stays put otherwise', () => {
     expect(arrivalScrollTarget(null, ['a', 'b'])).toBe('end');
