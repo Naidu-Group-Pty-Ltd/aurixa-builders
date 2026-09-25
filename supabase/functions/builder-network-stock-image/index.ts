@@ -11,9 +11,11 @@
  *
  * PUBLIC BY DESIGN, AND EXACTLY AS NARROW AS THE PUBLICATION INVARIANT:
  *
- *  * the id must be the CURRENT PRIMARY image of an ACTIVE stock item — not
- *    merely an image that exists. Secondary pages, demoted rows, and every
- *    fallback stage are unreachable whatever their id;
+ *  * the id must be the CURRENT PRIMARY image of an ACTIVE stock item, or a
+ *    current member of that item's published gallery
+ *    (`builder_network_stock_item_gallery`, the set the stock payload names) —
+ *    not merely an image that exists. Secondary pages, demoted rows, and
+ *    every fallback stage are unreachable whatever their id;
  *  * the item must pass `builder_stock_item_client_visible` — the same
  *    predicate that gates publication, so nothing is servable here that the
  *    builder's own marketplace would not stand behind;
@@ -128,12 +130,33 @@ Deno.serve(async (req) => {
     if (!image || !image.storage_path) return notFound();
 
     // The CURRENT primary of an ACTIVE item, not any image that exists.
-    const { data: item } = await supabase
+    let { data: item } = await supabase
       .from('builder_stock_items')
       .select('id, lifecycle_status, primary_image_id')
       .eq('primary_image_id', image.id)
       .eq('lifecycle_status', 'active')
       .maybeSingle();
+
+    /*
+     * OR A CURRENT MEMBER OF ITS OWN ITEM'S PUBLISHED GALLERY. The stock
+     * payload now carries a property's photographs (`media.photos`), read from
+     * `builder_network_stock_item_gallery` — so this door serves exactly the
+     * set the composer publishes, from the same function, and nothing wider.
+     * Today that gallery IS the primary, so this admits nothing the primary
+     * rule above did not; it is here so the two cannot drift when the gallery
+     * is allowed to hold more.
+     */
+    if (!item && image.stock_item_id) {
+      const { data: gallery, error: galleryError } = await supabase
+        .rpc('builder_network_stock_item_gallery', { _item_id: image.stock_item_id });
+      if (galleryError || !Array.isArray(gallery) || !gallery.includes(image.id)) return notFound();
+      ({ data: item } = await supabase
+        .from('builder_stock_items')
+        .select('id, lifecycle_status, primary_image_id')
+        .eq('id', image.stock_item_id)
+        .eq('lifecycle_status', 'active')
+        .maybeSingle());
+    }
     if (!item) return notFound();
 
     // And the item must be one this network's own marketplace would publish.

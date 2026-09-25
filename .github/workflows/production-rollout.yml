@@ -150,6 +150,18 @@ name: Production rollout
 #            refusing a foreign image and another organisation; and a party
 #            added, edited and removed with project access unchanged. Deletes
 #            every row, object, workspace and connection it made.
+#   stock-media-proof
+#            proves a property's photographs and documents reach the Command
+#            Centre over the real signed path: a never-activated organisation of
+#            the run's own, one property with two stored photographs and two
+#            document links, a proof-only transport between the two LIVE inbound
+#            doors; checks the figures, the one elected photograph (its bytes
+#            through the network door), the typed documents and the Command
+#            Centre's own get_stock_item; replay, replacement, removal and a
+#            changed document; another organisation's signed payload refused; a
+#            malformed media block refused while the property takes the event.
+#            Reaches the Command Centre project with the same token
+#            network-connection-remap uses. Deletes everything on both sides.
 #   upload-settlement-state
 #            read-only: why an upload's image settlement does not finish. For
 #            each property carrying the upload, judged by the pipeline's own
@@ -195,11 +207,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-media-proof | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-media-proof, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1)'
         required: false
@@ -307,6 +319,7 @@ jobs:
             stock-scan-proof)     node scripts/ops/stock-scan-proof.mjs ;;
             stock-confirmation-proof) node scripts/ops/stock-confirmation-proof.mjs ;;
             stock-project-proof) node scripts/ops/stock-project-proof.mjs ;;
+            stock-media-proof)   node scripts/ops/stock-media-proof.mjs ;;
             stock-overlay-audit)  deno run -A --config supabase/functions/deno.json scripts/ops/stock-overlay-audit.ts ;;
             upload-settlement-state)
                                   deno run -A --config supabase/functions/deno.json scripts/ops/stock-upload-settlement-state.ts ;;
