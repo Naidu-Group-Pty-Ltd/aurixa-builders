@@ -217,11 +217,13 @@ BEGIN
   v_conversation := public.builder_agency_conversation_id(_connection_id, _stock_item_id);
 
   -- The same send again (a lost response, a double click) is the same row.
+  -- The key is bound to what was sent: the same key with other text is not
+  -- a repeat, and answering it with the original would lose the new text.
   SELECT * INTO v_existing FROM public.builder_agency_messages m
    WHERE m.sender_builder_user_id = _sender_builder_user_id
      AND m.client_message_id = _client_message_id;
   IF v_existing.id IS NOT NULL THEN
-    IF v_existing.conversation_id <> v_conversation THEN
+    IF v_existing.conversation_id <> v_conversation OR v_existing.body <> v_body THEN
       RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'AGENCY_MESSAGE_ID_REUSED';
     END IF;
     RETURN NEXT v_existing;
@@ -288,10 +290,17 @@ BEGIN
     RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'AGENCY_MESSAGE_NOT_RETRYABLE';
   END IF;
   SELECT * INTO v_conversation FROM public.builder_agency_conversations WHERE id = v_message.conversation_id;
+  -- Sending again is writing: the conversation must still be open, exactly
+  -- as for a new message.
   IF NOT EXISTS (
     SELECT 1 FROM public.workspace_connections c
      WHERE c.id = v_conversation.connection_id AND c.state = 'active'
-       AND c.builder_organisation_id = _organisation_id) THEN
+       AND c.builder_organisation_id = _organisation_id)
+     OR NOT EXISTS (
+    SELECT 1 FROM public.builder_stock_selection_announcements a
+     WHERE a.connection_id = v_conversation.connection_id
+       AND a.stock_item_id = v_conversation.stock_item_id
+       AND a.organisation_id = _organisation_id AND a.status <> 'withdrawn') THEN
     RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'AGENCY_CONVERSATION_NOT_OPEN';
   END IF;
 
@@ -449,6 +458,32 @@ BEGIN
 END
 $fn$;
 
+-- A message whose CURRENT generation reached the other side (its outbox row
+-- is delivered) and whose receipt has not come back within the confirmation
+-- window is failed as `confirmation_timeout` — never as a refusal, because
+-- nobody refused it. Its writer can send it again: the receiver stores the
+-- message id once and answers every generation, so a message that WAS
+-- accepted (its receipt lost on the way back) is simply confirmed by the next
+-- generation's receipt. A late receipt of this same generation still makes it
+-- Delivered (it is the truth); one of an older generation changes nothing.
+-- Deterministic, set-based, and run by the message sweep's own schedule.
+CREATE OR REPLACE FUNCTION public.builder_agency_expire_unconfirmed(
+  _window interval DEFAULT interval '15 minutes')
+RETURNS integer
+LANGUAGE sql SECURITY DEFINER SET search_path = public
+AS $fn$
+  WITH expired AS (
+    UPDATE public.builder_agency_messages m
+       SET delivery_state = 'failed', failure_reason = 'confirmation_timeout'
+      FROM public.builder_network_outbox o
+     WHERE m.side = 'builder' AND m.delivery_state = 'queued'
+       AND o.dedupe_key = 'agency.message:' || m.id || ':' || m.delivery_generation
+       AND o.status = 'delivered'
+       AND o.delivered_at < now() - _window
+    RETURNING m.id)
+  SELECT count(*)::integer FROM expired
+$fn$;
+
 CREATE OR REPLACE FUNCTION public.builder_agency_apply_message_events(_limit integer DEFAULT 50)
 RETURNS TABLE(applied integer, refused integer, deferred integer)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
@@ -509,6 +544,7 @@ BEGIN
   IF v_applied + v_refused > 0 THEN
     PERFORM public.builder_agency_kick_outbox();
   END IF;
+  PERFORM public.builder_agency_expire_unconfirmed();
   applied := v_applied; refused := v_refused; deferred := v_deferred;
   RETURN NEXT;
 END
@@ -575,12 +611,14 @@ REVOKE ALL ON FUNCTION public.builder_agency_post_message(uuid, uuid, uuid, uuid
 REVOKE ALL ON FUNCTION public.builder_agency_retry_message(uuid, uuid, uuid) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.builder_agency_apply_message_event(uuid) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.builder_agency_apply_message_events(integer) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.builder_agency_expire_unconfirmed(interval) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.builder_agency_message_lane() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.builder_agency_message_transport_dead() FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.builder_agency_conversation_id(uuid, uuid) TO service_role;
 GRANT EXECUTE ON FUNCTION public.builder_agency_post_message(uuid, uuid, uuid, uuid, uuid, text) TO service_role;
 GRANT EXECUTE ON FUNCTION public.builder_agency_retry_message(uuid, uuid, uuid) TO service_role;
 GRANT EXECUTE ON FUNCTION public.builder_agency_apply_message_events(integer) TO service_role;
+GRANT EXECUTE ON FUNCTION public.builder_agency_expire_unconfirmed(interval) TO service_role;
 
 DO $$
 BEGIN

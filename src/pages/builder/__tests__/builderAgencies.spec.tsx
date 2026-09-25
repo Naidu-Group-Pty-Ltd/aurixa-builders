@@ -28,6 +28,7 @@ const state: {
   conversation: any;
 } = { records: [], error: null, loading: false, conversation: null };
 const sent: Array<{ clientMessageId: string; body: string }> = [];
+const sendFailures = { remaining: 0 };
 const retried: string[] = [];
 
 vi.mock('@/lib/builderStockQueries', () => ({
@@ -44,7 +45,11 @@ vi.mock('@/lib/builderStockQueries', () => ({
   }),
   useSendAgencyMessage: () => ({
     isPending: false,
-    mutateAsync: vi.fn(async (input: { clientMessageId: string; body: string }) => { sent.push(input); return { message: null }; }),
+    mutateAsync: vi.fn(async (input: { clientMessageId: string; body: string }) => {
+      sent.push(input);
+      if (sendFailures.remaining > 0) { sendFailures.remaining -= 1; throw new Error('network'); }
+      return { message: null };
+    }),
   }),
   useRetryAgencyMessage: () => ({
     isPending: false,
@@ -98,6 +103,7 @@ beforeEach(() => {
   state.loading = false;
   state.conversation = null;
   sent.length = 0;
+  sendFailures.remaining = 0;
   retried.length = 0;
 });
 
@@ -243,6 +249,38 @@ describe('Messages', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0].body).toBe('Hello agency');
     expect(sent[0].clientMessageId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('repeats a send that failed in flight under the same key, and mints a new key once the text changes', async () => {
+    state.records = [ACTIVATION];
+    state.conversation = { conversation_id: null, open: true, can_send: true, messages: [] };
+    sendFailures.remaining = 2;
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    const box = screen.getByRole('textbox', { name: /message/i });
+    fireEvent.change(box, { target: { value: 'Is lot 12 still available?' } });
+    fireEvent.click(screen.getByRole('button', { name: /^send$/i }));
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: /^send$/i }));
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1].clientMessageId).toBe(sent[0].clientMessageId);
+    fireEvent.change(box, { target: { value: 'Is lot 14 still available?' } });
+    fireEvent.click(screen.getByRole('button', { name: /^send$/i }));
+    await vi.waitFor(() => expect(sent).toHaveLength(3));
+    expect(sent[2].clientMessageId).not.toBe(sent[0].clientMessageId);
+    expect(sent[2].body).toBe('Is lot 14 still available?');
+  });
+
+  it('a message whose confirmation never came back says so, and its writer can send it again', () => {
+    state.records = [ACTIVATION];
+    state.conversation = {
+      conversation_id: 'c', open: true, can_send: true,
+      messages: [MESSAGE({ id: 'm-unconfirmed', body: 'Price still current?', delivery_state: 'failed', failure_reason: 'confirmation_timeout', can_retry: true })],
+    };
+    renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    expect(screen.getByText('Not confirmed')).toBeInTheDocument();
+    expect(screen.queryByText('Not delivered')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /send again/i }));
+    expect(retried).toEqual(['m-unconfirmed']);
   });
 
   it('a closed conversation keeps its history and cannot be written to', () => {

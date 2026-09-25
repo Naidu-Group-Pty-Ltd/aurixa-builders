@@ -30,13 +30,14 @@ function standIn(tables: Record<string, Row[]>) {
     const entry = { table, filters: [] as Array<[string, string, unknown]> };
     log.push(entry);
     let orders: Array<[string, boolean]> = [];
+    let cap = Infinity;
     const builder: any = {
       select() { return builder; },
       eq(col: string, v: unknown) { entry.filters.push(['eq', col, v]); return builder; },
       neq(col: string, v: unknown) { entry.filters.push(['neq', col, v]); return builder; },
       in(col: string, v: unknown[]) { entry.filters.push(['in', col, v]); return builder; },
       order(col: string, o?: { ascending?: boolean }) { orders = [...orders, [col, o?.ascending !== false]]; return builder; },
-      limit() { return builder; },
+      limit(n: number) { cap = n; return builder; },
       maybeSingle() { return builder.then((r: any) => ({ data: r.data[0] ?? null, error: null })); },
       then(resolve: (v: unknown) => unknown) {
         let rows = (tables[table] ?? []).filter((row) => entry.filters.every(([op, col, v]) =>
@@ -44,7 +45,7 @@ function standIn(tables: Record<string, Row[]>) {
         for (const [col, asc] of [...orders].reverse()) {
           rows = [...rows].sort((a, b) => (String(a[col]) < String(b[col]) ? -1 : String(a[col]) > String(b[col]) ? 1 : 0) * (asc ? 1 : -1));
         }
-        return Promise.resolve({ data: rows, error: null }).then(resolve);
+        return Promise.resolve({ data: rows.slice(0, cap), error: null }).then(resolve);
       },
     };
     return builder;
@@ -106,6 +107,23 @@ describe('reading a conversation', () => {
     expect(JSON.stringify(read)).not.toContain('Not yours');
   });
 
+  it('past the cap, the thread shows the NEWEST messages, still in reading order', async () => {
+    const f = fixture();
+    f.builder_agency_messages = Array.from({ length: 501 }, (_, i) => ({
+      id: `m${String(i).padStart(4, '0')}`, conversation_id: CONV, side: 'command_centre',
+      sender_display_name: 'Casey Agent', body: `Message ${i}`,
+      sent_at: new Date(Date.UTC(2026, 8, 25, 0, 0, i)).toISOString(), delivery_state: null,
+      delivered_at: null, failure_reason: null, sender_builder_user_id: null, client_message_id: null, delivery_generation: 1,
+    }));
+    const read = await readAgencyConversation(standIn(f).client, {
+      organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME,
+    });
+    if (!read.ok) throw new Error('read failed');
+    expect(read.messages).toHaveLength(500);
+    expect(read.messages[0].body).toBe('Message 1');
+    expect(read.messages[499].body).toBe('Message 500');
+  });
+
   it('a property with an activation and no messages yet is an empty, open conversation', async () => {
     const f = fixture();
     f.builder_agency_messages = [];
@@ -114,6 +132,23 @@ describe('reading a conversation', () => {
       organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME,
     });
     expect(read).toMatchObject({ ok: true, messages: [], open: true });
+  });
+
+  it('18. polling refresh gets new messages: the next read carries what was written since the last', async () => {
+    const f = fixture();
+    const args = { organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME };
+    const first = await readAgencyConversation(standIn(f).client, args);
+    if (!first.ok) throw new Error('read failed');
+    expect(first.messages.map((m) => m.id)).not.toContain('m-new');
+    f.builder_agency_messages.push({
+      id: 'm-new', conversation_id: CONV, side: 'command_centre', sender_display_name: 'Casey Agent', body: 'Just arrived',
+      sent_at: '2026-09-25T13:00:00Z', delivery_state: null, delivered_at: null, failure_reason: null,
+      sender_builder_user_id: null, client_message_id: null, delivery_generation: 1,
+    });
+    const next = await readAgencyConversation(standIn(f).client, args);
+    if (!next.ok) throw new Error('read failed');
+    expect(next.messages.at(-1)?.body).toBe('Just arrived');
+    expect(readCode('src/lib/builderStockQueries.ts')).toMatch(/refetchInterval:\s*AGENCY_CONVERSATION_POLL_MS/);
   });
 
   it('a withdrawn activation is read-only', async () => {
@@ -224,5 +259,8 @@ describe('the browser\'s half', () => {
     expect(outboundStateLabel('queued')).toBe('Sending');
     expect(outboundStateLabel('delivered')).toBe('Delivered');
     expect(outboundStateLabel('failed')).toBe('Not delivered');
+    expect(outboundStateLabel('failed', 'refused:conversation_not_open')).toBe('Not delivered');
+    // Nobody refused it: the other side may have it, and we never heard back.
+    expect(outboundStateLabel('failed', 'confirmation_timeout')).toBe('Not confirmed');
   });
 });

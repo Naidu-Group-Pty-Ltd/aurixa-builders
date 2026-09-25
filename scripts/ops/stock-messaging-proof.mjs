@@ -36,7 +36,8 @@
  *  11. every refusal is written to the operational event log;
  *  12. nothing but the contract crosses: exact payload keys, no user id, no
  *      client, and the portal's read carries no user id either;
- *  13. the portal's polling read answers quickly, repeatedly, unchanged;
+ *  13. the portal's polling read — the same request, repeated — does not
+ *      hold a message before it is written and does hold it after, in order;
  *  14. withdrawing the activation closes the conversation on both sides and
  *      keeps its history readable.
  *
@@ -417,6 +418,8 @@ try {
            failure_reason, conversation_id FROM public.builder_agency_messages WHERE id = ${id(messageId)}`))[0] ?? null;
   const ccCount = async (messageId) => Number((await cc('cc count', `
     SELECT count(*)::int AS n FROM public.builder_network_messages WHERE id = ${id(messageId)}`))[0]?.n);
+  const netCountIn = async (conversation) => Number((await net('thread count', `
+    SELECT count(*)::int AS n FROM public.builder_agency_messages WHERE conversation_id = ${id(conversation)}`))[0]?.n);
   const netCount = async (messageId) => Number((await net('network count', `
     SELECT count(*)::int AS n FROM public.builder_agency_messages WHERE id = ${id(messageId)}`))[0]?.n);
   const ccPost = async (userId, clientMessageId, body) => (await cc('post', `
@@ -571,9 +574,16 @@ try {
   const intruderId = randomUUID();
   const intruder = await deliver(networkDoor, otherConnection, otherSecret, 'agency.message.posted',
     posted({ message_id: intruderId, conversation_id: conversationIdFor(otherConnection, item) }));
+  // The right property, over this connection, naming the conversation another
+  // workspace connection would hold: the wrong workspace.
   const mismatchId = randomUUID();
   const mismatch = await deliver(networkDoor, connection, secret, 'agency.message.posted',
-    posted({ message_id: mismatchId, conversation_id: randomUUID() }));
+    posted({ message_id: mismatchId, conversation_id: conversationIdFor(otherConnection, item) }));
+  // Another builder's property, over this connection: the wrong property.
+  const wrongPropertyId = randomUUID();
+  const wrongProperty = await deliver(networkDoor, connection, secret, 'agency.message.posted',
+    posted({ message_id: wrongPropertyId, stock_item_id: otherItem, conversation_id: conversationIdFor(connection, otherItem) }));
+  const threadBefore = await netCountIn(conversationId);
   const malformedId = randomUUID();
   const malformed = await deliver(networkDoor, connection, secret, 'agency.message.posted',
     posted({ message_id: malformedId, body: '   ', sent_at: 'not a time' }));
@@ -584,19 +594,25 @@ try {
   const outcomes = {
     intruder: await netOutcome(intruderId), mismatch: await netOutcome(mismatchId),
     malformed: await netOutcome(malformedId), behind: await netOutcome(behindId),
+    wrongProperty: await netOutcome(wrongPropertyId),
   };
   record('10: another builder\'s signed message naming this property is refused and stored nowhere',
     intruder === 200 && outcomes.intruder?.error === 'refused:stock_item_not_ours' && await netCount(intruderId) === 0,
     `door ${intruder}, ${outcomes.intruder?.error ?? 'no outcome'}`);
-  record('10: a message naming the wrong conversation is refused and stored nowhere',
+  record('10: a message naming another workspace\'s conversation is refused and stored nowhere',
     mismatch === 200 && outcomes.mismatch?.error === 'refused:conversation_mismatch' && await netCount(mismatchId) === 0,
     `door ${mismatch}, ${outcomes.mismatch?.error ?? 'no outcome'}`);
+  record('10: a message naming another builder\'s property is refused and stored nowhere',
+    wrongProperty === 200 && outcomes.wrongProperty?.error === 'refused:stock_item_not_ours' && await netCount(wrongPropertyId) === 0,
+    `door ${wrongProperty}, ${outcomes.wrongProperty?.error ?? 'no outcome'}`);
   record('10: a malformed message is refused and stored nowhere',
     malformed === 200 && outcomes.malformed?.error === 'refused:invalid_message' && await netCount(malformedId) === 0,
     `door ${malformed}, ${outcomes.malformed?.error ?? 'no outcome'}`);
   record('10: a valid message behind them is applied (a refused message never blocks the next)',
     behind === 200 && outcomes.behind?.applied === true && outcomes.behind?.error === null && await netCount(behindId) === 1,
     `door ${behind}`);
+  record('11: the refusals did not harm the conversation (every earlier message kept, only the valid one added)',
+    await netCountIn(conversationId) === threadBefore + 1);
   const ccIntruderId = randomUUID();
   const ccIntruder = await deliver(ccDoor, otherConnection, otherSecret, 'agency.message.posted',
     posted({ message_id: ccIntruderId, conversation_id: conversationIdFor(otherConnection, item) }));
@@ -649,19 +665,36 @@ try {
       .some((value) => readText.includes(value)) && !/sender_builder_user_id|sender_user_id|client/i.test(Object.keys(read.json?.messages?.[0] ?? {}).join(',')),
     `HTTP ${read.status}`);
 
-  // 13. The polling read.
-  const polls = [];
-  for (let i = 0; i < 3; i += 1) {
-    polls.push(await call('builder-portal-stock', { operation: 'get_agency_conversation', connection_id: connection, stock_item_id: item }, cookie));
-  }
-  record('13: the polling read answers, repeatedly and unchanged',
-    polls.every((p) => p.status === 200 && p.json?.open === true && p.json?.can_send === true
-      && JSON.stringify(p.json?.messages?.map((m) => m.id)) === JSON.stringify(polls[0].json?.messages?.map((m) => m.id))),
-    polls.map((p) => `${p.status}/${p.ms}ms`).join(', '));
-  const mineFlags = (polls[0].json?.messages ?? []).filter((m) => m.mine).map((m) => m.id);
+  // 13. The polling read sees a NEW message. The same request the page repeats
+  // every 10 seconds: nothing is reopened, recreated or reloaded between reads.
+  const readThread = () => call('builder-portal-stock',
+    { operation: 'get_agency_conversation', connection_id: connection, stock_item_id: item }, cookie);
+  const before = await readThread();
+  const beforeIds = (before.json?.messages ?? []).map((m) => m.id);
+  const pollText = `A new question for polling ${RUN}`;
+  const m6 = await ccPost(ccColleague.id, randomUUID(), pollText);
+  record('13: the first polling read does not contain the new message',
+    before.status === 200 && !beforeIds.includes(m6), `HTTP ${before.status}, ${beforeIds.length} message(s)`);
+  let polls = 0;
+  const seen = await waitFor('poll sees it', async () => {
+    polls += 1;
+    const read = await readThread();
+    const found = (read.json?.messages ?? []).find((m) => m.id === m6);
+    return { read, found, done: read.status === 200 && !!found };
+  });
+  record('13: a later polling read contains it, with its writer\'s name, delivered over the signed path',
+    seen.done && seen.found?.body === pollText && seen.found?.sender_display_name === `Casey Colleague ${RUN}`
+      && seen.found?.side === 'command_centre',
+    `after ${polls} read(s), ${secs(seen)}`);
+  const polledIds = (seen.read?.json?.messages ?? []).map((m) => m.id);
+  record('13: the polled thread keeps the deterministic order, the new message last',
+    JSON.stringify(polledIds) === JSON.stringify((await net('order', `
+      SELECT id FROM public.builder_agency_messages WHERE conversation_id = ${id(conversationId)} ORDER BY sent_at, id`)).map((r) => r.id))
+      && polledIds.at(-1) === m6);
+  const mineFlags = (seen.read?.json?.messages ?? []).filter((m) => m.mine).map((m) => m.id);
   record('13: the read marks only the reader\'s own messages as theirs, each with its delivery',
     JSON.stringify(mineFlags) === JSON.stringify([m3])
-      && (polls[0].json?.messages ?? []).every((m) => (m.side === 'builder') === (m.delivery_state !== null)));
+      && (seen.read?.json?.messages ?? []).every((m) => (m.side === 'builder') === (m.delivery_state !== null)));
 
   // 14. Withdrawal closes the conversation and keeps its history.
   await cc('withdraw', `
@@ -681,7 +714,7 @@ try {
     `withdrawn in ${secs(withdrawn)}, portal ${closedSend.status}, cc ${closedCc ? 'refused' : 'ACCEPTED'}`);
   record('14: its history stays readable, and the composer is gone',
     history.status === 200 && history.json?.open === false && history.json?.can_send === false
-      && (history.json?.messages ?? []).length >= 6, `${(history.json?.messages ?? []).length} message(s)`);
+      && (history.json?.messages ?? []).length >= 7, `${(history.json?.messages ?? []).length} message(s)`);
 } catch (error) {
   record('the proof ran to the end', false, String(error?.message ?? error).slice(0, 300));
 } finally {

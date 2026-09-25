@@ -45,11 +45,13 @@ Both event types are sent through the existing outbox, signed, with the existing
 | --- | --- |
 | `queued` | Written here, not yet accepted by the other side. The door's 200 alone does not change this. |
 | `delivered` | The other side's sweep applied the message and sent back an accepted receipt for this generation. |
-| `failed` | Refused (with the other side's reason), or the outbox row dead-lettered (`not_delivered`). |
+| `failed` | Refused (with the other side's reason), the outbox row dead-lettered (`not_delivered`), or the current generation reached the other side and no receipt came back within 15 minutes (`confirmation_timeout`, shown as "Not confirmed" — never as a refusal, because the other side may hold it). |
 
-**Retries.** A failed message stays visible. Only its writer can retry it. A retry re-sends it under generation + 1. The receiver answers every generation but stores the message once: rows are keyed by the sender's message id.
+**Retries.** A failed message stays visible. Only its writer can retry it, and only while the conversation is open. A retry re-sends it under generation + 1. The receiver answers every generation but stores the message once: rows are keyed by the sender's message id. So a message that WAS accepted, whose receipt was lost on the way back, is confirmed by the next generation's receipt. A late receipt for an older generation changes nothing.
 
-**Idempotency.** A repeat of the same send reuses the same browser `client_message_id`, which is unique per sender. So a lost response or an ambiguous timeout never creates a second message.
+**The confirmation window.** Without it, a lost receipt would leave a message Sending for ever: its outbox row is already delivered, and only a failed message may be retried. The message sweep's own minute schedule fails any message whose current generation has been delivered for more than 15 minutes without a receipt. It reads only the message and its outbox row; there is no second transport.
+
+**Idempotency.** A repeat of the same send reuses the same browser `client_message_id`, which is unique per sender. So a lost response or an ambiguous timeout never creates a second message. The key is bound to the text: the same key with different text is refused (`AGENCY_MESSAGE_ID_REUSED`), and the composer mints a new key whenever the text changes.
 
 ## 4. Its own lane
 

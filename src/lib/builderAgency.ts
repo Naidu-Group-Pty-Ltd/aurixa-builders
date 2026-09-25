@@ -50,7 +50,13 @@ const OUTBOUND_LABELS: Record<AgencyDeliveryState, string> = {
   failed: 'Not delivered',
 };
 
-export function outboundStateLabel(state: AgencyDeliveryState): string {
+/**
+ * `confirmation_timeout` is not a refusal: the message reached the other side
+ * and no receipt came back in time, so the other side may well hold it. It is
+ * named as unconfirmed, never as "not delivered".
+ */
+export function outboundStateLabel(state: AgencyDeliveryState, failureReason?: string | null): string {
+  if (state === 'failed' && failureReason === 'confirmation_timeout') return 'Not confirmed';
   return OUTBOUND_LABELS[state];
 }
 

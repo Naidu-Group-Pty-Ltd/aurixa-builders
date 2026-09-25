@@ -145,6 +145,9 @@ check('no user id, client or email crosses', !/[0-9a-f-]{36}/.test(payload.sende
 const again = post(ORG_A, CONN_A, ITEM_A1, USER_A, client1, 'We can hold it until Friday.');
 check('the same send again (a lost response) is the same message and no second event',
   again === m1 && outbox(`event_type = 'agency.message.posted'`) === '1');
+check('the same key with different text is refused, never answered with the original',
+  /AGENCY_MESSAGE_ID_REUSED/.test(refusal(`SELECT public.builder_agency_post_message(${lit(ORG_A)}, ${lit(CONN_A)}, ${lit(ITEM_A1)}, ${lit(USER_A)}, ${lit(client1)}, 'We can hold it until Monday.')`) ?? '')
+    && outbox(`event_type = 'agency.message.posted'`) === '1');
 const second = post(ORG_A, CONN_A, ITEM_A1, USER_A2, randomUUID(), 'Adding the brochure link tomorrow.');
 check('a colleague writes into the SAME conversation, as themselves',
   sql(`SELECT count(DISTINCT conversation_id) || '|' || string_agg(sender_display_name, ',' ORDER BY sent_at)
@@ -254,11 +257,83 @@ receipt(m4, 1, 'refused', 'conversation_not_open');
 sweep();
 check('a refused receipt fails the message with the agency\'s reason',
   sql(`SELECT delivery_state || '|' || failure_reason FROM public.builder_agency_messages WHERE id = ${lit(m4)}`) === 'failed|refused:conversation_not_open');
+sql(`UPDATE public.builder_stock_selection_announcements SET status = 'withdrawn'
+      WHERE connection_id = ${lit(CONN_A)} AND stock_item_id = ${lit(ITEM_A1)}`);
+check('a failed message cannot be sent again once the activation is withdrawn',
+  /AGENCY_CONVERSATION_NOT_OPEN/.test(refusal(`SELECT public.builder_agency_retry_message(${lit(ORG_A)}, ${lit(m4)}, ${lit(USER_A)})`) ?? '')
+    && sql(`SELECT delivery_state || '|' || delivery_generation FROM public.builder_agency_messages WHERE id = ${lit(m4)}`) === 'failed|1');
+sql(`UPDATE public.builder_stock_selection_announcements SET status = 'selected'
+      WHERE connection_id = ${lit(CONN_A)} AND stock_item_id = ${lit(ITEM_A1)}`);
 land(CONN_B, 'agency.message.receipt', `agency.receipt:${m1}:1:${randomUUID()}`,
   { schema_version: 1, message_id: m1, conversation_id: conversationId(CONN_A, ITEM_A1), generation: 1, outcome: 'refused', reason: 'x' });
 sweep();
 check('a receipt over another connection cannot touch this conversation\'s message',
   sql(`SELECT delivery_state FROM public.builder_agency_messages WHERE id = ${lit(m1)}`) === 'delivered');
+
+console.log('\nA receipt that never gets back');
+// As RECEIVER: the agency's message is stored, and the accepted receipt dies
+// on the way back.
+const lostIn = agencyMessage({ body: 'Did you get this one?' });
+land(CONN_A, 'agency.message.posted', `agency.message:${lostIn.message_id}:1`, lostIn);
+sweep();
+check('lost receipt 1: the receiver stores the message',
+  sql(`SELECT count(*) FROM public.builder_agency_messages WHERE id = ${lit(lostIn.message_id)}`) === '1');
+sql(`UPDATE public.builder_network_outbox SET status = 'dead', last_error = 'http_503'
+      WHERE dedupe_key = 'agency.receipt:${lostIn.message_id}:1'`);
+check('lost receipt 2: its accepted receipt never gets back (dead-lettered here)',
+  outbox(`dedupe_key = 'agency.receipt:${lostIn.message_id}:1' AND status = 'dead'`) === '1');
+land(CONN_A, 'agency.message.posted', `agency.message:${lostIn.message_id}:2`, { ...lostIn, generation: 2 });
+sweep();
+check('lost receipt 8: the sender\'s retry still leaves exactly one message here',
+  sql(`SELECT count(*) FROM public.builder_agency_messages WHERE id = ${lit(lostIn.message_id)}`) === '1');
+check('lost receipt 9: the receiver answers the retry with a fresh accepted receipt',
+  outbox(`dedupe_key = 'agency.receipt:${lostIn.message_id}:2' AND payload->>'outcome' = 'accepted' AND status = 'pending'`) === '1');
+
+// As SENDER: the builder's message went out, and no receipt ever came.
+const lost = post(ORG_A, CONN_A, ITEM_A1, USER_A, randomUUID(), 'Is the price still current?');
+const pending = post(ORG_A, CONN_A, ITEM_A1, USER_A, randomUUID(), 'Still in the outbox.');
+const fresh = post(ORG_A, CONN_A, ITEM_A1, USER_A2, randomUUID(), 'Delivered a moment ago.');
+sql(`UPDATE public.builder_network_outbox SET status = 'delivered', delivered_at = now()
+      WHERE dedupe_key IN ('agency.message:${lost}:1', 'agency.message:${fresh}:1')`);
+sweep();
+check('lost receipt 3: after the transport succeeds the message stays queued (no receipt yet)',
+  sql(`SELECT delivery_state FROM public.builder_agency_messages WHERE id = ${lit(lost)}`) === 'queued');
+sql(`UPDATE public.builder_network_outbox SET delivered_at = now() - interval '16 minutes'
+      WHERE dedupe_key = 'agency.message:${lost}:1';
+     UPDATE public.builder_network_outbox SET created_at = now() - interval '2 hours'
+      WHERE dedupe_key = 'agency.message:${pending}:1'`);
+sweep();
+check('lost receipt 4: past the confirmation window it fails, and says why truthfully',
+  sql(`SELECT delivery_state || '|' || failure_reason FROM public.builder_agency_messages WHERE id = ${lit(lost)}`)
+    === 'failed|confirmation_timeout');
+check('lost receipt 12: another message is not affected — one still in transit, one just delivered',
+  sql(`SELECT string_agg(delivery_state, ',' ORDER BY id = ${lit(pending)} DESC) FROM public.builder_agency_messages
+       WHERE id IN (${lit(pending)}, ${lit(fresh)})`) === 'queued,queued');
+check('lost receipt 6: a colleague may not send it again',
+  /AGENCY_MESSAGE_NOT_RETRYABLE/.test(refusal(`SELECT public.builder_agency_retry_message(${lit(ORG_A)}, ${lit(lost)}, ${lit(USER_A2)})`) ?? ''));
+sql(`SELECT public.builder_agency_retry_message(${lit(ORG_A)}, ${lit(lost)}, ${lit(USER_A)})`);
+check('lost receipt 5 and 7: its writer sends it again, under generation 2, as the same message',
+  sql(`SELECT delivery_state || '|' || delivery_generation || '|' || (failure_reason IS NULL)
+       FROM public.builder_agency_messages WHERE id = ${lit(lost)}`) === 'queued|2|true'
+    && outbox(`dedupe_key = 'agency.message:${lost}:2'`) === '1'
+    && sql(`SELECT count(*) FROM public.builder_agency_messages WHERE body = 'Is the price still current?'`) === '1');
+receipt(lost, 1, 'accepted');
+sweep();
+check('lost receipt 11: a late generation-1 receipt does not touch the current generation',
+  sql(`SELECT delivery_state || '|' || delivery_generation FROM public.builder_agency_messages WHERE id = ${lit(lost)}`) === 'queued|2');
+receipt(lost, 2, 'accepted');
+sweep();
+check('lost receipt 10: the generation-2 receipt makes it Delivered',
+  sql(`SELECT delivery_state || '|' || (delivered_at IS NOT NULL) FROM public.builder_agency_messages WHERE id = ${lit(lost)}`) === 'delivered|true');
+receipt(lost, 1, 'refused', 'late');
+sweep();
+check('lost receipt 11: a late old receipt after delivery changes nothing',
+  sql(`SELECT delivery_state FROM public.builder_agency_messages WHERE id = ${lit(lost)}`) === 'delivered');
+sql(`UPDATE public.builder_network_outbox SET delivered_at = now() - interval '16 minutes'
+      WHERE dedupe_key = 'agency.message:${lost}:1'`);
+sweep();
+check('a delivered message never times out, and an old generation cannot time out the current one',
+  sql(`SELECT delivery_state FROM public.builder_agency_messages WHERE id = ${lit(lost)}`) === 'delivered');
 
 console.log('\nOne bad message never blocks the next');
 sql(`CREATE OR REPLACE FUNCTION public._check_poison() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -296,6 +371,15 @@ mainSweep();
 check('an event type nobody handles is still refused by the main sweep, visibly',
   sql(`SELECT count(*) FROM public.builder_network_inbound_events WHERE event_type = 'stock.unknown.thing' AND apply_error LIKE 'refused:unhandled_event_type%'`) === '1'
   || sql(`SELECT count(*) FROM public.builder_network_inbound_events WHERE event_type = 'stock.unknown.thing' AND processed_at IS NOT NULL`) === '1');
+const announceRef = randomUUID();
+land(CONN_A, 'stock.selection.announced', `stock.selection:${announceRef}:1`,
+  { remote_selection_ref: announceRef, stock_item_id: ITEM_A2, status: 'selected' });
+mainSweep();
+check('an activation still arrives through the main sweep, untouched by the message lane',
+  sql(`SELECT count(*) FROM public.builder_stock_selection_announcements
+       WHERE remote_selection_ref = ${lit(announceRef)} AND stock_item_id = ${lit(ITEM_A2)} AND status = 'selected'`) === '1'
+    && sql(`SELECT count(*) FROM public.builder_network_inbound_events
+            WHERE dedupe_key = 'stock.selection:${announceRef}:1' AND processed_at IS NOT NULL AND message_applied_at IS NULL`) === '1');
 for (const role of ['anon', 'authenticated']) {
   check(`${role} can reach neither the tables nor the functions`,
     sql(`SELECT has_table_privilege('${role}', 'public.builder_agency_messages', 'SELECT')

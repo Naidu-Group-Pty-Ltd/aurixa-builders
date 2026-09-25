@@ -339,7 +339,12 @@ function ThreadView({ thread }: { thread: AgencyThread }) {
             placeholder={canSend ? 'Write a message' : 'You cannot write in this conversation'}
             value={draft}
             maxLength={4000}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => {
+              // Different text is a different message: the key a failed send
+              // is repeated under belongs to the text it was sent with.
+              setDraft(event.target.value);
+              setClientMessageId(newClientMessageId());
+            }}
             disabled={!canSend || send.isPending}
             rows={3}
           />
@@ -380,7 +385,7 @@ function MessageBubble({
       {message.delivery_state ? (
         <p className={cn('mt-1 flex items-center gap-2 text-xs',
           message.delivery_state === 'failed' ? 'text-destructive' : 'text-muted-foreground')}>
-          <span>{outboundStateLabel(message.delivery_state)}</span>
+          <span>{outboundStateLabel(message.delivery_state, message.failure_reason)}</span>
           {message.can_retry ? (
             <Button type="button" variant="outline" size="sm" className="h-6 px-2 text-xs"
               onClick={() => onRetry(message.id)} disabled={retrying}>

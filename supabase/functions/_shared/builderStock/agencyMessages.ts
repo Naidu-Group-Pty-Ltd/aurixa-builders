@@ -45,8 +45,10 @@ export async function readAgencyConversation(
     .from('builder_agency_messages')
     .select('id, side, sender_builder_user_id, sender_display_name, body, sent_at, delivery_state, delivered_at, failure_reason')
     .eq('conversation_id', conversation.id)
-    .order('sent_at', { ascending: true })
-    .order('id', { ascending: true })
+    // The NEWEST page: a thread past the cap must keep showing what was just
+    // written. The projection puts it back in reading order.
+    .order('sent_at', { ascending: false })
+    .order('id', { ascending: false })
     .limit(500);
   if (messagesError) return { ok: false, reason: 'unavailable' };
 
