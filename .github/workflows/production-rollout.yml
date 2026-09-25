@@ -125,6 +125,28 @@ name: Production rollout
 #            every row and object it made. `scan_expect: observe` reports;
 #            `read` also requires every page recognised once and the document's
 #            property read field for field.
+#   stock-confirmation-proof
+#            proves "Use brochure image" on the live product with the gate's own
+#            SALTBUSH RISE brochures (`scripts/ops/fixtures/saltbush-lot-*.pdf`,
+#            digests pinned in the script, nothing in them any customer's),
+#            served from this project's storage under signed links, in an
+#            organisation of the run's own that is detached from the network in
+#            the transaction that creates it. Through the portal, as a builder's
+#            browser: a row whose own brochure mistypes its lot is offered the
+#            choice, a row linking a sibling's brochure is refused naming the
+#            listing that uses it, confirming puts the brochure's own photograph
+#            on the card stamped with the confirmation, and undoing takes it down
+#            and brings the notice back. Deletes every row and object it made.
+#   upload-settlement-state
+#            read-only: why an upload's image settlement does not finish. For
+#            each property carrying the upload, judged by the pipeline's own
+#            rules (`openBranches`, `servableStoredImage`) at the versions the
+#            deployed settler asks for: whether it already holds a picture the
+#            repair counts, which of its branches are still open and what each
+#            stored answer says — and so whether the upload-level repair owes
+#            it a package recovery. Prints no link (host, kind and a digest
+#            only). Runs SELECT only and refuses any statement that is not
+#            one. Takes `upload_id` (one or more, comma-separated).
 #   network-connection-remap
 #            points the live connection at the builder organisation named in
 #            `organisation_id` and backfills its active stock. It refuses
@@ -147,11 +169,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-overlay-audit'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-overlay-audit | upload-settlement-state'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-overlay-audit]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-overlay-audit, upload-settlement-state]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1)'
         required: false
@@ -163,7 +185,7 @@ on:
         default: ''
         type: string
       upload_id:
-        description: 'stock-source-restore: the deleted stock list to put back (uuid). stock-import-proof: the stored source to import again, read-only (uuid). stock-reading-trace: stored sources to trace, read-only (uuids, comma-separated)'
+        description: 'stock-source-restore: the deleted stock list to put back (uuid). stock-import-proof: the stored source to import again, read-only (uuid). stock-reading-trace: stored sources to trace, read-only (uuids, comma-separated). upload-settlement-state: uploads to read, read-only (uuids, comma-separated)'
         required: false
         default: ''
         type: string
@@ -198,7 +220,7 @@ jobs:
         with:
           node-version: 22
       - uses: denoland/setup-deno@v2
-        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' || inputs.phase == 'stock-collateral-reprocess' || inputs.phase == 'network-sync-state' || inputs.phase == 'network-connection-remap' || inputs.phase == 'portal-scope-state' || inputs.phase == 'stock-source-restore' || inputs.phase == 'stock-reading-trace' || inputs.phase == 'stock-overlay-audit' }}
+        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' || inputs.phase == 'stock-collateral-reprocess' || inputs.phase == 'network-sync-state' || inputs.phase == 'network-connection-remap' || inputs.phase == 'portal-scope-state' || inputs.phase == 'stock-source-restore' || inputs.phase == 'stock-reading-trace' || inputs.phase == 'stock-overlay-audit' || inputs.phase == 'upload-settlement-state' }}
         with:
           deno-version: v2.x
 
@@ -233,6 +255,7 @@ jobs:
           RESTORE_UPLOAD_ID: ${{ inputs.upload_id }}
           PROOF_UPLOAD_ID: ${{ inputs.upload_id }}
           TRACE_UPLOAD_IDS: ${{ inputs.upload_id }}
+          UPLOAD_IDS: ${{ inputs.upload_id }}
           TRACE_PAGES: ${{ inputs.items }}
           APPLY: ${{ inputs.apply }}
           ONLY: ${{ inputs.only }}
@@ -256,5 +279,8 @@ jobs:
             stock-import-proof)   node scripts/ops/stock-import-proof.mjs ;;
             stock-reading-trace)  deno run -A --config supabase/functions/deno.json scripts/ops/stock-reading-trace.ts ;;
             stock-scan-proof)     node scripts/ops/stock-scan-proof.mjs ;;
+            stock-confirmation-proof) node scripts/ops/stock-confirmation-proof.mjs ;;
             stock-overlay-audit)  deno run -A --config supabase/functions/deno.json scripts/ops/stock-overlay-audit.ts ;;
+            upload-settlement-state)
+                                  deno run -A --config supabase/functions/deno.json scripts/ops/stock-upload-settlement-state.ts ;;
           esac
