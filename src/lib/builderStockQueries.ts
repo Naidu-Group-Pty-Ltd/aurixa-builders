@@ -19,7 +19,7 @@ import type {
   ManualStatField, StatedLocationField,
 } from '@/lib/builderStock';
 import {
-  agencyConversationPollInterval, collectEveryPage, type ActivatedProperty, type AgencyConversation, type AgencyMessageView,
+  agencyConversationPollInterval, collectEveryPage, retryUnlessRefused, type ActivatedProperty, type AgencyConversation, type AgencyMessageView,
 } from '@/lib/builderAgency';
 
 export const builderStockKeys = {
@@ -233,6 +233,7 @@ export function useBuilderActivatedProperties(page = 1) {
     queryFn: () => invoke<Paginated<ActivatedProperty>>({
       operation: 'list_activated_properties', page, page_size: 25,
     }),
+    retry: retryUnlessRefused,
   });
 }
 
@@ -249,6 +250,7 @@ export function useEveryBuilderActivatedProperty() {
     queryFn: () => collectEveryPage((page) => invoke<Paginated<ActivatedProperty>>({
       operation: 'list_activated_properties', page, page_size: 100,
     })),
+    retry: retryUnlessRefused,
   });
 }
 
@@ -272,6 +274,7 @@ export function useAgencyConversation(connectionId: string | null, stockItemId: 
     }),
     refetchInterval: (query) => agencyConversationPollInterval(query.state.data),
     refetchIntervalInBackground: false,
+    retry: retryUnlessRefused,
   });
 }
 

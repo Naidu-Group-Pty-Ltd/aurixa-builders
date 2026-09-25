@@ -19,7 +19,7 @@ import {
 import { agencyDedupeKeyFor, agencyPayloadContractViolation, sameAgencyEnvelope } from '../../../supabase/functions/_shared/builderStock/agencyMessages.pure';
 import { readAgencyConversation } from '../../../supabase/functions/_shared/builderStock/agencyMessages';
 import {
-  AGENCY_CONVERSATION_CLOSED_POLL_MS, accessRefused, AGENCY_CONVERSATION_POLL_MS, agencyConversationPollInterval, arrivalScrollTarget, collectEveryPage, newClientMessageId, outboundStateLabel, scrollLogToEnd,
+  AGENCY_CONVERSATION_CLOSED_POLL_MS, accessRefused, retryUnlessRefused, AGENCY_CONVERSATION_POLL_MS, agencyConversationPollInterval, arrivalScrollTarget, collectEveryPage, newClientMessageId, outboundStateLabel, scrollLogToEnd,
 } from '../builderAgency';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
@@ -588,5 +588,24 @@ describe('a read the reader may no longer see', () => {
     expect(accessRefused({ status: 503 })).toBe(false);
     expect(accessRefused(new Error('Failed to fetch'))).toBe(false);
     expect(accessRefused(null)).toBe(false);
+  });
+});
+
+describe('a refusal is not retried before it is shown', () => {
+  it('retries a transient failure once and a refusal never', () => {
+    expect(retryUnlessRefused(0, { status: 503 })).toBe(true);
+    expect(retryUnlessRefused(1, { status: 503 })).toBe(false);
+    expect(retryUnlessRefused(0, { status: 401 })).toBe(false);
+    expect(retryUnlessRefused(0, { status: 403 })).toBe(false);
+  });
+
+  it('the first page, the full list and the conversation all use it', () => {
+    const q = readCode('src/lib/builderStockQueries.ts');
+    for (const hook of ['useBuilderActivatedProperties', 'useEveryBuilderActivatedProperty', 'useAgencyConversation']) {
+      const start = q.indexOf(`export function ${hook}(`);
+      expect(start).toBeGreaterThan(-1);
+      const body = q.slice(start, q.indexOf('\nexport ', start + 10));
+      expect(body).toMatch(/retry:\s*retryUnlessRefused/);
+    }
   });
 });

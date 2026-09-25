@@ -121,6 +121,15 @@ export function accessRefused(error: unknown): boolean {
   return status === 401 || status === 403;
 }
 
+/**
+ * A refusal is not retried: the query error is set only once retries are
+ * spent, and until then the page would keep showing what the reader may no
+ * longer see. Anything else is retried once, as every query in the app is.
+ */
+export function retryUnlessRefused(failureCount: number, error: unknown): boolean {
+  return !accessRefused(error) && failureCount < 1;
+}
+
 export const AGENCIES_PATH = '/builder/agencies';
 export const AGENCY_TABS = ['activations', 'messages'] as const;
 export type AgencyTab = typeof AGENCY_TABS[number];
