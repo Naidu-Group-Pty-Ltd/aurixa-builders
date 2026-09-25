@@ -93,6 +93,26 @@ const fixtures: Array<[string, Record<string, unknown> | null]> = [
   ['more than twelve', { unmapped: Object.fromEntries(Array.from({ length: 20 }, (_, i) =>
     [`Doc ${String(i).padStart(2, '0')}`, `https://example.com/${i}.pdf`])) }],
   ['a heading that is only "URL"', { unmapped: { URL: 'https://example.com/only.pdf' } }],
+  // Links a parser refuses: a port that is not a number, a port out of range,
+  // a host holding a character no host may hold, an empty host after userinfo.
+  ['links the portal\'s URL parser refuses', { unmapped: {
+    'Bad Port': 'https://example.com:bad/file.pdf',
+    'Big Port': 'https://example.com:99999/file.pdf',
+    'Odd Host': 'https://exa<mple.com/file.pdf',
+    'Pipe Host': 'https://exa|mple.com/file.pdf',
+    'Empty Host': 'https://user@/file.pdf',
+    'Good Port': 'https://example.com:8443/file.pdf',
+    'Good Userinfo': 'https://user:pass@example.com/file.pdf',
+    'Bracket Host': 'https://[::1]/file.pdf',
+    'Query Only': 'https://example.com?x=1',
+    'Empty Port': 'https://example.com:/file.pdf',
+    'Escaped Host': 'https://ex%41mple.com/file.pdf',
+    'Broken Escape': 'https://ex%zzmple.com/file.pdf',
+    'Caret Host': 'https://exa^mple.com/file.pdf',
+    'Backslash': 'https://exa\\mple.com/file.pdf',
+    'Bad Bracket': 'https://[bad]/file.pdf',
+    'Underscore Host': 'https://ex_ample.com/file.pdf',
+  } }],
   ['no row at all', null],
   ['an empty row', {}],
 ];

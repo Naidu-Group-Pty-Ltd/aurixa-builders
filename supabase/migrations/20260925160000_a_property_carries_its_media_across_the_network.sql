@@ -46,7 +46,8 @@ BEGIN;
 -- 1. The documents a property's own row links to. A port of
 --    `propertyDocumentLinks` (`_shared/builderStock/propertyDocuments.pure.ts`):
 --    columns in code-unit order, whitespace-separated candidates, trailing
---    `),.` stripped, first occurrence of a URL wins, http(s) with a host only,
+--    `),.` stripped, first occurrence of a URL wins, only what `new URL()`
+--    would parse,
 --    at most twelve; label = heading less a trailing URL/Link; kind read from
 --    the heading, most specific first.
 -- ---------------------------------------------------------------------------
@@ -63,6 +64,9 @@ DECLARE
   v_url text;
   v_label text;
   v_kind text;
+  v_authority text;
+  v_host text;
+  v_port text;
   v_seen text[] := '{}';
   v_out jsonb := '[]'::jsonb;
 BEGIN
@@ -83,8 +87,26 @@ BEGIN
       v_url := regexp_replace(v_candidate, '[),.]+$', '');
       CONTINUE WHEN v_url = ANY (v_seen);
       v_seen := v_seen || v_url;
-      -- A link a person opens: a scheme a browser will not execute, and a host.
-      CONTINUE WHEN v_url !~* '^https?://[^/?#[:space:]]+';
+      -- A link a person opens, and one `new URL()` would parse — the portal
+      -- lists a link only where it does, so the network must refuse the same
+      -- ones. The authority ends at / ? # or \ (a WHATWG parser treats a
+      -- backslash as a path separator in http(s)); userinfo ends at the last
+      -- @; the host must be non-empty, free of the code points a host may
+      -- not hold and of a broken % escape, bracketed only as an IPv6
+      -- literal; the port is empty or a number no greater than 65535.
+      v_authority := substring(v_url FROM '^[Hh][Tt][Tt][Pp][Ss]?://([^/?#\\]*)');
+      v_host := regexp_replace(COALESCE(v_authority, ''), '^.*@', '');
+      v_port := NULL;
+      IF v_host ~ '^\[' THEN
+        CONTINUE WHEN v_host !~ '^\[[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*\](:[0-9]*)?$';
+        v_port := substring(v_host FROM '\]:([0-9]*)$');
+      ELSE
+        CONTINUE WHEN v_host !~ '^[^:<>^|[:space:]\[\]]+(:[^:]*)?$';
+        v_port := substring(v_host FROM ':([^:]*)$');
+        CONTINUE WHEN v_host ~ '%($|[^0-9A-Fa-f]|[0-9A-Fa-f]($|[^0-9A-Fa-f]))';
+      END IF;
+      CONTINUE WHEN v_port IS NOT NULL AND v_port <> ''
+        AND (v_port !~ '^[0-9]+$' OR length(v_port) > 5 OR v_port::integer > 65535);
 
       v_label := regexp_replace(
         regexp_replace(v_column, '\s*(url|link)\s*$', '', 'i'), '^\s+|\s+$', '', 'g');
