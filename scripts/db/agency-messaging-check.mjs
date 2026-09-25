@@ -425,6 +425,35 @@ sweep();
 check('a delivered message never times out, and an old generation cannot time out the current one',
   sql(`SELECT delivery_state FROM public.builder_agency_messages WHERE id = ${lit(lost)}`) === 'delivered');
 
+console.log('\nA check and the change it guards against, at the same moment');
+{
+  const withdrawal = sqlAsync(`BEGIN; UPDATE public.builder_stock_selection_announcements SET status = 'withdrawn'
+      WHERE connection_id = ${lit(CONN_A)} AND stock_item_id = ${lit(ITEM_A1)}; SELECT pg_sleep(1.5); COMMIT;`);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const racingBody = `Racing the withdrawal ${randomUUID()}`;
+  const write = sqlAsync(`SELECT id FROM public.builder_agency_post_message(${lit(ORG_A)}, ${lit(CONN_A)}, ${lit(ITEM_A1)},
+      ${lit(USER_A)}, ${lit(randomUUID())}, ${lit(racingBody)})`).catch((error) => `refused: ${String(error.message)}`);
+  const [, written] = await Promise.all([withdrawal, write]);
+  check('a message written while the activation is being withdrawn waits for it, and is refused',
+    /AGENCY_CONVERSATION_NOT_OPEN/.test(written)
+      && sql(`SELECT count(*) FROM public.builder_agency_messages WHERE body = ${lit(racingBody)}`) === '0', written);
+  sql(`UPDATE public.builder_stock_selection_announcements SET status = 'selected'
+        WHERE connection_id = ${lit(CONN_A)} AND stock_item_id = ${lit(ITEM_A1)}`);
+
+  const racingIn = agencyMessage({ body: 'Applied while the connection is being revoked.' });
+  land(CONN_A, 'agency.message.posted', `agency.message:${racingIn.message_id}:1`, racingIn);
+  const eventId = sql(`SELECT id FROM public.builder_network_inbound_events WHERE dedupe_key = 'agency.message:${racingIn.message_id}:1'`);
+  const revocation = sqlAsync(`BEGIN; UPDATE public.workspace_connections SET state = 'revoked', revoked_at = now()
+      WHERE id = ${lit(CONN_A)}; SELECT pg_sleep(1.5); COMMIT;`);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const applied = await Promise.all([revocation, sqlAsync(`SELECT public.builder_agency_apply_message_event('${eventId}')`)]);
+  sql(`UPDATE public.builder_network_inbound_events SET message_applied_at = now() WHERE id = '${eventId}'`);
+  sql(`UPDATE public.workspace_connections SET state = 'active', revoked_at = NULL WHERE id = ${lit(CONN_A)}`);
+  check('a message applied while the connection is being revoked waits for it, and is refused',
+    applied[1] === 'refused:connection_not_active'
+      && sql(`SELECT count(*) FROM public.builder_agency_messages WHERE id = ${lit(racingIn.message_id)}`) === '0', applied[1]);
+}
+
 console.log('\nA receipt that landed before the connection was revoked');
 const beforeRevoke = post(ORG_A, CONN_A, ITEM_A1, USER_A, randomUUID(), 'Sent just before the revocation.');
 sql(`UPDATE public.builder_network_outbox SET status = 'delivered', delivered_at = now() WHERE dedupe_key = 'agency.message:${beforeRevoke}:1'`);

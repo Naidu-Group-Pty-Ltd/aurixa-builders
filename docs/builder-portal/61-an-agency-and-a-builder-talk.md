@@ -68,6 +68,9 @@ Both main inbound sweeps refuse an event type they do not handle, and the refusa
 
 ## 5. What is re-checked when a message is applied
 
+Every check below is made under a share lock on the rows it reads (the connection and the live activations), held until the message is written. So a revocation, dispute or withdrawal that lands at the same moment either commits first and is seen, or waits for the message. The same holds when a message is sent or retried.
+
+
 A signed payload is not authority. When a message event is applied, all of these are checked against the rows:
 
 - the connection is active (for new content; a receipt that landed before a revocation still settles the message it answers, since it carries no content);

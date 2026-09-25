@@ -204,7 +204,10 @@ BEGIN
     RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'AGENCY_MESSAGE_INVALID';
   END IF;
 
-  -- The relationship, re-read now from rows the caller cannot name for itself.
+  -- The relationship, re-read now from rows the caller cannot name for itself,
+  -- and held until this message is written: a revocation or a withdrawal
+  -- that lands now either commits first (and is seen) or waits for it.
+  PERFORM 1 FROM public.workspace_connections c WHERE c.id = _connection_id FOR SHARE;
   IF NOT EXISTS (
     SELECT 1 FROM public.workspace_connections c
      WHERE c.id = _connection_id AND c.builder_organisation_id = _organisation_id
@@ -230,6 +233,10 @@ BEGIN
     RETURN;
   END IF;
 
+  PERFORM 1 FROM public.builder_stock_selection_announcements a
+   WHERE a.connection_id = _connection_id AND a.stock_item_id = _stock_item_id
+     AND a.organisation_id = _organisation_id AND a.status <> 'withdrawn'
+   FOR SHARE OF a;
   IF NOT EXISTS (
     SELECT 1 FROM public.builder_stock_selection_announcements a
      WHERE a.connection_id = _connection_id AND a.stock_item_id = _stock_item_id
@@ -307,7 +314,13 @@ BEGIN
   END IF;
   SELECT * INTO v_conversation FROM public.builder_agency_conversations WHERE id = v_message.conversation_id;
   -- Sending again is writing: the conversation must still be open, exactly
-  -- as for a new message.
+  -- as for a new message, and what makes it open is held until it is sent.
+  PERFORM 1 FROM public.workspace_connections c WHERE c.id = v_conversation.connection_id FOR SHARE;
+  PERFORM 1 FROM public.builder_stock_selection_announcements a
+   WHERE a.connection_id = v_conversation.connection_id
+     AND a.stock_item_id = v_conversation.stock_item_id
+     AND a.organisation_id = _organisation_id AND a.status <> 'withdrawn'
+   FOR SHARE OF a;
   IF NOT EXISTS (
     SELECT 1 FROM public.workspace_connections c
      WHERE c.id = v_conversation.connection_id AND c.state = 'active'
@@ -360,7 +373,10 @@ BEGIN
   v_payload := COALESCE(v_event.payload, '{}'::jsonb);
 
   SELECT c.id, c.state, c.builder_organisation_id INTO v_connection
-    FROM public.workspace_connections c WHERE c.id = v_event.connection_id;
+    FROM public.workspace_connections c WHERE c.id = v_event.connection_id
+   -- Held until the event is applied: a revocation that lands now waits,
+   -- rather than committing beside a message stored under the old answer.
+   FOR SHARE;
   IF v_connection.id IS NULL THEN
     RETURN 'refused:connection_not_active';
   END IF;
@@ -425,6 +441,14 @@ BEGIN
   v_body := btrim(COALESCE(v_payload->>'body', ''));
   v_name := btrim(COALESCE(v_payload->>'sender_display_name', ''));
 
+  IF v_item IS NOT NULL THEN
+    -- The activation is held too, so a withdrawal cannot commit between the
+    -- check below and the insert.
+    PERFORM 1 FROM public.builder_stock_selection_announcements a
+     WHERE a.connection_id = v_connection.id AND a.stock_item_id = v_item
+       AND a.status <> 'withdrawn'
+     FOR SHARE OF a;
+  END IF;
   IF v_item IS NULL OR v_sent IS NULL OR length(v_body) NOT BETWEEN 1 AND 4000
      OR length(v_name) NOT BETWEEN 1 AND 200 THEN
     v_reason := 'invalid_message';
