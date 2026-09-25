@@ -19,7 +19,7 @@ import {
 import { agencyPayloadContractViolation } from '../../../supabase/functions/_shared/builderStock/agencyMessages.pure';
 import { readAgencyConversation } from '../../../supabase/functions/_shared/builderStock/agencyMessages';
 import {
-  AGENCY_CONVERSATION_CLOSED_POLL_MS, AGENCY_CONVERSATION_POLL_MS, agencyConversationPollInterval, collectEveryPage, newClientMessageId, outboundStateLabel,
+  AGENCY_CONVERSATION_CLOSED_POLL_MS, AGENCY_CONVERSATION_POLL_MS, agencyConversationPollInterval, collectEveryPage, newClientMessageId, outboundStateLabel, scrollLogToEnd,
 } from '../builderAgency';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
@@ -387,5 +387,14 @@ describe('the exact message contract: each value\'s JSON type', () => {
     const receipt = { schema_version: 1, message_id: 'm', conversation_id: 'c', generation: 1, outcome: 'accepted' };
     expect(agencyPayloadContractViolation('agency.message.receipt', receipt)).toBeNull();
     expect(agencyPayloadContractViolation('agency.message.receipt', { ...receipt, reason: null })).toBeNull();
+  });
+});
+
+describe('the conversation log', () => {
+  it('is scrolled to its newest message', () => {
+    const log = { scrollTop: 0, scrollHeight: 1840 };
+    scrollLogToEnd(log);
+    expect(log.scrollTop).toBe(1840);
+    expect(() => scrollLogToEnd(null)).not.toThrow();
   });
 });

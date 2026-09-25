@@ -67,6 +67,12 @@ vi.mock('@/lib/builderStockQueries', () => ({
   }),
 }));
 
+const scrolled: unknown[] = [];
+vi.mock('@/lib/builderAgency', async (original) => ({
+  ...(await original<typeof import('@/lib/builderAgency')>()),
+  scrollLogToEnd: (log: unknown) => { scrolled.push(log); },
+}));
+
 import BuilderAgencies from '../BuilderAgencies';
 import { builderNavItemVisible } from '@/components/builder-portal/builderNavVisibility.pure';
 
@@ -359,5 +365,30 @@ describe('the full conversation list, when it cannot be read', () => {
     expect(screen.getByText(/could not be loaded/i)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /try again/i }));
     expect(refreshed.every).toBe(1);
+  });
+});
+
+describe('the conversation log follows its newest message', () => {
+  it('opens at the end, and moves to the end again when a poll brings in a message', () => {
+    scrolled.length = 0;
+    state.records = [ACTIVATION];
+    state.conversation = {
+      conversation_id: 'c', open: true, can_send: true,
+      messages: [MESSAGE({ id: 'm1', body: 'First.', delivery_state: 'delivered' })],
+    };
+    const tree = () => (
+      <MemoryRouter initialEntries={['/builder/agencies/messages?thread=conn-a:item-a1']}>
+        <Routes><Route path="/builder/agencies/:tab" element={<BuilderAgencies />} /></Routes>
+      </MemoryRouter>
+    );
+    const view = render(tree());
+    const log = screen.getByRole('log');
+    expect(scrolled).toContain(log);
+    const before = scrolled.length;
+    state.conversation = { ...state.conversation, messages: [...state.conversation.messages,
+      MESSAGE({ id: 'm2', body: 'Arrived by poll.', delivery_state: 'delivered' })] };
+    view.rerender(tree());
+    expect(scrolled.length).toBeGreaterThan(before);
+    expect(scrolled[scrolled.length - 1]).toBe(screen.getByRole('log'));
   });
 });

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Handshake, Loader2, MessageSquare, RefreshCw, Send, ShieldAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -19,7 +19,7 @@ import { useToast } from '@/hooks/use-toast';
 import { isDisplayableSourceImage, type BuilderStockImage } from '@/lib/builderStock';
 import {
   AGENCIES_PATH, activatedPropertyLocality, activatedPropertyTitle, agencyLabel,
-  agencyTabFrom, agencyThreadsFrom, newClientMessageId, outboundStateLabel,
+  agencyTabFrom, agencyThreadsFrom, newClientMessageId, outboundStateLabel, scrollLogToEnd,
   type ActivatedProperty, type AgencyMessageView, type AgencyThread, type AgencyTab,
 } from '@/lib/builderAgency';
 
@@ -283,6 +283,10 @@ function ThreadView({ thread }: { thread: AgencyThread }) {
   const conversation = query.data;
   const messages = conversation?.messages ?? [];
   const canSend = !!conversation?.can_send;
+  // Open at the newest message, and follow it as polls bring more in.
+  const logRef = useRef<HTMLDivElement>(null);
+  const newestId = messages.length ? messages[messages.length - 1].id : null;
+  useEffect(() => { scrollLogToEnd(logRef.current); }, [thread.key, newestId]);
 
   const submit = async () => {
     const body = draft.trim();
@@ -333,7 +337,7 @@ function ThreadView({ thread }: { thread: AgencyThread }) {
             <p className="mt-1">Anything you write here is sent to {agencyLabel(thread.agency)} about this property.</p>
           </div>
         ) : (
-          <div role="log" aria-label="Conversation" aria-live="polite" className="max-h-[28rem] space-y-3 overflow-y-auto pr-1">
+          <div ref={logRef} role="log" aria-label="Conversation" aria-live="polite" className="max-h-[28rem] space-y-3 overflow-y-auto pr-1">
             {messages.map((message) => (
               <MessageBubble key={message.id} message={message} canRetry={canSend && message.can_retry} onRetry={sendAgain} retrying={retry.isPending} />
             ))}
