@@ -480,6 +480,16 @@ console.log('\nA value of the wrong JSON type');
       && sql(`SELECT count(*) FROM public.builder_agency_messages WHERE id = ${lit(typed.message_id)}`) === '0');
 }
 
+console.log('\nA generation that is not a whole number');
+{
+  const fractional = agencyMessage({ body: 'Generation one and a half.', generation: 1.5 });
+  land(CONN_A, 'agency.message.posted', `agency.message:${fractional.message_id}:1.5`, fractional);
+  sweep();
+  check('a message with a fractional generation is refused and stored nowhere',
+    sql(`SELECT message_apply_error FROM public.builder_network_inbound_events WHERE dedupe_key = 'agency.message:${fractional.message_id}:1.5'`) === 'refused:invalid_payload'
+      && sql(`SELECT count(*) FROM public.builder_agency_messages WHERE id = ${lit(fractional.message_id)}`) === '0');
+}
+
 console.log('\nA time that is not a time');
 for (const when of ['infinity', '-infinity']) {
   const odd = agencyMessage({ body: `Sent at ${when}.`, sent_at: when });

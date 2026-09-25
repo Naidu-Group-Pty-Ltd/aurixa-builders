@@ -120,7 +120,10 @@ export function agencyPayloadContractViolation(eventType: string, payload: unkno
   const mistyped = keys
     .filter((key) => allowed.has(key))
     .filter((key) => !(key === 'reason' && record[key] === null))
-    .filter((key) => typeof record[key] !== KEY_TYPES[key])
+    .filter((key) => typeof record[key] !== KEY_TYPES[key]
+      // A generation is a positive whole number within an integer's range.
+      || (key === 'generation' && !(Number.isInteger(record[key]) && (record[key] as number) >= 1
+        && (record[key] as number) <= 2_147_483_647)))
     .sort();
   return unexpected.length || missing.length || mistyped.length ? { unexpected, missing, mistyped } : null;
 }

@@ -415,3 +415,14 @@ describe('a message envelope\'s dedupe key is bound to its payload', () => {
     expect(door).toMatch(/message_dedupe_key_mismatch/);
   });
 });
+
+describe('a generation is a positive whole number', () => {
+  const posted = { schema_version: 1, conversation_id: 'c', message_id: 'm', stock_item_id: 'i', body: 'Hi',
+    sender_display_name: 'A', sent_at: '2026-09-25T00:00:00Z', generation: 1 };
+  it('refuses a fractional, zero, negative or out-of-range generation', () => {
+    for (const generation of [1.5, 0, -1, 2 ** 31]) {
+      expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, generation })).toMatchObject({ mistyped: ['generation'] });
+    }
+    expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, generation: 7 })).toBeNull();
+  });
+});
