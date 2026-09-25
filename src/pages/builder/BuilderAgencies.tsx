@@ -215,6 +215,13 @@ function MessagesShell({ firstPage }: { firstPage: ActivatedProperty[] }) {
   const selectedKey = params.get('thread') ?? '';
   const selected = threads.find((thread) => thread.key === selectedKey) ?? null;
 
+  // The first page stands in only while the full list is loading. A full
+  // list that FAILED is said so: the first page is not the complete list.
+  if (every.error && !every.data) {
+    const status = (every.error as { status?: number } | null)?.status;
+    return <ReadFailure denied={status === 403} onRetry={() => void every.refetch()} />;
+  }
+
   if (!threads.length) {
     return (
       <Card>

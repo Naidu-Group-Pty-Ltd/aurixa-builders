@@ -470,6 +470,16 @@ console.log('\nA message never overtakes the activation it depends on');
     sql(`SELECT count(*) FROM public.builder_agency_messages WHERE id = ${lit(early.message_id)}`) === '1');
 }
 
+console.log('\nA value of the wrong JSON type');
+{
+  const typed = { ...agencyMessage(), body: { text: 'hello there' } };
+  land(CONN_A, 'agency.message.posted', `agency.message:${typed.message_id}:1`, typed);
+  sweep();
+  check('a message whose body is an object is refused and stored nowhere',
+    sql(`SELECT message_apply_error FROM public.builder_network_inbound_events WHERE dedupe_key = 'agency.message:${typed.message_id}:1'`) === 'refused:invalid_payload'
+      && sql(`SELECT count(*) FROM public.builder_agency_messages WHERE id = ${lit(typed.message_id)}`) === '0');
+}
+
 console.log('\nA time that is not a time');
 for (const when of ['infinity', '-infinity']) {
   const odd = agencyMessage({ body: `Sent at ${when}.`, sent_at: when });

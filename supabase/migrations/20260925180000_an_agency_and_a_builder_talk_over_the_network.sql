@@ -398,6 +398,14 @@ BEGIN
                                      'schema_version'] END)) THEN
     RETURN 'refused:invalid_payload';
   END IF;
+  -- And each value is the contract's JSON type: `->>` would turn an object or
+  -- a number into text that passes every later check.
+  IF EXISTS (
+    SELECT 1 FROM jsonb_each(v_payload) kv
+     WHERE NOT (kv.key = 'reason' AND jsonb_typeof(kv.value) = 'null')
+       AND jsonb_typeof(kv.value) <> CASE WHEN kv.key IN ('generation', 'schema_version') THEN 'number' ELSE 'string' END) THEN
+    RETURN 'refused:invalid_payload';
+  END IF;
 
   BEGIN
     v_message_id := (v_payload->>'message_id')::uuid;

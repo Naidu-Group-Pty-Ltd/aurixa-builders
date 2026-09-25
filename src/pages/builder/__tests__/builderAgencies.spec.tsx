@@ -27,7 +27,8 @@ const state: {
   loading: boolean;
   conversation: any;
   laterPages: any[];
-} = { records: [], error: null, loading: false, conversation: null, laterPages: [] };
+  everyError: { status?: number; message?: string } | null;
+} = { records: [], error: null, loading: false, conversation: null, laterPages: [], everyError: null };
 const sent: Array<{ clientMessageId: string; body: string }> = [];
 const sendFailures = { remaining: 0 };
 const retried: string[] = [];
@@ -43,9 +44,10 @@ vi.mock('@/lib/builderStockQueries', () => ({
   }),
   useRefreshEveryBuilderActivatedProperty: () => async () => { refreshed.every += 1; },
   useEveryBuilderActivatedProperty: () => ({
-    data: state.error ? undefined : [...state.records, ...state.laterPages],
-    error: state.error,
+    data: state.error || state.everyError ? undefined : [...state.records, ...state.laterPages],
+    error: state.error ?? state.everyError,
     isLoading: state.loading,
+    refetch: vi.fn(async () => { refreshed.every += 1; }),
   }),
   builderStockImageUrl: vi.fn(async () => null),
   useAgencyConversation: () => ({
@@ -108,6 +110,7 @@ function renderAt(path: string) {
 beforeEach(() => {
   refreshed.firstPage = 0;
   refreshed.every = 0;
+  state.everyError = null;
   state.records = [];
   state.error = null;
   state.loading = false;
@@ -343,6 +346,18 @@ describe('the page\'s Refresh', () => {
     renderAt('/builder/agencies/messages');
     fireEvent.click(screen.getByRole('button', { name: /^refresh$/i }));
     expect(refreshed.firstPage).toBe(1);
+    expect(refreshed.every).toBe(1);
+  });
+});
+
+describe('the full conversation list, when it cannot be read', () => {
+  it('says so and offers a retry, rather than presenting the first page as complete', () => {
+    state.records = [ACTIVATION];
+    state.everyError = { message: 'page 2 failed' };
+    renderAt('/builder/agencies/messages');
+    expect(screen.queryByRole('listbox', { name: /conversations/i })).toBeNull();
+    expect(screen.getByText(/could not be loaded/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }));
     expect(refreshed.every).toBe(1);
   });
 });

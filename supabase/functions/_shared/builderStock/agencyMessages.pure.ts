@@ -88,7 +88,16 @@ export interface AgencyContractViolation {
   /** Key NAMES outside the contract; a value is never carried. */
   unexpected: string[];
   missing: string[];
+  /** Contract keys whose value is not the contract's JSON type. */
+  mistyped: string[];
 }
+
+/** Each key's JSON type. `reason` alone may also be null. */
+const KEY_TYPES: Record<string, 'string' | 'number'> = {
+  body: 'string', sender_display_name: 'string', sent_at: 'string', message_id: 'string',
+  conversation_id: 'string', stock_item_id: 'string', outcome: 'string', reason: 'string',
+  generation: 'number', schema_version: 'number',
+};
 
 export function agencyPayloadContractViolation(eventType: string, payload: unknown): AgencyContractViolation | null {
   let required: readonly string[];
@@ -101,11 +110,17 @@ export function agencyPayloadContractViolation(eventType: string, payload: unkno
     return null;
   }
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return { unexpected: [], missing: [...required] };
+    return { unexpected: [], missing: [...required], mistyped: [] };
   }
-  const keys = Object.keys(payload as Record<string, unknown>);
+  const record = payload as Record<string, unknown>;
+  const keys = Object.keys(record);
   const allowed = new Set<string>([...required, ...optional]);
   const unexpected = keys.filter((key) => !allowed.has(key)).sort();
   const missing = required.filter((key) => !keys.includes(key));
-  return unexpected.length || missing.length ? { unexpected, missing } : null;
+  const mistyped = keys
+    .filter((key) => allowed.has(key))
+    .filter((key) => !(key === 'reason' && record[key] === null))
+    .filter((key) => typeof record[key] !== KEY_TYPES[key])
+    .sort();
+  return unexpected.length || missing.length || mistyped.length ? { unexpected, missing, mistyped } : null;
 }

@@ -366,3 +366,26 @@ describe('the exact message contract, at the door', () => {
     expect(check).toBeLessThan(door.indexOf(".from('builder_network_inbound_events')"));
   });
 });
+
+describe('the exact message contract: each value\'s JSON type', () => {
+  const posted = {
+    schema_version: 1, conversation_id: 'c', message_id: 'm', stock_item_id: 'i', body: 'Hello',
+    sender_display_name: 'Avery', sent_at: '2026-09-25T00:00:00Z', generation: 1,
+  };
+  it('refuses a body, a name or an id that is not a string, and a generation that is not a number', () => {
+    expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, body: { text: 'hello' } }))
+      .toMatchObject({ mistyped: ['body'] });
+    expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, sender_display_name: ['A'] }))
+      .toMatchObject({ mistyped: ['sender_display_name'] });
+    expect(agencyPayloadContractViolation('agency.message.posted', { ...posted, generation: '1' }))
+      .toMatchObject({ mistyped: ['generation'] });
+    expect(agencyPayloadContractViolation('agency.message.receipt',
+      { schema_version: 1, message_id: 'm', conversation_id: 'c', generation: 1, outcome: 'refused', reason: 7 }))
+      .toMatchObject({ mistyped: ['reason'] });
+  });
+  it('accepts a receipt whose reason is absent or null', () => {
+    const receipt = { schema_version: 1, message_id: 'm', conversation_id: 'c', generation: 1, outcome: 'accepted' };
+    expect(agencyPayloadContractViolation('agency.message.receipt', receipt)).toBeNull();
+    expect(agencyPayloadContractViolation('agency.message.receipt', { ...receipt, reason: null })).toBeNull();
+  });
+});
