@@ -38,6 +38,7 @@
  * Runs from the production-rollout workflow (phase `agency-chat-backfill`).
  */
 import { createHash } from 'node:crypto';
+import { planConversation } from './agencyChatBackfillPlan.pure.mjs';
 
 const NETWORK_REF = process.env.PROJECT_REF || 'htfluofznhxeumblwbww';
 const CC_REF = process.env.CLONE_PROJECT_REF || 'dduzbchuswwbefdunfct';
@@ -148,29 +149,14 @@ async function main() {
     let conversationId = null;
     let messages = null;
     if (connection && announcement) {
-      const legacyId = propertyConversationId(connection.network_connection_id, row.stock_item_id);
-      const ccLegacy = (row.conversations ?? []).find((c) => c.id === legacyId);
-      const netLegacy = (announcement.conversations ?? []).find((c) => c.id === legacyId);
-      const ccBound = (row.conversations ?? []).find((c) => c.selection_ref === row.selection_id);
-      const netBound = (announcement.conversations ?? []).find((c) => c.selection_ref === row.selection_id);
-      if (ccBound || netBound) {
-        conversationId = (ccBound ?? netBound).id;
-        if (ccBound && netBound && ccBound.id !== netBound.id) reasons.push('the two sides bound it to different conversations');
-      } else if (ccLegacy || netLegacy) {
-        if (!ccLegacy || !netLegacy) reasons.push("Step 5's conversation exists on one side only");
-        if (row.live_activations_of_property !== 1) {
-          reasons.push(`${row.live_activations_of_property} live activations share Step 5's conversation of this property`);
-        }
-        if ((ccLegacy?.selection_ref && ccLegacy.selection_ref !== row.selection_id)
-            || (netLegacy?.selection_ref && netLegacy.selection_ref !== row.selection_id)) {
-          reasons.push("Step 5's conversation is already bound to another activation");
-        }
-        conversationId = legacyId;
-        messages = { cc: Number(ccLegacy?.messages ?? 0), net: Number(netLegacy?.messages ?? 0) };
-      } else {
-        conversationId = activationConversationId(connection.network_connection_id, row.selection_id);
-        messages = { cc: 0, net: 0 };
-      }
+      const planned = planConversation({
+        row, announcement,
+        legacyId: propertyConversationId(connection.network_connection_id, row.stock_item_id),
+        derivedId: activationConversationId(connection.network_connection_id, row.selection_id),
+      });
+      conversationId = planned.conversationId;
+      messages = planned.messages;
+      reasons.push(...planned.reasons);
     }
 
     const seeded = row.already_seeded && announcement?.already_seeded;
@@ -193,8 +179,35 @@ async function main() {
   console.log(`\n${plan.length} activation(s) agreed and not yet seeded`);
   if (!APPLY) { console.log('dry run: nothing was written'); return; }
 
+  // What seeding must never touch: every message, by id and by a digest of
+  // its body (the body itself is never printed or carried anywhere).
+  const ccMessageIdentity = (conversation) => cc('message identity', `
+    SELECT COALESCE(string_agg(id::text || ':' || md5(body), ',' ORDER BY sent_at, id), '') AS identity
+      FROM public.builder_network_messages WHERE conversation_id = ${lit(conversation)}`);
+  const netMessageIdentity = (conversation) => net('message identity', `
+    SELECT COALESCE(string_agg(id::text || ':' || md5(body), ',' ORDER BY sent_at, id), '') AS identity
+      FROM public.builder_agency_messages WHERE conversation_id = ${lit(conversation)}`);
+
   let failures = 0;
   for (const step of plan) {
+    // Agreement is asked again at execution time: the dry run is not
+    // authority for a write.
+    const [ccNow] = await cc('recheck', `
+      SELECT s.status <> 'withdrawn' AND s.acknowledged_at IS NOT NULL AS live,
+             (SELECT count(*) FROM public.builder_network_messages WHERE conversation_id = ${lit(step.conversation)})::int AS messages
+        FROM public.builder_stock_selections s WHERE s.id = ${lit(step.selection)}`);
+    const [netNow] = await net('recheck', `
+      SELECT a.status <> 'withdrawn' AND a.acknowledged_at IS NOT NULL AS live,
+             (SELECT count(*) FROM public.builder_agency_messages WHERE conversation_id = ${lit(step.conversation)})::int AS messages
+        FROM public.builder_stock_selection_announcements a WHERE a.id = ${lit(step.announcement)}`);
+    if (!ccNow?.live || !netNow?.live || ccNow.messages !== step.messages.cc || netNow.messages !== step.messages.net) {
+      failures += 1;
+      console.log(`  STOPPED activation ${short(step.selection)} — production changed since it was planned`
+        + ` (live cc=${ccNow?.live} network=${netNow?.live}; messages cc=${ccNow?.messages} network=${netNow?.messages})`);
+      continue;
+    }
+    const [ccBefore] = await ccMessageIdentity(step.conversation);
+    const [netBefore] = await netMessageIdentity(step.conversation);
     const [ccResult] = await cc('seed', `SELECT public.builder_network_seed_activation_conversation(
       ${lit(step.selection)}, ${lit(step.conversation)}) AS result`);
     const [netResult] = await net('seed', `SELECT public.builder_agency_seed_activation_conversation(
@@ -203,6 +216,10 @@ async function main() {
       SELECT (SELECT selection_ref FROM public.builder_network_conversations WHERE id = ${lit(step.conversation)}) AS bound,
              (SELECT count(*) FROM public.builder_network_conversation_participants
                WHERE conversation_id = ${lit(step.conversation)} AND side = 'command_centre' AND state = 'joined')::int AS participants,
+             (SELECT count(*) FROM public.builder_network_conversation_participants p
+                JOIN public.builder_stock_selections s ON s.id = ${lit(step.selection)}
+               WHERE p.conversation_id = ${lit(step.conversation)} AND p.side = 'command_centre' AND p.state = 'joined'
+                 AND p.local_user_id = s.selected_by_user_id)::int AS activator,
              (SELECT count(*) FROM public.builder_network_messages WHERE conversation_id = ${lit(step.conversation)})::int AS messages,
              (SELECT count(*) FROM public.notifications WHERE type = 'builder_activation_acknowledged'
                AND metadata->>'conversation_id' = ${lit(step.conversation)}::text)::int AS notified,
@@ -211,14 +228,28 @@ async function main() {
     const [netAfter] = await net('read back', `
       SELECT (SELECT count(*) FROM public.builder_agency_conversation_participants
                WHERE conversation_id = ${lit(step.conversation)} AND side = 'builder' AND state = 'joined')::int AS participants,
+             (SELECT count(*) FROM public.builder_agency_conversation_participants p
+                JOIN public.builder_stock_selection_announcements a ON a.id = ${lit(step.announcement)}
+               WHERE p.conversation_id = ${lit(step.conversation)} AND p.side = 'builder' AND p.state = 'joined'
+                 AND p.builder_user_id = a.acknowledged_by_builder_user_id)::int AS acknowledger,
              (SELECT count(*) FROM public.builder_agency_messages WHERE conversation_id = ${lit(step.conversation)})::int AS messages`);
+    const [ccIdentity] = await ccMessageIdentity(step.conversation);
+    const [netIdentity] = await netMessageIdentity(step.conversation);
     const ok = ['seeded', 'already_seeded'].includes(ccResult?.result) && ['seeded', 'already_seeded'].includes(netResult?.result)
-      && ccAfter?.bound === step.selection && ccAfter?.participants >= 1 && netAfter?.participants >= 1
+      && ccAfter?.bound === step.selection
+      // Exactly the activator here and the acknowledger there: nobody extra.
+      && ccAfter?.participants === 1 && ccAfter?.activator === 1
+      && netAfter?.participants === 1 && netAfter?.acknowledger === 1
       && ccAfter?.notified === 0 && ccAfter?.emails === 0
-      && ccAfter?.messages === step.messages.cc && netAfter?.messages === step.messages.net;
+      && ccAfter?.messages === step.messages.cc && netAfter?.messages === step.messages.net
+      // The same messages, by id and body digest, as before seeding.
+      && ccIdentity?.identity === ccBefore?.identity && netIdentity?.identity === netBefore?.identity;
     if (!ok) failures += 1;
     console.log(`  ${ok ? 'SEEDED' : 'FAILED'} activation ${short(step.selection)} conversation ${short(step.conversation)}`
       + ` — cc=${ccResult?.result} network=${netResult?.result} messages cc=${ccAfter?.messages} network=${netAfter?.messages}`
+      + ` participants cc=${ccAfter?.participants} (activator ${ccAfter?.activator}) network=${netAfter?.participants}`
+      + ` (acknowledger ${netAfter?.acknowledger}) message identity ${ccIdentity?.identity === ccBefore?.identity
+        && netIdentity?.identity === netBefore?.identity ? 'unchanged' : 'CHANGED'}`
       + ` notifications=${ccAfter?.notified} emails=${ccAfter?.emails}`);
   }
   if (failures) { console.error(`FAILED: ${failures} activation(s) did not read back as seeded`); process.exit(1); }

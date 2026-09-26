@@ -244,6 +244,11 @@ BEGIN
                        WHERE c.id = v_existing.conversation_id AND c.organisation_id = _organisation_id) THEN
       RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'AGENCY_MESSAGE_ID_REUSED';
     END IF;
+    -- Answered only to someone still in the conversation: repeating an
+    -- earlier send is never a way back in after leaving.
+    IF NOT public.builder_agency_is_participant(v_existing.conversation_id, _sender_builder_user_id) THEN
+      RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'AGENCY_NOT_A_PARTICIPANT';
+    END IF;
     RETURN NEXT v_existing;
     RETURN;
   END IF;
@@ -409,8 +414,9 @@ BEGIN
      WHERE m.organisation_id = _organisation_id AND m.status = 'active'
        AND public.builder_agency_invitee_eligible(m.builder_user_id, _organisation_id)
        AND NOT public.builder_agency_is_participant(_conversation_id, m.builder_user_id)
-     ORDER BY 2, 1
-     LIMIT 500;
+     -- Every eligible colleague, in a stable order: the caller reads them a
+     -- page at a time, so nobody past a fixed count is left uninvitable.
+     ORDER BY 2, 1;
 END
 $fn$;
 

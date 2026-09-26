@@ -314,6 +314,17 @@ check('N20. nobody outside this organisation, inactive, or without inventory acc
   [OTHER_BUILDER, INACTIVE, NO_INVENTORY, randomUUID()].every((who) => /AGENCY_INVITEE_NOT_ELIGIBLE/.test(inviteRefusal(C1, ACK, who))));
 check('N20b. an organisation that is not the conversation\'s cannot invite into it',
   /AGENCY_CONVERSATION_NOT_FOUND/.test(inviteRefusal(C1, OTHER_BUILDER, OTHER_BUILDER, ORG_B)));
+check('N20c. every eligible colleague is offered, however many there are',
+  sql(`BEGIN;
+    INSERT INTO public.builder_portal_users(id, email, name, status, is_active, email_verified_at, must_change_password)
+    SELECT ('00000000-0000-4000-9000-' || lpad(g::text, 12, '0'))::uuid, 'bulk' || g || '@checkhomes.example',
+           'Bulk Member ' || lpad(g::text, 4, '0'), 'active', true, now(), false FROM generate_series(1, 501) g;
+    INSERT INTO public.builder_organisation_memberships(builder_user_id, organisation_id, membership_role, is_primary, status)
+    SELECT ('00000000-0000-4000-9000-' || lpad(g::text, 12, '0'))::uuid, ${lit(ORG_A)}, 'member', false, 'active'
+      FROM generate_series(1, 501) g;
+    SELECT count(*) FROM public.builder_agency_invite_candidates(${lit(ORG_A)}, ${lit(C1)}, ${lit(ACK)})
+     WHERE display_name LIKE 'Bulk Member %';
+    ROLLBACK;`) === '501');
 check('N21. there is no way to remove somebody else',
   sql(`SELECT count(*) FROM pg_proc WHERE proname ~ 'builder_agency_.*(remove|kick|evict)_?(participant|user|member)'`) === '0');
 
@@ -332,6 +343,10 @@ check('N25. a departed participant loses write, retry, invite and leave at once'
     && /AGENCY_NOT_A_PARTICIPANT/.test(postRefusal(ORG_A, C1, ACK))
     && /AGENCY_NOT_A_PARTICIPANT/.test(inviteRefusal(C1, ACK, ACK))
     && /AGENCY_NOT_A_PARTICIPANT/.test(leaveRefusal(C1, ACK)));
+check('N25b. a departed participant repeating an earlier send is refused, not handed the stored message',
+  /AGENCY_NOT_A_PARTICIPANT/.test(refusal(`SELECT m2.id FROM public.builder_agency_messages m,
+    LATERAL public.builder_agency_post_message(${lit(ORG_A)}, ${lit(C1)}, ${lit(ACK)}, m.client_message_id, m.body) m2
+    WHERE m.id = ${lit(first)}`) ?? ''));
 sql(`UPDATE public.builder_agency_messages SET delivery_state = 'failed', failure_reason = 'not_delivered' WHERE id = ${lit(first)}`);
 check('N16. a non-participant cannot send again even a message they wrote',
   /AGENCY_NOT_A_PARTICIPANT/.test(refusal(`SELECT public.builder_agency_retry_message(${lit(ORG_A)}, ${lit(first)}, ${lit(ACK)})`) ?? ''));
