@@ -41,13 +41,15 @@ function standIn(tables: Record<string, Row[]>, options: { maxRows?: number } = 
       eq(col: string, v: unknown) { entry.filters.push(['eq', col, v]); return builder; },
       neq(col: string, v: unknown) { entry.filters.push(['neq', col, v]); return builder; },
       in(col: string, v: unknown[]) { entry.filters.push(['in', col, v]); return builder; },
+      lt(col: string, v: unknown) { entry.filters.push(['lt', col, v]); return builder; },
       order(col: string, o?: { ascending?: boolean }) { orders = [...orders, [col, o?.ascending !== false]]; return builder; },
       limit(n: number) { cap = n; return builder; },
       range(a: number, b: number) { offset = a; cap = Math.min(b - a + 1, options.maxRows ?? Infinity); return builder; },
       maybeSingle() { return builder.then((r: any) => ({ data: r.data[0] ?? null, error: null })); },
       then(resolve: (v: unknown) => unknown) {
         let rows = (tables[table] ?? []).filter((row) => entry.filters.every(([op, col, v]) =>
-          op === 'eq' ? row[col] === v : op === 'neq' ? row[col] !== v : (v as unknown[]).includes(row[col])));
+          op === 'eq' ? row[col] === v : op === 'neq' ? row[col] !== v
+            : op === 'lt' ? String(row[col]) < String(v) : (v as unknown[]).includes(row[col])));
         for (const [col, asc] of [...orders].reverse()) {
           rows = [...rows].sort((a, b) => (String(a[col]) < String(b[col]) ? -1 : String(a[col]) > String(b[col]) ? 1 : 0) * (asc ? 1 : -1));
         }
@@ -109,6 +111,47 @@ describe('reading a conversation is for its participants', () => {
     const read = await readAgencyConversation(standIn(tables, { maxRows: 1000 }).client, { organisationId: ORG, conversationId: 'conv-1', viewerUserId: ME });
     if (!read.ok) throw new Error(`refused: ${read.reason}`);
     expect(read.participants.length).toBe(1203);
+  });
+
+  it('the whole history is reachable: the newest 500 first, then earlier pages by cursor, each message exactly once', async () => {
+    const tables = world();
+    for (let i = 0; i < 1203; i += 1) {
+      const at = new Date(Date.UTC(2026, 8, 1) + Math.floor(i / 2) * 60_000).toISOString();
+      tables.builder_agency_messages.push({ id: `h-${String(i).padStart(4, '0')}`, conversation_id: 'conv-1', side: 'command_centre',
+        sender_builder_user_id: null, sender_display_name: 'Olive Owner', body: `History ${i}`, sent_at: at, created_at: at,
+        delivery_state: null, delivered_at: null, failure_reason: null });
+    }
+    const client = standIn(tables, { maxRows: 1000 }).client;
+    const first = await readAgencyConversation(client, { organisationId: ORG, conversationId: 'conv-1', viewerUserId: ME });
+    if (!first.ok) throw new Error('refused');
+    expect(first.messages).toHaveLength(500);
+    expect(first.has_earlier).toBe(true);
+    const seen = new Set(first.messages.map((m) => m.id));
+    let cursor = first.earlier_cursor;
+    let pages = 0;
+    while (cursor) {
+      const page = await readAgencyConversation(client, { organisationId: ORG, conversationId: 'conv-1', viewerUserId: ME, beforeMessageId: cursor });
+      if (!page.ok) throw new Error('refused');
+      for (const m of page.messages) {
+        expect(seen.has(m.id)).toBe(false);
+        seen.add(m.id);
+      }
+      cursor = page.has_earlier ? page.earlier_cursor : null;
+      pages += 1;
+      expect(pages).toBeLessThan(5);
+    }
+    expect(seen.size).toBe(1204);
+  });
+
+  it('a history cursor from another conversation reaches nothing, and a non-participant is refused with one', async () => {
+    const page = await readAgencyConversation(standIn(world()).client,
+      { organisationId: ORG, conversationId: 'conv-1', viewerUserId: ME, beforeMessageId: 'm2' });
+    if (!page.ok) throw new Error('refused');
+    expect(page.messages).toEqual([]);
+    expect(page.has_earlier).toBe(false);
+    const outsider = await readAgencyConversation(standIn(world()).client,
+      { organisationId: ORG, conversationId: 'conv-1', viewerUserId: COLLEAGUE, beforeMessageId: 'm1' });
+    expect(outsider).toEqual({ ok: false, reason: 'not_a_participant' });
   });
 
   it('N18/N38. a participant reads the thread and both sides\' current participants', async () => {
@@ -215,6 +258,13 @@ describe('refusals', () => {
 
 describe('the edge operations', () => {
   const source = () => readCode('supabase/functions/builder-portal-stock/index.ts');
+
+  it('a conversation read takes a history cursor, and says whether there is more', () => {
+    const code = source();
+    expect(code).toMatch(/'get_agency_conversation'[\s\S]{0,500}beforeMessageId:\s*uuidOf\(body\.before_message_id\)/);
+    expect(code).toMatch(/has_earlier:\s*read\.has_earlier/);
+    expect(code).toMatch(/earlier_cursor:\s*read\.earlier_cursor/);
+  });
   it('each is named', () => {
     for (const op of ['list_my_agency_conversations', 'get_agency_conversation', 'send_agency_message', 'retry_agency_message',
       'list_agency_conversation_invitees', 'invite_agency_conversation_participant', 'leave_agency_conversation']) {

@@ -87,6 +87,16 @@ or participant list is refused exactly as a user without access is refused
 (Step 5's refusal handling). Leaving never deletes history. Someone invited
 again after leaving joins again and sees the whole history.
 
+**The whole history, not a window of it.** A read returns the newest page of
+messages and says whether anything older exists (`has_earlier`, with
+`earlier_cursor`, the id of the oldest message returned). "Show earlier
+messages" asks again with that id as `before_message_id` and the next page is
+added above; the poll keeps only the newest page current. Paging is ordered by
+(`created_at`, `id`), so two messages written in the same instant are neither
+repeated nor skipped, and a cursor from another conversation returns nothing.
+The page size is unchanged: a longer history is reached by paging, never by a
+larger window.
+
 ## 3. The events
 
 All events travel through the existing outbox, signed, and are checked at the

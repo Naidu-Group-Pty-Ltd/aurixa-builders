@@ -83,6 +83,7 @@ vi.mock('@/lib/builderStockQueries', () => ({
       return { message: null };
     }),
   }),
+  useEarlierAgencyConversationMessages: () => ({ isPending: false, mutateAsync: vi.fn() }),
   useRetryAgencyMessage: () => ({
     isPending: false,
     mutateAsync: vi.fn(async (id: string) => { retried.push(id); return { message: null }; }),

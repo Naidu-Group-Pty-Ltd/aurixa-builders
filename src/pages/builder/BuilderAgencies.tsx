@@ -16,7 +16,7 @@ import {
 } from '@/components/builder-portal/StockActivation';
 import { StockPicture } from '@/components/stock/StockPicture';
 import {
-  builderStockImageUrl, useAgencyConversation, useAgencyConversationInvitees, useBuilderActivatedProperties,
+  builderStockImageUrl, useAgencyConversation, useAgencyConversationInvitees, useEarlierAgencyConversationMessages, useBuilderActivatedProperties,
   useInviteAgencyParticipant, useLeaveAgencyConversation, useMyAgencyConversations, useRefreshMyAgencyConversations,
   useRetryAgencyMessage, useSendAgencyMessage,
 } from '@/lib/builderStockQueries';
@@ -24,7 +24,7 @@ import { useToast } from '@/hooks/use-toast';
 import { isDisplayableSourceImage, type BuilderStockImage } from '@/lib/builderStock';
 import {
   AGENCIES_PATH, activatedPropertyLocality, activatedPropertyTitle, agencyLabel,
-  accessRefused, agencyTabFrom, newClientMessageId, outboundStateLabel, arrivalScrollTarget, scrollLogToEnd, scrollMessageIntoView,
+  accessRefused, agencyTabFrom, mergeAgencyConversationPages, newClientMessageId, outboundStateLabel, arrivalScrollTarget, scrollLogToEnd, scrollMessageIntoView,
   type ActivatedProperty, type AgencyConversation, type AgencyConversationSummary, type AgencyMessageView, type AgencyTab,
 } from '@/lib/builderAgency';
 
@@ -321,7 +321,13 @@ function ThreadView({ conversationId, summary }: { conversationId: string; summa
   // keeps what was read.
   const accessLost = accessRefused(query.error);
   const conversation = accessLost ? undefined : query.data;
-  const messages = conversation?.messages ?? [];
+  // The poll keeps the newest window current; earlier pages are added above
+  // it when asked for, so the whole history can be read however long it is.
+  const earlierPage = useEarlierAgencyConversationMessages(conversationId);
+  const [earlier, setEarlier] = useState<{ messages: AgencyMessageView[]; cursor: string | null; more: boolean } | null>(null);
+  const messages = conversation ? mergeAgencyConversationPages(earlier?.messages ?? [], conversation.messages ?? []) : [];
+  const earlierCursor = earlier ? earlier.cursor : conversation?.earlier_cursor ?? null;
+  const moreEarlier = earlier ? earlier.more : !!conversation?.has_earlier;
   const canSend = !!conversation?.can_send;
   // Open at the newest message, and follow whatever a poll brings in, even a
   // late message that sorts above the newest one.
@@ -346,6 +352,24 @@ function ThreadView({ conversationId, summary }: { conversationId: string; summa
     } catch (error) {
       toast({
         title: 'Your message was not sent',
+        description: error instanceof Error ? error.message : 'Try again shortly.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const showEarlier = async () => {
+    if (!earlierCursor || earlierPage.isPending) return;
+    try {
+      const page = await earlierPage.mutateAsync(earlierCursor);
+      setEarlier((previous) => ({
+        messages: [...(page.messages ?? []), ...(previous?.messages ?? [])],
+        cursor: page.earlier_cursor ?? null,
+        more: !!page.has_earlier && !!page.earlier_cursor,
+      }));
+    } catch (error) {
+      toast({
+        title: 'Earlier messages could not be loaded',
         description: error instanceof Error ? error.message : 'Try again shortly.',
         variant: 'destructive',
       });
@@ -400,11 +424,19 @@ function ThreadView({ conversationId, summary }: { conversationId: string; summa
             <p className="mt-1">Anything you write here is sent to {summary?.agency_name ?? 'the agency'} about this property.</p>
           </div>
         ) : (
-          <div ref={logRef} role="log" aria-label="Conversation" aria-live="polite" className="max-h-[28rem] space-y-3 overflow-y-auto pr-1">
-            {messages.map((message) => (
-              <MessageBubble key={message.id} message={message} canRetry={canSend && message.can_retry} onRetry={sendAgain} retrying={retry.isPending} />
-            ))}
-          </div>
+          <>
+            {moreEarlier && earlierCursor ? (
+              <Button type="button" variant="outline" size="sm" onClick={() => void showEarlier()} disabled={earlierPage.isPending}>
+                {earlierPage.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden /> : null}
+                Show earlier messages
+              </Button>
+            ) : null}
+            <div ref={logRef} role="log" aria-label="Conversation" aria-live="polite" className="max-h-[28rem] space-y-3 overflow-y-auto pr-1">
+              {messages.map((message) => (
+                <MessageBubble key={message.id} message={message} canRetry={canSend && message.can_retry} onRetry={sendAgain} retrying={retry.isPending} />
+              ))}
+            </div>
+          </>
         )}
 
         {conversation && !conversation.open ? (

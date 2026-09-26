@@ -299,6 +299,18 @@ export function useAgencyConversation(conversationId: string | null) {
 }
 
 /**
+ * One earlier page of a conversation, older than `cursor` (a message id of
+ * this conversation). The server answers only a current participant.
+ */
+export function useEarlierAgencyConversationMessages(conversationId: string) {
+  return useMutation({
+    mutationFn: (cursor: string) => invoke<AgencyConversation>({
+      operation: 'get_agency_conversation', conversation_id: conversationId, before_message_id: cursor,
+    }),
+  });
+}
+
+/**
  * Send one message. The caller mints `clientMessageId` once per message and
  * passes the SAME id to any retry of the same send, which is what makes a
  * timeout safe to retry.

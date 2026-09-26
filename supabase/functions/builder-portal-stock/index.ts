@@ -2570,6 +2570,8 @@ Deno.serve(async (req) => {
         organisationId: activeOrganisationId,
         conversationId,
         viewerUserId: me.id,
+        // A history cursor, where one is asked for: the page before that message.
+        beforeMessageId: uuidOf(body.before_message_id),
       });
       if (!read.ok) {
         if (read.reason === 'not_found') return notFoundHere('That conversation');
@@ -2592,6 +2594,8 @@ Deno.serve(async (req) => {
         // The retry operation needs inventory edit, so a reader without it is
         // never offered "Send again".
         messages: read.messages.map((message) => ({ ...message, can_retry: message.can_retry && mayEdit })),
+        has_earlier: read.has_earlier,
+        earlier_cursor: read.earlier_cursor,
       });
     }
 

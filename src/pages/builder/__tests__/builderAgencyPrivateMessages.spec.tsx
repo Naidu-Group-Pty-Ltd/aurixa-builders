@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const state: Record<string, any> = {};
 const invited: string[] = [];
 const left: string[] = [];
+const earlierAsked: string[] = [];
 
 vi.mock('@/lib/builderStockQueries', () => ({
   useBuilderActivatedProperties: () => ({ data: { records: [], pagination: { page: 1, page_size: 25, total: 0, total_pages: 1 } },
@@ -25,6 +26,8 @@ vi.mock('@/lib/builderStockQueries', () => ({
   builderStockImageUrl: vi.fn(async () => null),
   useMyAgencyConversations: () => ({ data: state.inbox, error: null, isLoading: false, refetch: vi.fn() }),
   useAgencyConversation: () => ({ data: state.conversation, error: state.conversationError ?? null, isLoading: false, isFetching: false }),
+  useEarlierAgencyConversationMessages: () => ({ isPending: false, mutateAsync: vi.fn(async (cursor: string) => {
+    earlierAsked.push(cursor); return state.earlierPage; }) }),
   useSendAgencyMessage: () => ({ isPending: false, mutateAsync: vi.fn(async () => ({ message: null })) }),
   useRetryAgencyMessage: () => ({ isPending: false, mutateAsync: vi.fn(async () => ({ message: null })) }),
   useAgencyConversationInvitees: () => ({ data: state.inviteesError ? undefined : (state.invitees ?? []), error: state.inviteesError ?? null, isLoading: false, refetch: vi.fn() }),
@@ -57,7 +60,7 @@ beforeEach(() => {
       agency_name: 'Example Agency', open: true, last_message_at: '2026-09-25T10:00:00Z' },
   ] };
   state.conversation = CONVERSATION();
-  invited.length = 0; left.length = 0;
+  invited.length = 0; left.length = 0; earlierAsked.length = 0;
 });
 
 const renderAt = (path: string) => render(
@@ -124,6 +127,29 @@ describe('Agencies → Messages', () => {
     renderAt('/builder/agencies/messages?thread=conv-9');
     expect(screen.queryByRole('log')).toBeNull();
     expect(screen.queryByRole('list', { name: /participants/i })).toBeNull();
+  });
+
+  it('a long conversation reads back to its first message, page by page', async () => {
+    state.conversation = CONVERSATION({ has_earlier: true, earlier_cursor: 'm1' });
+    state.earlierPage = CONVERSATION({ has_earlier: false, earlier_cursor: null, messages: [
+      { id: 'm0', side: 'builder', sender_display_name: 'Avery Builder', body: 'The very first message',
+        sent_at: '2026-09-20T10:00:00Z', delivery_state: 'delivered', delivered_at: null, failure_reason: null, mine: true, can_retry: false },
+    ] });
+    renderAt('/builder/agencies/messages?thread=conv-1');
+    expect(screen.queryByText('The very first message')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /show earlier messages/i }));
+    expect(await screen.findByText('The very first message')).toBeTruthy();
+    expect(earlierAsked).toEqual(['m1']);
+    const log = screen.getByRole('log');
+    const bodies = within(log).getAllByText(/first message|available/).map((node) => node.textContent);
+    expect(bodies).toEqual(['The very first message', 'Is it available?']);
+    // The first message has been reached: nothing further to ask for.
+    expect(screen.queryByRole('button', { name: /show earlier messages/i })).toBeNull();
+  });
+
+  it('a conversation with nothing earlier offers no earlier page', () => {
+    renderAt('/builder/agencies/messages?thread=conv-1');
+    expect(screen.queryByRole('button', { name: /show earlier messages/i })).toBeNull();
   });
 
   it('with no conversations, says how one starts', () => {

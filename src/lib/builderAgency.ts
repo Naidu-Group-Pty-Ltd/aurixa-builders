@@ -42,6 +42,23 @@ export interface AgencyConversation {
   can_leave?: boolean;
   participants?: AgencyParticipantView[];
   messages: AgencyMessageView[];
+  /** True where messages older than this window exist; ask again with `earlier_cursor`. */
+  has_earlier?: boolean;
+  earlier_cursor?: string | null;
+}
+
+/**
+ * Earlier pages joined to the newest window: one entry per message, oldest
+ * first. The poll keeps the window current; earlier pages sit above it.
+ */
+export function mergeAgencyConversationPages(
+  earlier: readonly AgencyMessageView[], window: readonly AgencyMessageView[],
+): AgencyMessageView[] {
+  const byId = new Map<string, AgencyMessageView>();
+  for (const message of earlier) byId.set(message.id, message);
+  for (const message of window) byId.set(message.id, message);
+  return [...byId.values()].sort((a, b) =>
+    (a.sent_at === b.sent_at ? (a.id < b.id ? -1 : 1) : (a.sent_at < b.sent_at ? -1 : 1)));
 }
 
 /** One conversation the reader is in, as the Messages list names it. */
