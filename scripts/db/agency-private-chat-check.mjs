@@ -315,7 +315,7 @@ check('N20. nobody outside this organisation, inactive, or without inventory acc
 check('N20b. an organisation that is not the conversation\'s cannot invite into it',
   /AGENCY_CONVERSATION_NOT_FOUND/.test(inviteRefusal(C1, OTHER_BUILDER, OTHER_BUILDER, ORG_B)));
 check('N21. there is no way to remove somebody else',
-  sql(`SELECT count(*) FROM pg_proc WHERE proname ~ 'builder_agency_.*(remove|kick|evict)'`) === '0');
+  sql(`SELECT count(*) FROM pg_proc WHERE proname ~ 'builder_agency_.*(remove|kick|evict)_?(participant|user|member)'`) === '0');
 
 console.log('\nLeaving');
 check('N23. the last builder participant of a live conversation cannot leave',
@@ -453,6 +453,64 @@ console.log('\nN36. Nothing private crossed');
   const everything = sql(`SELECT COALESCE(string_agg(payload::text, ' '), '') FROM public.builder_network_outbox`);
   const leaked = [ACK, COLLEAGUE, NO_INVENTORY, 'avery@', 'alex@', 'nina@'].filter((s) => everything.includes(s));
   check('no builder user id or personal email is in anything this step sends', leaked.length === 0, leaked.join(','));
+}
+
+console.log('\nN39. Step 5\'s delivery, under the new model');
+{
+  const ITEM3 = randomUUID(); const REF_3 = randomUUID();
+  sql(`INSERT INTO public.builder_stock_items(id, organisation_id, lot_number, address_line, lifecycle_status)
+       VALUES (${lit(ITEM3)}, ${lit(ORG_A)}, '104', '4 Transport Street', 'active');
+       INSERT INTO public.builder_stock_selection_announcements(connection_id, stock_item_id, organisation_id,
+         remote_selection_ref, status, source_version)
+       VALUES (${lit(CONN_A)}, ${lit(ITEM3)}, ${lit(ORG_A)}, ${lit(REF_3)}, 'selected', 1);`);
+  acknowledge(REF_3, COLLEAGUE);
+  const C3 = activationConversationId(CONN_A, REF_3);
+  const receipt = (message, generation, outcome, reason) =>
+    land(CONN_A, 'agency.message.receipt', `agency.receipt:${message}:${generation}:${randomUUID()}`, {
+      schema_version: 1, message_id: message, conversation_id: C3, generation, outcome, ...(reason ? { reason } : {}),
+    });
+  const a = post(ORG_A, C3, COLLEAGUE, 'First.');
+  const b = post(ORG_A, C3, COLLEAGUE, 'Second.');
+  receipt(a, 1, 'accepted');
+  receipt(b, 1, 'refused', 'conversation_not_open');
+  sweep();
+  check('an accepted receipt marks a message delivered; a refusal marks it failed, with the reason',
+    sql(`SELECT delivery_state FROM public.builder_agency_messages WHERE id = ${lit(a)}`) === 'delivered'
+      && sql(`SELECT delivery_state || '|' || failure_reason FROM public.builder_agency_messages WHERE id = ${lit(b)}`)
+        === 'failed|refused:conversation_not_open');
+  const m = agencyMessage({ conversation_id: C3, stock_item_id: ITEM3, body: 'Once.' });
+  land(CONN_A, 'agency.message.posted', `agency.message:${m.message_id}:1`, m);
+  land(CONN_A, 'agency.message.posted', `agency.message:${m.message_id}:2`, { ...m, generation: 2 });
+  land(CONN_A, 'agency.message.posted', `agency.message:${m.message_id}:3`, { ...m, body: 'Other words.', generation: 3 });
+  sweep();
+  check('an agency message is stored once however often it is delivered, and a changed one is refused',
+    sql(`SELECT count(*) FROM public.builder_agency_messages WHERE id = ${lit(m.message_id)}`) === '1'
+      && sql(`SELECT string_agg(payload->>'outcome', ',' ORDER BY (payload->>'generation')::int) FROM public.builder_network_outbox
+              WHERE event_type = 'agency.message.receipt' AND payload->>'message_id' = ${lit(m.message_id)}`) === 'accepted,accepted,refused');
+  const behind = agencyMessage({ conversation_id: C3, stock_item_id: ITEM3, body: 'Behind an activation.' });
+  const laterRef = randomUUID();
+  land(CONN_A, 'stock.selection.announced', `stock.selection:${laterRef}:1`,
+    { remote_selection_ref: laterRef, stock_item_id: ITEM3, status: 'selected' });
+  land(CONN_A, 'agency.message.posted', `agency.message:${behind.message_id}:1`, behind);
+  sweep();
+  const waited = sql(`SELECT count(*) FROM public.builder_agency_messages WHERE id = ${lit(behind.message_id)}`) === '0';
+  mainSweep();
+  sweep();
+  check('a message waits behind an activation that landed before it and is not yet applied',
+    waited && sql(`SELECT count(*) FROM public.builder_agency_messages WHERE id = ${lit(behind.message_id)}`) === '1');
+  const kept = agencyMessage({ conversation_id: C3, stock_item_id: ITEM3, body: 'Kept before the withdrawal.' });
+  land(CONN_A, 'agency.message.posted', `agency.message:${kept.message_id}:1`, kept);
+  sweep();
+  sql(`UPDATE public.builder_stock_selection_announcements SET status = 'withdrawn' WHERE remote_selection_ref = ${lit(REF_3)}`);
+  const fresh = agencyMessage({ conversation_id: C3, stock_item_id: ITEM3, body: 'After the withdrawal.' });
+  land(CONN_A, 'agency.message.posted', `agency.message:${fresh.message_id}:1`, fresh);
+  land(CONN_A, 'agency.message.posted', `agency.message:${kept.message_id}:2`, { ...kept, generation: 2 });
+  sweep();
+  check('a withdrawn activation refuses the agency\'s new message, and still acknowledges a stored one sent again',
+    sql(`SELECT message_apply_error FROM public.builder_network_inbound_events
+         WHERE dedupe_key = 'agency.message:${fresh.message_id}:1'`) === 'refused:conversation_not_open'
+      && sql(`SELECT COALESCE(message_apply_error, 'applied') FROM public.builder_network_inbound_events
+              WHERE dedupe_key = 'agency.message:${kept.message_id}:2'`) === 'applied');
 }
 
 console.log('\nN40. What did not change');

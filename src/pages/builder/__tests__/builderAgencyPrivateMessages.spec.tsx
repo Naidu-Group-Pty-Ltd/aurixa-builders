@@ -20,6 +20,7 @@ vi.mock('@/lib/builderStockQueries', () => ({
   useBuilderActivatedProperties: () => ({ data: { records: [], pagination: { page: 1, page_size: 25, total: 0, total_pages: 1 } },
     error: null, isLoading: false, isFetching: false, refetch: vi.fn() }),
   useRefreshEveryBuilderActivatedProperty: () => async () => undefined,
+  useRefreshMyAgencyConversations: () => async () => undefined,
   useEveryBuilderActivatedProperty: () => ({ data: { records: [], truncated: false }, error: null, isLoading: false, refetch: vi.fn() }),
   builderStockImageUrl: vi.fn(async () => null),
   useMyAgencyConversations: () => ({ data: state.inbox, error: null, isLoading: false, refetch: vi.fn() }),

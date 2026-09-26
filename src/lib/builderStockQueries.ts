@@ -19,7 +19,7 @@ import type {
   ManualStatField, StatedLocationField,
 } from '@/lib/builderStock';
 import {
-  agencyConversationPollInterval, agencyConversationRefetchInterval, collectEveryPage, retryUnlessRefused, type ActivatedProperty, type AgencyConversation, type AgencyMessageView,
+  agencyConversationPollInterval, agencyConversationRefetchInterval, collectEveryPage, retryUnlessRefused, type ActivatedProperty, type AgencyConversation, type AgencyConversationSummary, type AgencyMessageView,
 } from '@/lib/builderAgency';
 
 export const builderStockKeys = {
@@ -30,8 +30,8 @@ export const builderStockKeys = {
   item: (id: string) => ['builder', 'stock', 'item', id] as const,
   selections: (page: number) => ['builder', 'stock', 'selections', page] as const,
   activatedProperties: (page: number) => ['builder', 'stock', 'activated-properties', page] as const,
-  agencyConversation: (connectionId: string, stockItemId: string) =>
-    ['builder', 'stock', 'agency-conversation', connectionId, stockItemId] as const,
+  agencyConversation: (conversationId: string) => ['builder', 'stock', 'agency-conversation', conversationId] as const,
+  myAgencyConversations: () => ['builder', 'stock', 'my-agency-conversations'] as const,
 };
 
 export interface StockFilters {
@@ -261,16 +261,36 @@ export function useRefreshEveryBuilderActivatedProperty() {
 }
 
 /**
- * One conversation with an agency, re-read every few seconds while it is open
- * and the tab is visible. Polling is the whole transport on this side: the
- * page is correct without anything pushed to it.
+ * The conversations the reader is in now (docs/builder-portal/62) — the
+ * Messages list. Nobody else's is ever served.
  */
-export function useAgencyConversation(connectionId: string | null, stockItemId: string | null) {
+export function useMyAgencyConversations() {
   return useQuery({
-    queryKey: builderStockKeys.agencyConversation(connectionId ?? '', stockItemId ?? ''),
-    enabled: !!connectionId && !!stockItemId,
+    queryKey: builderStockKeys.myAgencyConversations(),
+    queryFn: () => invoke<{ conversations: AgencyConversationSummary[] }>({ operation: 'list_my_agency_conversations' }),
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+    retry: retryUnlessRefused,
+  });
+}
+
+/** The page's Refresh: re-read the Messages list. */
+export function useRefreshMyAgencyConversations() {
+  const queryClient = useQueryClient();
+  return () => queryClient.invalidateQueries({ queryKey: builderStockKeys.myAgencyConversations() });
+}
+
+/**
+ * One conversation, re-read every few seconds while it is open and the tab is
+ * visible. Polling is the whole transport on this side: the page is correct
+ * without anything pushed to it.
+ */
+export function useAgencyConversation(conversationId: string | null) {
+  return useQuery({
+    queryKey: builderStockKeys.agencyConversation(conversationId ?? ''),
+    enabled: !!conversationId,
     queryFn: () => invoke<AgencyConversation>({
-      operation: 'get_agency_conversation', connection_id: connectionId, stock_item_id: stockItemId,
+      operation: 'get_agency_conversation', conversation_id: conversationId,
     }),
     refetchInterval: (query) => agencyConversationRefetchInterval(query.state),
     refetchIntervalInBackground: false,
@@ -283,28 +303,58 @@ export function useAgencyConversation(connectionId: string | null, stockItemId: 
  * passes the SAME id to any retry of the same send, which is what makes a
  * timeout safe to retry.
  */
-export function useSendAgencyMessage(connectionId: string, stockItemId: string) {
+export function useSendAgencyMessage(conversationId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: { clientMessageId: string; body: string }) =>
       invoke<{ message: AgencyMessageView | null }>({
-        operation: 'send_agency_message', connection_id: connectionId, stock_item_id: stockItemId,
+        operation: 'send_agency_message', conversation_id: conversationId,
         client_message_id: input.clientMessageId, body: input.body,
       }),
-    onSettled: () => queryClient.invalidateQueries({
-      queryKey: builderStockKeys.agencyConversation(connectionId, stockItemId),
-    }),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: builderStockKeys.agencyConversation(conversationId) }),
   });
 }
 
-export function useRetryAgencyMessage(connectionId: string, stockItemId: string) {
+export function useRetryAgencyMessage(conversationId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (messageId: string) =>
       invoke<{ message: AgencyMessageView | null }>({ operation: 'retry_agency_message', message_id: messageId }),
-    onSettled: () => queryClient.invalidateQueries({
-      queryKey: builderStockKeys.agencyConversation(connectionId, stockItemId),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: builderStockKeys.agencyConversation(conversationId) }),
+  });
+}
+
+/** Colleagues who may be added: the server decides who, from this organisation's own rows. */
+export function useAgencyConversationInvitees(conversationId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: [...builderStockKeys.agencyConversation(conversationId), 'invitees'] as const,
+    enabled: enabled && !!conversationId,
+    queryFn: async () => (await invoke<{ invitees: Array<{ user_id: string; display_name: string }> }>({
+      operation: 'list_agency_conversation_invitees', conversation_id: conversationId,
+    })).invitees,
+    retry: retryUnlessRefused,
+  });
+}
+
+export function useInviteAgencyParticipant(conversationId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (inviteeUserId: string) => invoke<{ result: string }>({
+      operation: 'invite_agency_conversation_participant', conversation_id: conversationId, invitee_user_id: inviteeUserId,
     }),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: builderStockKeys.agencyConversation(conversationId) }),
+  });
+}
+
+/** Leave a conversation. It names only the person leaving. */
+export function useLeaveAgencyConversation(conversationId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => invoke<{ result: string }>({ operation: 'leave_agency_conversation', conversation_id: conversationId }),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: builderStockKeys.myAgencyConversations() });
+      queryClient.removeQueries({ queryKey: builderStockKeys.agencyConversation(conversationId) });
+    },
   });
 }
 

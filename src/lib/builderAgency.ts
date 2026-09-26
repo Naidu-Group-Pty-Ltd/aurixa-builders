@@ -21,18 +21,38 @@ import type {
 import type {
   AgencyDeliveryState,
   AgencyMessageView,
+  AgencyParticipantView,
 } from '../../supabase/functions/_shared/builderStock/agencyMessages.pure';
 
 export type { ActivatedProperty, ActivatedPropertyAgency, ActivatedPropertyFacts, ActivationStatus };
-export type { AgencyDeliveryState, AgencyMessageView };
+export type { AgencyDeliveryState, AgencyMessageView, AgencyParticipantView };
 
-/** A conversation as the Messages tab reads it. */
+/**
+ * One activation's private conversation, as its participant reads it
+ * (docs/builder-portal/62). Only a current participant is ever given one; for
+ * anyone else the server answers 403 `not_a_participant` and nothing of it.
+ */
 export interface AgencyConversation {
-  conversation_id: string | null;
+  conversation_id: string;
+  stock_item_id?: string;
   /** False once the agency has withdrawn the activation: history stays, writing stops. */
   open: boolean;
   can_send: boolean;
+  can_invite?: boolean;
+  can_leave?: boolean;
+  participants?: AgencyParticipantView[];
   messages: AgencyMessageView[];
+}
+
+/** One conversation the reader is in, as the Messages list names it. */
+export interface AgencyConversationSummary {
+  conversation_id: string;
+  stock_item_id: string;
+  address: string | null;
+  lot_number: string | null;
+  agency_name: string | null;
+  open: boolean;
+  last_message_at: string | null;
 }
 
 /**

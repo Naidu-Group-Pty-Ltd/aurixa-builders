@@ -68,9 +68,9 @@ function world() {
     workspace_registry: [{ id: 'ws-1', display_name: 'Example Agency Workspace' }],
     builder_stock_selection_announcements: [
       { id: 'ann-1', connection_id: 'conn-a', stock_item_id: 'item-1', organisation_id: ORG, remote_selection_ref: 'ref-1',
-        status: 'builder_acknowledged', agency_name: 'Example Agency' },
+        status: 'builder_acknowledged', acknowledged_at: '2026-09-25T02:00:00Z', agency_name: 'Example Agency' },
       { id: 'ann-2', connection_id: 'conn-a', stock_item_id: 'item-1', organisation_id: ORG, remote_selection_ref: 'ref-2',
-        status: 'withdrawn', agency_name: 'Example Agency' },
+        status: 'withdrawn', acknowledged_at: '2026-09-24T02:00:00Z', agency_name: 'Example Agency' },
     ],
     builder_stock_items: [{ id: 'item-1', organisation_id: ORG, address_line: '1 Private Street', lot_number: '101' }],
     builder_agency_conversations: [

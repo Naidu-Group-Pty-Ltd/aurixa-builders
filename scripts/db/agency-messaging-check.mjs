@@ -57,8 +57,13 @@ psql(['-d', 'postgres', '-c', `CREATE DATABASE ${DB}`]);
 psql(['-d', DB, '-q', '-f', join(repoRoot, 'scripts/db/00-supabase-bootstrap.sql')]);
 psql(['-d', DB, '-q', '-c', 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;']);
 psql(['-d', DB, '-q', '-f', join(repoRoot, 'supabase/migrations/00000000000000_network_baseline.sql')]);
+// Step 5 as it shipped: the migrations up to the step that made a
+// conversation private to one activation's participants
+// (20260926120000, proved by agency-private-chat-check.mjs, which also
+// re-proves this delivery under that model).
+const PRIVATE_STEP = '20260926120000';
 for (const file of readdirSync(join(repoRoot, 'supabase/migrations'))
-  .filter((f) => /^\d{14}_.+\.sql$/.test(f) && !f.startsWith('00000000000000')).sort()) {
+  .filter((f) => /^\d{14}_.+\.sql$/.test(f) && !f.startsWith('00000000000000') && f < PRIVATE_STEP).sort()) {
   psql(['-d', DB, '-q', '-f', join(repoRoot, 'supabase/migrations', file)]);
 }
 

@@ -85,11 +85,23 @@ const id = (value) => {
   if (!UUID.test(String(value))) throw new Error('not a uuid');
   return `'${value}'::uuid`;
 };
-/** The shared derivation, recomputed here so neither side vouches for itself. */
+/**
+ * Step 5's per-property derivation — since one activation, one private
+ * conversation (docs/builder-portal/52, 62) it names no conversation a new
+ * activation opens, which is what the refusals below use it for.
+ */
 const conversationIdFor = (connectionId, stockItemId) => {
   const hex = createHash('md5').update(`agency.conversation:${connectionId}:${stockItemId}`).digest('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 };
+
+/** The shared derivation of an activation's conversation. */
+const activationConversationIdFor = (connectionId, selectionRef) => {
+  const hex = createHash('md5').update(`agency.activation:${connectionId}:${selectionRef}`).digest('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
+const PARTICIPANT_KEYS = ['conversation_id', 'display_name', 'participant_ref', 'schema_version', 'side', 'state',
+  'stock_item_id', 'version'];
 
 async function query(ref, label, sql) {
   const response = await fetch(`https://api.supabase.com/v1/projects/${ref}/database/query`, {
@@ -182,8 +194,21 @@ async function cleanup(stage) {
   // are removed, or is refused by a door that no longer knows the connection.
   const connList = ccConnections.length ? ccConnections.map((row) => id(row.id)).join(', ') : 'NULL::uuid';
   const orgList = ccOrgIds.length ? ccOrgIds.map(id).join(', ') : 'NULL::uuid';
+  const proofUsers = `SELECT u.id FROM public.custom_users u WHERE u.username LIKE ${sqlLit(`${CC_USER_PREFIX}%`)}`;
+  const proofSelections = `SELECT s.id FROM public.builder_stock_selections s WHERE s.organisation_id IN (${orgList})`;
   await cc(`${stage}: rows`, `
     SET LOCAL lock_timeout = '5s';
+    DELETE FROM public.integration_delivery_attempts WHERE outbox_id IN (
+      SELECT o.id FROM public.integration_outbox o
+       WHERE o.idempotency_key IN (SELECT 'builder_activation_acknowledged:' || s.id::text FROM (${proofSelections}) s));
+    DELETE FROM public.integration_dead_letters WHERE outbox_id IN (
+      SELECT o.id FROM public.integration_outbox o
+       WHERE o.idempotency_key IN (SELECT 'builder_activation_acknowledged:' || s.id::text FROM (${proofSelections}) s));
+    DELETE FROM public.integration_outbox
+     WHERE idempotency_key IN (SELECT 'builder_activation_acknowledged:' || s.id::text FROM (${proofSelections}) s);
+    DELETE FROM public.builder_network_acknowledgement_notices WHERE selection_id IN (${proofSelections});
+    DELETE FROM public.notifications WHERE target_user_id IN (${proofUsers});
+    DELETE FROM public.user_permissions WHERE user_id IN (${proofUsers});
     DELETE FROM public.builder_network_conversations WHERE connection_id IN (${connList});
     DELETE FROM public.builder_stock_selections WHERE organisation_id IN (${orgList});
     ALTER TABLE public.clients DISABLE TRIGGER USER;
@@ -264,7 +289,7 @@ try {
   await cleanup('start');
 
   const networkShipped = (await net('shipped', `
-    SELECT to_regprocedure('public.builder_agency_post_message(uuid,uuid,uuid,uuid,uuid,text)') IS NOT NULL AS post,
+    SELECT to_regprocedure('public.builder_agency_post_message(uuid,uuid,uuid,uuid,text)') IS NOT NULL AS post,
            to_regprocedure('public.builder_agency_apply_message_events(integer)') IS NOT NULL AS sweep,
            EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'builder-agency-messages-apply-1min' AND active) AS cron`))[0] ?? {};
   const ccShipped = (await cc('shipped', `
@@ -372,7 +397,7 @@ try {
     SET LOCAL lock_timeout = '5s';
     ALTER TABLE public.custom_users DISABLE TRIGGER USER;
     INSERT INTO public.custom_users(username, email, password_hash, role, first_name, last_name, is_active)
-    VALUES (${sqlLit(`${CC_USER_PREFIX}owner-${RUN}`)}, ${sqlLit(`${CC_USER_PREFIX}owner-${RUN}@example.com`)},
+    VALUES (${sqlLit(`${CC_USER_PREFIX}owner-${RUN}`)}, ${sqlLit(`delivered+${TAG}-owner-${RUN}@resend.dev`)},
             ${sqlLit(`not-a-password-${randomBytes(16).toString('hex')}`)}, 'proof_no_access', 'Olive', ${sqlLit(`Owner ${RUN}`)}, true),
            (${sqlLit(`${CC_USER_PREFIX}colleague-${RUN}`)}, ${sqlLit(`${CC_USER_PREFIX}colleague-${RUN}@example.com`)},
             ${sqlLit(`not-a-password-${randomBytes(16).toString('hex')}`)}, 'proof_no_access', 'Casey', ${sqlLit(`Colleague ${RUN}`)}, true);
@@ -380,6 +405,11 @@ try {
     SELECT id, first_name FROM public.custom_users WHERE username LIKE ${sqlLit(`${CC_USER_PREFIX}%-${RUN}`)}`);
   const owner = staff.find((row) => row.first_name === 'Olive');
   const ccColleague = staff.find((row) => row.first_name === 'Casey');
+  // Listings view, so the colleague may be invited into the conversation.
+  await cc('listings', `
+    INSERT INTO public.user_permissions(user_id, module_id, can_view, can_edit, can_delete)
+    SELECT u.id, m.id, true, true, false FROM public.dashboard_modules m, (VALUES (${id(owner.id)}), (${id(ccColleague.id)})) AS u(id)
+     WHERE m.module_key = 'listings'`);
   const clientLabel = `Proof Client ${RUN}`;
   // An invented client that NOTHING may react to: every user trigger on the
   // table is off for this one insert, inside this one transaction.
@@ -407,7 +437,27 @@ try {
   for (const action of [{ action: 'accept_current_terms', acknowledgements: ALL_ACKS }, { action: 'complete_onboarding' }]) {
     await call('builder-portal-verify', action, cookie);
   }
-  const conversationId = conversationIdFor(connection, item);
+  // Since one activation, one private conversation: the builder acknowledges,
+  // which opens the activation's conversation with the acknowledger and the
+  // activator, and each side invites its colleague.
+  const announcementId = (await net('announcement id', `
+    SELECT id FROM public.builder_stock_selection_announcements
+     WHERE connection_id = ${id(connection)} AND stock_item_id = ${id(item)}`))[0]?.id;
+  const acknowledged = await call('builder-portal-stock', { operation: 'acknowledge_selection', selection_id: announcementId }, cookie);
+  const conversationId = activationConversationIdFor(connection, selection.id);
+  const opened = await waitFor('conversation opened', async () => {
+    const rows = await cc('opened', `
+      SELECT count(*)::int AS n FROM public.builder_network_conversation_participants
+       WHERE conversation_id = ${id(conversationId)} AND local_user_id = ${id(owner.id)} AND state = 'joined'`);
+    return { done: Number(rows[0]?.n) === 1 };
+  });
+  if (!record('2: the builder acknowledges, and the activation\'s conversation opens with the activator',
+    acknowledged.status === 200 && opened.done, `HTTP ${acknowledged.status}, ${secs(opened)}`)) {
+    throw new Error('the conversation never opened');
+  }
+  await cc('invite colleague', `SELECT public.builder_network_invite_participant(${id(conversationId)}, ${id(owner.id)}, ${id(ccColleague.id)})`);
+  await net('invite colleague', `SELECT public.builder_agency_invite_participant(${id(builder.orgId)}, ${id(conversationId)},
+    ${id(builder.userId)}, ${id(colleagueBuilder.userId)})`);
 
   // Views of the two sides.
   const ccMessage = async (messageId) => (await cc('cc message', `
@@ -423,9 +473,9 @@ try {
   const netCount = async (messageId) => Number((await net('network count', `
     SELECT count(*)::int AS n FROM public.builder_agency_messages WHERE id = ${id(messageId)}`))[0]?.n);
   const ccPost = async (userId, clientMessageId, body) => (await cc('post', `
-    SELECT id FROM public.builder_network_post_message(${id(item)}, ${id(userId)}, ${id(clientMessageId)}, ${sqlLit(body)})`))[0]?.id;
+    SELECT id FROM public.builder_network_post_message(${id(conversationId)}, ${id(userId)}, ${id(clientMessageId)}, ${sqlLit(body)})`))[0]?.id;
   const netPost = async (userId, clientMessageId, body) => (await net('post', `
-    SELECT id FROM public.builder_agency_post_message(${id(builder.orgId)}, ${id(connection)}, ${id(item)},
+    SELECT id FROM public.builder_agency_post_message(${id(builder.orgId)}, ${id(conversationId)},
       ${id(userId)}, ${id(clientMessageId)}, ${sqlLit(body)})`))[0]?.id;
   const deliveredOnCc = (messageId) => waitFor(`delivered ${messageId}`, async () => {
     const here = await ccMessage(messageId);
@@ -452,9 +502,10 @@ try {
   const ccConversation = (await cc('conversation', `
     SELECT id, owner_user_id, started_by_user_id FROM public.builder_network_conversations
      WHERE connection_id = (SELECT id FROM public.builder_network_connections WHERE network_connection_id = ${id(connection)})
-       AND stock_item_id = ${id(item)}`))[0] ?? {};
+       AND selection_ref = ${id(selection.id)}`))[0] ?? {};
   const netConversation = (await net('conversation', `
-    SELECT id FROM public.builder_agency_conversations WHERE connection_id = ${id(connection)} AND stock_item_id = ${id(item)}`))[0] ?? {};
+    SELECT id FROM public.builder_agency_conversations WHERE connection_id = ${id(connection)}
+       AND selection_ref = ${id(selection.id)}`))[0] ?? {};
   record('3: both sides hold the same conversation, and it is the shared derivation',
     ccConversation.id === conversationId && netConversation.id === conversationId);
   record('3: the conversation belongs to the Command Centre user whose activation opened it',
@@ -472,7 +523,7 @@ try {
 
   // 5. The builder replies through the portal's own request; a builder colleague too.
   const k3 = randomUUID();
-  const sendBody = { operation: 'send_agency_message', connection_id: connection, stock_item_id: item,
+  const sendBody = { operation: 'send_agency_message', conversation_id: conversationId,
     client_message_id: k3, body: 'Yes — titles are due in the second quarter.' };
   const sent = await call('builder-portal-stock', sendBody, cookie);
   const sentAgain = await call('builder-portal-stock', sendBody, cookie);
@@ -501,7 +552,7 @@ try {
     SELECT id FROM public.builder_network_messages WHERE conversation_id = ${id(conversationId)} ORDER BY sent_at, id`)).map((r) => r.id);
   const netOrder = (await net('order', `
     SELECT id FROM public.builder_agency_messages WHERE conversation_id = ${id(conversationId)} ORDER BY sent_at, id`)).map((r) => r.id);
-  const read = await call('builder-portal-stock', { operation: 'get_agency_conversation', connection_id: connection, stock_item_id: item }, cookie);
+  const read = await call('builder-portal-stock', { operation: 'get_agency_conversation', conversation_id: conversationId }, cookie);
   const portalOrder = (read.json?.messages ?? []).map((m) => m.id);
   record('7: both sides, and the portal\'s read, order the thread identically',
     ccOrder.length === 4 && JSON.stringify(ccOrder) === JSON.stringify(netOrder)
@@ -526,7 +577,7 @@ try {
   record('8: only its writer may send it again', /AGENCY_MESSAGE_NOT_RETRYABLE/.test(colleagueRetry ?? ''),
     colleagueRetry ? 'refused' : 'ACCEPTED');
   await net('restore', `
-    UPDATE public.builder_stock_selection_announcements SET status = 'selected'
+    UPDATE public.builder_stock_selection_announcements SET status = 'builder_acknowledged'
      WHERE connection_id = ${id(connection)} AND stock_item_id = ${id(item)}`);
   await cc('retry', `SELECT * FROM public.builder_network_retry_message(${id(m5)}, ${id(owner.id)})`);
   const d5 = await deliveredOnCc(m5);
@@ -663,7 +714,9 @@ try {
     const keys = Object.keys(payload ?? {}).sort();
     return type === 'agency.message.posted'
       ? JSON.stringify(keys) !== JSON.stringify(POSTED_KEYS)
-      : !keys.every((key) => RECEIPT_KEYS.includes(key));
+      : type === 'agency.message.participant'
+        ? JSON.stringify(keys) !== JSON.stringify(PARTICIPANT_KEYS)
+        : !keys.every((key) => RECEIPT_KEYS.includes(key));
   });
   const secretsOfThisSide = [owner.id, ccColleague.id, client.id, selection.id, clientLabel, builder.userId,
     colleagueBuilder.userId, 'example.com'];
@@ -681,7 +734,7 @@ try {
   // 13. The polling read sees a NEW message. The same request the page repeats
   // every 10 seconds: nothing is reopened, recreated or reloaded between reads.
   const readThread = () => call('builder-portal-stock',
-    { operation: 'get_agency_conversation', connection_id: connection, stock_item_id: item }, cookie);
+    { operation: 'get_agency_conversation', conversation_id: conversationId }, cookie);
   const before = await readThread();
   const beforeIds = (before.json?.messages ?? []).map((m) => m.id);
   const pollText = `A new question for polling ${RUN}`;
@@ -720,7 +773,7 @@ try {
   });
   const closedSend = await call('builder-portal-stock', { ...sendBody, client_message_id: randomUUID(), body: 'Still there?' }, cookie);
   const closedCc = await refusalOf(() => ccPost(owner.id, randomUUID(), 'Still there?'));
-  const history = await call('builder-portal-stock', { operation: 'get_agency_conversation', connection_id: connection, stock_item_id: item }, cookie);
+  const history = await call('builder-portal-stock', { operation: 'get_agency_conversation', conversation_id: conversationId }, cookie);
   record('14: a withdrawn activation closes the conversation on both sides',
     withdrawn.done && closedSend.status === 409 && closedSend.json?.code === 'conversation_not_open'
       && /AGENCY_CONVERSATION_NOT_OPEN/.test(closedCc ?? ''),

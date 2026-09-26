@@ -47,7 +47,7 @@ import {
   logBuilderProjectActivity,
 } from '../_shared/builderPortalAuth.ts';
 import { readActivatedProperties } from '../_shared/builderStock/activatedProperties.ts';
-import { readAgencyConversation } from '../_shared/builderStock/agencyMessages.ts';
+import { listMyAgencyConversations, readAgencyConversation } from '../_shared/builderStock/agencyMessages.ts';
 import { agencyMessageRefusal, projectAgencyMessages } from '../_shared/builderStock/agencyMessages.pure.ts';
 import {
   MAX_STOCK_FILE_BYTES, STOCK_LIST_BUCKET, STOCK_IMAGE_BUCKET,
@@ -2546,27 +2546,46 @@ Deno.serve(async (req) => {
       return json({ success: false, error: 'The message could not be saved. Try again shortly.' }, 503);
     };
 
+    // One activation, one private conversation (docs/builder-portal/62):
+    // membership decides every read and write. The SQL is the authority; each
+    // operation names only a conversation (and, to invite, a colleague). The
+    // organisation and the actor are always the session's.
+    const notAParticipant = () => json({
+      success: false, code: 'not_a_participant', error: 'You are not in this conversation.',
+    }, 403);
+
+    if (operation === 'list_my_agency_conversations') {
+      const read = await listMyAgencyConversations(supabase, { organisationId: activeOrganisationId, viewerUserId: me.id });
+      if (!read.ok) return json({ success: false, error: 'conversations_could_not_be_read' }, 503);
+      return json({ success: true, conversations: read.conversations });
+    }
+
     if (operation === 'get_agency_conversation') {
-      const connectionId = uuidOf(body.connection_id);
-      const stockItemId = uuidOf(body.stock_item_id);
-      if (!connectionId || !stockItemId) return notFoundHere('That conversation');
+      const conversationId = uuidOf(body.conversation_id);
+      if (!conversationId) return notFoundHere('That conversation');
       const read = await readAgencyConversation(supabase, {
         organisationId: activeOrganisationId,
-        connectionId,
-        stockItemId,
+        conversationId,
         viewerUserId: me.id,
       });
       if (!read.ok) {
-        return read.reason === 'not_found'
-          ? notFoundHere('That conversation')
-          : json({ success: false, error: 'conversation_could_not_be_read' }, 503);
+        if (read.reason === 'not_found') return notFoundHere('That conversation');
+        if (read.reason === 'not_a_participant') return notAParticipant();
+        return json({ success: false, error: 'conversation_could_not_be_read' }, 503);
       }
       const mayEdit = await can('edit');
+      const mine = read.participants.filter((p) => p.side === 'builder');
       return json({
         success: true,
         conversation_id: read.conversation_id,
+        stock_item_id: read.stock_item_id,
         open: read.open,
         can_send: read.open && mayEdit,
+        can_invite: read.open && mayEdit,
+        // A live conversation keeps someone from this organisation; a closed
+        // one can be left freely. The server decides again when asked.
+        can_leave: !read.open || mine.length > 1,
+        participants: read.participants,
         // The retry operation needs inventory edit, so a reader without it is
         // never offered "Send again".
         messages: read.messages.map((message) => ({ ...message, can_retry: message.can_retry && mayEdit })),
@@ -2577,17 +2596,15 @@ Deno.serve(async (req) => {
       if (!await can('edit')) {
         return json({ error: 'You do not have permission to message agencies', code: 'permission_denied' }, 403);
       }
-      const connectionId = uuidOf(body.connection_id);
-      const stockItemId = uuidOf(body.stock_item_id);
+      const conversationId = uuidOf(body.conversation_id);
       const clientMessageId = uuidOf(body.client_message_id);
-      if (!connectionId || !stockItemId) return notFoundHere('That conversation');
+      if (!conversationId) return notFoundHere('That conversation');
       if (!clientMessageId) {
         return json({ success: false, error: 'A message needs its own id.', code: 'invalid_message' }, 400);
       }
       const { data, error } = await supabase.rpc('builder_agency_post_message', {
         _organisation_id: activeOrganisationId,
-        _connection_id: connectionId,
-        _stock_item_id: stockItemId,
+        _conversation_id: conversationId,
         _sender_builder_user_id: me.id,
         _client_message_id: clientMessageId,
         _body: String(body.body ?? '').slice(0, 8000),
@@ -2611,6 +2628,57 @@ Deno.serve(async (req) => {
       if (error) return agencyRefusal(error);
       const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
       return json({ success: true, message: row ? projectAgencyMessages([row], me.id)[0] : null });
+    }
+
+    if (operation === 'list_agency_conversation_invitees') {
+      const conversationId = uuidOf(body.conversation_id);
+      if (!conversationId) return notFoundHere('That conversation');
+      const { data, error } = await supabase.rpc('builder_agency_invite_candidates', {
+        _organisation_id: activeOrganisationId,
+        _conversation_id: conversationId,
+        _actor_builder_user_id: me.id,
+      });
+      if (error) return agencyRefusal(error);
+      return json({
+        success: true,
+        invitees: ((data ?? []) as Array<{ user_id: string; display_name: string }>)
+          .map((row) => ({ user_id: String(row.user_id), display_name: String(row.display_name) })),
+      });
+    }
+
+    if (operation === 'invite_agency_conversation_participant') {
+      if (!await can('edit')) {
+        return json({ error: 'You do not have permission to message agencies', code: 'permission_denied' }, 403);
+      }
+      const conversationId = uuidOf(body.conversation_id);
+      const inviteeId = uuidOf(body.invitee_user_id);
+      if (!conversationId) return notFoundHere('That conversation');
+      if (!inviteeId) {
+        return json({ success: false, code: 'invitee_not_eligible', error: 'That person cannot be added to this conversation.' }, 422);
+      }
+      // The invitee is a lookup key: whether they may join is decided from
+      // this organisation's own memberships and permissions.
+      const { data, error } = await supabase.rpc('builder_agency_invite_participant', {
+        _organisation_id: activeOrganisationId,
+        _conversation_id: conversationId,
+        _actor_builder_user_id: me.id,
+        _invitee_builder_user_id: inviteeId,
+      });
+      if (error) return agencyRefusal(error);
+      return json({ success: true, result: String(data) });
+    }
+
+    if (operation === 'leave_agency_conversation') {
+      const conversationId = uuidOf(body.conversation_id);
+      if (!conversationId) return notFoundHere('That conversation');
+      // Leaving names only the person leaving: nothing removes anyone else.
+      const { data, error } = await supabase.rpc('builder_agency_leave_conversation', {
+        _organisation_id: activeOrganisationId,
+        _conversation_id: conversationId,
+        _actor_builder_user_id: me.id,
+      });
+      if (error) return agencyRefusal(error);
+      return json({ success: true, result: String(data) });
     }
 
     if (operation === 'acknowledge_selection') {

@@ -48,6 +48,12 @@ jobs:
       # message never blocking the next, and the order a thread settles in.
       - name: agency messages cross the network once, and say whether they arrived
         run: npm run db:agency-messaging:check
+      # One activation, one private conversation: membership decides who reads
+      # and writes, invitations and leaving, the agency's participants as
+      # display records, the conversation that already existed kept whole, and
+      # Step 5's delivery re-proved under the new model.
+      - name: an activation's conversation is private to its participants
+        run: npm run db:agency-private-chat:check
 
   edge:
     name: edge functions typecheck + gates

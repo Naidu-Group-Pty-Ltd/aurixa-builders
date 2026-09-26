@@ -181,7 +181,8 @@ Deno.serve(async (req) => {
     }
     // Messages have their own lane and sweep; the same opportunism, the same
     // rule: a failure here costs latency, never the delivery.
-    if (eventType === 'agency.message.posted' || eventType === 'agency.message.receipt') {
+    if (eventType === 'agency.message.posted' || eventType === 'agency.message.receipt'
+      || eventType === 'agency.message.participant') {
       const { error: messageError } = await supabase
         .rpc('builder_agency_apply_message_events', { _limit: 25 });
       if (messageError) {
