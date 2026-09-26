@@ -327,8 +327,8 @@ async function classifyCcConnections() {
 // field: the event name and event type; a request id carrying the proof's own
 // dedupe key, whose run tag decodes to a time within the window of the event;
 // a connection that no longer exists; a metadata shape of path NAMES only (the
-// refusal never stores a value); and no actor, case, matter, firm or
-// correlation. Anything else proof-related is unexpected residue.
+// refusal never stores a value); and a system actor with no actor id, case,
+// matter or firm. Anything else proof-related is unexpected residue.
 const DELIBERATE_REFUSALS = [
   {
     proof: 'stock-agencies-proof (check 3: a payload naming a client is refused at the door)',
@@ -360,7 +360,10 @@ function deliberateRefusal(e) {
       metadata_shape: JSON.stringify(keys) === JSON.stringify([...d.metadataKeys].sort()),
       path_names_only: !!paths && JSON.stringify(paths) === JSON.stringify(d.forbiddenPaths)
         && Number(m.forbidden_path_count) === paths.length,
-      no_actor_or_case: [e.actor_id, e.case_id, e.matter_id, e.firm_id, e.correlation_id].every((v) => v === null || v === undefined),
+      // `correlation_id` is NOT NULL DEFAULT gen_random_uuid(): a random id on
+      // every row, naming nobody, so it is not part of this test.
+      no_actor_or_case: e.actor_type === 'system'
+        && [e.actor_id, e.case_id, e.matter_id, e.firm_id].every((v) => v === null || v === undefined),
     };
     const failed = Object.keys(checks).filter((k) => !checks[k]);
     if (!failed.length) return { proof: d.proof, run: tag[1], started: new Date(started).toISOString() };
@@ -382,7 +385,7 @@ async function classifyOperationalEvents(db, parent) {
       return;
     }
   }
-  const optional = ['actor_id', 'case_id', 'matter_id', 'firm_id', 'correlation_id']
+  const optional = ['actor_type', 'actor_id', 'case_id', 'matter_id', 'firm_id']
     .map((c) => (has(db, 'portal_operational_events', c) ? `x.${c}` : `NULL AS ${c}`)).join(', ');
   let rows;
   try {
