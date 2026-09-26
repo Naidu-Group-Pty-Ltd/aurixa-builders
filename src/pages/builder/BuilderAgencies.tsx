@@ -388,7 +388,15 @@ function ThreadView({ conversationId, summary }: { conversationId: string; summa
 
   const sendAgain = async (messageId: string) => {
     try {
-      await retry.mutateAsync(messageId);
+      const answer = await retry.mutateAsync(messageId);
+      // A message from an earlier page is not in the polled window the retry
+      // refreshes, so what the server now says of it replaces the kept copy.
+      const updated = answer?.message;
+      if (updated) {
+        setEarlier((previous) => (previous
+          ? { ...previous, messages: previous.messages.map((m) => (m.id === updated.id ? updated : m)) }
+          : previous));
+      }
     } catch (error) {
       toast({
         title: 'That message could not be sent again',

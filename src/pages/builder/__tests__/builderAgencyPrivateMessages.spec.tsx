@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -16,6 +16,7 @@ const state: Record<string, any> = {};
 const invited: string[] = [];
 const left: string[] = [];
 const earlierAsked: string[] = [];
+const retried: string[] = [];
 
 vi.mock('@/lib/builderStockQueries', () => ({
   useBuilderActivatedProperties: () => ({ data: { records: [], pagination: { page: 1, page_size: 25, total: 0, total_pages: 1 } },
@@ -29,7 +30,7 @@ vi.mock('@/lib/builderStockQueries', () => ({
   useEarlierAgencyConversationMessages: () => ({ isPending: false, mutateAsync: vi.fn(async (cursor: string) => {
     earlierAsked.push(cursor); return state.earlierPage; }) }),
   useSendAgencyMessage: () => ({ isPending: false, mutateAsync: vi.fn(async () => ({ message: null })) }),
-  useRetryAgencyMessage: () => ({ isPending: false, mutateAsync: vi.fn(async () => ({ message: null })) }),
+  useRetryAgencyMessage: () => ({ isPending: false, mutateAsync: vi.fn(async (id: string) => { retried.push(id); return { message: state.retryAnswer ?? null }; }) }),
   useAgencyConversationInvitees: () => ({ data: state.inviteesError ? undefined : (state.invitees ?? []), error: state.inviteesError ?? null, isLoading: false, refetch: vi.fn() }),
   useInviteAgencyParticipant: () => ({ isPending: false, mutateAsync: vi.fn(async (id: string) => { invited.push(id); return { result: 'joined' }; }) }),
   useLeaveAgencyConversation: () => ({ isPending: false, mutateAsync: vi.fn(async () => { left.push('left'); return { result: 'left' }; }) }),
@@ -60,7 +61,7 @@ beforeEach(() => {
       agency_name: 'Example Agency', open: true, last_message_at: '2026-09-25T10:00:00Z' },
   ] };
   state.conversation = CONVERSATION();
-  invited.length = 0; left.length = 0; earlierAsked.length = 0;
+  invited.length = 0; left.length = 0; earlierAsked.length = 0; retried.length = 0;
 });
 
 const renderAt = (path: string) => render(
@@ -168,6 +169,19 @@ describe('Agencies → Messages', () => {
     const log = screen.getByRole('log');
     expect(within(log).getAllByText(/note$|available\?$/).map((node) => node.textContent))
       .toEqual(['Older note', 'Is it available?', 'Arrived note', 'Latest note']);
+  });
+
+  it('a failed message from an earlier page that is sent again shows what the server now says of it', async () => {
+    const failed = { id: 'm0', side: 'builder', sender_display_name: 'Avery Builder', body: 'Failed note',
+      sent_at: '2026-09-20T10:00:00Z', delivery_state: 'failed', delivered_at: null, failure_reason: 'not_delivered', mine: true, can_retry: true };
+    state.conversation = CONVERSATION({ has_earlier: true, earlier_cursor: 'm1' });
+    state.earlierPage = CONVERSATION({ has_earlier: false, earlier_cursor: null, messages: [failed] });
+    state.retryAnswer = { ...failed, delivery_state: 'queued', failure_reason: null, can_retry: false };
+    renderAt('/builder/agencies/messages?thread=conv-1');
+    fireEvent.click(screen.getByRole('button', { name: /show earlier messages/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /send again/i }));
+    expect(retried).toEqual(['m0']);
+    await waitFor(() => expect(screen.queryByRole('button', { name: /send again/i })).toBeNull());
   });
 
   it('a conversation with nothing earlier offers no earlier page', () => {
