@@ -351,17 +351,22 @@ function deliberateRefusal(e) {
     const started = tag ? runStartedAt(tag[1]) : NaN;
     const occurred = Date.parse(e.occurred_at);
     const paths = Array.isArray(m.forbidden_paths) ? m.forbidden_paths : null;
-    const checks = [
-      e.event_name === d.eventName,
-      m.event_type === d.eventType,
-      !!tag && e.marker,
-      Number.isFinite(started) && occurred >= started && occurred - started <= RUN_WINDOW_MS,
-      e.has_connection && !e.connection_exists,
-      JSON.stringify(keys) === JSON.stringify([...d.metadataKeys].sort()),
-      !!paths && JSON.stringify(paths) === JSON.stringify(d.forbiddenPaths) && m.forbidden_path_count === paths.length,
-      [e.actor_id, e.case_id, e.matter_id, e.firm_id, e.correlation_id].every((v) => v === null || v === undefined),
-    ];
-    if (checks.every(Boolean)) return { proof: d.proof, run: tag[1], started: new Date(started).toISOString() };
+    const checks = {
+      event_name: e.event_name === d.eventName,
+      event_type: m.event_type === d.eventType,
+      proof_dedupe_key: !!tag && e.marker,
+      within_run_window: Number.isFinite(started) && occurred >= started && occurred - started <= RUN_WINDOW_MS,
+      connection_gone: e.has_connection && !e.connection_exists,
+      metadata_shape: JSON.stringify(keys) === JSON.stringify([...d.metadataKeys].sort()),
+      path_names_only: !!paths && JSON.stringify(paths) === JSON.stringify(d.forbiddenPaths)
+        && Number(m.forbidden_path_count) === paths.length,
+      no_actor_or_case: [e.actor_id, e.case_id, e.matter_id, e.firm_id, e.correlation_id].every((v) => v === null || v === undefined),
+    };
+    const failed = Object.keys(checks).filter((k) => !checks[k]);
+    if (!failed.length) return { proof: d.proof, run: tag[1], started: new Date(started).toISOString() };
+    // Only a row that is recognisably this case (its name and type) says which
+    // test it failed; anything else is plainly residue.
+    if (checks.event_name && checks.event_type) return { failed };
   }
   return null;
 }
@@ -398,7 +403,9 @@ async function classifyOperationalEvents(db, parent) {
   const retained = []; const residue = [];
   for (const e of rows) {
     const verdict = deliberateRefusal(e);
-    if (verdict) {
+    if (verdict?.failed) {
+      residue.push(`${short(e.id)} (resembles a deliberate refusal but failed: ${verdict.failed.join(', ')})`);
+    } else if (verdict) {
       retained.push(`${short(e.id)} ${e.event_name} at ${e.occurred_at} from ${verdict.proof} run ${verdict.run} (started ${verdict.started})`);
     } else {
       residue.push(short(e.id));
@@ -503,7 +510,7 @@ async function describeFlagged() {
       ` items=${c.items} selections=${c.selections} conversations=${c.conversations} inbound=${c.inbound} outbox=${c.outbox}; ${network}`);
   }
   const eventRefs = [...new Set(flagged.filter((r) => r.db === 'net' && r.label.startsWith('portal_operational_events'))
-    .flatMap((r) => r.refs))];
+    .flatMap((r) => r.refs.map((ref) => String(ref).slice(0, 8))))];
   for (const ref of eventRefs) {
     const [e] = await query(NETWORK_REF, `
       SELECT x.id, x.event_name, x.severity, x.portal, x.occurred_at, x.success,
