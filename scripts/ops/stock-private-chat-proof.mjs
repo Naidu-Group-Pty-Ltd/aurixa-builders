@@ -489,6 +489,14 @@ try {
   record('9: the activating user reads the conversation', ownerRead.status === 200 && ownerRead.json?.open === true,
     `HTTP ${ownerRead.status}`);
   record('10: the acknowledging builder reads it', ackRead.status === 200 && ackRead.json?.open === true, `HTTP ${ackRead.status}`);
+  // 10a. The builder's Messages list names the agency — the activation's own
+  // name, else the workspace's — never the placeholder "Agency".
+  const ackList = await portal({ operation: 'list_my_agency_conversations' }, ackCookie);
+  const listed = (ackList.json?.conversations ?? []).find((c) => c.conversation_id === conversationId);
+  record('10a: the builder\'s Messages list names the agency the conversation is with',
+    ackList.status === 200 && !!listed && typeof listed.agency_name === 'string'
+      && listed.agency_name.trim().length > 0 && listed.agency_name !== 'Agency',
+    `agency_name=${listed?.agency_name ?? 'none'}`);
 
   // 19 (first part): a participant writes, so there is history to prove with.
   const firstBody = `Is lot ${RUN} still available?`;
@@ -603,7 +611,15 @@ try {
   record('18: two people with one name are two participants on the other side, told apart by reference',
     twinInvited.json?.result === 'joined' && twins.done, `${twins.rows?.length ?? 0} in ${secs(twins)}`);
 
-  // 20. The invited colleagues reply as themselves.
+  // 20. The invited colleagues reply as themselves. Before they do, each
+  // Command Centre reader takes the new-message popup's cursor, exactly as the
+  // mounted popup does on its first read.
+  const popupCursor = {};
+  for (const [who, reader] of [['participant', ccColleague], ['outsider', ccOutsider]]) {
+    const first = await commandCentre('list_new_builder_messages', {}, reader.token);
+    popupCursor[who] = first.json?.cursor ?? null;
+  }
+  const builderSentAt = Date.now();
   const reply = await commandCentre('send_builder_message',
     { conversation_id: conversationId, client_message_id: randomUUID(), body: 'Adding: settlement in June.' }, ccColleague.token);
   const builderReply = await portal({ operation: 'send_agency_message', conversation_id: conversationId,
@@ -616,6 +632,26 @@ try {
     return { there, here, done: there?.sender_display_name === ccColleague.name && here?.sender_display_name === invitee.name };
   });
   record('20: the invited colleagues reply as themselves, and each reply crosses', replies.done, secs(replies));
+
+  // 20a/20b. The Command Centre popup: a participant is told the builder wrote,
+  // by the builder company's name, without the message body; an outsider is
+  // told nothing. Measured from the builder's send, the way the popup polls.
+  const popup = await waitFor('popup', async () => {
+    const read = await commandCentre('list_new_builder_messages', { since: popupCursor.participant }, ccColleague.token);
+    const hit = (read.json?.messages ?? []).find((m) => m.message_id === builderReply.json?.message?.id);
+    return { read, hit, done: !!hit };
+  });
+  const popupAfterSendMs = Date.now() - builderSentAt;
+  record('20a: the Command Centre popup names the builder company to a participant, without the message',
+    popup.done && popup.hit?.builder_name === orgName && popup.hit?.sender_display_name === invitee.name
+      && !('body' in (popup.hit ?? {})) && !JSON.stringify(popup.read?.json ?? {}).includes('titles are due'),
+    `builder_name=${popup.hit?.builder_name === orgName ? 'the company' : popup.hit?.builder_name} `
+      + `builder send→popup ${popupAfterSendMs}ms (polled)`);
+  const outsiderPopup = await commandCentre('list_new_builder_messages', { since: popupCursor.outsider }, ccOutsider.token);
+  const ownSide = (popup.read?.json?.messages ?? []).some((m) => m.message_id === reply.json?.message?.id);
+  record('20b: a Command Centre user outside the conversation is told nothing, and nobody is alerted to their own side',
+    outsiderPopup.status === 200 && (outsiderPopup.json?.messages ?? []).length === 0 && !ownSide,
+    `outsider=${(outsiderPopup.json?.messages ?? []).length} own-side-listed=${ownSide}`);
 
   // 21. Nobody can remove anybody.
   const removeCc = await commandCentre('remove_builder_conversation_participant',

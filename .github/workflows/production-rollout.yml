@@ -211,6 +211,23 @@ name: Production rollout
 #            the company contacts, who may read, invite and leave on each side,
 #            participant events converging, withdrawal, and nothing private
 #            crossing. Deletes everything on both sides.
+#   portal-access-proof
+#            proves a brand-new builder organisation end to end on the live
+#            portal: governance from empty rows, an invitation for every role,
+#            the session windows (idle slide, idle and absolute expiry, logout,
+#            deactivation, revocation, suspension, password change and reset),
+#            the role matrix against the database resolvers, a project
+#            conversation, notifications and multi-tenant isolation. Its
+#            organisations are detached from every workspace in the
+#            transaction that creates them. Deletes everything it creates.
+#   portal-browser-proof
+#            opens the live portal in a real Chromium, signed in as a proof
+#            organisation of its own: every live route renders, the old
+#            bookmarks redirect, an open project conversation shows a reply
+#            without a reload, the newer-build banner appears, phone width
+#            fits. Screenshots are uploaded as the run's artifact. Playwright
+#            is installed for this phase only (never saved to package.json).
+#            Deletes everything it creates.
 #   upload-settlement-state
 #            read-only: why an upload's image settlement does not finish. For
 #            each property carrying the upload, judged by the pipeline's own
@@ -256,11 +273,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1)'
         required: false
@@ -375,6 +392,11 @@ jobs:
             step6-proof-audit)   node scripts/ops/step6-proof-audit.mjs ;;
             agency-chat-backfill) node scripts/ops/agency-chat-backfill.mjs ;;
             stock-private-chat-proof) node scripts/ops/stock-private-chat-proof.mjs ;;
+            portal-access-proof) node scripts/ops/portal-access-proof.mjs ;;
+            portal-browser-proof)
+                                  npm install --no-save --no-package-lock --no-audit --no-fund playwright@1.55.0 \
+                                    && npx playwright install --with-deps chromium \
+                                    && node scripts/ops/portal-browser-proof.mjs ;;
             stock-overlay-audit)  deno run -A --config supabase/functions/deno.json scripts/ops/stock-overlay-audit.ts ;;
             upload-settlement-state)
                                   deno run -A --config supabase/functions/deno.json scripts/ops/stock-upload-settlement-state.ts ;;
@@ -382,3 +404,12 @@ jobs:
             stock-brochure-figures)
                                   deno run -A --config supabase/functions/deno.json scripts/ops/stock-brochure-figures.ts ;;
           esac
+
+      - name: upload the browser proof's screenshots
+        if: ${{ always() && inputs.phase == 'portal-browser-proof' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: portal-browser-proof
+          path: proof-artifacts/
+          if-no-files-found: warn
+          retention-days: 7

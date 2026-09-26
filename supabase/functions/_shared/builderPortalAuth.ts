@@ -17,6 +17,7 @@
 import { extractBuilderSessionToken, validateBuilderPortalHeaders } from './builderSessionToken.ts';
 import { resolveBuilderSessionToken } from './builderSessions.ts';
 import { getPortalClientIp } from './requestSecurity.ts';
+import { resolvePermissionMatrix } from './builderPermissionMatrix.pure.ts';
 import {
   readAccessDenial,
   type AccessDenialReading,
@@ -384,16 +385,10 @@ export async function builderPermissionMatrix(
   session: BuilderSessionResult,
   organisationId: string,
 ): Promise<Record<string, { view: boolean; edit: boolean; delete: boolean }>> {
-  const matrix: Record<string, { view: boolean; edit: boolean; delete: boolean }> = {};
-  for (const key of BUILDER_PERMISSION_KEYS) {
-    const [view, edit, remove] = await Promise.all([
-      builderCan(supabase, session, organisationId, key, 'view'),
-      builderCan(supabase, session, organisationId, key, 'edit'),
-      builderCan(supabase, session, organisationId, key, 'delete'),
-    ]);
-    matrix[key] = { view, edit, delete: remove };
-  }
-  return matrix;
+  // Every key is still asked, forbidden ones included (builderCan denies them);
+  // only the waiting is concurrent. See builderPermissionMatrix.pure.ts.
+  return await resolvePermissionMatrix(BUILDER_PERMISSION_KEYS, new Set<string>(),
+    (key, level) => builderCan(supabase, session, organisationId, key, level));
 }
 
 // ===========================================================================
@@ -494,26 +489,17 @@ export async function resolveBuilderProjectPermissions(
   supabase: any,
   access: BuilderProjectAccess,
 ): Promise<BuilderPermissionMatrix> {
-  const matrix: BuilderPermissionMatrix = {};
-  for (const key of BUILDER_PERMISSION_KEYS) {
-    if (BUILDER_FORBIDDEN_KEYS.has(key)) {
-      matrix[key] = { view: false, edit: false, delete: false };
-      continue;
-    }
-    const [view, edit, remove] = await Promise.all(
-      (['view', 'edit', 'delete'] as const).map(async (level) => {
-        const { data } = await supabase.rpc('builder_resolve_project_permission', {
-          _user_id: access.builder_user_id,
-          _project_id: access.project_id,
-          _permission_key: key,
-          _level: level,
-        });
-        return data === true;
-      }),
-    );
-    matrix[key] = { view, edit, delete: remove };
-  }
-  return matrix;
+  // The same (key, level) questions as before, asked concurrently rather than
+  // one key at a time: see builderPermissionMatrix.pure.ts.
+  return await resolvePermissionMatrix(BUILDER_PERMISSION_KEYS, BUILDER_FORBIDDEN_KEYS, async (key, level) => {
+    const { data } = await supabase.rpc('builder_resolve_project_permission', {
+      _user_id: access.builder_user_id,
+      _project_id: access.project_id,
+      _permission_key: key,
+      _level: level,
+    });
+    return data === true;
+  });
 }
 
 /**

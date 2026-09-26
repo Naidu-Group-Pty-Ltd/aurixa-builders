@@ -11,6 +11,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
+import { mayPostInConversation } from '@/lib/builderConversationAccess.pure';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { BuilderPortalShell } from '@/components/builder-portal/BuilderPortalShell';
@@ -331,6 +332,10 @@ function ProjectConversations() {
                 {conversation?.status === 'archived' ? (
                   <p className="rounded-md border border-border p-3 text-sm text-muted-foreground">
                     This conversation is archived. No new messages can be posted.
+                  </p>
+                ) : !mayPostInConversation(detailQuery.data?.permissions) ? (
+                  <p className="rounded-md border border-border p-3 text-sm text-muted-foreground">
+                    You can read this conversation but not post in it.
                   </p>
                 ) : (
                   <div className="space-y-2">
