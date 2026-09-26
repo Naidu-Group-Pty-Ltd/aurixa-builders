@@ -55,6 +55,34 @@ export function projectAgencyMessages(rows: readonly Row[], viewerUserId: string
     .sort((a, b) => (a.sent_at === b.sent_at ? (a.id < b.id ? -1 : 1) : (a.sent_at < b.sent_at ? -1 : 1)));
 }
 
+export interface AgencyParticipantView {
+  /** Random per (conversation, person): what tells two people with one name apart. */
+  participant_ref: string;
+  side: AgencyMessageSide;
+  display_name: string;
+  is_me: boolean;
+}
+
+/**
+ * The people in a conversation now (docs/builder-portal/62): this side first,
+ * then the agency's, by name. Someone who has left is not listed, and no user
+ * id leaves this function.
+ */
+export function projectAgencyParticipants(rows: readonly Row[], viewerUserId: string): AgencyParticipantView[] {
+  return rows
+    .filter((row) => row.state === 'joined')
+    .map((row) => ({
+      participant_ref: String(row.participant_ref),
+      side: (row.side === 'command_centre' ? 'command_centre' : 'builder') as AgencyMessageSide,
+      display_name: String(row.display_name ?? ''),
+      is_me: row.side === 'builder' && !!row.builder_user_id && row.builder_user_id === viewerUserId,
+    }))
+    .sort((a, b) => (a.side === b.side
+      ? (a.display_name === b.display_name ? (a.participant_ref < b.participant_ref ? -1 : 1)
+        : a.display_name < b.display_name ? -1 : 1)
+      : a.side === 'builder' ? -1 : 1));
+}
+
 /** A refusal raised by the SQL, as the browser is told it — or null for a fault of ours. */
 export function agencyMessageRefusal(message: string): { status: number; code: string; error: string } | null {
   const table: Array<[string, number, string, string]> = [
@@ -64,6 +92,10 @@ export function agencyMessageRefusal(message: string): { status: number; code: s
     ['AGENCY_MESSAGE_NOT_RETRYABLE', 409, 'not_retryable', 'Only a message you sent that was not delivered can be sent again.'],
     ['AGENCY_SENDER_NOT_A_MEMBER', 403, 'not_a_member', 'You are not a member of this organisation.'],
     ['AGENCY_MESSAGE_ID_REUSED', 409, 'message_id_reused', 'That message was already sent to a different conversation.'],
+    // One activation, one private conversation (docs/builder-portal/52, 62).
+    ['AGENCY_NOT_A_PARTICIPANT', 403, 'not_a_participant', 'You are not in this conversation.'],
+    ['AGENCY_LAST_PARTICIPANT', 409, 'last_participant', 'Add a colleague before you leave: a live conversation keeps at least one person from your side.'],
+    ['AGENCY_INVITEE_NOT_ELIGIBLE', 422, 'invitee_not_eligible', 'That person cannot be added to this conversation.'],
   ];
   for (const [raw, status, code, error] of table) {
     if (message.includes(raw)) return { status, code, error };
@@ -83,6 +115,16 @@ const POSTED_KEYS = [
 ] as const;
 const RECEIPT_REQUIRED_KEYS = ['conversation_id', 'generation', 'message_id', 'outcome', 'schema_version'] as const;
 const RECEIPT_OPTIONAL_KEYS = ['reason'] as const;
+/**
+ * `agency.message.participant` (docs/builder-portal/52, 62): who is in an
+ * activation's conversation, as each side announces its own. A display record
+ * only — it never grants anything at the receiving end.
+ */
+const PARTICIPANT_KEYS = [
+  'conversation_id', 'display_name', 'participant_ref', 'schema_version', 'side', 'state', 'stock_item_id', 'version',
+] as const;
+const PARTICIPANT_SIDES: readonly string[] = ['command_centre', 'builder'];
+const PARTICIPANT_STATES: readonly string[] = ['joined', 'left'];
 
 export interface AgencyContractViolation {
   /** Key NAMES outside the contract; a value is never carried. */
@@ -103,6 +145,7 @@ const KEY_TYPES: Record<string, 'string' | 'number'> = {
   body: 'string', sender_display_name: 'string', sent_at: 'string', message_id: 'string',
   conversation_id: 'string', stock_item_id: 'string', outcome: 'string', reason: 'string',
   generation: 'number', schema_version: 'number',
+  participant_ref: 'string', display_name: 'string', side: 'string', state: 'string', version: 'number',
 };
 
 export function agencyPayloadContractViolation(eventType: string, payload: unknown): AgencyContractViolation | null {
@@ -112,6 +155,8 @@ export function agencyPayloadContractViolation(eventType: string, payload: unkno
     required = POSTED_KEYS; optional = [];
   } else if (eventType === 'agency.message.receipt') {
     required = RECEIPT_REQUIRED_KEYS; optional = RECEIPT_OPTIONAL_KEYS;
+  } else if (eventType === 'agency.message.participant') {
+    required = PARTICIPANT_KEYS; optional = [];
   } else {
     return null;
   }
@@ -135,6 +180,13 @@ export function agencyPayloadContractViolation(eventType: string, payload: unkno
       // cast, or an outcome it does not know, would be stamped invalid there
       // with no receipt, after the door had already said delivered.
       || ((key === 'message_id' || key === 'conversation_id') && !UUID_SHAPE.test(String(record[key])))
+      || ((key === 'participant_ref' || (key === 'stock_item_id' && eventType === 'agency.message.participant'))
+        && !UUID_SHAPE.test(String(record[key])))
+      || (key === 'side' && !PARTICIPANT_SIDES.includes(record[key] as string))
+      || (key === 'state' && !PARTICIPANT_STATES.includes(record[key] as string))
+      || (key === 'display_name' && !(String(record[key]).trim().length >= 1 && String(record[key]).trim().length <= 200))
+      || (key === 'version' && !(Number.isInteger(record[key]) && (record[key] as number) >= 1
+        && (record[key] as number) <= 2_147_483_647))
       || (key === 'outcome' && !RECEIPT_OUTCOMES.includes(record[key] as string))
       // A generation is a positive whole number within an integer's range.
       || (key === 'generation' && !(Number.isInteger(record[key]) && (record[key] as number) >= 1
@@ -152,6 +204,9 @@ export function agencyDedupeKeyFor(eventType: string, payload: unknown): string 
   const record = (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>;
   if (eventType === 'agency.message.posted') return `agency.message:${String(record.message_id)}:${String(record.generation)}`;
   if (eventType === 'agency.message.receipt') return `agency.receipt:${String(record.message_id)}:${String(record.generation)}`;
+  if (eventType === 'agency.message.participant') {
+    return `agency.participant:${String(record.conversation_id)}:${String(record.participant_ref)}:${String(record.version)}`;
+  }
   return null;
 }
 

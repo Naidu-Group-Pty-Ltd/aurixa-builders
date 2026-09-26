@@ -189,6 +189,23 @@ name: Production rollout
 #            behind them applied, the operational log, the exact payload keys,
 #            the polling read, and a withdrawal that closes the conversation.
 #            Deletes everything on both sides.
+#   agency-chat-state
+#            read-only: who each existing agency conversation belongs to, on
+#            both projects, before one activation, one private conversation.
+#   agency-chat-backfill
+#            binds each conversation that existed before that step to its
+#            activation and seeds its activator and acknowledger — only where
+#            both projects agree; everything else is reported by id. Sends no
+#            notification or email. Works before the migrations (reports the
+#            mapping) and after them. DRY RUN unless `apply` is true;
+#            idempotent.
+#   stock-private-chat-proof
+#            proves one activation, one private conversation on the live
+#            product with proof organisations, users and an activation of its
+#            own: the acknowledgement's conversation, notification and email,
+#            the company contacts, who may read, invite and leave on each side,
+#            participant events converging, withdrawal, and nothing private
+#            crossing. Deletes everything on both sides.
 #   upload-settlement-state
 #            read-only: why an upload's image settlement does not finish. For
 #            each property carrying the upload, judged by the pipeline's own
@@ -234,11 +251,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | agency-chat-backfill | stock-private-chat-proof | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, agency-chat-backfill, stock-private-chat-proof, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1)'
         required: false
@@ -255,7 +272,7 @@ on:
         default: ''
         type: string
       apply:
-        description: 'item-reopen / stock-collateral-reprocess / network-connection-remap / stock-source-restore: false is a dry run that writes nothing'
+        description: 'item-reopen / stock-collateral-reprocess / network-connection-remap / stock-source-restore / agency-chat-backfill: false is a dry run that writes nothing'
         required: false
         default: false
         type: boolean
@@ -349,6 +366,9 @@ jobs:
             stock-agencies-proof) node scripts/ops/stock-agencies-proof.mjs ;;
             stock-media-proof)   node scripts/ops/stock-media-proof.mjs ;;
             stock-messaging-proof) node scripts/ops/stock-messaging-proof.mjs ;;
+            agency-chat-state)   node scripts/ops/agency-chat-state.mjs ;;
+            agency-chat-backfill) node scripts/ops/agency-chat-backfill.mjs ;;
+            stock-private-chat-proof) node scripts/ops/stock-private-chat-proof.mjs ;;
             stock-overlay-audit)  deno run -A --config supabase/functions/deno.json scripts/ops/stock-overlay-audit.ts ;;
             upload-settlement-state)
                                   deno run -A --config supabase/functions/deno.json scripts/ops/stock-upload-settlement-state.ts ;;

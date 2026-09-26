@@ -59,6 +59,19 @@ vi.mock('@/lib/builderStockQueries', () => ({
     refetch: vi.fn(async () => { refreshed.every += 1; }),
   }),
   builderStockImageUrl: vi.fn(async () => null),
+  // Since Step 6 the Messages list is the reader's own conversations, one per
+  // activation (docs/builder-portal/62), served in one read. The fixture's
+  // activations stand for them, keyed as the thread URL names them.
+  useMyAgencyConversations: () => ({
+    data: state.everyError && !state.everyStale ? undefined : { conversations: summariesOf([...state.records, ...state.laterPages]) },
+    error: state.everyError,
+    isLoading: state.loading,
+    refetch: vi.fn(async () => { refreshed.every += 1; }),
+  }),
+  useRefreshMyAgencyConversations: () => async () => { refreshed.every += 1; },
+  useAgencyConversationInvitees: () => ({ data: [], isLoading: false, error: null }),
+  useInviteAgencyParticipant: () => ({ isPending: false, mutateAsync: vi.fn() }),
+  useLeaveAgencyConversation: () => ({ isPending: false, mutateAsync: vi.fn() }),
   useAgencyConversation: () => ({
     data: state.conversation ?? undefined, error: state.conversationError ?? null, isLoading: false, isFetching: false,
   }),
@@ -70,11 +83,21 @@ vi.mock('@/lib/builderStockQueries', () => ({
       return { message: null };
     }),
   }),
+  useEarlierAgencyConversationMessages: () => ({ isPending: false, mutateAsync: vi.fn() }),
   useRetryAgencyMessage: () => ({
     isPending: false,
     mutateAsync: vi.fn(async (id: string) => { retried.push(id); return { message: null }; }),
   }),
 }));
+
+function summariesOf(records: any[]) {
+  const seen = new Set<string>();
+  return records.map((r) => ({
+    conversation_id: `${r.connection_id}:${r.stock_item_id}`, stock_item_id: r.stock_item_id,
+    address: r.property?.address_line ?? null, lot_number: r.property?.lot_number ?? null,
+    agency_name: r.agency?.name ?? null, open: r.status !== 'withdrawn', last_message_at: null,
+  })).filter((c) => (seen.has(c.conversation_id) ? false : (seen.add(c.conversation_id), true)));
+}
 
 const scrolled: unknown[] = [];
 vi.mock('@/lib/builderAgency', async (original) => ({
@@ -224,14 +247,14 @@ describe('Activated Properties', () => {
 });
 
 describe('Messages', () => {
-  it('lists one conversation per agency and property', () => {
+  it('lists each conversation the reader is in, once', () => {
     state.records = [ACTIVATION, { ...ACTIVATION, id: 'ann-a1-again' }];
     renderAt('/builder/agencies/messages');
     expect(screen.getByRole('tab', { name: /messages/i })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getAllByRole('option')).toHaveLength(1);
   });
 
-  it('offers a conversation from beyond the first page of activations', () => {
+  it('lists every conversation the server returns, however many activations there are', () => {
     state.records = [ACTIVATION];
     state.laterPages = [{ ...ACTIVATION, id: 'ann-z', connection_id: 'conn-z', stock_item_id: 'item-z',
       agency: { ...ACTIVATION.agency, name: 'Page Two Agency' } }];
@@ -415,19 +438,25 @@ describe('a refresh of the first page that fails after it was read', () => {
   });
 
   it('a refresh REFUSED after the list was read withdraws it on both tabs', () => {
-    for (const path of ['/builder/agencies/messages', '/builder/agencies/activations']) {
-      state.records = [ACTIVATION];
-      state.error = { status: 403, message: 'You do not have access to stock' };
-      state.firstStale = true;
-      const view = renderAt(path);
-      expect(screen.queryByRole('listbox', { name: /conversations/i })).toBeNull();
-      expect(screen.getByText(/do not have access/i)).toBeTruthy();
-      view.unmount();
-    }
+    // Each tab is decided by its own read: activations by the activations
+    // list, Messages by the conversation list (so a failure of one never
+    // takes the other offline).
+    state.records = [ACTIVATION];
+    state.error = { status: 403, message: 'You do not have access to stock' };
+    state.firstStale = true;
+    const activations = renderAt('/builder/agencies/activations');
+    expect(screen.getByText(/do not have access/i)).toBeTruthy();
+    activations.unmount();
+    state.error = null; state.firstStale = false;
+    state.everyError = { status: 403, message: 'You do not have access to stock' };
+    state.everyStale = true;
+    renderAt('/builder/agencies/messages');
+    expect(screen.queryByRole('listbox', { name: /conversations/i })).toBeNull();
+    expect(screen.getByText(/do not have access/i)).toBeTruthy();
   });
 
   it('a first read that fails still says so, and a refusal still says access is missing', () => {
-    state.error = { message: 'first read failed' };
+    state.everyError = { message: 'first read failed' };
     renderAt('/builder/agencies/messages');
     expect(screen.getByText(/could not be loaded just now/i)).toBeTruthy();
   });
@@ -469,16 +498,6 @@ describe('a poll of an open conversation that fails', () => {
     state.conversationError = { message: 'first read failed' };
     renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
     expect(screen.getByText(/could not be loaded just now/i)).toBeTruthy();
-  });
-});
-
-describe('a full list the server would not finish', () => {
-  it('lists what it read and says the list is incomplete', () => {
-    state.records = [ACTIVATION];
-    state.everyTruncated = true;
-    renderAt('/builder/agencies/messages');
-    expect(screen.getByRole('listbox', { name: /conversations/i })).toBeTruthy();
-    expect(screen.getByText(/not every conversation is listed/i)).toBeTruthy();
   });
 });
 

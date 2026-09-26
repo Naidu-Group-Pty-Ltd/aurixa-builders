@@ -34,6 +34,7 @@ function standIn(tables: Record<string, Row[]>) {
     log.push(entry);
     let orders: Array<[string, boolean]> = [];
     let cap = Infinity;
+    let offset = 0;
     const builder: any = {
       select() { return builder; },
       eq(col: string, v: unknown) { entry.filters.push(['eq', col, v]); return builder; },
@@ -41,6 +42,7 @@ function standIn(tables: Record<string, Row[]>) {
       in(col: string, v: unknown[]) { entry.filters.push(['in', col, v]); return builder; },
       order(col: string, o?: { ascending?: boolean }) { orders = [...orders, [col, o?.ascending !== false]]; return builder; },
       limit(n: number) { cap = n; return builder; },
+      range(a: number, b: number) { offset = a; cap = b - a + 1; return builder; },
       maybeSingle() { return builder.then((r: any) => ({ data: r.data[0] ?? null, error: null })); },
       then(resolve: (v: unknown) => unknown) {
         let rows = (tables[table] ?? []).filter((row) => entry.filters.every(([op, col, v]) =>
@@ -48,7 +50,7 @@ function standIn(tables: Record<string, Row[]>) {
         for (const [col, asc] of [...orders].reverse()) {
           rows = [...rows].sort((a, b) => (String(a[col]) < String(b[col]) ? -1 : String(a[col]) > String(b[col]) ? 1 : 0) * (asc ? 1 : -1));
         }
-        return Promise.resolve({ data: rows.slice(0, cap), error: null }).then(resolve);
+        return Promise.resolve({ data: rows.slice(offset, offset + cap), error: null }).then(resolve);
       },
     };
     return builder;
@@ -69,12 +71,17 @@ function fixture() {
       { id: 'conn-b', builder_organisation_id: 'org-b', state: 'active' },
     ],
     builder_stock_selection_announcements: [
-      { id: 'ann-1', connection_id: CONN, stock_item_id: ITEM, organisation_id: ORG, status: 'selected' },
+      { id: 'ann-1', connection_id: CONN, stock_item_id: ITEM, organisation_id: ORG, status: 'builder_acknowledged',
+        remote_selection_ref: 'ref-1', acknowledged_at: '2026-09-25T09:00:00Z' },
       { id: 'ann-x', connection_id: 'conn-b', stock_item_id: 'item-b1', organisation_id: 'org-b', status: 'selected' },
     ],
     builder_agency_conversations: [
-      { id: CONV, connection_id: CONN, stock_item_id: ITEM, organisation_id: ORG },
+      { id: CONV, connection_id: CONN, stock_item_id: ITEM, organisation_id: ORG, selection_ref: 'ref-1' },
       { id: 'conv-b', connection_id: 'conn-b', stock_item_id: 'item-b1', organisation_id: 'org-b' },
+    ],
+    // Since Step 6 a conversation is read by its participants (docs/builder-portal/62).
+    builder_agency_conversation_participants: [
+      { conversation_id: CONV, participant_ref: 'ref-me', side: 'builder', builder_user_id: ME, display_name: 'Avery Builder', state: 'joined' },
     ],
     builder_agency_messages: [
       { id: 'm2', conversation_id: CONV, side: 'command_centre', sender_display_name: 'Casey Agent', body: 'Second',
@@ -94,21 +101,21 @@ function fixture() {
 }
 
 describe('reading a conversation', () => {
-  it('opens only a conversation this organisation\'s activation stands behind', async () => {
+  it('opens only a conversation of this organisation, and only for one of its participants', async () => {
     const db = standIn(fixture());
-    const theirs = await readAgencyConversation(db.client, {
-      organisationId: ORG, connectionId: 'conn-b', stockItemId: 'item-b1', viewerUserId: ME,
-    });
+    const theirs = await readAgencyConversation(db.client, { organisationId: ORG, conversationId: 'conv-b', viewerUserId: ME });
     expect(theirs).toEqual({ ok: false, reason: 'not_found' });
-    const announcements = db.log.find((q) => q.table === 'builder_stock_selection_announcements')!;
-    expect(announcements.filters).toContainEqual(['eq', 'organisation_id', ORG]);
+    const conversations = db.log.find((q) => q.table === 'builder_agency_conversations')!;
+    expect(conversations.filters).toContainEqual(['eq', 'organisation_id', ORG]);
+    const outsider = await readAgencyConversation(standIn(fixture()).client, {
+      organisationId: ORG, conversationId: CONV, viewerUserId: 'user-colleague',
+    });
+    expect(outsider).toEqual({ ok: false, reason: 'not_a_participant' });
   });
 
   it('returns the thread in the order it was written, whatever order it arrived in', async () => {
     const db = standIn(fixture());
-    const read = await readAgencyConversation(db.client, {
-      organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME,
-    });
+    const read = await readAgencyConversation(db.client, { organisationId: ORG, conversationId: CONV, viewerUserId: ME });
     if (!read.ok) throw new Error('read failed');
     expect(read.messages.map((m) => m.body)).toEqual(['First', 'Second', 'Third']);
     expect(JSON.stringify(read)).not.toContain('Not yours');
@@ -123,9 +130,7 @@ describe('reading a conversation', () => {
       delivered_at: null, failure_reason: null, sender_builder_user_id: null, client_message_id: null, delivery_generation: 1,
       created_at: new Date(Date.UTC(2026, 8, 25, 0, 0, i)).toISOString(),
     })) as Row[];
-    const read = await readAgencyConversation(standIn({ ...f, builder_agency_messages: capRows }).client, {
-      organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME,
-    });
+    const read = await readAgencyConversation(standIn({ ...f, builder_agency_messages: capRows }).client, { organisationId: ORG, conversationId: CONV, viewerUserId: ME });
     if (!read.ok) throw new Error('read failed');
     expect(read.messages).toHaveLength(500);
     expect(read.messages[0].body).toBe('Message 1');
@@ -145,9 +150,7 @@ describe('reading a conversation', () => {
       sent_at: '2026-09-25T00:30:00.000Z', created_at: '2026-09-25T02:00:00.000Z',
       delivery_state: null, delivered_at: null, failure_reason: null, sender_builder_user_id: null, client_message_id: null, delivery_generation: 1,
     });
-    const read = await readAgencyConversation(standIn({ ...f, builder_agency_messages: rows }).client, {
-      organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME,
-    });
+    const read = await readAgencyConversation(standIn({ ...f, builder_agency_messages: rows }).client, { organisationId: ORG, conversationId: CONV, viewerUserId: ME });
     if (!read.ok) throw new Error('read failed');
     expect(read.messages[0].body).toBe('Written earlier, arrived late');
     expect(read.messages.filter((m) => m.id === 'late')).toHaveLength(1);
@@ -164,28 +167,23 @@ describe('reading a conversation', () => {
     const rows: Row[] = Array.from({ length: 500 }, (_, i) => row(`old${String(i).padStart(3, '0')}`, at(100 + i), at(100 + i)));
     rows.push(row('late', at(0), at(700)));
     for (let i = 0; i < 60; i += 1) rows.push(row(`after${String(i).padStart(2, '0')}`, at(800 + i), at(800 + i)));
-    const read = await readAgencyConversation(standIn({ ...f, builder_agency_messages: rows }).client, {
-      organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME,
-    });
+    const read = await readAgencyConversation(standIn({ ...f, builder_agency_messages: rows }).client, { organisationId: ORG, conversationId: CONV, viewerUserId: ME });
     if (!read.ok) throw new Error('read failed');
     expect(read.messages).toHaveLength(500);
     expect(read.messages[0].id).toBe('late');
     expect(read.messages[read.messages.length - 1].id).toBe('after59');
   });
 
-  it('a property with an activation and no messages yet is an empty, open conversation', async () => {
+  it('an acknowledged activation\'s conversation with no messages yet is empty and open', async () => {
     const f = fixture();
     f.builder_agency_messages = [];
-    f.builder_agency_conversations = [];
-    const read = await readAgencyConversation(standIn(f).client, {
-      organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME,
-    });
+    const read = await readAgencyConversation(standIn(f).client, { organisationId: ORG, conversationId: CONV, viewerUserId: ME });
     expect(read).toMatchObject({ ok: true, messages: [], open: true });
   });
 
   it('18. polling refresh gets new messages: the next read carries what was written since the last', async () => {
     const f = fixture();
-    const args = { organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME };
+    const args = { organisationId: ORG, conversationId: CONV, viewerUserId: ME };
     const first = await readAgencyConversation(standIn(f).client, args);
     if (!first.ok) throw new Error('read failed');
     expect(first.messages.map((m) => m.id)).not.toContain('m-new');
@@ -203,9 +201,7 @@ describe('reading a conversation', () => {
   it('a revoked connection is read-only, even while its activation row stands', async () => {
     const f = fixture();
     f.workspace_connections[0].state = 'revoked';
-    const read = await readAgencyConversation(standIn(f).client, {
-      organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME,
-    });
+    const read = await readAgencyConversation(standIn(f).client, { organisationId: ORG, conversationId: CONV, viewerUserId: ME });
     expect(read).toMatchObject({ ok: true, open: false });
     if (read.ok) expect(read.messages.length).toBeGreaterThan(0);
   });
@@ -213,9 +209,7 @@ describe('reading a conversation', () => {
   it('a withdrawn activation is read-only', async () => {
     const f = fixture();
     f.builder_stock_selection_announcements[0].status = 'withdrawn';
-    const read = await readAgencyConversation(standIn(f).client, {
-      organisationId: ORG, connectionId: CONN, stockItemId: ITEM, viewerUserId: ME,
-    });
+    const read = await readAgencyConversation(standIn(f).client, { organisationId: ORG, conversationId: CONV, viewerUserId: ME });
     expect(read).toMatchObject({ ok: true, open: false });
   });
 });
