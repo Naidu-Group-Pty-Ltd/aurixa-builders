@@ -341,10 +341,12 @@ async function describeFlagged() {
   for (const ref of eventRefs) {
     const [e] = await query(NETWORK_REF, `
       SELECT x.id, x.event_name, x.severity, x.portal, x.occurred_at, x.success,
-             substring(x::text from ${sqlLit('(smoke-rollout-[a-z-]*proof|Smoke Rollout [a-z-]*proof)')}) AS proof_tag,
+             substring(x::text from ${sqlLit(`(${MARKER_RE})`)}) AS proof_tag,
+             x.metadata->'forbidden_paths' AS forbidden_paths,
+             x.metadata->>'event_type' AS event_type,
              (SELECT string_agg(k, ',' ORDER BY k) FROM jsonb_object_keys(x.metadata) k) AS metadata_keys
         FROM public.portal_operational_events x WHERE x.id::text LIKE ${sqlLit(`${ref}%`)}`);
-    console.log(e ? `  NET operational event ${short(e.id)} ${e.event_name} severity=${e.severity} portal=${e.portal} occurred=${e.occurred_at} success=${e.success} tag=${e.proof_tag ?? '—'} keys=${e.metadata_keys}`
+    console.log(e ? `  NET operational event ${short(e.id)} ${e.event_name} severity=${e.severity} portal=${e.portal} occurred=${e.occurred_at} success=${e.success} marker=${e.proof_tag ?? '—'} event_type=${e.event_type ?? '—'} forbidden_paths=${JSON.stringify(e.forbidden_paths)} keys=${e.metadata_keys}`
       : `  NET operational event ${ref}: not found on re-read`);
   }
 }
