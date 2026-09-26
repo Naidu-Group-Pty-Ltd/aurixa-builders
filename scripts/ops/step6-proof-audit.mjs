@@ -80,8 +80,12 @@ const MARKER_RE = [
   '(private-chat|messaging|media|project|agencies)-proof',
 ].join('|');
 
-const REAL_CONVERSATIONS = ['0c07fd71', '45e16763'];
-const REAL_ACTIVATIONS = ['856a4faa', '7e26e039', '6422d121', 'd7cd9995'];
+// dddddd24 / 50c60e5f were added 26 Sep 2026 after verification by provenance
+// (agency-chat-state): organisation 484b9618 is a real, non-proof builder, the
+// property d4756ca1 is its own, the activator is an active real user, and no
+// row carries a proof marker. Real activity after the first agreed set.
+const REAL_CONVERSATIONS = ['0c07fd71', '45e16763', 'dddddd24'];
+const REAL_ACTIVATIONS = ['856a4faa', '7e26e039', '6422d121', 'd7cd9995', '50c60e5f'];
 
 const schema = {};
 async function loadSchema(db) {
@@ -233,6 +237,23 @@ async function audit() {
   // ---- inbound / network events --------------------------------------------
   await orphan('inbound / network events', 'cc', 'builder_network_inbound_events', 'connection_id', 'builder_network_connections');
   await marker('inbound / network events', 'cc', 'builder_network_inbound_events');
+  // Describe (never change) any marked inbound event: what it was, on which
+  // connection, whether that connection is a proof one, and what matched.
+  const markedInbound = await query(DB.cc, `
+    SELECT left(e.id::text, 8) AS id, e.event_type, left(e.connection_id::text, 8) AS connection,
+           c.id IS NOT NULL AS connection_exists,
+           coalesce(c::text ~ ${sqlLit(MARKER_RE)}, false) AS connection_marker,
+           e.received_at, e.processed_at IS NOT NULL AS processed,
+           substring(e::text from ${sqlLit(`(.{0,40}(${MARKER_RE}).{0,40})`)}) AS matched
+      FROM public.builder_network_inbound_events e
+      LEFT JOIN public.builder_network_connections c ON c.id = e.connection_id
+     WHERE e::text ~ ${sqlLit(MARKER_RE)}
+     LIMIT 10`);
+  for (const row of markedInbound) {
+    console.log(`  [inbound / network events] describe CC ${row.id} type=${row.event_type} connection=${row.connection}`
+      + ` exists=${row.connection_exists} connection_marker=${row.connection_marker} received=${row.received_at}`
+      + ` processed=${row.processed} matched=${JSON.stringify(String(row.matched ?? '').slice(0, 120))}`);
+  }
   await orphan('inbound / network events', 'cc', 'builder_network_stamps', 'connection_id', 'builder_network_connections');
   await orphan('inbound / network events', 'net', 'builder_network_inbound_events', 'connection_id', 'workspace_connections');
   await marker('inbound / network events', 'net', 'builder_network_inbound_events');
