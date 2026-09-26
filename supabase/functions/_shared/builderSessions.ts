@@ -21,7 +21,18 @@ import { hashSessionToken, computeIdleExpiry, isSessionHashConfigured } from './
 import { getPortalClientIp } from './requestSecurity.ts';
 
 export const BUILDER_SESSION_ABSOLUTE_HOURS = 12;
-export const BUILDER_SESSION_IDLE_MINUTES = 30;
+/**
+ * How long a session survives without a request. It slides forward on every
+ * request, and an open tab polls while it is in view — so what this measures in
+ * practice is how long the portal can sit in a background tab.
+ *
+ * Was 30 minutes, which signed builders out whenever they left the portal in
+ * another tab over a coffee (the owner, 27 Sep 2026: "it's timing out too
+ * fast"). Four hours covers a working session; the 12-hour absolute cap above
+ * still ends every session within the working day, and revocation, a lost
+ * membership and sign-out still end it immediately.
+ */
+export const BUILDER_SESSION_IDLE_MINUTES = 240;
 
 /** One generic string for every credential failure — no account enumeration. */
 export const GENERIC_AUTH_ERROR = 'Invalid email or password';
