@@ -622,8 +622,10 @@ $fn$;
 -- 7. Receiving: the agency's messages, receipts and participants.
 -- ---------------------------------------------------------------------------
 -- Which conversation an event names: its row, on this connection and
--- property; or, new, the derivation of a live activation of this property on
--- this connection (created then). NULL for anything else.
+-- property; or, new, the derivation of a live, ACKNOWLEDGED activation of
+-- this property on this connection (created then). NULL for anything else:
+-- the acknowledgement is what opens a conversation, so nothing signed can
+-- open one, or put anybody or anything in it, ahead of it.
 CREATE OR REPLACE FUNCTION public.builder_agency_resolve_conversation(
   _connection_id uuid, _conversation_id uuid, _stock_item_id uuid)
 RETURNS uuid
@@ -642,6 +644,7 @@ BEGIN
   END IF;
   SELECT * INTO v_a FROM public.builder_stock_selection_announcements a
    WHERE a.connection_id = _connection_id AND a.stock_item_id = _stock_item_id AND a.status <> 'withdrawn'
+     AND a.acknowledged_at IS NOT NULL
      AND public.builder_agency_activation_conversation_id(_connection_id, a.remote_selection_ref) = _conversation_id
      AND NOT EXISTS (SELECT 1 FROM public.builder_agency_conversations o
                       WHERE o.connection_id = _connection_id AND o.selection_ref = a.remote_selection_ref)
@@ -863,7 +866,7 @@ BEGIN
     IF NOT EXISTS (
       SELECT 1 FROM public.builder_stock_selection_announcements a
        WHERE a.connection_id = v_connection.id AND a.stock_item_id = v_item
-         AND (v_c.selection_ref IS NULL OR a.remote_selection_ref = v_c.selection_ref)
+         AND (v_c.selection_ref IS NULL OR (a.remote_selection_ref = v_c.selection_ref AND a.acknowledged_at IS NOT NULL))
          AND a.status <> 'withdrawn') THEN
       SELECT * INTO v_existing FROM public.builder_agency_messages WHERE id = v_message_id;
       IF v_existing.id IS NULL

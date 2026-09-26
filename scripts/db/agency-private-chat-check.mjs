@@ -513,6 +513,28 @@ console.log('\nN39. Step 5\'s delivery, under the new model');
               WHERE dedupe_key = 'agency.message:${kept.message_id}:2'`) === 'applied');
 }
 
+console.log('\nN41. Nothing arrives ahead of the acknowledgement');
+{
+  const ITEM4 = randomUUID(); const REF_4 = randomUUID();
+  sql(`INSERT INTO public.builder_stock_items(id, organisation_id, lot_number, address_line, lifecycle_status)
+       VALUES (${lit(ITEM4)}, ${lit(ORG_A)}, '105', '5 Early Street', 'active');
+       INSERT INTO public.builder_stock_selection_announcements(connection_id, stock_item_id, organisation_id,
+         remote_selection_ref, status, source_version)
+       VALUES (${lit(CONN_A)}, ${lit(ITEM4)}, ${lit(ORG_A)}, ${lit(REF_4)}, 'selected', 1);`);
+  const C4 = activationConversationId(CONN_A, REF_4);
+  agencyParticipant({ conversation_id: C4, stock_item_id: ITEM4, display_name: 'Early Agent' });
+  const early = agencyMessage({ conversation_id: C4, stock_item_id: ITEM4, body: 'Before anyone acknowledged.' });
+  land(CONN_A, 'agency.message.posted', `agency.message:${early.message_id}:1`, early);
+  sweep();
+  check('a signed participant or message for an activation not yet acknowledged opens no conversation and stores nothing',
+    sql(`SELECT count(*) FROM public.builder_agency_conversations WHERE id = ${lit(C4)}`) === '0'
+      && sql(`SELECT count(*) FROM public.builder_agency_messages WHERE id = ${lit(early.message_id)}`) === '0');
+  acknowledge(REF_4, ACK);
+  check('acknowledging it then opens the conversation with exactly its acknowledger',
+    members(C4) === 'builder:Avery Builder:joined'
+      && sql(`SELECT count(*) FROM public.builder_agency_messages WHERE conversation_id = ${lit(C4)}`) === '0');
+}
+
 console.log('\nN40. What did not change');
 {
   const ref = randomUUID();
