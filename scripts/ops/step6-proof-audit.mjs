@@ -602,8 +602,17 @@ async function main() {
       && np.some((p) => p.side === 'builder' && p.is_acknowledger) && np.some((p) => p.side === 'command_centre');
   });
   const unmatchedOk = ['6422d121', 'd7cd9995'].every((p) => byPrefix(state.selections, p)?.conversations === 0);
-  const noBackfillMail = state.selections.every((s) => s.ack_emails === 0 && s.notifications_naming_it === 0);
-  const realOk = state.ccConv.length === 2 && state.netConv.length === 2
+  // The BACKFILLED activations (those that existed before Step 6) must have
+  // sent no email and raised no notification. An activation acknowledged after
+  // Step 6 shipped is entitled to its one acknowledgement email.
+  const BACKFILLED = ['856a4faa', '7e26e039', '6422d121', 'd7cd9995'];
+  const noBackfillMail = state.selections
+    .filter((s) => BACKFILLED.some((p) => String(s.id).startsWith(p)))
+    .every((s) => s.ack_emails === 0 && s.notifications_naming_it === 0);
+  // Every conversation on either side is one of the verified real ones.
+  const onlyReal = (rows) => rows.every((r) => REAL_CONVERSATIONS.some((p) => String(r.id).startsWith(p)));
+  const realOk = onlyReal(state.ccConv) && onlyReal(state.netConv)
+    && state.ccConv.length === state.netConv.length
     && conv0?.messages === 3 && net0?.messages === 3 && conv1?.messages === 0 && net1?.messages === 0
     && partsOk && unmatchedOk && noBackfillMail;
   console.log(`\nmutable proof artefacts: ${mutableTotal}; retained security evidence: ${retainedCount}; unverifiable: ${unverifiable.length}`);
