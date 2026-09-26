@@ -178,7 +178,14 @@ async function cleanup(stage) {
     DELETE FROM public.builder_network_inbound_events WHERE connection_id IN (${connList});
     DELETE FROM public.builder_network_outbox WHERE connection_id IN (${connList});
     DELETE FROM public.builder_network_stamps WHERE connection_id IN (${connList});
-    DELETE FROM public.builder_network_connections WHERE id IN (${connList});`);
+    DELETE FROM public.builder_network_connections WHERE id IN (${connList});
+    -- A smoke organisation that was ever provisioned announced itself over the
+    -- workspace's EXISTING route, so that one event sits on a real connection.
+    -- Removed by what it says, and only that: an announcement naming a smoke
+    -- organisation.
+    DELETE FROM public.builder_network_inbound_events
+     WHERE event_type = 'connection.authorised'
+       AND payload::text ~ 'Smoke Rollout ';`);
 }
 
 async function seedGovernedUser(tag) {
@@ -1193,7 +1200,9 @@ const leftovers = await q('leftover check', `
 const ccLeftovers = await cc('leftover check', `
   SELECT
     (SELECT count(*) FROM public.builder_network_connections WHERE builder_org_label LIKE 'Smoke Rollout %') AS connections,
-    (SELECT count(*) FROM public.builder_network_stock_organisations WHERE legal_name LIKE 'Smoke Rollout %') AS orgs`);
+    (SELECT count(*) FROM public.builder_network_stock_organisations WHERE legal_name LIKE 'Smoke Rollout %') AS orgs,
+    (SELECT count(*) FROM public.builder_network_inbound_events
+      WHERE event_type = 'connection.authorised' AND payload::text ~ 'Smoke Rollout ') AS announcements`);
 record('cleanup: no smoke rows remain, on the network or on the Command Centre',
   Object.values(leftovers[0] ?? { x: 1 }).every((n) => Number(n) === 0)
     && Object.values(ccLeftovers[0] ?? { x: 1 }).every((n) => Number(n) === 0),

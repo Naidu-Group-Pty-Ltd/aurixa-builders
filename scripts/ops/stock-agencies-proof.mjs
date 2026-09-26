@@ -20,7 +20,8 @@
  *      photograph's bytes are served;
  *   5. another organisation reads nothing — nor after being listed as a party
  *      on the project — and cannot reach the photograph;
- *   6. the deployed portal serves the area's route and the bundle carries it;
+ *   6. the deployed portal serves the area's route (/builder/activations, with
+ *      the old /builder/agencies routes kept as redirects) and the bundle carries it;
  *   7. read-only, across production: no real announcement holds a client label.
  *
  * THE DOCUMENT IS THE GATE'S OWN (`SALTBUSH RISE`, pinned by digest). Every
@@ -490,20 +491,23 @@ try {
     `party ${party.status}, activations ${(afterParty.json?.records ?? []).length}, project ${afterPartyProject.status}`);
 
   // --- 6. THE DEPLOYED PORTAL SERVES THE AREA ------------------------------
-  const page = await fetch(`${ORIGIN}/builder/agencies/activations`);
+  // Since #124 the area is Agency Activations at /builder/activations (its
+  // conversations moved to Messages), and the old /builder/agencies routes
+  // are kept as redirects so bookmarks still land.
+  const page = await fetch(`${ORIGIN}/builder/activations`);
   const html = await page.text();
   const scripts = [...html.matchAll(/src="(\/assets\/[^"]+\.js)"/g)].map((m) => m[1]);
   let bundleNamesRoute = false;
   let chunk = null;
   for (const src of scripts) {
     const js = await (await fetch(`${ORIGIN}${src}`)).text();
-    if (js.includes('agencies/:tab')) bundleNamesRoute = true;
-    chunk = chunk ?? js.match(/assets\/BuilderAgencies-[A-Za-z0-9_-]+\.js/)?.[0] ?? null;
+    if (js.includes('activations') && js.includes('agencies/:tab')) bundleNamesRoute = true;
+    chunk = chunk ?? js.match(/assets\/BuilderAgencyActivations-[A-Za-z0-9_-]+\.js/)?.[0] ?? null;
   }
   let chunkIsArea = false;
   if (chunk) {
     const js = await (await fetch(`${ORIGIN}/${chunk}`)).text();
-    chunkIsArea = js.includes('Activated Properties') && js.includes('No messages yet');
+    chunkIsArea = js.includes('Agency Activations') && js.includes('Your conversations with them are in Messages');
   }
   record('6: the portal serves the route and its bundle carries the area',
     page.status === 200 && bundleNamesRoute && chunkIsArea,
