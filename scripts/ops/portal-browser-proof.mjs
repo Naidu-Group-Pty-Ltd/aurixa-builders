@@ -98,6 +98,9 @@ async function cleanup(stage) {
   await q(`cleanup (${stage})`, `
     DO $$ BEGIN
       ${detachFromNetwork(ORGS)}
+      ALTER TABLE public.builder_messages DISABLE TRIGGER trg_builder_messages_immutable;
+      DELETE FROM public.builder_conversations WHERE organisation_id IN (${ORGS});
+      ALTER TABLE public.builder_messages ENABLE TRIGGER trg_builder_messages_immutable;
       ALTER TABLE public.builder_project_status_history
         DISABLE TRIGGER trg_builder_project_status_history_append_only;
       DELETE FROM public.builder_projects WHERE builder_organisation_id IN (${ORGS});
@@ -145,6 +148,7 @@ let browser = null;
 try {
   const owner = await seedPerson('owner', 'owner');
   const colleague = await seedPerson('colleague', 'member', owner.orgId);
+  const reader = await seedPerson('reader', 'read_only', owner.orgId);
   const project = (await q('project', `
     SELECT (public.builder_upsert_project(NULL, 'system', NULL, NULL,
       ${sqlLit(JSON.stringify({ name: `${ORG_NAME} project`, suburb: 'Proofville', state: 'NSW', postcode: '2000' }))}::jsonb,
@@ -152,10 +156,11 @@ try {
   await q('grant', `
     INSERT INTO public.builder_project_access(builder_user_id, project_id, organisation_id, organisation_side, access_role)
     VALUES (${id(owner.userId)}, ${id(project)}, ${id(owner.orgId)}, 'builder', 'responsible'),
-           (${id(colleague.userId)}, ${id(project)}, ${id(owner.orgId)}, 'builder', 'team_member')`);
+           (${id(colleague.userId)}, ${id(project)}, ${id(owner.orgId)}, 'builder', 'team_member'),
+           (${id(reader.userId)}, ${id(project)}, ${id(owner.orgId)}, 'builder', 'read_only')`);
   const conversation = await call('builder-portal-collaboration', {
     operation: 'create_conversation', scope_type: 'project', scope_id: project,
-    subject: 'Site meeting', participant_ids: [colleague.userId], reason: 'portal browser proof',
+    subject: 'Site meeting', participant_ids: [colleague.userId, reader.userId], reason: 'portal browser proof',
   }, owner.token);
   const conversationId = conversation.json?.record?.id;
   await call('builder-portal-collaboration',
@@ -164,10 +169,10 @@ try {
     `conversation=${conversation.status}`);
 
   browser = await chromium.launch();
-  const open = async (viewport) => {
+  const open = async (viewport, token = owner.token) => {
     const context = await browser.newContext({ viewport, ignoreHTTPSErrors: false });
     await context.addCookies([{
-      name: '__Host-builder_session_token', value: owner.token, url: ORIGIN,
+      name: '__Host-builder_session_token', value: token, url: ORIGIN,
       secure: true, httpOnly: true, sameSite: 'Lax',
     }]);
     const page = await context.newPage();
@@ -245,6 +250,19 @@ try {
   record('4: the newer-build banner appears when the site serves a different build', banner);
   await page.unroute(`${ORIGIN}/`);
   await context.close();
+
+  // 3b. A read-only participant reads the conversation and is not offered a composer.
+  const ro = await open({ width: 1366, height: 900 }, reader.token);
+  await ro.page.goto(`${ORIGIN}/builder/messages?view=projects&project=${project}&conversation=${conversationId}`,
+    { waitUntil: 'networkidle', timeout: 45_000 }).catch(() => {});
+  const roReads = await ro.page.getByText('Setout is booked for Tuesday.').first()
+    .waitFor({ timeout: 20_000 }).then(() => true).catch(() => false);
+  const roNotice = await ro.page.getByText('You can read this conversation but not post in it.').count();
+  const roSend = await ro.page.getByRole('button', { name: /^Send$/ }).count();
+  await ro.page.screenshot({ path: `${OUT}/desktop-read-only-conversation.png`, fullPage: true });
+  record('3b: a read-only participant reads the conversation and is shown no Send button',
+    roReads && roNotice === 1 && roSend === 0, `reads=${roReads} notice=${roNotice} send=${roSend}`);
+  await ro.context.close();
 
   // 1 (phone). The main pages at 390 px, without sideways scrolling.
   const phone = await open({ width: 390, height: 844 });

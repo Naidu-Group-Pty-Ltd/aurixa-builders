@@ -86,6 +86,7 @@ async function q(label, sql, ref = PROJECT_REF) {
   catch { return []; }
 }
 
+const latency = {};
 /** Call a portal function through the same-origin proxy, as the browser does. */
 async function call(fn, body, cookie = null) {
   const headers = {
@@ -101,8 +102,10 @@ async function call(fn, body, cookie = null) {
   const text = await response.text();
   let json = null;
   try { json = JSON.parse(text); } catch { /* non-JSON stays null */ }
+  const ms = Date.now() - started;
+  (latency[fn + ':' + (body?.operation ?? body?.action ?? '')] ??= []).push(ms);
   return {
-    status: response.status, json, ms: Date.now() - started,
+    status: response.status, json, ms,
     setCookies: response.headers.getSetCookie?.() ?? [],
   };
 }
@@ -150,6 +153,12 @@ async function cleanup(stage) {
       ${detachFromNetwork(ORGS_SQL)}
       ALTER TABLE public.builder_project_status_history
         DISABLE TRIGGER trg_builder_project_status_history_append_only;
+      -- Messages are immutable BY TRIGGER for real conversations; these are this
+      -- run's own synthetic rows, so the trigger steps aside for this statement
+      -- inside this transaction only (the status-history rule, verbatim).
+      ALTER TABLE public.builder_messages DISABLE TRIGGER trg_builder_messages_immutable;
+      DELETE FROM public.builder_conversations WHERE organisation_id IN (${ORGS_SQL});
+      ALTER TABLE public.builder_messages ENABLE TRIGGER trg_builder_messages_immutable;
       DELETE FROM public.builder_projects WHERE builder_organisation_id IN
         (SELECT id FROM public.builder_organisations WHERE legal_name LIKE ${sqlLit(`Smoke Rollout ${TAG} %`)});
       ALTER TABLE public.builder_project_status_history
@@ -524,8 +533,12 @@ try {
       { operation: 'get_conversation', conversation_id: conversationId }, members['read-only']?.cookie);
     const roPost = await call('builder-portal-collaboration',
       { operation: 'post_message', conversation_id: conversationId, body: 'read only tries' }, members['read-only']?.cookie);
+    // Refused at the scope's messages:edit check, which answers 404 rather than
+    // 403; either is a refusal, and the page no longer offers the composer.
     record('E: a read_only participant reads the conversation and cannot post',
-      roRead.status === 200 && roPost.status === 403, `read=${roRead.status} post=${roPost.status}`);
+      roRead.status === 200 && [403, 404].includes(roPost.status)
+        && roRead.json?.permissions?.messages?.edit === false,
+      `read=${roRead.status} post=${roPost.status} permissions.messages.edit=${roRead.json?.permissions?.messages?.edit}`);
     const markRead = await call('builder-portal-collaboration',
       { operation: 'mark_conversation_read', conversation_id: conversationId }, members.member.cookie);
     record('E: a participant marks the conversation read', markRead.status === 200, `status ${markRead.status}`);
@@ -686,7 +699,7 @@ try {
   const deactivated = members.deactivated;
   if (deactivated) {
     const before = await probe(deactivated.cookie);
-    await q('deactivate', `UPDATE public.builder_portal_users SET is_active = false WHERE id = ${id(deactivated.userId)}`);
+    await q('deactivate', `UPDATE public.builder_portal_users SET is_active = false, status = 'suspended' WHERE id = ${id(deactivated.userId)}`);
     const after = await probe(deactivated.cookie);
     record('C: a deactivated user loses access on their very next request',
       before.status === 200 && refused(after.status), `before=${before.status} after=${after.status}`);
@@ -705,10 +718,10 @@ try {
   }
 
   const cBefore = await probe(C.cookie);
-  await q('suspend C', `UPDATE public.builder_organisations SET status = 'suspended', suspended_at = now() WHERE id = ${id(C.orgId)}`);
+  await q('suspend C', `UPDATE public.builder_organisations SET status = 'suspended', is_active = false, suspended_at = now() WHERE id = ${id(C.orgId)}`);
   const cSuspended = await probe(C.cookie);
   // Reinstating is an activation, which provisions routes again; detached in the same transaction.
-  await q('reinstate C', `UPDATE public.builder_organisations SET status = 'active', suspended_at = NULL WHERE id = ${id(C.orgId)};
+  await q('reinstate C', `UPDATE public.builder_organisations SET status = 'active', is_active = true, suspended_at = NULL WHERE id = ${id(C.orgId)};
     ${detachFromNetwork(`SELECT ${id(C.orgId)}`)}`);
   const cReinstated = await probe(C.cookie);
   record('C: a suspended organisation’s members are refused, and reinstatement restores them',
@@ -787,6 +800,11 @@ try {
   record('cleanup ran', false, String(error?.message ?? error).slice(0, 300));
 }
 
+console.log('\nLatency by operation (ms: min / median / max, n)');
+for (const [key, list] of Object.entries(latency).sort()) {
+  const sorted = [...list].sort((a, b) => a - b);
+  console.log(`  ${key.padEnd(58)} ${sorted[0]} / ${sorted[Math.floor(sorted.length / 2)]} / ${sorted.at(-1)}  n=${sorted.length}`);
+}
 const required = results.filter((r) => r.required);
 const passed = required.filter((r) => r.ok).length;
 console.log(`\n${passed} of ${required.length} required checks passed (run ${RUN})`);
