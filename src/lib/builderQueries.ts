@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { invokeBuilderFunction } from '@/lib/builderPortal';
+import { TEAM_CONVERSATION_POLL_MS, UNREAD_COUNTS_POLL_MS, pollUnlessGone } from '@/lib/builderPolling.pure';
 import type { PropertyDocumentLink } from '../../supabase/functions/_shared/builderStock/propertyDocuments.pure';
 import type {
   BuilderProject, BuilderProjectParty, BuilderProjectStatusHistoryEntry,
@@ -737,6 +738,8 @@ export function useBuilderConversation(conversationId: string) {
       operation: 'get_conversation', conversation_id: conversationId,
     }, signal) as Promise<ConversationBundle>,
     enabled: Boolean(conversationId),
+    // A colleague's reply arrives without a reload (see builderPolling.pure.ts).
+    refetchInterval: (query) => pollUnlessGone(query.state, TEAM_CONVERSATION_POLL_MS),
     retry: retryBuilderQuery,
   });
 }
@@ -768,6 +771,7 @@ export function useBuilderUnreadCounts() {
       operation: 'unread_counts',
     }, signal) as Promise<BuilderUnreadCounts>,
     staleTime: 30_000,
+    refetchInterval: (query) => pollUnlessGone(query.state, UNREAD_COUNTS_POLL_MS),
     retry: retryBuilderQuery,
   });
 }
