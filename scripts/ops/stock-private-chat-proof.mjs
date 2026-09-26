@@ -227,7 +227,7 @@ async function cleanup(stage) {
 }
 
 /** A proof builder in an organisation of the run's own, detached in the SAME transaction. */
-async function seedBuilder(label, name, { orgName, existingOrgId = null, contact = null }) {
+async function seedBuilder(label, name, { orgName, existingOrgId = null, contact = null, role = null }) {
   const email = `${MARK}-${TAG}-${label}-${RUN}@example.com`;
   const password = `Pr00f!${RUN}!private`;
   const orgSql = existingOrgId
@@ -247,7 +247,7 @@ async function seedBuilder(label, name, { orgName, existingOrgId = null, contact
               extensions.crypt(${sqlLit(password)}, extensions.gen_salt('bf', 10)))
       RETURNING id)
     INSERT INTO public.builder_organisation_memberships(builder_user_id, organisation_id, membership_role, is_primary, status)
-    SELECT person.id, org.id, ${existingOrgId ? "'member'" : "'owner'"}, ${existingOrgId ? 'false' : 'true'}, 'active' FROM person, org;
+    SELECT person.id, org.id, ${sqlLit(role ?? (existingOrgId ? 'member' : 'owner'))}, ${existingOrgId ? 'false' : 'true'}, 'active' FROM person, org;
     DELETE FROM public.builder_network_outbox
      WHERE dedupe_key IN (SELECT 'connection.authorised:' || c.id::text FROM public.workspace_connections c
                            WHERE c.builder_organisation_id IN (${orgFilter}));
@@ -342,7 +342,10 @@ try {
   const orgName = `${ORG_PREFIX} ${RUN} Pty Ltd`;
   const contact = { email: `sales-${RUN}@example.com`, phone: '03 9000 0000', website: `https://example.com/${TAG}-${RUN}` };
   const acknowledger = await seedBuilder('ack', `Avery Builder ${RUN}`, { orgName, contact });
-  const invitee = await seedBuilder('invitee', `Bailey Builder ${RUN}`, { orgName, existingOrgId: acknowledger.orgId });
+  // The invited colleague WRITES (checks 20 and 27), and writing needs
+  // `inventory` edit: a plain member holds view only and is rightly refused.
+  const invitee = await seedBuilder('invitee', `Bailey Builder ${RUN}`,
+    { orgName, existingOrgId: acknowledger.orgId, role: 'manager' });
   const outsiderBuilder = await seedBuilder('outsider', `Blake Builder ${RUN}`, { orgName, existingOrgId: acknowledger.orgId });
   const otherBuilder = await seedBuilder('other', `Otto Other ${RUN}`, { orgName: `${ORG_PREFIX} other ${RUN} Pty Ltd` });
   const item = (await net('item', `
@@ -711,17 +714,37 @@ try {
       SELECT event_type, payload FROM public.builder_network_outbox WHERE connection_id = ${id(connection)}`)),
   ].map((r) => ({ type: r.event_type, payload: typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload }));
   const wire = JSON.stringify(crossed.map((r) => r.payload));
-  const newWire = JSON.stringify(crossed.filter((r) => r.type.startsWith('agency.') || r.type === 'stock.selection.acknowledged')
-    .map((r) => r.payload));
+  const newWire = JSON.stringify(crossed.filter((r) => r.type.startsWith('agency.')).map((r) => r.payload));
   const participantOff = crossed.filter((r) => r.type === 'agency.message.participant'
     && JSON.stringify(Object.keys(r.payload ?? {}).sort()) !== JSON.stringify(PARTICIPANT_KEYS));
-  const privateValues = [client.id, `${CLIENT_SURNAME} ${RUN}`, `private note ${RUN}`, owner.userId, ccColleague.userId,
-    ccTwin.userId, acknowledger.userId, invitee.userId, SAFE_SINK('owner'), acknowledger.email, invitee.email,
-    `${CC_USER_PREFIX}colleague-${RUN}@example.com`];
+  // Labelled, so a failure names WHAT crossed (never the value) and in which event type.
+  const privateValues = [
+    ['client id', client.id], ['client name', `${CLIENT_SURNAME} ${RUN}`], ['client note', `private note ${RUN}`],
+    ['activator user id', owner.userId], ['cc colleague user id', ccColleague.userId], ['cc twin user id', ccTwin.userId],
+    ['acknowledger user id', acknowledger.userId], ['invitee user id', invitee.userId],
+    ['activator email', SAFE_SINK('owner')], ['acknowledger email', acknowledger.email], ['invitee email', invitee.email],
+    ['cc colleague email', `${CC_USER_PREFIX}colleague-${RUN}@example.com`],
+  ];
+  // The activation reference is the OLD protocol's (stock.selection.*), which
+  // carries it by design; the question is whether a NEW event carries it.
+  // The activation announcement's `agency` block is the workspace's AUTHORISED
+  // self-disclosure — the acting adviser's outward contact (name, email, phone),
+  // decided by the product owner in Phase 7 wave 5 (CC migration
+  // 20261201090000) and unchanged by this step. It is the one place a person's
+  // email may ride; everything else in every event is still held to the list.
+  const withoutAuthorisedAgency = (r) => {
+    if (!r.type.startsWith('stock.selection.') || !r.payload || typeof r.payload !== 'object') return r.payload;
+    const { agency: _agency, ...rest } = r.payload;
+    return rest;
+  };
+  const leaked = privateValues.flatMap(([label, value]) => crossed
+    .filter((r) => JSON.stringify(withoutAuthorisedAgency(r)).includes(value)).map((r) => `${label} in ${r.type}`));
+  const leakedValues = leaked.length;
+  const refInNewEvents = newWire.includes(selection.id);
   record('28: no client, note, user id or personal email crossed; participant events carry exactly their keys',
-    crossed.length > 0 && !privateValues.some((value) => wire.includes(value)) && participantOff.length === 0
-      && !newWire.includes(selection.id),
-    `${crossed.length} payload(s), ${participantOff.length} off contract`);
+    crossed.length > 0 && leakedValues === 0 && participantOff.length === 0 && !refInNewEvents,
+    `${crossed.length} payload(s), ${participantOff.length} off contract, ${leakedValues} private value(s), `
+      + `activation ref in new events: ${refInNewEvents}${leaked.length ? ` [${[...new Set(leaked)].join('; ')}]` : ''}`);
 
   // 29. No model was called.
   const ccModelCalls = Number((await cc('model calls', `
