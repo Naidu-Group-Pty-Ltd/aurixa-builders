@@ -303,6 +303,52 @@ async function realState() {
   return { ccConv, netConv, ccParts, netParts, selections };
 }
 
+// ---------------------------------------------------------------------------
+/** Describes, without printing a name, email or body, each row a check flagged. */
+async function describeFlagged() {
+  const flagged = results.filter((r) => r.n);
+  if (!flagged.length) return;
+  console.log('\nFLAGGED ROWS (read-only description; nothing is changed)');
+  const connRefs = flagged.filter((r) => r.db === 'cc' && r.label.startsWith('builder_network_connections.'))
+    .flatMap((r) => r.refs);
+  for (const ref of connRefs) {
+    const [c] = await query(CC_REF, `
+      SELECT x.id, x.state, x.created_at, x.accepted_at, x.revoked_at, x.network_connection_id,
+             x::text ~ ${sqlLit(MARKER_RE)} AS proof_marker,
+             (SELECT count(*) FROM public.builder_network_stock_items i WHERE i.organisation_id = x.builder_organisation_id)::int AS items,
+             (SELECT count(*) FROM public.builder_stock_selections s WHERE s.organisation_id = x.builder_organisation_id)::int AS selections,
+             (SELECT count(*) FROM public.builder_network_conversations v WHERE v.connection_id = x.id)::int AS conversations,
+             (SELECT count(*) FROM public.builder_network_inbound_events e WHERE e.connection_id = x.id)::int AS inbound,
+             (SELECT count(*) FROM public.builder_network_outbox o WHERE o.connection_id = x.id)::int AS outbox
+        FROM public.builder_network_connections x WHERE x.id::text LIKE ${sqlLit(`${ref}%`)}`);
+    if (!c) { console.log(`  CC connection ${ref}: not found on re-read`); continue; }
+    let network = 'no network_connection_id';
+    if (c.network_connection_id) {
+      const [w] = await query(NETWORK_REF, `
+        SELECT x.state, x.created_at, x.revoked_at,
+               x::text ~ ${sqlLit(MARKER_RE)} AS proof_marker,
+               EXISTS (SELECT 1 FROM public.builder_organisations o WHERE o.id = x.builder_organisation_id) AS org_exists,
+               (SELECT r.slug ~ ${sqlLit(MARKER_RE)} FROM public.workspace_registry r WHERE r.id = x.workspace_id) AS workspace_is_proof
+          FROM public.workspace_connections x WHERE x.id = ${sqlLit(c.network_connection_id)}::uuid`);
+      network = w ? `network connection state=${w.state} created=${w.created_at} revoked=${w.revoked_at ?? '—'} proof_marker=${w.proof_marker} org_exists=${w.org_exists} workspace_is_proof=${w.workspace_is_proof}`
+        : 'network connection not found';
+    }
+    console.log(`  CC connection ${short(c.id)} state=${c.state} created=${c.created_at} accepted=${c.accepted_at ?? '—'} revoked=${c.revoked_at ?? '—'} proof_marker=${c.proof_marker}` +
+      ` items=${c.items} selections=${c.selections} conversations=${c.conversations} inbound=${c.inbound} outbox=${c.outbox}; ${network}`);
+  }
+  const eventRefs = [...new Set(flagged.filter((r) => r.db === 'net' && r.label.startsWith('portal_operational_events'))
+    .flatMap((r) => r.refs))];
+  for (const ref of eventRefs) {
+    const [e] = await query(NETWORK_REF, `
+      SELECT x.id, x.event_name, x.severity, x.portal, x.occurred_at, x.success,
+             substring(x::text from ${sqlLit('(smoke-rollout-[a-z-]*proof|Smoke Rollout [a-z-]*proof)')}) AS proof_tag,
+             (SELECT string_agg(k, ',' ORDER BY k) FROM jsonb_object_keys(x.metadata) k) AS metadata_keys
+        FROM public.portal_operational_events x WHERE x.id::text LIKE ${sqlLit(`${ref}%`)}`);
+    console.log(e ? `  NET operational event ${short(e.id)} ${e.event_name} severity=${e.severity} portal=${e.portal} occurred=${e.occurred_at} success=${e.success} tag=${e.proof_tag ?? '—'} keys=${e.metadata_keys}`
+      : `  NET operational event ${ref}: not found on re-read`);
+  }
+}
+
 async function main() {
   console.log('Step 6 closure audit (read-only; every statement a single SELECT)');
   await loadSchema('cc');
@@ -331,6 +377,7 @@ async function main() {
     console.log(`  ${c} | ${summarise(rows.filter((r) => r.db === 'cc'))} | ${summarise(rows.filter((r) => r.db === 'net'))}`);
   }
 
+  await describeFlagged();
   const state = await realState();
   const nonZero = results.filter((r) => r.n);
   console.log(`\nnon-zero proof checks: ${nonZero.length}; unverifiable checks: ${results.filter((r) => r.n === null).length}`);
