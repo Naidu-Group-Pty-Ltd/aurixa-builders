@@ -192,6 +192,11 @@ name: Production rollout
 #   agency-chat-state
 #            read-only: who each existing agency conversation belongs to, on
 #            both projects, before one activation, one private conversation.
+#   step6-proof-audit
+#            read-only: counts, table by table on both projects, anything the
+#            Step 6 and regression proofs could have left (proof markers and
+#            rows whose parent no longer exists), and re-reads the two real
+#            agency conversations. Every statement is a single SELECT.
 #   agency-chat-backfill
 #            binds each conversation that existed before that step to its
 #            activation and seeds its activator and acknowledger — only where
@@ -251,11 +256,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | agency-chat-backfill | stock-private-chat-proof | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, agency-chat-backfill, stock-private-chat-proof, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1)'
         required: false
@@ -367,6 +372,7 @@ jobs:
             stock-media-proof)   node scripts/ops/stock-media-proof.mjs ;;
             stock-messaging-proof) node scripts/ops/stock-messaging-proof.mjs ;;
             agency-chat-state)   node scripts/ops/agency-chat-state.mjs ;;
+            step6-proof-audit)   node scripts/ops/step6-proof-audit.mjs ;;
             agency-chat-backfill) node scripts/ops/agency-chat-backfill.mjs ;;
             stock-private-chat-proof) node scripts/ops/stock-private-chat-proof.mjs ;;
             stock-overlay-audit)  deno run -A --config supabase/functions/deno.json scripts/ops/stock-overlay-audit.ts ;;
