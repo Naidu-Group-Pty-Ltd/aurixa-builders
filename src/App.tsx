@@ -40,7 +40,8 @@ const BuilderProjects = lazyWithRetry(() => import("@/pages/builder/BuilderProje
 const BuilderProjectDetail = lazyWithRetry(() => import("@/pages/builder/BuilderProjectDetail"));
 const BuilderStockList = lazyWithRetry(() => import("@/pages/builder/BuilderStockList"));
 const BuilderMessages = lazyWithRetry(() => import("@/pages/builder/BuilderMessages"));
-const BuilderAgencies = lazyWithRetry(() => import("@/pages/builder/BuilderAgencies"));
+const BuilderAgencyActivations = lazyWithRetry(() => import("@/pages/builder/BuilderAgencyActivations"));
+const LegacyAgenciesRedirect = lazyWithRetry(() => import("@/pages/builder/LegacyAgenciesRedirect"));
 const BuilderTasks = lazyWithRetry(() => import("@/pages/builder/BuilderTasks"));
 const BuilderNotifications = lazyWithRetry(() => import("@/pages/builder/BuilderNotifications"));
 const BuilderActivity = lazyWithRetry(() => import("@/pages/builder/BuilderActivity"));
@@ -132,9 +133,11 @@ const App = () => (
                           <Route path="inventory" element={<BuilderSectionWithdrawn />} />
                           <Route path="inventory/:unitId" element={<BuilderSectionWithdrawn />} />
                           <Route path="stock" element={<BuilderStockList />} />
-                          {/* The connected agencies: /agencies/activations and /agencies/messages. */}
-                          <Route path="agencies" element={<BuilderAgencies />} />
-                          <Route path="agencies/:tab" element={<BuilderAgencies />} />
+                          {/* What connected agencies activated. Their conversations are on Messages. */}
+                          <Route path="activations" element={<BuilderAgencyActivations />} />
+                          {/* The old Agencies section's addresses, redirected so no link breaks. */}
+                          <Route path="agencies" element={<LegacyAgenciesRedirect />} />
+                          <Route path="agencies/:tab" element={<LegacyAgenciesRedirect />} />
                           <Route path="transactions" element={<BuilderSectionWithdrawn />} />
                           <Route path="transactions/:transactionId" element={<BuilderSectionWithdrawn />} />
                           <Route path="pipeline" element={<BuilderSectionWithdrawn />} />

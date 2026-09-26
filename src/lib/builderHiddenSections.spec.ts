@@ -47,7 +47,7 @@ describe('withdrawn builder sections — the set itself', () => {
 
   it('leaves every offered section alone', () => {
     for (const path of [
-      '/builder', '/builder/projects', '/builder/stock', '/builder/agencies', '/builder/messages',
+      '/builder', '/builder/projects', '/builder/stock', '/builder/activations', '/builder/messages',
       '/builder/tasks', '/builder/notifications', '/builder/activity',
       '/builder/settings', '/builder/compliance',
     ]) {
@@ -92,7 +92,7 @@ describe('withdrawn builder sections — every door asks the same list', () => {
      * it gets, which is what an operator actually sees.
      *
      * Compliance is flag-gated on top of this and absent wherever the flag is
-     * off, and Agencies is drawn only for a user who may view the organisation's
+     * off, and Agency Activations is drawn only for a user who may view the organisation's
      * activations, so ten is the ceiling rather than the count every user sees.
      */
     const layout = read('src/components/builder-portal/BuilderPortalLayout.tsx');
@@ -106,7 +106,7 @@ describe('withdrawn builder sections — every door asks the same list', () => {
       '/builder/compliance',
       '/builder/projects',
       '/builder/stock',
-      '/builder/agencies',
+      '/builder/activations',
       '/builder/messages',
       '/builder/tasks',
       '/builder/notifications',

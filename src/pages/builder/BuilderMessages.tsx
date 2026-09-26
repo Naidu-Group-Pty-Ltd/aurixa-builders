@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Loader2, MessageSquare, Plus, RefreshCw, Send, ShieldAlert } from 'lucide-react';
+import { FolderKanban, Handshake, Loader2, MessageSquare, Plus, RefreshCw, Send, ShieldAlert } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -9,11 +9,15 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { BuilderPortalShell } from '@/components/builder-portal/BuilderPortalShell';
 import { BuilderScopePicker, type BuilderScopeValue } from '@/components/builder-portal/BuilderScopePicker';
+import { AgencyConversations } from '@/components/builder-portal/AgencyConversations';
+import { useRefreshMyAgencyConversations } from '@/lib/builderStockQueries';
+import { messagesViewFrom, type MessagesView } from '@/lib/builderAgency';
 import {
   useBuilderCollaborationMutation, useBuilderConversation, useBuilderConversations,
 } from '@/lib/builderQueries';
@@ -23,14 +27,69 @@ import {
 } from '@/lib/builderCollaboration';
 
 /**
- * External Builder Portal conversations.
+ * Builder Portal — Messages: the portal's one home for messaging.
  *
- * The list is `builder_accessible_conversations`, so a conversation whose scope
- * this user cannot reach — or one restricted to other participants — never
- * appears. Messages are immutable once posted; there is deliberately no edit or
- * delete control, because the database refuses both.
+ * Two kinds of conversation, one tab each, bookmarkable through `?view=`:
+ *
+ *   - Agency conversations — the private conversation each acknowledged
+ *     activation opens with the agency user who activated it
+ *     (docs/builder-portal/62). They used to be a tab of the Agencies page;
+ *     that page is Agency Activations now and lists activations only.
+ *   - Project conversations — `builder_accessible_conversations`, so a
+ *     conversation whose scope this user cannot reach, or one restricted to
+ *     other participants, never appears. Messages are immutable once posted;
+ *     there is deliberately no edit or delete control, because the database
+ *     refuses both.
+ *
+ * A URL that names a project conversation (every link written before the
+ * agency conversations moved here) opens the project tab; anything else
+ * opens the agency conversations (`messagesViewFrom`).
  */
 export default function BuilderMessages() {
+  const [params, setParams] = useSearchParams();
+  const view = messagesViewFrom(params);
+  const refreshAgency = useRefreshMyAgencyConversations();
+
+  const setView = (next: MessagesView) => {
+    const updated = new URLSearchParams(params);
+    updated.set('view', next);
+    setParams(updated, { replace: true });
+  };
+
+  return (
+    <BuilderPortalShell
+      title="Messages"
+      description="Your private conversations with connected agencies about the properties they activated, and your conversations on projects."
+      actions={view === 'agencies' ? (
+        <Button variant="outline" size="sm" onClick={() => void refreshAgency()}>
+          <RefreshCw className="mr-2 h-4 w-4" aria-hidden />
+          Refresh
+        </Button>
+      ) : null}
+    >
+      <Tabs value={view} onValueChange={(next) => setView(next as MessagesView)}>
+        <TabsList>
+          <TabsTrigger value="agencies">
+            <Handshake className="mr-2 h-4 w-4" aria-hidden />
+            Agency conversations
+          </TabsTrigger>
+          <TabsTrigger value="projects">
+            <FolderKanban className="mr-2 h-4 w-4" aria-hidden />
+            Project conversations
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value="agencies" className="mt-6">
+          <AgencyConversations />
+        </TabsContent>
+        <TabsContent value="projects" className="mt-6 space-y-4">
+          <ProjectConversations />
+        </TabsContent>
+      </Tabs>
+    </BuilderPortalShell>
+  );
+}
+
+function ProjectConversations() {
   const [params, setParams] = useSearchParams();
   const { toast } = useToast();
 
@@ -43,6 +102,9 @@ export default function BuilderMessages() {
 
   const patchParams = (changes: Record<string, string | null>) => {
     const updated = new URLSearchParams(params);
+    // Pinned, so clearing the project picker never flips the page to the
+    // agency tab (which is what a URL naming no project would open).
+    updated.set('view', 'projects');
     for (const [key, value] of Object.entries(changes)) {
       if (value) updated.set(key, value); else updated.delete(key);
     }
@@ -113,25 +175,21 @@ export default function BuilderMessages() {
   };
 
   return (
-    <BuilderPortalShell
-      title="Messages"
-      description="Conversations against the projects, units, transactions and builds you can reach."
-      actions={
-        <>
-          <Button
-            variant="outline" size="sm"
-            onClick={() => void query.refetch()}
-            disabled={!scopeChosen || query.isFetching}
-          >
-            <RefreshCw className={cn('mr-2 h-4 w-4', query.isFetching && 'animate-spin')} aria-hidden />
-            Refresh
-          </Button>
-          <Button size="sm" onClick={() => setCreateOpen(true)} disabled={!scopeChosen}>
-            <Plus className="mr-2 h-4 w-4" aria-hidden />New conversation
-          </Button>
-        </>
-      }
-    >
+    <>
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button
+          variant="outline" size="sm"
+          onClick={() => void query.refetch()}
+          disabled={!scopeChosen || query.isFetching}
+        >
+          <RefreshCw className={cn('mr-2 h-4 w-4', query.isFetching && 'animate-spin')} aria-hidden />
+          Refresh
+        </Button>
+        <Button size="sm" onClick={() => setCreateOpen(true)} disabled={!scopeChosen}>
+          <Plus className="mr-2 h-4 w-4" aria-hidden />New conversation
+        </Button>
+      </div>
+
       <Card>
         <CardHeader className="gap-3">
           <div>
@@ -334,6 +392,6 @@ export default function BuilderMessages() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </BuilderPortalShell>
+    </>
   );
 }

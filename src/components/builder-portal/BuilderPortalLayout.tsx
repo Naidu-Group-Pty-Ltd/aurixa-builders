@@ -77,10 +77,11 @@ const NAV: BuilderNavItem[] = [
   { to: '/builder/projects', label: 'Projects', icon: Building2, available: true },
   { to: '/builder/inventory', label: 'Inventory', icon: Boxes, available: true },
   { to: '/builder/stock', label: 'Stock List', icon: ClipboardList, available: true },
-  // The connected Command Centre workspaces: what they activated, and the
-  // conversations about it. Read under `inventory`, like the Stock List's
-  // own activations, so it is offered to exactly the people who see those.
-  { to: '/builder/agencies', label: 'Agencies', icon: Handshake, available: true, permission: 'inventory' },
+  // What connected Command Centre workspaces activated from the stock list.
+  // Read under `inventory`, like the Stock List's own activations, so it is
+  // offered to exactly the people who see those. The conversations about
+  // those properties are on Messages, the portal's one home for messaging.
+  { to: '/builder/activations', label: 'Agency Activations', icon: Handshake, available: true, permission: 'inventory' },
   { to: '/builder/transactions', label: 'Transactions', icon: Receipt, available: true },
   { to: '/builder/pipeline', label: 'Pipeline', icon: KanbanSquare, available: true },
   { to: '/builder/construction', label: 'Construction', icon: Hammer, available: true },
