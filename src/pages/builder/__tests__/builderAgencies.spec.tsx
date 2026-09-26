@@ -447,7 +447,7 @@ describe('a refresh of the first page that fails after it was read', () => {
     const activations = renderAt('/builder/agencies/activations');
     expect(screen.getByText(/do not have access/i)).toBeTruthy();
     activations.unmount();
-    delete state.error; delete state.firstStale;
+    state.error = null; state.firstStale = false;
     state.everyError = { status: 403, message: 'You do not have access to stock' };
     state.everyStale = true;
     renderAt('/builder/agencies/messages');
