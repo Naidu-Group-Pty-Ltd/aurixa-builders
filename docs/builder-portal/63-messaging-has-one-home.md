@@ -32,3 +32,26 @@ the activated properties only, under a name that says what it is.
   clearing the project picker never flips the page.
 - **Each page refreshes its own read.** Agency Activations' Refresh re-reads the
   activations; Messages' Refresh (agency tab) re-reads the conversation list.
+
+## Why the conversations did not load (26 Sep 2026)
+
+The owner's screenshots showed a conversation stuck on "Loading…" and then
+"could not be loaded". The server and the data were correct: both conversations
+belong to the organisation, their connection and property agree, and the reader
+is an active owner and a joined participant. What was wrong was **the tab**.
+
+- The gateway logged every failing request at exactly **215 bytes**, which is
+  the Step 5 client's `get_agency_conversation` (a `connection_id` and a
+  `stock_item_id`). The Step 6 server reads a `conversation_id`, so it answered
+  "not found".
+- In the same windows the function never queried the conversation tables. The
+  site itself already served the Step 6 build, whose chunks carry
+  `list_my_agency_conversations` and `conversation_id`.
+
+So the tab had been open since before the release and was still running the
+Step 5 JavaScript. A reload is the whole remedy. **A single-page app never
+notices a release by itself**, so the portal now does: `useNewerBuildAvailable`
+compares the entry script this page loaded with the one `/` serves (the file
+name carries the content hash) on focus and every five minutes, and
+`NewerBuildBanner` offers a reload. It never reloads by itself, because a
+half-written message would be lost, and an unreadable check says nothing.

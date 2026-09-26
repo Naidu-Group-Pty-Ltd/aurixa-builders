@@ -27,6 +27,7 @@ import { BuilderNotificationBell } from './BuilderNotificationBell';
 import { BuilderPortalUserCard } from './ui/BuilderPortalUserCard';
 import { BuilderOrganisationSwitcher } from './BuilderOrganisationSwitcher';
 import { BuilderOnboardingTour } from './BuilderOnboardingTour';
+import { NewerBuildBanner } from './NewerBuildBanner';
 import { BUILDER_TOUR_EVENT } from './BuilderOnboardingTour';
 import { usePartnerWorkspaceEnabled } from '@/lib/aml/usePartnerWorkspaceFlags';
 
@@ -414,6 +415,7 @@ export function BuilderPortalLayout() {
 
           <main id="main-content" className="builder-portal-main min-w-0 flex-1 overflow-auto">
             <div className="builder-portal-content">
+              <NewerBuildBanner />
               <AnimatePresence mode="wait">
                 <motion.div
                   key={pathname}
