@@ -175,6 +175,12 @@ async function readIn(
   return { data, error: null };
 }
 
+/** An agency's name as a builder reads it: its own, else its workspace's, else none. */
+function agencyNameOf(name: unknown, workspaceLabel: unknown): string | null {
+  const clean = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim().slice(0, 200) : null);
+  return clean(name) ?? clean(workspaceLabel);
+}
+
 /** The conversations one member is in now, in the session's organisation. */
 export async function listMyAgencyConversations(
   supabase: Client, args: { organisationId: string; viewerUserId: string },
@@ -208,10 +214,19 @@ export async function listMyAgencyConversations(
     readIn(supabase, 'builder_stock_selection_announcements',
       'connection_id, remote_selection_ref, status, acknowledged_at, agency_name',
       'remote_selection_ref', list.map((c) => c.selection_ref).filter(Boolean), org),
-    readIn(supabase, 'workspace_connections', 'id, state', 'id', list.map((c) => c.connection_id),
+    readIn(supabase, 'workspace_connections', 'id, state, workspace_id', 'id', list.map((c) => c.connection_id),
       { column: 'builder_organisation_id', value: args.organisationId }),
   ]);
   if (items.error || announcements.error || connections.error) return { ok: false };
+  // The agency is named the way Agency Activations names it: the name its
+  // activation carried, else the workspace the connection belongs to. Only
+  // workspaces this organisation's own connections point at are read.
+  const workspaceIds = [...new Set(((connections.data ?? []) as Row[]).map((row) => row.workspace_id).filter(Boolean))];
+  const workspaces = workspaceIds.length
+    ? await supabase.from('workspace_registry').select('id, display_name').in('id', workspaceIds)
+    : { data: [], error: null };
+  if (workspaces.error) return { ok: false };
+  const workspaceName = new Map(((workspaces.data ?? []) as Row[]).map((row) => [row.id, row.display_name]));
   const itemById = new Map(((items.data ?? []) as Row[]).map((row) => [row.id, row]));
   const connectionById = new Map(((connections.data ?? []) as Row[]).map((row) => [row.id, row]));
   const announcementOf = (c: Row) => ((announcements.data ?? []) as Row[])
@@ -226,7 +241,8 @@ export async function listMyAgencyConversations(
         stock_item_id: String(c.stock_item_id),
         address: itemById.get(c.stock_item_id)?.address_line ?? null,
         lot_number: itemById.get(c.stock_item_id)?.lot_number ?? null,
-        agency_name: announcement?.agency_name ?? null,
+        agency_name: agencyNameOf(announcement?.agency_name,
+          workspaceName.get(connectionById.get(c.connection_id)?.workspace_id)),
         open: isOpen(connectionById.get(c.connection_id) ?? null, announcement, c.selection_ref),
         last_message_at: c.last_message_at ?? null,
       };

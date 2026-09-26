@@ -225,6 +225,25 @@ describe('Messages lists the viewer\'s own conversations', () => {
     expect(mine.conversations[0]).toMatchObject({ address: '1 Private Street', lot_number: '101', agency_name: 'Example Agency', open: true });
     expect(JSON.stringify(mine)).not.toMatch(/remote_client|ref-1/);
   });
+
+  it('names the agency by its workspace where its activation carried no name, as Agency Activations does', async () => {
+    const tables = world();
+    tables.builder_stock_selection_announcements = tables.builder_stock_selection_announcements
+      .map((a) => ({ ...a, agency_name: null as unknown as string }));
+    const mine = await listMyAgencyConversations(standIn(tables).client, { organisationId: ORG, viewerUserId: ME });
+    if (!mine.ok) throw new Error('failed');
+    expect(mine.conversations[0].agency_name).toBe('Example Agency Workspace');
+  });
+
+  it('reads only the workspaces this organisation\'s own connections point at', async () => {
+    const tables = world();
+    (tables.workspace_registry as Array<{ id: string; display_name: string }>).push({ id: 'ws-other', display_name: 'Somebody Else' });
+    const stand = standIn(tables);
+    await listMyAgencyConversations(stand.client, { organisationId: ORG, viewerUserId: ME });
+    const asked = stand.log.filter((e) => e.table === 'workspace_registry')
+      .flatMap((e) => e.filters.filter(([op]) => op === 'in').flatMap(([, , v]) => v as unknown[]));
+    expect(asked).toEqual(['ws-1']);
+  });
 });
 
 describe('the participant event contract, at the door', () => {
