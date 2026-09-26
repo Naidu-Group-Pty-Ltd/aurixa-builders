@@ -1,9 +1,10 @@
 /**
- * Builder Portal — the Agencies area.
+ * Builder Portal — agency activations and the conversations about them.
  *
  * An agency here is a connected Command Centre workspace. What a builder knows
  * of one comes entirely from its activations of their stock, read by
- * `list_activated_properties`; this module shapes that for the two tabs.
+ * `list_activated_properties`; this module shapes that for Agency Activations
+ * and for the agency conversations on Messages.
  *
  * A conversation is keyed by the connection and the property, the relationship
  * the network carries it over. The thread list is built from the
@@ -175,14 +176,39 @@ export function agencyConversationRefetchInterval(state: { data?: { open?: boole
   return accessRefused(state.error) ? false : agencyConversationPollInterval(state.data);
 }
 
-export const AGENCIES_PATH = '/builder/agencies';
-export const AGENCY_TABS = ['activations', 'messages'] as const;
-export type AgencyTab = typeof AGENCY_TABS[number];
+/** Agency Activations: what connected agencies activated, and nothing else. */
+export const ACTIVATIONS_PATH = '/builder/activations';
+/** Messages: the portal's one home for messaging, agency and project alike. */
+export const MESSAGES_PATH = '/builder/messages';
+export const MESSAGE_VIEWS = ['agencies', 'projects'] as const;
+export type MessagesView = typeof MESSAGE_VIEWS[number];
 
-export function agencyTabFrom(value: string | undefined): AgencyTab {
-  return (AGENCY_TABS as readonly string[]).includes(value ?? '')
-    ? value as AgencyTab
-    : 'activations';
+/** The keys the project conversations read from the URL. */
+const PROJECT_CONVERSATION_KEYS = ['project', 'scope', 'scopeId', 'conversation'];
+
+/**
+ * Which half of Messages a URL opens. An explicit `view` wins; a URL that
+ * names a project conversation (every link written before the agency
+ * conversations moved here) opens the project conversations; anything else
+ * opens the agency conversations.
+ */
+export function messagesViewFrom(params: URLSearchParams): MessagesView {
+  const view = params.get('view');
+  if ((MESSAGE_VIEWS as readonly string[]).includes(view ?? '')) return view as MessagesView;
+  return PROJECT_CONVERSATION_KEYS.some((key) => params.has(key)) ? 'projects' : 'agencies';
+}
+
+/**
+ * Where an address from the old Agencies section lands, so no bookmark or
+ * shared link breaks: its Messages tab (with the conversation it named) opens
+ * the agency conversations on Messages, and everything else opens Agency
+ * Activations.
+ */
+export function legacyAgenciesTarget(tab: string | undefined, search: string): string {
+  if (tab !== 'messages') return ACTIVATIONS_PATH;
+  const params = new URLSearchParams(search);
+  params.set('view', 'agencies');
+  return `${MESSAGES_PATH}?${params.toString()}`;
 }
 
 /** The agency as a person reads it: its own name, else its workspace's. */

@@ -3,7 +3,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
- * AGENCIES → MESSAGES, ON THE PARTICIPANT MODEL (docs/builder-portal/62).
+ * MESSAGES → AGENCY CONVERSATIONS, ON THE PARTICIPANT MODEL (docs/builder-portal/62).
  *
  * Data is mocked at the query hook; the server decides every fact. What is
  * asserted is what the page does with it: the list is the conversations the
@@ -42,7 +42,14 @@ vi.mock('@/lib/builderAgency', async (original) => ({
   scrollMessageIntoView: () => undefined,
 }));
 
-import BuilderAgencies from '../BuilderAgencies';
+vi.mock('@/lib/builderQueries', () => ({
+  useBuilderConversations: () => ({ data: [], error: null, isLoading: false, isFetching: false, isError: false, refetch: vi.fn() }),
+  useBuilderConversation: () => ({ data: undefined, error: null, isLoading: false, isError: false, refetch: vi.fn() }),
+  useBuilderCollaborationMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
+}));
+vi.mock('@/components/builder-portal/BuilderScopePicker', () => ({ BuilderScopePicker: () => null }));
+
+import BuilderMessages from '../BuilderMessages';
 
 const CONVERSATION = (overrides: Record<string, unknown> = {}) => ({
   conversation_id: 'conv-1', open: true, can_send: true, can_invite: true, can_leave: true,
@@ -68,20 +75,20 @@ beforeEach(() => {
 const renderAt = (path: string) => render(
   <MemoryRouter initialEntries={[path]}>
     <Routes>
-      <Route path="/builder/agencies/:tab" element={<BuilderAgencies />} />
+      <Route path="/builder/messages" element={<BuilderMessages />} />
     </Routes>
   </MemoryRouter>,
 );
 
-describe('Agencies → Messages', () => {
+describe('Messages → Agency conversations', () => {
   it('lists the viewer\'s own conversations, one per activation', () => {
     state.inbox.conversations.push({ ...state.inbox.conversations[0], conversation_id: 'conv-2', agency_name: 'Example Agency' });
-    renderAt('/builder/agencies/messages');
+    renderAt('/builder/messages?view=agencies');
     expect(screen.getAllByRole('option')).toHaveLength(2);
   });
 
   it('a selected conversation shows its thread and both sides\' participants', () => {
-    renderAt('/builder/agencies/messages?thread=conv-1');
+    renderAt('/builder/messages?view=agencies&thread=conv-1');
     const people = screen.getByRole('list', { name: /participants/i });
     expect(within(people).getByText('Avery Builder')).toBeInTheDocument();
     expect(within(people).getByText('Olive Owner')).toBeInTheDocument();
@@ -91,7 +98,7 @@ describe('Agencies → Messages', () => {
 
   it('a participant adds a colleague from their own organisation, and leaves', async () => {
     state.invitees = [{ user_id: 'u-alex', display_name: 'Alex Builder' }];
-    renderAt('/builder/agencies/messages?thread=conv-1');
+    renderAt('/builder/messages?view=agencies&thread=conv-1');
     fireEvent.click(screen.getByRole('button', { name: /add user/i }));
     fireEvent.click(await screen.findByRole('button', { name: /add alex builder/i }));
     await vi.waitFor(() => expect(invited).toEqual(['u-alex']));
@@ -102,7 +109,7 @@ describe('Agencies → Messages', () => {
 
   it('Add user says the colleagues could not be loaded, not that there is nobody', () => {
     state.inviteesError = Object.assign(new Error('unavailable'), { status: 503 });
-    renderAt('/builder/agencies/messages?thread=conv-1');
+    renderAt('/builder/messages?view=agencies&thread=conv-1');
     fireEvent.click(screen.getByRole('button', { name: /add user/i }));
     expect(screen.getByText(/colleagues could not be loaded/i)).toBeInTheDocument();
     expect(screen.queryByText(/nobody else/i)).toBeNull();
@@ -110,14 +117,14 @@ describe('Agencies → Messages', () => {
 
   it('the last builder participant is told to add a colleague before leaving', () => {
     state.conversation = CONVERSATION({ can_leave: false });
-    renderAt('/builder/agencies/messages?thread=conv-1');
+    renderAt('/builder/messages?view=agencies&thread=conv-1');
     expect(screen.getByRole('button', { name: /leave chat/i })).toBeDisabled();
     expect(screen.getByText(/add a colleague before you leave/i)).toBeInTheDocument();
   });
 
   it('a withdrawn activation\'s conversation keeps its history and takes no reply and no new user', () => {
     state.conversation = CONVERSATION({ open: false, can_send: false, can_invite: false });
-    renderAt('/builder/agencies/messages?thread=conv-1');
+    renderAt('/builder/messages?view=agencies&thread=conv-1');
     expect(screen.getByText('Is it available?')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /add user/i })).toBeNull();
     expect(screen.getByRole('textbox', { name: /message/i })).toBeDisabled();
@@ -126,7 +133,7 @@ describe('Agencies → Messages', () => {
   it('a conversation the viewer is not in shows nothing of it', () => {
     state.conversation = undefined;
     state.conversationError = Object.assign(new Error('You are not in this conversation.'), { status: 403, code: 'not_a_participant' });
-    renderAt('/builder/agencies/messages?thread=conv-9');
+    renderAt('/builder/messages?view=agencies&thread=conv-9');
     expect(screen.queryByRole('log')).toBeNull();
     expect(screen.queryByRole('list', { name: /participants/i })).toBeNull();
   });
@@ -137,7 +144,7 @@ describe('Agencies → Messages', () => {
       { id: 'm0', side: 'builder', sender_display_name: 'Avery Builder', body: 'The very first message',
         sent_at: '2026-09-20T10:00:00Z', delivery_state: 'delivered', delivered_at: null, failure_reason: null, mine: true, can_retry: false },
     ] });
-    renderAt('/builder/agencies/messages?thread=conv-1');
+    renderAt('/builder/messages?view=agencies&thread=conv-1');
     expect(screen.queryByText('The very first message')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /show earlier messages/i }));
     expect(await screen.findByText('The very first message')).toBeTruthy();
@@ -158,8 +165,8 @@ describe('Agencies → Messages', () => {
     const MID = message('m2', 'Mid note', '2026-09-25T11:00:00Z');
     const ARRIVED = message('m3', 'Arrived note', '2026-09-26T10:00:00Z');
     const LATEST = message('m4', 'Latest note', '2026-09-27T10:00:00Z');
-    const tree = () => (<MemoryRouter initialEntries={['/builder/agencies/messages?thread=conv-1']}>
-      <Routes><Route path="/builder/agencies/:tab" element={<BuilderAgencies />} /></Routes></MemoryRouter>);
+    const tree = () => (<MemoryRouter initialEntries={['/builder/messages?view=agencies&thread=conv-1']}>
+      <Routes><Route path="/builder/messages" element={<BuilderMessages />} /></Routes></MemoryRouter>);
     state.conversation = CONVERSATION({ has_earlier: true, earlier_cursor: 'm1', messages: [FIRST, MID] });
     state.earlierPage = CONVERSATION({ has_earlier: false, earlier_cursor: null,
       messages: [message('m0', 'Older note', '2026-09-20T10:00:00Z')] });
@@ -178,8 +185,8 @@ describe('Agencies → Messages', () => {
   it('a poll window that no longer touches what was kept pages again from the new window, so nothing between is unreachable', async () => {
     const message = (id: string, body: string, sent_at: string) => ({ id, side: 'command_centre', sender_display_name: 'Olive Owner',
       body, sent_at, delivery_state: null, delivered_at: null, failure_reason: null, mine: false, can_retry: false });
-    const tree = () => (<MemoryRouter initialEntries={['/builder/agencies/messages?thread=conv-1']}>
-      <Routes><Route path="/builder/agencies/:tab" element={<BuilderAgencies />} /></Routes></MemoryRouter>);
+    const tree = () => (<MemoryRouter initialEntries={['/builder/messages?view=agencies&thread=conv-1']}>
+      <Routes><Route path="/builder/messages" element={<BuilderMessages />} /></Routes></MemoryRouter>);
     state.conversation = CONVERSATION({ has_earlier: true, earlier_cursor: 'm1' });
     state.earlierPage = CONVERSATION({ has_earlier: false, earlier_cursor: null,
       messages: [message('m0', 'Older note', '2026-09-20T10:00:00Z')] });
@@ -203,7 +210,7 @@ describe('Agencies → Messages', () => {
     state.conversation = CONVERSATION({ has_earlier: true, earlier_cursor: 'm1' });
     state.earlierPage = CONVERSATION({ has_earlier: false, earlier_cursor: null, messages: [failed] });
     state.retryAnswer = { ...failed, delivery_state: 'queued', failure_reason: null, can_retry: false };
-    renderAt('/builder/agencies/messages?thread=conv-1');
+    renderAt('/builder/messages?view=agencies&thread=conv-1');
     fireEvent.click(screen.getByRole('button', { name: /show earlier messages/i }));
     fireEvent.click(await screen.findByRole('button', { name: /send again/i }));
     expect(retried).toEqual(['m0']);
@@ -211,20 +218,20 @@ describe('Agencies → Messages', () => {
   });
 
   it('a conversation with nothing earlier offers no earlier page', () => {
-    renderAt('/builder/agencies/messages?thread=conv-1');
+    renderAt('/builder/messages?view=agencies&thread=conv-1');
     expect(screen.queryByRole('button', { name: /show earlier messages/i })).toBeNull();
   });
 
   it('an Activated Properties read that fails leaves the Messages tab working', () => {
     state.activationsError = Object.assign(new Error('unavailable'), { status: 503 });
-    renderAt('/builder/agencies/messages?thread=conv-1');
+    renderAt('/builder/messages?view=agencies&thread=conv-1');
     expect(screen.getAllByRole('option')).toHaveLength(1);
     expect(screen.getByRole('log')).toBeTruthy();
   });
 
   it('with no conversations, says how one starts', () => {
     state.inbox = { conversations: [] };
-    renderAt('/builder/agencies/messages');
+    renderAt('/builder/messages?view=agencies');
     expect(screen.getByText(/no conversations yet/i)).toBeInTheDocument();
   });
 });
