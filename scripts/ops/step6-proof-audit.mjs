@@ -21,6 +21,17 @@
  * Conversations, participants and messages are also counted against the two
  * agreed real conversations: anything outside them is reported.
  *
+ * The result separates four things and never merges them:
+ *   - MUTABLE proof artefacts, which must be zero;
+ *   - RETAINED security log evidence: an operational event that is exactly a
+ *     declared deliberate refusal a proof provokes (`DELIBERATE_REFUSALS`),
+ *     verified by provenance and semantics, never by row id — reported
+ *     separately and never counted as residue;
+ *   - REAL Command Centre connections, validated against the network's
+ *     `workspace_connections` (not against the stock mirror, which a builder
+ *     with no stock copied yet is legitimately absent from);
+ *   - UNVERIFIABLE checks, named, never guessed.
+ *
  * Every statement is a single SELECT, and `query` refuses anything else
  * before it leaves this process. It prints ids truncated to eight characters,
  * states and counts — never a message body, a name, an email address or any
@@ -139,7 +150,10 @@ async function audit() {
   await marker('workspaces', 'net', 'workspace_connections');
   await orphan('workspaces', 'net', 'workspace_connections', 'builder_organisation_id', 'builder_organisations');
   await orphan('workspaces', 'net', 'workspace_connections', 'workspace_id', 'workspace_registry');
-  await orphan('workspaces', 'cc', 'builder_network_connections', 'builder_organisation_id', 'builder_network_stock_organisations');
+  // A Command Centre connection is judged by the cross-network relationship,
+  // never by the stock mirror: a real builder with no stock copied yet has no
+  // `builder_network_stock_organisations` row, and that is not residue.
+  await classifyCcConnections();
 
   // ---- users / staff -------------------------------------------------------
   await marker('users / staff', 'net', 'builder_portal_users');
@@ -227,13 +241,7 @@ async function audit() {
 
   // ---- operational events / logs -------------------------------------------
   for (const [db, parent] of [['cc', 'builder_network_connections'], ['net', 'workspace_connections']]) {
-    await count('operational events', db, `portal_operational_events: connection_id → missing ${parent}`,
-      ['portal_operational_events.metadata', `${parent}.id`], `
-      SELECT count(*)::int AS n, (array_agg(left(e.id::text, 8)))[1:5] AS refs
-        FROM public.portal_operational_events e
-       WHERE e.metadata ? 'connection_id'
-         AND NOT EXISTS (SELECT 1 FROM public.${parent} c WHERE c.id::text = e.metadata->>'connection_id')`);
-    await marker('operational events', db, 'portal_operational_events');
+    await classifyOperationalEvents(db, parent);
     await orphan('operational events', db, 'portal_operational_alerts', 'event_id', 'portal_operational_events');
   }
 
@@ -241,6 +249,164 @@ async function audit() {
   await orphan('sessions / temporary auth', 'cc', 'user_sessions', 'user_id', 'custom_users');
   await marker('sessions / temporary auth', 'cc', 'user_sessions');
   await orphan('sessions / temporary auth', 'net', 'builder_portal_sessions', 'builder_user_id', 'builder_portal_users');
+}
+
+// ---------------------------------------------------------------------------
+// COMMAND CENTRE CONNECTIONS — legitimacy from the authoritative relationship.
+//
+// Real (excluded from residue) only when ALL hold: its `network_connection_id`
+// resolves to a network `workspace_connections` row; both sides are active and
+// unrevoked; the network builder organisation exists; the workspace exists and
+// is not a proof workspace; and no side carries a proof marker. A marker on any
+// side is proof residue. Anything else is reported as not validated, never
+// guessed either way.
+async function classifyCcConnections() {
+  const category = 'workspaces / connections';
+  const needs = [['cc', 'builder_network_connections', 'network_connection_id', 'state', 'revoked_at'],
+    ['net', 'workspace_connections', 'workspace_id', 'builder_organisation_id', 'state', 'revoked_at']];
+  for (const [db, table, ...cols] of needs) {
+    if (!has(db, table, ...cols)) {
+      results.push({ category, db: 'cc', label: 'connection legitimacy', n: null, note: `${table} columns missing on ${db}` });
+      return;
+    }
+  }
+  let ccRows; let netRows;
+  try {
+    ccRows = await query(CC_REF, `
+      SELECT x.id::text AS id, x.state, x.revoked_at, x.network_connection_id::text AS network_connection_id,
+             x::text ~ ${sqlLit(MARKER_RE)} AS marker
+        FROM public.builder_network_connections x ORDER BY x.created_at`);
+    const ids = ccRows.map((r) => r.network_connection_id).filter((v) => /^[0-9a-f-]{36}$/i.test(String(v)));
+    netRows = ids.length ? await query(NETWORK_REF, `
+      SELECT x.id::text AS id, x.state, x.revoked_at,
+             x::text ~ ${sqlLit(MARKER_RE)} AS marker,
+             o.id IS NOT NULL AS org_exists, coalesce(o::text ~ ${sqlLit(MARKER_RE)}, false) AS org_marker,
+             r.id IS NOT NULL AS workspace_exists, coalesce(r::text ~ ${sqlLit(MARKER_RE)}, false) AS workspace_marker
+        FROM public.workspace_connections x
+        LEFT JOIN public.builder_organisations o ON o.id = x.builder_organisation_id
+        LEFT JOIN public.workspace_registry r ON r.id = x.workspace_id
+       WHERE x.id::text IN (${ids.map(sqlLit).join(', ')})`) : [];
+  } catch (error) {
+    results.push({ category, db: 'cc', label: 'connection legitimacy', n: null, note: String(error.message).slice(0, 160) });
+    return;
+  }
+  const byId = new Map(netRows.map((r) => [r.id, r]));
+  const proof = []; const real = []; const unvalidated = [];
+  for (const c of ccRows) {
+    const w = byId.get(c.network_connection_id);
+    const reasons = [];
+    if (c.state !== 'active') reasons.push(`cc state ${c.state}`);
+    if (c.revoked_at) reasons.push('cc revoked');
+    if (!w) reasons.push('network connection not found');
+    else {
+      if (w.state !== 'active') reasons.push(`network state ${w.state}`);
+      if (w.revoked_at) reasons.push('network revoked');
+      if (!w.org_exists) reasons.push('network organisation missing');
+      if (!w.workspace_exists) reasons.push('workspace missing');
+    }
+    const marked = c.marker || (w && (w.marker || w.org_marker || w.workspace_marker));
+    const line = `${short(c.id)}→${short(c.network_connection_id)}`;
+    if (marked) proof.push(line);
+    else if (!reasons.length) real.push(line);
+    else unvalidated.push(`${line} (${reasons.join('; ')})`);
+  }
+  results.push({ category, db: 'cc', label: 'connections carrying a proof marker (either side)', n: proof.length, refs: proof });
+  results.push({ category, db: 'cc', kind: 'real', label: 'real connections, validated against the network', n: real.length, refs: real });
+  if (unvalidated.length) {
+    results.push({ category, db: 'cc', label: 'connections not validated (no proof marker)', n: null,
+      note: unvalidated.join(', ') });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// OPERATIONAL EVENTS — proof residue vs retained security evidence.
+//
+// A proof-related event is one whose text carries a proof marker, or whose
+// `connection_id` no longer resolves. It is RETAINED EVIDENCE only when it is
+// exactly one of the declared deliberate refusal cases below, verified field by
+// field: the event name and event type; a request id carrying the proof's own
+// dedupe key, whose run tag decodes to a time within the window of the event;
+// a connection that no longer exists; a metadata shape of path NAMES only (the
+// refusal never stores a value); and no actor, case, matter, firm or
+// correlation. Anything else proof-related is unexpected residue.
+const DELIBERATE_REFUSALS = [
+  {
+    proof: 'stock-agencies-proof (check 3: a payload naming a client is refused at the door)',
+    eventName: 'builder_network_inbound_privacy_violation',
+    eventType: 'stock.selection.announced',
+    requestId: /^smoke-rollout:agencies-proof:([0-9a-z]+):client$/,
+    metadataKeys: ['connection_id', 'event_type', 'forbidden_path_count', 'forbidden_paths'],
+    forbiddenPaths: ['client_name'],
+  },
+];
+const RUN_WINDOW_MS = 30 * 60 * 1000;
+/** A proof RUN is `Date.now().toString(36)` followed by six hex characters. */
+const runStartedAt = (run) => (run.length > 6 ? parseInt(run.slice(0, -6), 36) : NaN);
+
+function deliberateRefusal(e) {
+  for (const d of DELIBERATE_REFUSALS) {
+    const m = e.metadata ?? {};
+    const keys = Object.keys(m).sort();
+    const tag = String(e.request_id ?? '').match(d.requestId);
+    const started = tag ? runStartedAt(tag[1]) : NaN;
+    const occurred = Date.parse(e.occurred_at);
+    const paths = Array.isArray(m.forbidden_paths) ? m.forbidden_paths : null;
+    const checks = [
+      e.event_name === d.eventName,
+      m.event_type === d.eventType,
+      !!tag && e.marker,
+      Number.isFinite(started) && occurred >= started && occurred - started <= RUN_WINDOW_MS,
+      e.has_connection && !e.connection_exists,
+      JSON.stringify(keys) === JSON.stringify([...d.metadataKeys].sort()),
+      !!paths && JSON.stringify(paths) === JSON.stringify(d.forbiddenPaths) && m.forbidden_path_count === paths.length,
+      [e.actor_id, e.case_id, e.matter_id, e.firm_id, e.correlation_id].every((v) => v === null || v === undefined),
+    ];
+    if (checks.every(Boolean)) return { proof: d.proof, run: tag[1], started: new Date(started).toISOString() };
+  }
+  return null;
+}
+
+async function classifyOperationalEvents(db, parent) {
+  const category = 'operational events';
+  const needed = ['portal_operational_events.metadata', 'portal_operational_events.request_id',
+    'portal_operational_events.event_name', `${parent}.id`];
+  for (const need of needed) {
+    const [table, ...cols] = need.split('.');
+    if (!has(db, table, ...cols)) {
+      results.push({ category, db, label: 'portal_operational_events provenance', n: null, note: `${need} not in this schema` });
+      return;
+    }
+  }
+  const optional = ['actor_id', 'case_id', 'matter_id', 'firm_id', 'correlation_id']
+    .map((c) => (has(db, 'portal_operational_events', c) ? `x.${c}` : `NULL AS ${c}`)).join(', ');
+  let rows;
+  try {
+    rows = await query(DB[db], `
+      SELECT x.id::text AS id, x.event_name, x.request_id, x.metadata, x.occurred_at, ${optional},
+             x::text ~ ${sqlLit(MARKER_RE)} AS marker,
+             (x.metadata ? 'connection_id') AS has_connection,
+             EXISTS (SELECT 1 FROM public.${parent} c WHERE c.id::text = x.metadata->>'connection_id') AS connection_exists
+        FROM public.portal_operational_events x
+       WHERE x::text ~ ${sqlLit(MARKER_RE)}
+          OR ((x.metadata ? 'connection_id')
+              AND NOT EXISTS (SELECT 1 FROM public.${parent} c WHERE c.id::text = x.metadata->>'connection_id'))
+       ORDER BY x.occurred_at`);
+  } catch (error) {
+    results.push({ category, db, label: 'portal_operational_events provenance', n: null, note: String(error.message).slice(0, 160) });
+    return;
+  }
+  const retained = []; const residue = [];
+  for (const e of rows) {
+    const verdict = deliberateRefusal(e);
+    if (verdict) {
+      retained.push(`${short(e.id)} ${e.event_name} at ${e.occurred_at} from ${verdict.proof} run ${verdict.run} (started ${verdict.started})`);
+    } else {
+      residue.push(short(e.id));
+    }
+  }
+  results.push({ category, db, label: 'portal_operational_events: unexpected proof residue', n: residue.length, refs: residue });
+  results.push({ category, db, kind: 'retained', label: 'portal_operational_events: retained security evidence (deliberate refusal)',
+    n: retained.length, refs: retained });
 }
 
 // ---------------------------------------------------------------------------
@@ -306,11 +472,11 @@ async function realState() {
 // ---------------------------------------------------------------------------
 /** Describes, without printing a name, email or body, each row a check flagged. */
 async function describeFlagged() {
-  const flagged = results.filter((r) => r.n);
+  const flagged = results.filter((r) => r.n && !r.kind);
   if (!flagged.length) return;
   console.log('\nFLAGGED ROWS (read-only description; nothing is changed)');
-  const connRefs = flagged.filter((r) => r.db === 'cc' && r.label.startsWith('builder_network_connections.'))
-    .flatMap((r) => r.refs);
+  const connRefs = flagged.filter((r) => r.db === 'cc' && r.category === 'workspaces / connections')
+    .flatMap((r) => r.refs.map((ref) => String(ref).slice(0, 8)));
   for (const ref of connRefs) {
     const [c] = await query(CC_REF, `
       SELECT x.id, x.state, x.created_at, x.accepted_at, x.revoked_at, x.network_connection_id,
@@ -357,33 +523,64 @@ async function main() {
   await loadSchema('net');
   await audit();
 
+  const kindOf = (r) => r.kind ?? 'mutable';
   console.log('\nPROOF ARTEFACT CHECKS');
   for (const r of results) {
     const where = r.db === 'cc' ? 'CC ' : 'NET';
     const value = r.n === null ? `NOT INDEPENDENTLY VERIFIABLE (${r.note})` : String(r.n);
-    const refs = r.n ? ` refs=${(r.refs ?? []).join(',')}` : '';
-    console.log(`  [${r.category}] ${where} ${r.label}: ${value}${refs}`);
+    const refs = r.n ? ` refs=${(r.refs ?? []).join(' | ')}` : '';
+    console.log(`  [${r.category}] (${kindOf(r)}) ${where} ${r.label}: ${value}${refs}`);
   }
 
-  console.log('\nSUMMARY  category | CC | network');
-  const categories = [...new Set(results.map((r) => r.category))];
+  const mutable = results.filter((r) => kindOf(r) === 'mutable');
+  console.log('\nMUTABLE PROOF ARTEFACTS  category | CC | network');
   const summarise = (rows) => {
     if (!rows.length) return 'n/a';
     const known = rows.filter((r) => r.n !== null);
     const sum = known.reduce((a, r) => a + r.n, 0);
     const unverifiable = rows.length - known.length;
-    return `${sum}${unverifiable ? ` (+${unverifiable} unverifiable)` : ''} over ${known.length} check(s)`;
+    return `${sum}${unverifiable ? ` (+${unverifiable} NOT INDEPENDENTLY VERIFIABLE)` : ''} over ${known.length} check(s)`;
   };
-  for (const c of categories) {
-    const rows = results.filter((r) => r.category === c);
+  for (const c of [...new Set(mutable.map((r) => r.category))]) {
+    const rows = mutable.filter((r) => r.category === c);
     console.log(`  ${c} | ${summarise(rows.filter((r) => r.db === 'cc'))} | ${summarise(rows.filter((r) => r.db === 'net'))}`);
   }
+  const retained = results.filter((r) => kindOf(r) === 'retained');
+  const real = results.filter((r) => kindOf(r) === 'real');
+  const unverifiable = results.filter((r) => r.n === null);
+  const retainedCount = retained.reduce((a, r) => a + (r.n ?? 0), 0);
+  console.log(`\nRETAINED SECURITY LOG EVIDENCE: ${retainedCount}`);
+  for (const r of retained) for (const ref of r.refs ?? []) console.log(`  ${r.db === 'cc' ? 'CC ' : 'NET'} ${ref}`);
+  console.log(`\nREAL CONNECTIONS EXCLUDED AFTER VALIDATION: ${real.reduce((a, r) => a + (r.n ?? 0), 0)}`);
+  for (const r of real) for (const ref of r.refs ?? []) console.log(`  CC  ${ref}`);
+  console.log(`\nUNVERIFIABLE: ${unverifiable.length}`);
+  for (const r of unverifiable) console.log(`  ${r.db === 'cc' ? 'CC ' : 'NET'} ${r.label}: ${r.note}`);
 
   await describeFlagged();
   const state = await realState();
-  const nonZero = results.filter((r) => r.n);
-  console.log(`\nnon-zero proof checks: ${nonZero.length}; unverifiable checks: ${results.filter((r) => r.n === null).length}`);
-  console.log(`real conversations found: CC ${state.ccConv.length}, network ${state.netConv.length}`);
+
+  const mutableTotal = mutable.reduce((a, r) => a + (r.n ?? 0), 0);
+  const byPrefix = (rows, p) => rows.find((r) => String(r.id).startsWith(p));
+  const conv0 = byPrefix(state.ccConv, '0c07fd71'); const conv1 = byPrefix(state.ccConv, '45e16763');
+  const net0 = byPrefix(state.netConv, '0c07fd71'); const net1 = byPrefix(state.netConv, '45e16763');
+  const partsOk = ['0c07fd71', '45e16763'].every((c) => {
+    const cp = state.ccParts.filter((p) => p.conv === c); const np = state.netParts.filter((p) => p.conv === c);
+    return cp.length === 2 && np.length === 2
+      && cp.every((p) => p.state === 'joined') && np.every((p) => p.state === 'joined')
+      && cp.some((p) => p.side === 'command_centre' && p.is_activator) && cp.some((p) => p.side === 'builder')
+      && np.some((p) => p.side === 'builder' && p.is_acknowledger) && np.some((p) => p.side === 'command_centre');
+  });
+  const unmatchedOk = ['6422d121', 'd7cd9995'].every((p) => byPrefix(state.selections, p)?.conversations === 0);
+  const noBackfillMail = state.selections.every((s) => s.ack_emails === 0 && s.notifications_naming_it === 0);
+  const realOk = state.ccConv.length === 2 && state.netConv.length === 2
+    && conv0?.messages === 3 && net0?.messages === 3 && conv1?.messages === 0 && net1?.messages === 0
+    && partsOk && unmatchedOk && noBackfillMail;
+  console.log(`\nmutable proof artefacts: ${mutableTotal}; retained security evidence: ${retainedCount}; unverifiable: ${unverifiable.length}`);
+  console.log(`real state as agreed: ${realOk} (conversations, messages, participants, unmatched activations, no backfill mail)`);
+  const verdict = mutableTotal === 0 && unverifiable.length === 0 && realOk
+    ? (retainedCount ? 'AUDIT CLEAN — WITH EXPECTED RETAINED SECURITY LOG EVIDENCE' : 'AUDIT CLEAN')
+    : 'AUDIT NOT CLEAN';
+  console.log(`VERDICT: ${verdict}`);
   console.log('nothing was written');
 }
 
