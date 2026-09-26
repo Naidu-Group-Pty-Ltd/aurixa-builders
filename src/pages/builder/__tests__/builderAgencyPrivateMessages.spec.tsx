@@ -19,8 +19,9 @@ const earlierAsked: string[] = [];
 const retried: string[] = [];
 
 vi.mock('@/lib/builderStockQueries', () => ({
-  useBuilderActivatedProperties: () => ({ data: { records: [], pagination: { page: 1, page_size: 25, total: 0, total_pages: 1 } },
-    error: null, isLoading: false, isFetching: false, refetch: vi.fn() }),
+  useBuilderActivatedProperties: () => ({
+    data: state.activationsError ? undefined : { records: [], pagination: { page: 1, page_size: 25, total: 0, total_pages: 1 } },
+    error: state.activationsError ?? null, isLoading: false, isFetching: false, refetch: vi.fn() }),
   useRefreshEveryBuilderActivatedProperty: () => async () => undefined,
   useRefreshMyAgencyConversations: () => async () => undefined,
   useEveryBuilderActivatedProperty: () => ({ data: { records: [], truncated: false }, error: null, isLoading: false, refetch: vi.fn() }),
@@ -212,6 +213,13 @@ describe('Agencies → Messages', () => {
   it('a conversation with nothing earlier offers no earlier page', () => {
     renderAt('/builder/agencies/messages?thread=conv-1');
     expect(screen.queryByRole('button', { name: /show earlier messages/i })).toBeNull();
+  });
+
+  it('an Activated Properties read that fails leaves the Messages tab working', () => {
+    state.activationsError = Object.assign(new Error('unavailable'), { status: 503 });
+    renderAt('/builder/agencies/messages?thread=conv-1');
+    expect(screen.getAllByRole('option')).toHaveLength(1);
+    expect(screen.getByRole('log')).toBeTruthy();
   });
 
   it('with no conversations, says how one starts', () => {

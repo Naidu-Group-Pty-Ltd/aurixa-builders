@@ -438,19 +438,25 @@ describe('a refresh of the first page that fails after it was read', () => {
   });
 
   it('a refresh REFUSED after the list was read withdraws it on both tabs', () => {
-    for (const path of ['/builder/agencies/messages', '/builder/agencies/activations']) {
-      state.records = [ACTIVATION];
-      state.error = { status: 403, message: 'You do not have access to stock' };
-      state.firstStale = true;
-      const view = renderAt(path);
-      expect(screen.queryByRole('listbox', { name: /conversations/i })).toBeNull();
-      expect(screen.getByText(/do not have access/i)).toBeTruthy();
-      view.unmount();
-    }
+    // Each tab is decided by its own read: activations by the activations
+    // list, Messages by the conversation list (so a failure of one never
+    // takes the other offline).
+    state.records = [ACTIVATION];
+    state.error = { status: 403, message: 'You do not have access to stock' };
+    state.firstStale = true;
+    const activations = renderAt('/builder/agencies/activations');
+    expect(screen.getByText(/do not have access/i)).toBeTruthy();
+    activations.unmount();
+    delete state.error; delete state.firstStale;
+    state.everyError = { status: 403, message: 'You do not have access to stock' };
+    state.everyStale = true;
+    renderAt('/builder/agencies/messages');
+    expect(screen.queryByRole('listbox', { name: /conversations/i })).toBeNull();
+    expect(screen.getByText(/do not have access/i)).toBeTruthy();
   });
 
   it('a first read that fails still says so, and a refusal still says access is missing', () => {
-    state.error = { message: 'first read failed' };
+    state.everyError = { message: 'first read failed' };
     renderAt('/builder/agencies/messages');
     expect(screen.getByText(/could not be loaded just now/i)).toBeTruthy();
   });

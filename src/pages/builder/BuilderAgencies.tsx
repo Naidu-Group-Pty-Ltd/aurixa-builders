@@ -111,14 +111,11 @@ export default function BuilderAgencies() {
           )}
         </TabsContent>
 
-        {/* The Messages tab reads the full list itself and says when that
-            fails; the first page is only its stand-in while it loads. */}
+        {/* The Messages tab reads its own conversation list and says when
+            that fails, so a failure of the activations read never takes it
+            offline. */}
         <TabsContent value="messages" className="mt-6">
-          {query.isLoading ? <Loading /> : query.error && (!query.data || refused) ? (
-            <ReadFailure denied={denied} onRetry={() => void query.refetch()} />
-          ) : (
-            <MessagesShell />
-          )}
+          <MessagesShell />
         </TabsContent>
       </Tabs>
     </BuilderPortalShell>
