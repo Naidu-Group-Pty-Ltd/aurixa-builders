@@ -9,7 +9,7 @@ and nothing about how a message travels.
 The same contract is implemented twice:
 
 - **Command Centre:** `npc-property-dashbord`'s
-  `20261222090000_one_activation_one_private_conversation.sql`.
+  `20261224090000_one_activation_one_private_conversation.sql`.
 - **aurixa-builders (this repository):** `20260926120000_one_activation_one_private_conversation.sql`.
 
 The Command Centre's copy of this document is `npc-property-dashbord`'s
