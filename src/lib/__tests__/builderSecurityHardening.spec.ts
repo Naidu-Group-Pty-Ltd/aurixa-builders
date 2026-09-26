@@ -504,3 +504,14 @@ describe('the rest of the remediation, pinned where it lives', () => {
     expect(hashCheck).toBeLessThan(body.indexOf("'expired'"));
   });
 });
+
+describe('how long a Builder Portal session lasts', () => {
+  it('survives four hours without a request, and never more than twelve in all', () => {
+    const code = readCode('supabase/functions/_shared/builderSessions.ts');
+    expect(code).toMatch(/export const BUILDER_SESSION_IDLE_MINUTES = 240;/);
+    expect(code).toMatch(/export const BUILDER_SESSION_ABSOLUTE_HOURS = 12;/);
+    // The idle window is what the database slides on every request, so the
+    // constant must be the one handed to it rather than a second copy.
+    expect(code).toContain('_idle_minutes: BUILDER_SESSION_IDLE_MINUTES');
+  });
+});
