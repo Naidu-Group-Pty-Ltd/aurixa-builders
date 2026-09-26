@@ -27,13 +27,15 @@ const readCode = (p: string) => readFileSync(join(REPO_ROOT, p), 'utf8')
   .replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
 
 type Row = Record<string, any>;
-function standIn(tables: Record<string, Row[]>) {
+function standIn(tables: Record<string, Row[]>, options: { maxRows?: number } = {}) {
   const log: Array<{ table: string; filters: Array<[string, string, unknown]> }> = [];
   const from = (table: string) => {
     const entry = { table, filters: [] as Array<[string, string, unknown]> };
     log.push(entry);
     let orders: Array<[string, boolean]> = [];
-    let cap = Infinity;
+    // PostgREST's own ceiling on an unbounded read, where a test sets one.
+    let cap = options.maxRows ?? Infinity;
+    let offset = 0;
     const builder: any = {
       select() { return builder; },
       eq(col: string, v: unknown) { entry.filters.push(['eq', col, v]); return builder; },
@@ -41,6 +43,7 @@ function standIn(tables: Record<string, Row[]>) {
       in(col: string, v: unknown[]) { entry.filters.push(['in', col, v]); return builder; },
       order(col: string, o?: { ascending?: boolean }) { orders = [...orders, [col, o?.ascending !== false]]; return builder; },
       limit(n: number) { cap = n; return builder; },
+      range(a: number, b: number) { offset = a; cap = Math.min(b - a + 1, options.maxRows ?? Infinity); return builder; },
       maybeSingle() { return builder.then((r: any) => ({ data: r.data[0] ?? null, error: null })); },
       then(resolve: (v: unknown) => unknown) {
         let rows = (tables[table] ?? []).filter((row) => entry.filters.every(([op, col, v]) =>
@@ -48,7 +51,7 @@ function standIn(tables: Record<string, Row[]>) {
         for (const [col, asc] of [...orders].reverse()) {
           rows = [...rows].sort((a, b) => (String(a[col]) < String(b[col]) ? -1 : String(a[col]) > String(b[col]) ? 1 : 0) * (asc ? 1 : -1));
         }
-        return Promise.resolve({ data: rows.slice(0, cap), error: null }).then(resolve);
+        return Promise.resolve({ data: rows.slice(offset, offset + cap), error: null }).then(resolve);
       },
     };
     return builder;
@@ -144,6 +147,22 @@ describe('Messages lists the viewer\'s own conversations', () => {
     expect(theirs.ok && theirs.conversations.map((c) => c.conversation_id)).toEqual(['conv-2']);
     const nobody = await listMyAgencyConversations(standIn(world()).client, { organisationId: ORG, viewerUserId: 'user-nobody' });
     expect(nobody.ok && nobody.conversations).toEqual([]);
+  });
+
+  it('lists every conversation the viewer is in, past the server\'s row ceiling', async () => {
+    const tables = world();
+    for (let i = 0; i < 1201; i += 1) {
+      tables.builder_agency_conversations.push({ id: `bulk-${i}`, connection_id: 'conn-a', stock_item_id: 'item-1',
+        organisation_id: ORG, selection_ref: 'ref-1', last_message_at: null });
+      tables.builder_agency_conversation_participants.push({ conversation_id: `bulk-${i}`, participant_ref: `r-${i}`,
+        side: 'builder', builder_user_id: ME, display_name: 'Avery Builder', state: 'joined', version: 1 });
+    }
+    const stand = standIn(tables, { maxRows: 1000 });
+    const mine = await listMyAgencyConversations(stand.client, { organisationId: ORG, viewerUserId: ME });
+    if (!mine.ok) throw new Error('failed');
+    expect(mine.conversations).toHaveLength(1202);
+    const inSizes = stand.log.flatMap((e) => e.filters.filter(([op]) => op === 'in').map(([, , v]) => (v as unknown[]).length));
+    expect(Math.max(...inSizes)).toBeLessThanOrEqual(200);
   });
 
   it('each names the property and the agency, and nothing about the agency\'s client', async () => {

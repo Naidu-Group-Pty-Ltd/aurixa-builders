@@ -97,33 +97,60 @@ export interface AgencyConversationSummary {
   last_message_at: string | null;
 }
 
+const LIST_PAGE = 500;
+const IN_CHUNK = 200;
+
+/** A `.in()` lookup over any number of ids, asked in bounded chunks, within one scope. */
+async function readIn(
+  supabase: Client, table: string, columns: string, column: string, values: unknown[],
+  scope: { column: string; value: string },
+): Promise<{ data: Row[]; error: unknown }> {
+  const ids = [...new Set(values.map(String))];
+  const data: Row[] = [];
+  for (let i = 0; i < ids.length; i += IN_CHUNK) {
+    const { data: rows, error } = await supabase.from(table).select(columns)
+      .in(column, ids.slice(i, i + IN_CHUNK)).eq(scope.column, scope.value);
+    if (error) return { data: [], error };
+    data.push(...((rows ?? []) as Row[]));
+  }
+  return { data, error: null };
+}
+
 /** The conversations one member is in now, in the session's organisation. */
 export async function listMyAgencyConversations(
   supabase: Client, args: { organisationId: string; viewerUserId: string },
 ): Promise<{ ok: true; conversations: AgencyConversationSummary[] } | { ok: false }> {
-  const { data: mine, error } = await supabase.from('builder_agency_conversation_participants')
-    .select('conversation_id')
-    .eq('builder_user_id', args.viewerUserId).eq('side', 'builder').eq('state', 'joined');
-  if (error) return { ok: false };
-  const ids = [...new Set(((mine ?? []) as Row[]).map((row) => String(row.conversation_id)))];
-  if (!ids.length) return { ok: true, conversations: [] };
+  // Every conversation the viewer is in, a page at a time: a response cap
+  // would otherwise drop threads with nothing saying so.
+  const mine: Row[] = [];
+  for (let from = 0; ; from += LIST_PAGE) {
+    const { data, error } = await supabase.from('builder_agency_conversation_participants')
+      .select('conversation_id')
+      .eq('builder_user_id', args.viewerUserId).eq('side', 'builder').eq('state', 'joined')
+      .order('conversation_id', { ascending: true })
+      .range(from, from + LIST_PAGE - 1);
+    if (error) return { ok: false };
+    const page = (data ?? []) as Row[];
+    mine.push(...page);
+    if (page.length < LIST_PAGE) break;
+  }
+  if (!mine.length) return { ok: true, conversations: [] };
 
-  const { data: conversations, error: conversationError } = await supabase.from('builder_agency_conversations')
-    .select('id, connection_id, stock_item_id, selection_ref, last_message_at')
-    .in('id', ids).eq('organisation_id', args.organisationId);
-  if (conversationError) return { ok: false };
-  const list = (conversations ?? []) as Row[];
+  // Only this organisation's conversations; every lookup scoped to it too.
+  const org = { column: 'organisation_id', value: args.organisationId };
+  const conversations = await readIn(supabase, 'builder_agency_conversations',
+    'id, connection_id, stock_item_id, selection_ref, last_message_at', 'id', mine.map((row) => row.conversation_id), org);
+  if (conversations.error) return { ok: false };
+  const list = conversations.data;
   if (!list.length) return { ok: true, conversations: [] };
 
   const [items, announcements, connections] = await Promise.all([
-    supabase.from('builder_stock_items').select('id, address_line, lot_number')
-      .in('id', [...new Set(list.map((c) => c.stock_item_id))]).eq('organisation_id', args.organisationId),
-    supabase.from('builder_stock_selection_announcements')
-      .select('connection_id, remote_selection_ref, status, acknowledged_at, agency_name')
-      .eq('organisation_id', args.organisationId)
-      .in('remote_selection_ref', list.map((c) => c.selection_ref).filter(Boolean)),
-    supabase.from('workspace_connections').select('id, state')
-      .in('id', [...new Set(list.map((c) => c.connection_id))]).eq('builder_organisation_id', args.organisationId),
+    readIn(supabase, 'builder_stock_items', 'id, address_line, lot_number', 'id', list.map((c) => c.stock_item_id), org),
+    readIn(supabase, 'builder_stock_selection_announcements',
+      'connection_id, remote_selection_ref, status, acknowledged_at, agency_name',
+      'remote_selection_ref', list.map((c) => c.selection_ref).filter(Boolean), org),
+    readIn(supabase, 'workspace_connections', 'id, state', 'id', list.map((c) => c.connection_id),
+      { column: 'builder_organisation_id', value: args.organisationId }),
   ]);
   if (items.error || announcements.error || connections.error) return { ok: false };
   const itemById = new Map(((items.data ?? []) as Row[]).map((row) => [row.id, row]));

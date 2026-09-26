@@ -72,7 +72,10 @@ only: on the Command Centre, an active user who holds Listings view; on the
 network, an active member of the same builder organisation who holds
 `inventory` view. The server reads the candidate's membership from its own
 rows; the browser names a user and nothing else, and any user who is not a
-valid candidate is refused. An invited colleague sees the whole history.
+valid candidate is refused. Inviting is a write, so the inviter also needs the
+permission sending needs (Listings edit here, `inventory` edit on the
+network); a participant who holds view alone reads the conversation and adds
+nobody, exactly as they send nothing. An invited colleague sees the whole history.
 Inviting someone already in the conversation changes nothing. A conversation
 that is closed takes no invitation.
 
