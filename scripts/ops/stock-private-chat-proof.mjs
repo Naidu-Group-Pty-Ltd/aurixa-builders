@@ -727,8 +727,18 @@ try {
   ];
   // The activation reference is the OLD protocol's (stock.selection.*), which
   // carries it by design; the question is whether a NEW event carries it.
+  // The activation announcement's `agency` block is the workspace's AUTHORISED
+  // self-disclosure — the acting adviser's outward contact (name, email, phone),
+  // decided by the product owner in Phase 7 wave 5 (CC migration
+  // 20261201090000) and unchanged by this step. It is the one place a person's
+  // email may ride; everything else in every event is still held to the list.
+  const withoutAuthorisedAgency = (r) => {
+    if (!r.type.startsWith('stock.selection.') || !r.payload || typeof r.payload !== 'object') return r.payload;
+    const { agency: _agency, ...rest } = r.payload;
+    return rest;
+  };
   const leaked = privateValues.flatMap(([label, value]) => crossed
-    .filter((r) => JSON.stringify(r.payload).includes(value)).map((r) => `${label} in ${r.type}`));
+    .filter((r) => JSON.stringify(withoutAuthorisedAgency(r)).includes(value)).map((r) => `${label} in ${r.type}`));
   const leakedValues = leaked.length;
   const refInNewEvents = newWire.includes(selection.id);
   record('28: no client, note, user id or personal email crossed; participant events carry exactly their keys',
