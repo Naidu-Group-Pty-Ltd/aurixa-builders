@@ -131,6 +131,31 @@ async function main() {
            count(*) FILTER (WHERE acknowledged_at IS NOT NULL AND status <> 'withdrawn')::int AS live_acknowledged
       FROM public.builder_stock_selections`);
   console.log(`\nCommand Centre activations: ${ccTotals?.all_rows ?? 0} total, ${ccTotals?.live ?? 0} live, ${ccTotals?.live_acknowledged ?? 0} live and acknowledged, ${ccUnopened?.n ?? 0} acknowledged with no conversation yet`);
+
+  // Whether a participant can READ the conversation they are listed in: the
+  // portal's read resolves the conversation inside the reader's organisation,
+  // so every agreement it depends on is printed (ids truncated, no names).
+  const readable = await net('participant readability', `
+    SELECT c.id AS conversation_id, c.organisation_id AS conversation_org,
+           w.builder_organisation_id AS connection_org,
+           i.organisation_id AS item_org,
+           p.side, p.state, p.builder_user_id IS NOT NULL AS has_user,
+           (SELECT string_agg(left(m.organisation_id::text, 8) || ':' || m.status || ':' || m.membership_role, ',' ORDER BY m.organisation_id)
+              FROM public.builder_organisation_memberships m WHERE m.builder_user_id = p.builder_user_id) AS memberships,
+           EXISTS (SELECT 1 FROM public.builder_organisation_memberships m
+                    WHERE m.builder_user_id = p.builder_user_id AND m.organisation_id = c.organisation_id
+                      AND m.status = 'active') AS member_of_conversation_org
+      FROM public.builder_agency_conversations c
+      JOIN public.builder_agency_conversation_participants p ON p.conversation_id = c.id AND p.side = 'builder'
+      LEFT JOIN public.workspace_connections w ON w.id = c.connection_id
+      LEFT JOIN public.builder_stock_items i ON i.id = c.stock_item_id
+     ORDER BY c.created_at`);
+  console.log('\nNetwork builder participants — can they read their conversation?');
+  for (const r of readable) {
+    console.log(`  ${short(r.conversation_id)} org=${short(r.conversation_org)} connection_org=${short(r.connection_org)} item_org=${short(r.item_org)}`
+      + ` participant state=${r.state} has_user=${r.has_user} member_of_conversation_org=${r.member_of_conversation_org} memberships=${r.memberships ?? 'none'}`);
+  }
+
   console.log('\nnothing was written');
 }
 
