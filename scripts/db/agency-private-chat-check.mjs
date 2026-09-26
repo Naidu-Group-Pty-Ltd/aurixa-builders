@@ -367,6 +367,27 @@ check('N20c. every eligible colleague is offered, however many there are',
     SELECT count(*) FROM public.builder_agency_invite_candidates(${lit(ORG_A)}, ${lit(C1)}, ${lit(ACK)})
      WHERE display_name LIKE 'Bulk Member %';
     ROLLBACK;`) === '501');
+{
+  // A user who is deleted outright has left every conversation they were in,
+  // and the agency is told so: a deleted account must never read as present.
+  const GONE = randomUUID();
+  sql(`INSERT INTO public.builder_portal_users(id, email, name, status, is_active, email_verified_at, must_change_password)
+       VALUES (${lit(GONE)}, 'deleted@checkhomes.example', 'Dana Deleted', 'active', true, now(), false);
+       INSERT INTO public.builder_organisation_memberships(builder_user_id, organisation_id, membership_role, is_primary, status)
+       VALUES (${lit(GONE)}, ${lit(ORG_A)}, 'member', false, 'active');`);
+  sql(`SELECT public.builder_agency_join_local(${lit(C1)}, ${lit(GONE)}, 'Dana Deleted')`);
+  const ref = sql(`SELECT participant_ref FROM public.builder_agency_conversation_participants
+                   WHERE conversation_id = ${lit(C1)} AND builder_user_id = ${lit(GONE)}`);
+  sql(`DELETE FROM public.builder_organisation_memberships WHERE builder_user_id = ${lit(GONE)};
+       DELETE FROM public.builder_portal_users WHERE id = ${lit(GONE)};`);
+  const left = sql(`SELECT state || '|' || version || '|' || (builder_user_id IS NULL)
+                    FROM public.builder_agency_conversation_participants
+                    WHERE conversation_id = ${lit(C1)} AND participant_ref = ${lit(ref)}`);
+  const announced = sql(`SELECT payload->>'state' FROM public.builder_network_outbox
+                         WHERE dedupe_key = 'agency.participant:' || ${lit(C1)} || ':' || ${lit(ref)} || ':2'`);
+  check('N21b. a deleted user has left their conversations, and the agency is told', left === 'left|2|true' && announced === 'left',
+    `${left} / ${announced}`);
+}
 check('N21. there is no way to remove somebody else',
   sql(`SELECT count(*) FROM pg_proc WHERE proname ~ 'builder_agency_.*(remove|kick|evict)_?(participant|user|member)'`) === '0');
 
@@ -375,7 +396,7 @@ check('N23. the last builder participant of a live conversation cannot leave',
   /AGENCY_LAST_PARTICIPANT/.test(leaveRefusal(C2, COLLEAGUE)) && isParticipant(C2, COLLEAGUE) === 't');
 check('N22/N24. once a colleague has joined, the acknowledger can leave, and is announced as left',
   leave(C1, ACK) === 'left'
-    && members(C1) === 'builder:Alex Builder:joined,builder:Avery Builder:left'
+    && members(C1) === 'builder:Alex Builder:joined,builder:Avery Builder:left,builder:Dana Deleted:left'
     && sql(`SELECT payload->>'state' || '|' || (payload->>'version') FROM public.builder_network_outbox
             WHERE event_type = 'agency.message.participant' AND payload->>'display_name' = 'Avery Builder'
               AND payload->>'conversation_id' = ${lit(C1)}

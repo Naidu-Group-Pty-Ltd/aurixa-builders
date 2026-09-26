@@ -464,6 +464,39 @@ BEGIN
 END
 $fn$;
 
+-- A user who is deleted outright has left every conversation they were in.
+-- The foreign key only nulls their id; without this the row would stay
+-- 'joined', so colleagues and the agency would go on seeing a deleted account
+-- as present. It runs on every deletion path, before the id is nulled, and
+-- announces each leave exactly as leaving does. Deletion is not a choice the
+-- last-participant rule can refuse, so it is not asked.
+CREATE OR REPLACE FUNCTION public.builder_agency_retire_deleted_user()
+RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $fn$
+DECLARE
+  v_p record;
+  v_any boolean := false;
+BEGIN
+  FOR v_p IN
+    UPDATE public.builder_agency_conversation_participants
+       SET state = 'left', version = version + 1, left_at = now(), updated_at = now()
+     WHERE builder_user_id = OLD.id AND state = 'joined'
+    RETURNING conversation_id, participant_ref
+  LOOP
+    PERFORM public.builder_agency_announce_participant(v_p.conversation_id, v_p.participant_ref);
+    v_any := true;
+  END LOOP;
+  IF v_any THEN PERFORM public.builder_agency_kick_outbox(); END IF;
+  RETURN OLD;
+END
+$fn$;
+REVOKE ALL ON FUNCTION public.builder_agency_retire_deleted_user() FROM PUBLIC, anon, authenticated;
+DROP TRIGGER IF EXISTS builder_agency_retire_deleted_user ON public.builder_portal_users;
+CREATE TRIGGER builder_agency_retire_deleted_user
+  BEFORE DELETE ON public.builder_portal_users
+  FOR EACH ROW EXECUTE FUNCTION public.builder_agency_retire_deleted_user();
+
 -- ---------------------------------------------------------------------------
 -- 5. The acknowledgement opens the conversation. Exactly the previous
 --    definition (20260916170000), plus the conversation and the name.

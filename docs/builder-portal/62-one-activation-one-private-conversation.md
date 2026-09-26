@@ -87,6 +87,14 @@ or participant list is refused exactly as a user without access is refused
 (Step 5's refusal handling). Leaving never deletes history. Someone invited
 again after leaving joins again and sees the whole history.
 
+**Deletion.** A user who is deleted outright has left every conversation
+they were in, announced exactly as a leave is (a trigger on
+`builder_portal_users`, so every deletion path does it before the id is
+nulled). Deletion is not a choice the last-participant rule can refuse. If
+the deleted user was the last builder participant of a live conversation,
+nobody on this side is in it until the product decides how one is rejoined;
+that policy is not defined here.
+
 **The whole history, not a window of it.** A read returns the newest page of
 messages and says whether anything older exists (`has_earlier`, with
 `earlier_cursor`, the id of the oldest message returned). "Show earlier
