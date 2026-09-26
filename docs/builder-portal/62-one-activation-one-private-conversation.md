@@ -96,6 +96,13 @@ added above; the poll keeps only the newest page current. Paging is ordered by
 repeated nor skipped, and a cursor from another conversation returns nothing.
 The page size is unchanged: a longer history is reached by paging, never by a
 larger window.
+Once an earlier page has been read, every newest window a poll brings is kept
+as well: the window moves on as messages arrive, and a message that slides
+out of it sits after the earliest page's cursor, where no page returns it.
+
+**Lock order.** Posting takes the conversation row before the poster's
+participant row, the order leaving takes them in, so a post and a leave by the
+same person wait for each other rather than deadlock.
 
 ## 3. The events
 

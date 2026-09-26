@@ -147,6 +147,29 @@ describe('Agencies → Messages', () => {
     expect(screen.queryByRole('button', { name: /show earlier messages/i })).toBeNull();
   });
 
+  it('a message that slides out of the polled window after an earlier page was read stays in the history', async () => {
+    const message = (id: string, body: string, sent_at: string) => ({ id, side: 'command_centre', sender_display_name: 'Olive Owner',
+      body, sent_at, delivery_state: null, delivered_at: null, failure_reason: null, mine: false, can_retry: false });
+    state.conversation = CONVERSATION({ has_earlier: true, earlier_cursor: 'm1' });
+    state.earlierPage = CONVERSATION({ has_earlier: false, earlier_cursor: null,
+      messages: [message('m0', 'Older note', '2026-09-20T10:00:00Z')] });
+    const view = renderAt('/builder/agencies/messages?thread=conv-1');
+    fireEvent.click(screen.getByRole('button', { name: /show earlier messages/i }));
+    expect(await screen.findByText('Older note')).toBeTruthy();
+    // New messages arrive and the newest window moves on twice.
+    state.conversation = CONVERSATION({ has_earlier: true, earlier_cursor: 'm2',
+      messages: [message('m2', 'Arrived note', '2026-09-26T10:00:00Z')] });
+    view.rerender(<MemoryRouter initialEntries={['/builder/agencies/messages?thread=conv-1']}>
+      <Routes><Route path="/builder/agencies/:tab" element={<BuilderAgencies />} /></Routes></MemoryRouter>);
+    state.conversation = CONVERSATION({ has_earlier: true, earlier_cursor: 'm3',
+      messages: [message('m3', 'Latest note', '2026-09-27T10:00:00Z')] });
+    view.rerender(<MemoryRouter initialEntries={['/builder/agencies/messages?thread=conv-1']}>
+      <Routes><Route path="/builder/agencies/:tab" element={<BuilderAgencies />} /></Routes></MemoryRouter>);
+    const log = screen.getByRole('log');
+    expect(within(log).getAllByText(/note$|available\?$/).map((node) => node.textContent))
+      .toEqual(['Older note', 'Is it available?', 'Arrived note', 'Latest note']);
+  });
+
   it('a conversation with nothing earlier offers no earlier page', () => {
     renderAt('/builder/agencies/messages?thread=conv-1');
     expect(screen.queryByRole('button', { name: /show earlier messages/i })).toBeNull();

@@ -27,7 +27,7 @@
  * Fixtures are invented. Nothing here reaches a network.
  * Same env contract: LOCAL_PG_HOST / LOCAL_PG_PORT / LOCAL_PG_USER.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { randomUUID, createHash } from 'node:crypto';
 import { readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -46,6 +46,11 @@ const psql = (args) => execFileSync('psql', [...conn, '-v', 'ON_ERROR_STOP=1', .
   encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
 });
 const sql = (statement) => psql(['-d', DB, '-qAt', '-c', statement]).trim();
+/** The same, in its own session without blocking this one — for races. Never rejects. */
+const sqlAsync = (statement) => new Promise((resolve) => {
+  execFile('psql', [...conn, '-v', 'ON_ERROR_STOP=1', '-d', DB, '-qAt', '-c', statement], { encoding: 'utf8' },
+    (error, stdout, stderr) => resolve(error ? `ERROR ${stderr}` : stdout.trim()));
+});
 const lit = (v) => (v === null || v === undefined ? 'NULL' : `'${String(v).replace(/'/g, "''")}'`);
 const json = (v) => `${lit(JSON.stringify(v))}::jsonb`;
 function refusal(statement) {
@@ -273,6 +278,22 @@ const first = post(ORG_A, C1, ACK, 'We can hold it until Friday.');
   check('N39. Step 5\'s idempotency holds: the same send again is one message and one event',
     a === b && outbox(`dedupe_key = 'agency.message:${a}:1'`) === '1'
       && /AGENCY_MESSAGE_ID_REUSED/.test(refusal(`SELECT public.builder_agency_post_message(${lit(ORG_A)}, ${lit(C1)}, ${lit(ACK)}, ${lit(key)}, 'Other')`) ?? ''));
+}
+{
+  // A leave holds the conversation and then needs the poster's participant
+  // row. A post that locked the participant first and the conversation second
+  // would be holding exactly what the leave needs next.
+  const leaveSide = sqlAsync(`
+    SELECT 1 FROM public.builder_agency_conversations WHERE id = ${lit(C1)} FOR UPDATE;
+    SELECT pg_sleep(1.5);
+    SELECT 'participant row free' FROM public.builder_agency_conversation_participants
+     WHERE conversation_id = ${lit(C1)} AND builder_user_id = ${lit(ACK)} FOR UPDATE NOWAIT;`);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const postSide = sqlAsync(`SELECT count(*) FROM public.builder_agency_post_message(
+    ${lit(ORG_A)}, ${lit(C1)}, ${lit(ACK)}, gen_random_uuid(), 'Posted while a leave was deciding')`);
+  const [leaveResult, postResult] = await Promise.all([leaveSide, postSide]);
+  check('posting takes the conversation before the participant, as leaving does, so the two cannot deadlock',
+    leaveResult.includes('participant row free') && postResult === '1', `${leaveResult} / ${postResult}`);
 }
 sql(`UPDATE public.builder_agency_messages SET delivery_state = 'failed', failure_reason = 'not_delivered' WHERE id = ${lit(first)}`);
 check('N15. a participant sends their own failed message again',

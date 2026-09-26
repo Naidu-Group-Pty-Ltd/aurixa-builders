@@ -253,8 +253,12 @@ BEGIN
     RETURN;
   END IF;
 
+  -- The conversation is taken before the participant, the order leaving takes
+  -- them in, so a post and a leave by the same person cannot deadlock. The
+  -- post updates this row below, so it takes the lock that update needs.
   SELECT * INTO v_c FROM public.builder_agency_conversations
-   WHERE id = _conversation_id AND organisation_id = _organisation_id;
+   WHERE id = _conversation_id AND organisation_id = _organisation_id
+   FOR NO KEY UPDATE;
   IF v_c.id IS NULL THEN
     RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'AGENCY_CONVERSATION_NOT_FOUND';
   END IF;
