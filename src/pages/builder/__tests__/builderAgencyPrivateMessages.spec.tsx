@@ -151,24 +151,49 @@ describe('Agencies → Messages', () => {
   it('a message that slides out of the polled window after an earlier page was read stays in the history', async () => {
     const message = (id: string, body: string, sent_at: string) => ({ id, side: 'command_centre', sender_display_name: 'Olive Owner',
       body, sent_at, delivery_state: null, delivered_at: null, failure_reason: null, mine: false, can_retry: false });
+    // A real window is 500 messages and moves by the few that arrived, so
+    // consecutive windows overlap; two-message windows stand in for that.
+    const FIRST = message('m1', 'First note', '2026-09-25T10:00:00Z');
+    const MID = message('m2', 'Mid note', '2026-09-25T11:00:00Z');
+    const ARRIVED = message('m3', 'Arrived note', '2026-09-26T10:00:00Z');
+    const LATEST = message('m4', 'Latest note', '2026-09-27T10:00:00Z');
+    const tree = () => (<MemoryRouter initialEntries={['/builder/agencies/messages?thread=conv-1']}>
+      <Routes><Route path="/builder/agencies/:tab" element={<BuilderAgencies />} /></Routes></MemoryRouter>);
+    state.conversation = CONVERSATION({ has_earlier: true, earlier_cursor: 'm1', messages: [FIRST, MID] });
+    state.earlierPage = CONVERSATION({ has_earlier: false, earlier_cursor: null,
+      messages: [message('m0', 'Older note', '2026-09-20T10:00:00Z')] });
+    const view = render(tree());
+    fireEvent.click(screen.getByRole('button', { name: /show earlier messages/i }));
+    expect(await screen.findByText('Older note')).toBeTruthy();
+    state.conversation = CONVERSATION({ has_earlier: true, earlier_cursor: 'm2', messages: [MID, ARRIVED] });
+    view.rerender(tree());
+    state.conversation = CONVERSATION({ has_earlier: true, earlier_cursor: 'm3', messages: [ARRIVED, LATEST] });
+    view.rerender(tree());
+    const log = screen.getByRole('log');
+    expect(within(log).getAllByText(/note$/).map((node) => node.textContent))
+      .toEqual(['Older note', 'First note', 'Mid note', 'Arrived note', 'Latest note']);
+  });
+
+  it('a poll window that no longer touches what was kept pages again from the new window, so nothing between is unreachable', async () => {
+    const message = (id: string, body: string, sent_at: string) => ({ id, side: 'command_centre', sender_display_name: 'Olive Owner',
+      body, sent_at, delivery_state: null, delivered_at: null, failure_reason: null, mine: false, can_retry: false });
+    const tree = () => (<MemoryRouter initialEntries={['/builder/agencies/messages?thread=conv-1']}>
+      <Routes><Route path="/builder/agencies/:tab" element={<BuilderAgencies />} /></Routes></MemoryRouter>);
     state.conversation = CONVERSATION({ has_earlier: true, earlier_cursor: 'm1' });
     state.earlierPage = CONVERSATION({ has_earlier: false, earlier_cursor: null,
       messages: [message('m0', 'Older note', '2026-09-20T10:00:00Z')] });
-    const view = renderAt('/builder/agencies/messages?thread=conv-1');
+    const view = render(tree());
     fireEvent.click(screen.getByRole('button', { name: /show earlier messages/i }));
     expect(await screen.findByText('Older note')).toBeTruthy();
-    // New messages arrive and the newest window moves on twice.
-    state.conversation = CONVERSATION({ has_earlier: true, earlier_cursor: 'm2',
-      messages: [message('m2', 'Arrived note', '2026-09-26T10:00:00Z')] });
-    view.rerender(<MemoryRouter initialEntries={['/builder/agencies/messages?thread=conv-1']}>
-      <Routes><Route path="/builder/agencies/:tab" element={<BuilderAgencies />} /></Routes></MemoryRouter>);
-    state.conversation = CONVERSATION({ has_earlier: true, earlier_cursor: 'm3',
-      messages: [message('m3', 'Latest note', '2026-09-27T10:00:00Z')] });
-    view.rerender(<MemoryRouter initialEntries={['/builder/agencies/messages?thread=conv-1']}>
-      <Routes><Route path="/builder/agencies/:tab" element={<BuilderAgencies />} /></Routes></MemoryRouter>);
-    const log = screen.getByRole('log');
-    expect(within(log).getAllByText(/note$|available\?$/).map((node) => node.textContent))
-      .toEqual(['Older note', 'Is it available?', 'Arrived note', 'Latest note']);
+    // A whole window arrived while the tab slept.
+    state.conversation = CONVERSATION({ has_earlier: true, earlier_cursor: 'far',
+      messages: [message('far', 'Far later note', '2026-09-30T10:00:00Z')] });
+    view.rerender(tree());
+    state.earlierPage = CONVERSATION({ has_earlier: true, earlier_cursor: 'between',
+      messages: [message('between', 'Between note', '2026-09-28T10:00:00Z')] });
+    fireEvent.click(await screen.findByRole('button', { name: /show earlier messages/i }));
+    expect(await screen.findByText('Between note')).toBeTruthy();
+    expect(earlierAsked).toEqual(['m1', 'far']);
   });
 
   it('a failed message from an earlier page that is sent again shows what the server now says of it', async () => {

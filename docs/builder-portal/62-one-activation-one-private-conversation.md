@@ -99,6 +99,10 @@ larger window.
 Once an earlier page has been read, every newest window a poll brings is kept
 as well: the window moves on as messages arrive, and a message that slides
 out of it sits after the earliest page's cursor, where no page returns it.
+A window that shares nothing with the last one (a whole window arrived
+unseen) restarts paging from the new window, so nothing between is
+unreachable. Sending a failed message again from an earlier page takes the
+retry's answer into the kept copy.
 
 **Lock order.** Posting takes the conversation row before the poster's
 participant row, the order leaving takes them in, so a post and a leave by the

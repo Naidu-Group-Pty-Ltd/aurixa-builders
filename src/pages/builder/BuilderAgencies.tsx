@@ -332,7 +332,12 @@ function ThreadView({ conversationId, summary }: { conversationId: string; summa
   } | null>(null);
   const pollWindow = conversation?.messages;
   if (earlier && pollWindow && earlier.window !== pollWindow) {
-    setEarlier({ ...earlier, messages: mergeAgencyConversationPages(earlier.messages, pollWindow), window: pollWindow });
+    // A window that shares nothing with the last one, with more before it,
+    // means a whole window arrived unseen: the messages between are reached
+    // by paging again from the new window, never skipped over.
+    const kept = new Set(earlier.window.map((m) => m.id));
+    const disjoint = kept.size > 0 && !!conversation?.has_earlier && !pollWindow.some((m) => kept.has(m.id));
+    setEarlier(disjoint ? null : { ...earlier, messages: mergeAgencyConversationPages(earlier.messages, pollWindow), window: pollWindow });
   }
   const messages = conversation ? mergeAgencyConversationPages(earlier?.messages ?? [], conversation.messages ?? []) : [];
   const earlierCursor = earlier ? earlier.cursor : conversation?.earlier_cursor ?? null;
