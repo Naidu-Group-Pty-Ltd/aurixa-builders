@@ -717,17 +717,24 @@ try {
   const newWire = JSON.stringify(crossed.filter((r) => r.type.startsWith('agency.')).map((r) => r.payload));
   const participantOff = crossed.filter((r) => r.type === 'agency.message.participant'
     && JSON.stringify(Object.keys(r.payload ?? {}).sort()) !== JSON.stringify(PARTICIPANT_KEYS));
-  const privateValues = [client.id, `${CLIENT_SURNAME} ${RUN}`, `private note ${RUN}`, owner.userId, ccColleague.userId,
-    ccTwin.userId, acknowledger.userId, invitee.userId, SAFE_SINK('owner'), acknowledger.email, invitee.email,
-    `${CC_USER_PREFIX}colleague-${RUN}@example.com`];
+  // Labelled, so a failure names WHAT crossed (never the value) and in which event type.
+  const privateValues = [
+    ['client id', client.id], ['client name', `${CLIENT_SURNAME} ${RUN}`], ['client note', `private note ${RUN}`],
+    ['activator user id', owner.userId], ['cc colleague user id', ccColleague.userId], ['cc twin user id', ccTwin.userId],
+    ['acknowledger user id', acknowledger.userId], ['invitee user id', invitee.userId],
+    ['activator email', SAFE_SINK('owner')], ['acknowledger email', acknowledger.email], ['invitee email', invitee.email],
+    ['cc colleague email', `${CC_USER_PREFIX}colleague-${RUN}@example.com`],
+  ];
   // The activation reference is the OLD protocol's (stock.selection.*), which
   // carries it by design; the question is whether a NEW event carries it.
-  const leakedValues = privateValues.filter((value) => wire.includes(value)).length;
+  const leaked = privateValues.flatMap(([label, value]) => crossed
+    .filter((r) => JSON.stringify(r.payload).includes(value)).map((r) => `${label} in ${r.type}`));
+  const leakedValues = leaked.length;
   const refInNewEvents = newWire.includes(selection.id);
   record('28: no client, note, user id or personal email crossed; participant events carry exactly their keys',
     crossed.length > 0 && leakedValues === 0 && participantOff.length === 0 && !refInNewEvents,
     `${crossed.length} payload(s), ${participantOff.length} off contract, ${leakedValues} private value(s), `
-      + `activation ref in new events: ${refInNewEvents}`);
+      + `activation ref in new events: ${refInNewEvents}${leaked.length ? ` [${[...new Set(leaked)].join('; ')}]` : ''}`);
 
   // 29. No model was called.
   const ccModelCalls = Number((await cc('model calls', `
