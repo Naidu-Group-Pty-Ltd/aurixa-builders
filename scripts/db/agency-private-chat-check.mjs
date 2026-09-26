@@ -535,6 +535,17 @@ console.log('\nN41. Nothing arrives ahead of the acknowledgement');
       && sql(`SELECT count(*) FROM public.builder_agency_messages WHERE conversation_id = ${lit(C4)}`) === '0');
 }
 
+console.log('\nN42. A conversation closed for any reason can be left');
+{
+  // C2's only builder participant is the colleague. Its activation stands and
+  // its connection is active; it is closed only because it no longer reads as
+  // acknowledged, which is a closure the builder cannot undo from this side.
+  sql(`UPDATE public.builder_stock_selection_announcements SET acknowledged_at = NULL WHERE remote_selection_ref = ${lit(REF_2)}`);
+  check('the last builder participant may leave a conversation closed for a reason other than withdrawal',
+    sql(`SELECT public.builder_agency_conversation_closed_reason(${lit(C2)})`) === 'not_acknowledged'
+      && leave(C2, COLLEAGUE) === 'left');
+}
+
 console.log('\nN40. What did not change');
 {
   const ref = randomUUID();

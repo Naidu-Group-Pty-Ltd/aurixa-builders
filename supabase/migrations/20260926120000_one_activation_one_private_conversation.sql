@@ -435,12 +435,10 @@ BEGIN
   IF v_p.participant_ref IS NULL THEN
     RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'AGENCY_NOT_A_PARTICIPANT';
   END IF;
-  v_live := v_c.selection_ref IS NOT NULL
-    AND EXISTS (SELECT 1 FROM public.builder_stock_selection_announcements a
-                 WHERE a.connection_id = v_c.connection_id AND a.remote_selection_ref = v_c.selection_ref
-                   AND a.status <> 'withdrawn')
-    AND EXISTS (SELECT 1 FROM public.workspace_connections c
-                 WHERE c.id = v_c.connection_id AND c.state = 'active');
+  -- Live is the same open/closed decision every other act reads: a
+  -- conversation closed for ANY reason can be left, so nobody is held in one
+  -- that no act of theirs can reopen.
+  v_live := public.builder_agency_conversation_closed_reason(v_c.id) IS NULL;
   IF v_live AND NOT EXISTS (
     SELECT 1 FROM public.builder_agency_conversation_participants o
      WHERE o.conversation_id = v_c.id AND o.side = 'builder' AND o.state = 'joined'
