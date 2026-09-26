@@ -18,6 +18,9 @@ import {
 type Client = any;
 type Row = Record<string, any>;
 
+/** How many participant rows one read asks for. */
+const ROSTER_PAGE = 500;
+
 export type AgencyConversationRead =
   | {
     ok: true; conversation_id: string; stock_item_id: string; open: boolean;
@@ -45,11 +48,20 @@ export async function readAgencyConversation(
   if (error) return { ok: false, reason: 'unavailable' };
   if (!conversation) return { ok: false, reason: 'not_found' };
 
-  const { data: people, error: peopleError } = await supabase.from('builder_agency_conversation_participants')
-    .select('participant_ref, side, builder_user_id, display_name, state')
-    .eq('conversation_id', conversation.id);
-  if (peopleError) return { ok: false, reason: 'unavailable' };
-  const rows = (people ?? []) as Row[];
+  // The whole roster, a page at a time, before membership is decided: a
+  // response ceiling must never refuse somebody who is in the conversation.
+  const rows: Row[] = [];
+  for (let from = 0; ; from += ROSTER_PAGE) {
+    const { data: people, error: peopleError } = await supabase.from('builder_agency_conversation_participants')
+      .select('participant_ref, side, builder_user_id, display_name, state')
+      .eq('conversation_id', conversation.id)
+      .order('participant_ref', { ascending: true })
+      .range(from, from + ROSTER_PAGE - 1);
+    if (peopleError) return { ok: false, reason: 'unavailable' };
+    const page = (people ?? []) as Row[];
+    rows.push(...page);
+    if (page.length < ROSTER_PAGE) break;
+  }
   if (!rows.some((row) => row.builder_user_id === args.viewerUserId && row.state === 'joined' && row.side === 'builder')) {
     return { ok: false, reason: 'not_a_participant' };
   }

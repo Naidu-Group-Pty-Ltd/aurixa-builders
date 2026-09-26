@@ -27,7 +27,7 @@ vi.mock('@/lib/builderStockQueries', () => ({
   useAgencyConversation: () => ({ data: state.conversation, error: state.conversationError ?? null, isLoading: false, isFetching: false }),
   useSendAgencyMessage: () => ({ isPending: false, mutateAsync: vi.fn(async () => ({ message: null })) }),
   useRetryAgencyMessage: () => ({ isPending: false, mutateAsync: vi.fn(async () => ({ message: null })) }),
-  useAgencyConversationInvitees: () => ({ data: state.invitees ?? [], error: null, isLoading: false }),
+  useAgencyConversationInvitees: () => ({ data: state.inviteesError ? undefined : (state.invitees ?? []), error: state.inviteesError ?? null, isLoading: false, refetch: vi.fn() }),
   useInviteAgencyParticipant: () => ({ isPending: false, mutateAsync: vi.fn(async (id: string) => { invited.push(id); return { result: 'joined' }; }) }),
   useLeaveAgencyConversation: () => ({ isPending: false, mutateAsync: vi.fn(async () => { left.push('left'); return { result: 'left' }; }) }),
 }));
@@ -93,6 +93,14 @@ describe('Agencies → Messages', () => {
     fireEvent.click(screen.getByRole('button', { name: /leave chat/i }));
     fireEvent.click(await screen.findByRole('button', { name: /^leave$/i }));
     await vi.waitFor(() => expect(left).toEqual(['left']));
+  });
+
+  it('Add user says the colleagues could not be loaded, not that there is nobody', () => {
+    state.inviteesError = Object.assign(new Error('unavailable'), { status: 503 });
+    renderAt('/builder/agencies/messages?thread=conv-1');
+    fireEvent.click(screen.getByRole('button', { name: /add user/i }));
+    expect(screen.getByText(/colleagues could not be loaded/i)).toBeInTheDocument();
+    expect(screen.queryByText(/nobody else/i)).toBeNull();
   });
 
   it('the last builder participant is told to add a colleague before leaving', () => {

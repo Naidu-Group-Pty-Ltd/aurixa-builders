@@ -543,6 +543,11 @@ function People({ conversationId, conversation }: { conversationId: string; conv
         <div className="rounded-md border border-border p-3">
           {invitees.isLoading ? (
             <p className="text-sm text-muted-foreground">Loading colleagues…</p>
+          ) : invitees.error && !invitees.data ? (
+            <div role="status" className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+              <span>Your colleagues could not be loaded just now.</span>
+              <Button type="button" size="sm" variant="outline" onClick={() => void invitees.refetch?.()}>Try again</Button>
+            </div>
           ) : (invitees.data ?? []).length ? (
             <ul className="space-y-1">
               {(invitees.data ?? []).map((person) => (

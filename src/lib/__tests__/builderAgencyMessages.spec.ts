@@ -34,6 +34,7 @@ function standIn(tables: Record<string, Row[]>) {
     log.push(entry);
     let orders: Array<[string, boolean]> = [];
     let cap = Infinity;
+    let offset = 0;
     const builder: any = {
       select() { return builder; },
       eq(col: string, v: unknown) { entry.filters.push(['eq', col, v]); return builder; },
@@ -41,6 +42,7 @@ function standIn(tables: Record<string, Row[]>) {
       in(col: string, v: unknown[]) { entry.filters.push(['in', col, v]); return builder; },
       order(col: string, o?: { ascending?: boolean }) { orders = [...orders, [col, o?.ascending !== false]]; return builder; },
       limit(n: number) { cap = n; return builder; },
+      range(a: number, b: number) { offset = a; cap = b - a + 1; return builder; },
       maybeSingle() { return builder.then((r: any) => ({ data: r.data[0] ?? null, error: null })); },
       then(resolve: (v: unknown) => unknown) {
         let rows = (tables[table] ?? []).filter((row) => entry.filters.every(([op, col, v]) =>
@@ -48,7 +50,7 @@ function standIn(tables: Record<string, Row[]>) {
         for (const [col, asc] of [...orders].reverse()) {
           rows = [...rows].sort((a, b) => (String(a[col]) < String(b[col]) ? -1 : String(a[col]) > String(b[col]) ? 1 : 0) * (asc ? 1 : -1));
         }
-        return Promise.resolve({ data: rows.slice(0, cap), error: null }).then(resolve);
+        return Promise.resolve({ data: rows.slice(offset, offset + cap), error: null }).then(resolve);
       },
     };
     return builder;
