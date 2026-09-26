@@ -156,6 +156,23 @@ async function main() {
       + ` participant state=${r.state} has_user=${r.has_user} member_of_conversation_org=${r.member_of_conversation_org} memberships=${r.memberships ?? 'none'}`);
   }
 
+  // The exact size of each "not found" answer this organisation's reader
+  // could be given, to match against the gateway's logged response sizes.
+  // Only byte counts are printed, never the name.
+  const orgIds = [...new Set(readable.map((r) => r.conversation_org).filter(Boolean))];
+  for (const orgId of orgIds) {
+    const [org] = await net('organisation name', `
+      SELECT id, trading_name, legal_name FROM public.builder_organisations WHERE id = '${String(orgId).replace(/'/g, "''")}'`);
+    const name = org?.trading_name ?? org?.legal_name ?? null;
+    const sizes = ['That conversation', 'That property', 'That image', 'That stock list'].map((what) => {
+      const error = name
+        ? `${what} was not found in ${name}. If the page was showing a different organisation, this browser has since signed in as another one — reload the page and try again.`
+        : `${what} was not found in the organisation you are signed in as. Reload the page and try again.`;
+      return `${what}=${Buffer.byteLength(JSON.stringify({ error, code: 'not_found_in_active_organisation', active_organisation_id: orgId }))}`;
+    });
+    console.log(`  not-found answer sizes for ${short(orgId)}: ${sizes.join(', ')}`);
+  }
+
   console.log('\nnothing was written');
 }
 
