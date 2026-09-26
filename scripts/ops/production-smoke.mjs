@@ -37,6 +37,7 @@ const ACCESS_TOKEN = process.env.SUPABASE_ACCESS_TOKEN || '';
 const PEPPER = process.env.NETWORK_SESSION_PEPPER || '';
 const ORIGIN = process.env.PORTAL_ORIGIN || 'https://builders.aurixasystems.com.au';
 const FUNCTIONS_BASE = `https://${PROJECT_REF}.supabase.co/functions/v1`;
+const CC_REF = process.env.CLONE_PROJECT_REF || 'dduzbchuswwbefdunfct';
 const AGREEMENT_HASH = 'f5612fc2daef61ef645b43465005f411cd85979c8687cfb023f358c615e00af5';
 const ALL_ACKS = [
   'global_confidentiality_privacy', 'authority_binding_acceptance',
@@ -54,9 +55,9 @@ function record(name, ok, detail = '', { required = true } = {}) {
   return ok;
 }
 
-async function q(label, sql) {
+async function q(label, sql, ref = PROJECT_REF) {
   const response = await fetch(
-    `https://api.supabase.com/v1/projects/${PROJECT_REF}/database/query`,
+    `https://api.supabase.com/v1/projects/${ref}/database/query`,
     {
       method: 'POST',
       headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, 'Content-Type': 'application/json' },
@@ -68,6 +69,9 @@ async function q(label, sql) {
   try { const parsed = JSON.parse(text); return Array.isArray(parsed) ? parsed : (parsed?.result ?? []); }
   catch { return []; }
 }
+
+/** The Command Centre the network delivers to — read and cleaned, never seeded. */
+const cc = (label, sql) => q(`cc ${label}`, sql, CC_REF);
 
 /** Call a portal function through the same-origin proxy, as the browser does. */
 async function call(fn, body, cookie = null) {
@@ -89,10 +93,37 @@ async function call(fn, body, cookie = null) {
 const hmacHex = (key, message) => createHmac('sha256', key).update(message).digest('hex');
 const sqlLit = (value) => `'${String(value).replace(/'/g, "''")}'`;
 
+/**
+ * NEVER CONNECTED TO A REAL WORKSPACE — `stock-import-proof.mjs`' rule. Since
+ * 20260921060000 an ACTIVE builder organisation is provisioned onto every
+ * registered workspace the moment it is inserted, and announces itself with a
+ * `connection.authorised` event. Seeded without this, the smoke organisation
+ * reached the live Command Centre and its stock was mirrored there. So the
+ * connections, and everything queued on them, are removed in the SAME
+ * transaction as the insert, and again at cleanup.
+ */
+function detachFromNetwork(orgIdsSql) {
+  const connections = `SELECT c.id FROM public.workspace_connections c WHERE c.builder_organisation_id IN (${orgIdsSql})`;
+  return `
+    DELETE FROM public.builder_network_outbox
+     WHERE dedupe_key IN (SELECT 'connection.authorised:' || c.id::text
+                            FROM public.workspace_connections c
+                           WHERE c.builder_organisation_id IN (${orgIdsSql}));
+    DELETE FROM public.workspace_connection_events WHERE connection_id IN (${connections});
+    DELETE FROM public.builder_stock_selection_announcements WHERE connection_id IN (${connections});
+    DELETE FROM public.builder_network_outbox WHERE connection_id IN (${connections});
+    DELETE FROM public.builder_network_inbound_events WHERE connection_id IN (${connections});
+    DELETE FROM public.builder_network_stamps WHERE connection_id IN (${connections});
+    DELETE FROM public.workspace_connections WHERE builder_organisation_id IN (${orgIdsSql});`;
+}
+const SMOKE_ORGS = `SELECT id FROM public.builder_organisations WHERE legal_name LIKE 'Smoke Rollout %'`;
+
 async function cleanup(stage) {
-  // Order matters only where FKs RESTRICT (announcements → connection);
-  // everything user- and organisation-rooted cascades. The activity log and
-  // operational events keep their rows: append-only audit, by design.
+  // Order matters only where FKs RESTRICT (announcements, connection events →
+  // connection); everything user- and organisation-rooted cascades. The
+  // activity log and operational events keep their rows: append-only audit,
+  // by design.
+  const orgIds = (await q(`cleanup (${stage}): smoke organisations`, SMOKE_ORGS)).map((r) => r.id);
   const sql = `
     DO $$
     DECLARE v_conn uuid;
@@ -106,8 +137,10 @@ async function cleanup(stage) {
         DELETE FROM public.builder_network_outbox WHERE connection_id = v_conn;
         DELETE FROM public.builder_network_inbound_events WHERE connection_id = v_conn;
         DELETE FROM public.builder_network_stamps WHERE connection_id = v_conn;
+        DELETE FROM public.workspace_connection_events WHERE connection_id = v_conn;
         DELETE FROM public.workspace_connections WHERE id = v_conn;
       END LOOP;
+      ${detachFromNetwork(SMOKE_ORGS)}
       DELETE FROM public.workspace_registry WHERE slug LIKE '${MARK}-%';
       -- Activation-opened projects RESTRICT the organisation delete, so they
       -- go first (their access grants, parties and history CASCADE with them,
@@ -128,6 +161,24 @@ async function cleanup(stage) {
       DELETE FROM public.builder_portal_users WHERE email LIKE '${MARK}-%@example.com';
     END $$;`;
   await q(`cleanup (${stage})`, sql);
+
+  // And whatever of it reached a Command Centre: a smoke organisation that was
+  // ever connected to a real workspace had its stock mirrored there.
+  const orgList = orgIds.length ? orgIds.map((v) => sqlLit(v) + '::uuid').join(', ') : 'NULL::uuid';
+  const connList = `SELECT c.id FROM public.builder_network_connections c
+     WHERE c.builder_org_label LIKE 'Smoke Rollout %' OR c.builder_organisation_id IN (${orgList})`;
+  await cc(`cleanup (${stage})`, `
+    SET LOCAL lock_timeout = '5s';
+    DELETE FROM public.builder_network_conversations WHERE connection_id IN (${connList});
+    DELETE FROM public.builder_stock_selections WHERE organisation_id IN (${orgList});
+    DELETE FROM public.builder_network_stock_items WHERE organisation_id IN (${orgList})
+       OR organisation_id IN (SELECT o.id FROM public.builder_network_stock_organisations o
+                               WHERE o.legal_name LIKE 'Smoke Rollout %');
+    DELETE FROM public.builder_network_stock_organisations WHERE id IN (${orgList}) OR legal_name LIKE 'Smoke Rollout %';
+    DELETE FROM public.builder_network_inbound_events WHERE connection_id IN (${connList});
+    DELETE FROM public.builder_network_outbox WHERE connection_id IN (${connList});
+    DELETE FROM public.builder_network_stamps WHERE connection_id IN (${connList});
+    DELETE FROM public.builder_network_connections WHERE id IN (${connList});`);
 }
 
 async function seedGovernedUser(tag) {
@@ -136,10 +187,11 @@ async function seedGovernedUser(tag) {
   // Mirrors what the real doors produce: register/accept-invite set
   // must_change_password=false with the password, and every door seeds the
   // onboarding checklist through builder_ensure_onboarding_steps.
+  const orgName = `Smoke Rollout ${tag} ${RUN}`;
   const rows = await q(`seed ${tag} user`, `
     WITH org AS (
       INSERT INTO public.builder_organisations(legal_name, org_type, status, is_active, activated_at)
-      VALUES ('Smoke Rollout ${tag} ${RUN}', 'builder', 'active', true, now())
+      VALUES (${sqlLit(orgName)}, 'builder', 'active', true, now())
       RETURNING id
     ), person AS (
       INSERT INTO public.builder_portal_users(
@@ -152,8 +204,15 @@ async function seedGovernedUser(tag) {
       SELECT person.id, org.id, 'owner', true, 'active' FROM person, org
       RETURNING id
     )
-    SELECT person.id AS user_id, org.id AS org_id FROM person, org, membership`);
-  const { user_id, org_id } = rows[0];
+    SELECT count(*) FROM membership;
+    ${detachFromNetwork(`SELECT id FROM public.builder_organisations WHERE legal_name = ${sqlLit(orgName)}`)}
+    SELECT u.id AS user_id, o.id AS org_id,
+           (SELECT count(*) FROM public.workspace_connections c WHERE c.builder_organisation_id = o.id)::int AS connections
+      FROM public.builder_portal_users u, public.builder_organisations o
+     WHERE u.email = ${sqlLit(email)} AND o.legal_name = ${sqlLit(orgName)}`);
+  const { user_id, org_id, connections } = rows[0];
+  record(`seed (${tag}): the smoke organisation is detached from every real workspace`,
+    Number(connections) === 0, `connections=${connections}`);
   await q(`seed ${tag} onboarding`, `SELECT public.builder_ensure_onboarding_steps(${sqlLit(user_id)}::uuid)`);
   return { email, password, userId: user_id, orgId: org_id };
 }
@@ -618,7 +677,10 @@ record('D2: and the property settles rather than staying in the ladder',
 const readiness = await q('readiness recalculated', `
   SELECT total, photos_ready, failed, working, blocked_reason
     FROM public.builder_stock_image_progress(${sqlLit(alpha.orgId)}::uuid)
-   WHERE published = false LIMIT 1`);
+   LIMIT 1`);
+// Since 20260919030000 a FIRST publication publishes what is ready, so the
+// upload is already published once one property has its photograph; the row
+// is asserted whatever its published flag says.
 record('D2: readiness recalculates — one of two properties is now ready',
   Number(readiness[0]?.photos_ready) === 1 && Number(readiness[0]?.total) === 2,
   `${readiness[0]?.photos_ready} of ${readiness[0]?.total} ready, blocked: ${String(readiness[0]?.blocked_reason ?? '').slice(0, 80)}`);
@@ -1125,10 +1187,17 @@ const leftovers = await q('leftover check', `
   SELECT
     (SELECT count(*) FROM public.builder_portal_users WHERE email LIKE '${MARK}-%@example.com') AS users,
     (SELECT count(*) FROM public.builder_organisations WHERE legal_name LIKE 'Smoke Rollout %') AS orgs,
-    (SELECT count(*) FROM public.workspace_registry WHERE slug LIKE '${MARK}-%') AS workspaces`);
-record('cleanup: no smoke rows remain',
-  Number(leftovers[0]?.users) === 0 && Number(leftovers[0]?.orgs) === 0 && Number(leftovers[0]?.workspaces) === 0,
-  JSON.stringify(leftovers[0] ?? {}));
+    (SELECT count(*) FROM public.workspace_registry WHERE slug LIKE '${MARK}-%') AS workspaces,
+    (SELECT count(*) FROM public.builder_network_outbox o WHERE NOT EXISTS
+       (SELECT 1 FROM public.workspace_connections c WHERE c.id = o.connection_id)) AS orphan_outbox`);
+const ccLeftovers = await cc('leftover check', `
+  SELECT
+    (SELECT count(*) FROM public.builder_network_connections WHERE builder_org_label LIKE 'Smoke Rollout %') AS connections,
+    (SELECT count(*) FROM public.builder_network_stock_organisations WHERE legal_name LIKE 'Smoke Rollout %') AS orgs`);
+record('cleanup: no smoke rows remain, on the network or on the Command Centre',
+  Object.values(leftovers[0] ?? { x: 1 }).every((n) => Number(n) === 0)
+    && Object.values(ccLeftovers[0] ?? { x: 1 }).every((n) => Number(n) === 0),
+  `${JSON.stringify(leftovers[0] ?? {})} cc=${JSON.stringify(ccLeftovers[0] ?? {})}`);
 
 console.log('\n================ smoke summary ================');
 for (const r of results) console.log(`  ${r.ok ? 'PASS' : r.required ? 'FAIL' : 'note'}  ${r.name}`);
