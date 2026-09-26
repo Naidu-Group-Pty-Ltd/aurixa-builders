@@ -526,6 +526,14 @@ BEGIN
     RAISE EXCEPTION USING ERRCODE='P0001', MESSAGE='BUILDER_ANNOUNCEMENT_NOT_FOUND';
   END IF;
 
+  -- The acknowledger joins the conversation this opens, so only an active
+  -- member may acknowledge: otherwise the acknowledgement would commit and
+  -- open a conversation with nobody on this side in it. The refusal rolls
+  -- back the stamp above with everything else, so nothing of it is written.
+  IF NOT EXISTS (SELECT 1 FROM public.builder_active_membership(_builder_user_id, _organisation_id)) THEN
+    RAISE EXCEPTION USING ERRCODE='P0001', MESSAGE='BUILDER_ACKNOWLEDGER_NOT_A_MEMBER';
+  END IF;
+
   INSERT INTO public.builder_network_stamps(connection_id, side, stamp, source_version)
   VALUES (v_row.connection_id, 'outbound',
           jsonb_build_object('count', 1, 'latest', to_jsonb(now()),

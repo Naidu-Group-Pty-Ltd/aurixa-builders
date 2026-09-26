@@ -244,6 +244,27 @@ check('N4. acknowledging again is refused and adds no conversation, participant 
     && sql(`SELECT count(*) FROM public.builder_agency_conversations WHERE stock_item_id = ${lit(ITEM)}`) === '1'
     && members(C1) === 'builder:Avery Builder:joined' && participantEvents(C1) === '1');
 
+{
+  // An acknowledgement and the conversation it opens commit together or not
+  // at all: someone who is not an active member cannot acknowledge, so a
+  // conversation is never opened with nobody on the builder side in it. (A
+  // blank name cannot exist: builder_portal_users_name_check refuses it.)
+  const ITEM_N = randomUUID(); const REF_N = randomUUID();
+  sql(`INSERT INTO public.builder_stock_items(id, organisation_id, lot_number, address_line, lifecycle_status)
+       VALUES (${lit(ITEM_N)}, ${lit(ORG_A)}, '105', '5 Membership Street', 'active');
+       INSERT INTO public.builder_stock_selection_announcements(connection_id, stock_item_id, organisation_id,
+         remote_selection_ref, status, source_version)
+       VALUES (${lit(CONN_A)}, ${lit(ITEM_N)}, ${lit(ORG_A)}, ${lit(REF_N)}, 'selected', 1);`);
+  const CN = activationConversationId(CONN_A, REF_N);
+  check('N4b. someone who is no longer an active member cannot acknowledge, and nothing of it is written',
+    /BUILDER_ACKNOWLEDGER_NOT_A_MEMBER/.test(refusal(`SELECT public.builder_stock_acknowledge_announcement(
+      ${lit(announcement(REF_N))}, ${lit(ORG_A)}, ${lit(INACTIVE)})`) ?? '')
+      && sql(`SELECT status FROM public.builder_stock_selection_announcements WHERE remote_selection_ref = ${lit(REF_N)}`) === 'selected'
+      && sql(`SELECT count(*) FROM public.builder_agency_conversations WHERE id = ${lit(CN)}`) === '0'
+      && sql(`SELECT count(*) FROM public.builder_network_outbox
+              WHERE dedupe_key = 'stock.selection.acknowledged:' || ${lit(CONN_A)} || ':' || ${lit(REF_N)}`) === '0');
+}
+
 console.log('\nEach activation is its own conversation');
 acknowledge(REF_2, COLLEAGUE);
 check('N7. a second activation of the same property has a different conversation',

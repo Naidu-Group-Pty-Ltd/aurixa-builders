@@ -801,6 +801,10 @@ BEGIN
   VALUES (v_org, '3 Ack Street') RETURNING id INTO v_item;
   INSERT INTO public.builder_portal_users(email, name, status, is_active)
   VALUES ('ack-proof@example.test', 'Ack Proof', 'active', true) RETURNING id INTO v_user;
+  -- Only an active member may acknowledge (the acknowledger joins the
+  -- activation's conversation), so the acknowledger is one.
+  INSERT INTO public.builder_organisation_memberships(builder_user_id, organisation_id, membership_role, is_primary, status)
+  VALUES (v_user, v_org, 'owner', true, 'active');
   INSERT INTO public.builder_stock_selection_announcements(
     connection_id, stock_item_id, organisation_id, remote_selection_ref, status, source_version)
   VALUES (v_connection, v_item, v_org, v_ref, 'selected', 1) RETURNING id INTO v_announcement;

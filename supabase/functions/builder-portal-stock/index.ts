@@ -2711,6 +2711,9 @@ Deno.serve(async (req) => {
       if (error) {
         const message = String(error.message);
         if (message.includes('BUILDER_ANNOUNCEMENT_NOT_FOUND')) return notFoundHere('That selection');
+        if (message.includes('BUILDER_ACKNOWLEDGER_NOT_A_MEMBER')) {
+          return json({ error: 'You are no longer an active member of this organisation.', code: 'not_a_member' }, 403);
+        }
         if (message.includes('BUILDER_ANNOUNCEMENT_NOT_ACKNOWLEDGEABLE')) {
           return json({ error: 'This selection has already moved on.', code: 'not_acknowledgeable' }, 409);
         }

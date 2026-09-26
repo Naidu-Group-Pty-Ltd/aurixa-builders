@@ -281,6 +281,10 @@ describe('the edge operations', () => {
     expect(code).toMatch(/builder_agency_leave_conversation[\s\S]{0,300}_actor_builder_user_id:\s*me\.id/);
     expect(code).toMatch(/builder_agency_invite_participant[\s\S]{0,300}_organisation_id:\s*activeOrganisationId/);
   });
+  it('an acknowledger who is no longer an active member is told so, not given a generic failure', () => {
+    expect(source()).toMatch(/BUILDER_ACKNOWLEDGER_NOT_A_MEMBER[\s\S]{0,200}code: 'not_a_member' \}, 403\)/);
+  });
+
   it('the acknowledgement names the acknowledger by display name, composed in the database', () => {
     const migration = readCode('supabase/migrations/20260926120000_one_activation_one_private_conversation.sql');
     expect(migration).toMatch(/'acknowledged_by_display_name'/);
