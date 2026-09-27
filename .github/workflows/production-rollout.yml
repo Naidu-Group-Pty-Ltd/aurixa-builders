@@ -220,6 +220,17 @@ name: Production rollout
 #            conversation, notifications and multi-tenant isolation. Its
 #            organisations are detached from every workspace in the
 #            transaction that creates them. Deletes everything it creates.
+#   activation-speed-proof
+#            times Command Centre activations from the selection to the
+#            builder portal's own list (outbox, worker, door, apply), then
+#            replays one delivery with no kick to prove the cron recovers it
+#            and nothing is stored twice. Disposable rows; deletes them all.
+#   portal-performance-proof
+#            times, on the live portal, a comparable ordinary request against
+#            opening a project, posting and reading a project message — through
+#            the proxy (end to end) and directly (the functions' Server-Timing
+#            stages) — and re-proves who may do what. PERF_SAMPLES rounds.
+#            Deletes everything it creates.
 #   portal-browser-proof
 #            opens the live portal in a real Chromium, signed in as a proof
 #            organisation of its own: every live route renders, the old
@@ -273,11 +284,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1)'
         required: false
@@ -393,6 +404,8 @@ jobs:
             agency-chat-backfill) node scripts/ops/agency-chat-backfill.mjs ;;
             stock-private-chat-proof) node scripts/ops/stock-private-chat-proof.mjs ;;
             portal-access-proof) node scripts/ops/portal-access-proof.mjs ;;
+            portal-performance-proof) node scripts/ops/portal-performance-proof.mjs ;;
+            activation-speed-proof) node scripts/ops/activation-speed-proof.mjs ;;
             portal-browser-proof)
                                   npm install --no-save --no-package-lock --no-audit --no-fund playwright@1.55.0 \
                                     && npx playwright install --with-deps chromium \

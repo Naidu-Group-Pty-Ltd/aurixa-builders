@@ -29,6 +29,7 @@
  *   * A project id in the body is a lookup key, never authority: every load goes
  *     through `resolveBuilderProjectAccess` and re-resolves permissions.
  */
+import { createStageTimer } from '../_shared/serverTiming.pure.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0';
 import { createCorsHeaders } from '../_shared/auth.ts';
 import { enforceCsrf, csrfDenied } from '../_shared/csrfGuard.ts';
@@ -65,9 +66,11 @@ Deno.serve(async (req) => {
   const csrf = enforceCsrf(req);
   if (!csrf.ok) return csrfDenied(corsHeaders, csrf);
 
+  // Stage timings (observability only; the proxy does not forward them).
+  const timer = createStageTimer();
   const json = (payload: unknown, status = 200) => new Response(
     JSON.stringify(payload),
-    { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+    { status, headers: { ...corsHeaders, 'Content-Type': 'application/json', 'Server-Timing': timer.header() } },
   );
 
   try {
@@ -81,8 +84,10 @@ Deno.serve(async (req) => {
     const body = await readBoundedJson(req, DEFAULT_MAX_BODY_BYTES)
       .catch(() => ({} as Record<string, any>));
     const operation = String(body.operation || '');
+    timer.mark('body');
 
     const session = await resolveBuilderSession(supabase, req);
+    timer.mark('session');
     if (!session.ok || !session.user) {
       return json({ error: session.error || 'Unauthorised', code: session.code }, session.status || 401);
     }
@@ -99,6 +104,7 @@ Deno.serve(async (req) => {
 
     const accessibleProjectIds = await listAccessibleBuilderProjectIds(
       supabase, me.id, activeOrganisationId);
+    timer.mark('accessible_projects');
 
     /** Load a project and confirm this builder user may see it. */
     const loadProject = async (projectId: string): Promise<
@@ -108,6 +114,7 @@ Deno.serve(async (req) => {
       if (!projectId) return { ok: false, status: 400, error: 'project_id is required' };
 
       const access = await resolveBuilderProjectAccess(supabase, me.id, projectId);
+      timer.mark('project_access');
       // No live grant is reported as "not found", not "forbidden": a caller must
       // not be able to discover that a project exists by probing ids.
       if (!access) return { ok: false, status: 404, error: 'Project not found' };
@@ -123,6 +130,7 @@ Deno.serve(async (req) => {
         .select(BUILDER_PROJECT_PORTAL_DETAIL_SELECT)
         .eq('id', projectId)
         .maybeSingle();
+      timer.mark('project_row');
       if (!project) return { ok: false, status: 404, error: 'Project not found' };
 
       // The project must still name the granting organisation on the granted
@@ -135,6 +143,7 @@ Deno.serve(async (req) => {
       }
 
       const perms = await resolveBuilderProjectPermissions(supabase, access);
+      timer.mark('permissions');
       if (!builderMatrixCan(perms, 'projects', 'view')) {
         return { ok: false, status: 403, error: 'You do not have access to this project' };
       }
@@ -354,12 +363,14 @@ Deno.serve(async (req) => {
             : Promise.resolve({ data: null }),
         ]);
 
+      timer.mark('details');
       const organisationMap = new Map<string, any>((organisations || []).map((o: any) => [o.id, o]));
 
       // The activation that opened this project, with the property record it
       // was opened for. The stock read is organisation-pinned: the item is
       // served only when it belongs to the organisation this session acts as.
       const activationByProject = await loadActivationContext([project.id]);
+      timer.mark('activation');
       const activation = activationByProject.get(project.id) ?? null;
       if (activation) {
         // On this surface the project IS the property, so its name is the
@@ -369,11 +380,13 @@ Deno.serve(async (req) => {
       // The property this project IS, read exactly as the Stock List reads
       // it — overlay, images and the documents its own row links to.
       const stockIdByProject = await loadProjectStockIds([project.id], activationByProject);
+      timer.mark('stock_link');
       const stockItemId = stockIdByProject.get(project.id) ?? null;
       const views = await readPropertyViews(supabase, {
         organisationId: activeOrganisationId,
         stockItemIds: stockItemId ? [stockItemId] : [],
       });
+      timer.mark('property_view');
       const view = stockItemId ? views.get(stockItemId) ?? null : null;
       const stockItem: Record<string, unknown> | null = view?.item ?? null;
 
@@ -381,6 +394,7 @@ Deno.serve(async (req) => {
         builderUserId: me.id, organisationId: activeOrganisationId,
         action: 'builder_project_viewed', entityType: 'project', entityId: project.id,
       });
+      timer.mark('activity_log');
 
       return json({
         success: true,

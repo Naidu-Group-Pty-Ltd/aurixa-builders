@@ -11,6 +11,7 @@ import { type BuilderStockImageProgressRecord } from '@/lib/builderStock';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { invokeBuilderFunction } from '@/lib/builderPortal';
 import { actingOrganisation } from '@/lib/builderActingOrganisation';
+import { ACTIVATED_PROPERTIES_POLL_MS, pollUnlessGone } from '@/lib/builderPolling.pure';
 import {
   countArrivingUploads, countWorkingImages,
 } from '../../supabase/functions/_shared/builderStock/imageProgress.pure';
@@ -224,8 +225,9 @@ export function useBuilderStockSelections(page = 1) {
 
 /**
  * The Agencies page's Activated Properties — the organisation's activations,
- * each with its property, elected photograph, agency and project link. Read
- * on mount and on focus like the rest of the portal; nothing here polls.
+ * each with its property, elected photograph, agency and project link. It
+ * re-reads itself while the tab is visible, so an activation the Command
+ * Centre has just delivered appears without a reload.
  */
 export function useBuilderActivatedProperties(page = 1) {
   return useQuery({
@@ -233,6 +235,8 @@ export function useBuilderActivatedProperties(page = 1) {
     queryFn: () => invoke<Paginated<ActivatedProperty>>({
       operation: 'list_activated_properties', page, page_size: 25,
     }),
+    refetchInterval: (query) => pollUnlessGone(query.state, ACTIVATED_PROPERTIES_POLL_MS),
+    refetchIntervalInBackground: false,
     retry: retryUnlessRefused,
   });
 }
@@ -250,6 +254,8 @@ export function useEveryBuilderActivatedProperty() {
     queryFn: () => collectEveryPage((page) => invoke<Paginated<ActivatedProperty>>({
       operation: 'list_activated_properties', page, page_size: 100,
     })),
+    refetchInterval: (query) => pollUnlessGone(query.state, ACTIVATED_PROPERTIES_POLL_MS),
+    refetchIntervalInBackground: false,
     retry: retryUnlessRefused,
   });
 }
