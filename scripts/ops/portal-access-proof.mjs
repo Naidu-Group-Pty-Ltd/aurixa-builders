@@ -533,10 +533,9 @@ try {
       { operation: 'get_conversation', conversation_id: conversationId }, members['read-only']?.cookie);
     const roPost = await call('builder-portal-collaboration',
       { operation: 'post_message', conversation_id: conversationId, body: 'read only tries' }, members['read-only']?.cookie);
-    // Refused at the scope's messages:edit check, which answers 404 rather than
-    // 403; either is a refusal, and the page no longer offers the composer.
-    record('E: a read_only participant reads the conversation and cannot post',
-      roRead.status === 200 && [403, 404].includes(roPost.status)
+    // A reader who can see the conversation is told 403, not "not found".
+    record('E: a read_only participant reads the conversation and cannot post (403)',
+      roRead.status === 200 && roPost.status === 403
         && roRead.json?.permissions?.messages?.edit === false,
       `read=${roRead.status} post=${roPost.status} permissions.messages.edit=${roRead.json?.permissions?.messages?.edit}`);
     const markRead = await call('builder-portal-collaboration',

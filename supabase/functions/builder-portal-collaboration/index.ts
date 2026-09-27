@@ -281,7 +281,22 @@ Deno.serve(async (req) => {
 
       const scope = await loadScope(
         conversation.scope_type as BuilderScopeType, conversation.scope_id, 'messages', level);
-      if (!scope.ok) return { ok: false, status: 404, error: 'Conversation not found' };
+      if (!scope.ok) {
+        // A reader who can SEE this conversation but may not write in it is
+        // told so; anyone who cannot see it still gets 404, so its existence
+        // never leaks.
+        if (level !== 'view') {
+          const readable = await loadScope(
+            conversation.scope_type as BuilderScopeType, conversation.scope_id, 'messages', 'view');
+          if (readable.ok) {
+            const { data: seen } = await supabase.rpc('builder_can_see_conversation', {
+              _user_id: me.id, _conversation_id: conversationId, _level: 'view',
+            });
+            if (seen === true) return { ok: false, status: 403, error: 'You do not have permission to post here' };
+          }
+        }
+        return { ok: false, status: 404, error: 'Conversation not found' };
+      }
 
       const { data: visible, error } = await supabase.rpc('builder_can_see_conversation', {
         _user_id: me.id, _conversation_id: conversationId, _level: level,

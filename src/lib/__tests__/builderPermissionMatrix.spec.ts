@@ -54,3 +54,33 @@ describe('resolvePermissionMatrix', () => {
       .rejects.toThrow('db');
   });
 });
+
+describe('matrixFromRows (one round trip)', () => {
+  const keys = ['projects', 'messages', 'legal_status'];
+  const forbidden = new Set(['legal_status']);
+  it('builds the matrix from the database rows, forbidden keys denied', async () => {
+    const { matrixFromRows } = await import('../../../supabase/functions/_shared/builderPermissionMatrix.pure');
+    const m = matrixFromRows(keys, forbidden, [
+      { permission_key: 'projects', can_view: true, can_edit: false, can_delete: false },
+      { permission_key: 'messages', can_view: true, can_edit: true, can_delete: null },
+    ]);
+    expect(m).toEqual({
+      projects: { view: true, edit: false, delete: false },
+      messages: { view: true, edit: true, delete: false },
+      legal_status: { view: false, edit: false, delete: false },
+    });
+    expect(Object.keys(m!)).toEqual(keys);
+  });
+  it('returns null — so the caller asks per key — when any asked key is missing or the answer is not rows', async () => {
+    const { matrixFromRows } = await import('../../../supabase/functions/_shared/builderPermissionMatrix.pure');
+    expect(matrixFromRows(keys, forbidden, [{ permission_key: 'projects', can_view: true, can_edit: true, can_delete: true }])).toBeNull();
+    expect(matrixFromRows(keys, forbidden, null)).toBeNull();
+    // A forbidden key is never trusted from a row, even if one came back allowing it.
+    const m = matrixFromRows(keys, forbidden, [
+      { permission_key: 'projects', can_view: true, can_edit: true, can_delete: true },
+      { permission_key: 'messages', can_view: true, can_edit: true, can_delete: true },
+      { permission_key: 'legal_status', can_view: true, can_edit: true, can_delete: true },
+    ]);
+    expect(m!.legal_status).toEqual({ view: false, edit: false, delete: false });
+  });
+});
