@@ -652,6 +652,83 @@ try {
       inB.status === 404, `status ${inB.status}`);
   }
 
+  // --- H. Member management ---------------------------------------------------------
+  console.log('\nH. Member management');
+  const manageMember = (cookie, membershipId, memberAction, role) => call('builder-portal-invite',
+    { action: 'manage_member', membership_id: membershipId, member_action: memberAction, role }, cookie);
+  const listMembers = (cookie) => call('builder-portal-invite', { action: 'list_members' }, cookie);
+  const { user: target } = await inviteAndAccept(A, A.cookie, 'member', 'managed');
+  if (target) await govern(target.cookie);
+  const pendingEmail = `${EMAIL_PREFIX}pending@example.com`;
+  await call('builder-portal-invite', { action: 'invite', email: pendingEmail, name: 'Access pending', membership_role: 'read_only' }, A.cookie);
+  const ownerList = await listMembers(A.cookie);
+  const listed = ownerList.json?.members ?? [];
+  const pendingListed = (ownerList.json?.invitations ?? []).find((m) => m.email === pendingEmail);
+  const selfRow = listed.find((m) => m.is_self);
+  record('H: the owner lists members (role, status) and pending invitations apart',
+    ownerList.status === 200 && listed.some((m) => m.builder_user_id === target?.userId && m.role === 'member' && m.status === 'active')
+      && !!pendingListed && !listed.some((m) => m.email === pendingEmail) && selfRow?.role === 'owner' && selfRow?.can_manage === false,
+    `members=${listed.length} invitations=${(ownerList.json?.invitations ?? []).length}`);
+  const bMembers = await listMembers(B.cookie);
+  record('H: another organisation\'s owner lists only their own members',
+    bMembers.status === 200 && !(bMembers.json?.members ?? []).some((m) => m.builder_user_id === target?.userId),
+    `members=${(bMembers.json?.members ?? []).length}`);
+  const managerCookie = (await mintSession(members.manager.userId)).cookie;
+  for (const [who, cookie] of [['manager', managerCookie], ['member', members.member.cookie], ['read_only', members['read-only'].cookie]]) {
+    const l = await listMembers(cookie);
+    const m = await manageMember(cookie, target?.membershipId, 'suspend');
+    record(`H: a ${who} can neither list nor manage members`, l.status === 403 && m.status === 403, `list=${l.status} manage=${m.status}`);
+  }
+  const stockEdit = (cookie) => call('builder-portal-stock',
+    { operation: 'set_availability', stock_item_id: randomUUID(), availability_status: 'available' }, cookie);
+  const beforePromote = await stockEdit(target.cookie);
+  const promoted = await manageMember(members.administrator.cookie, target.membershipId, 'set_role', 'manager');
+  const afterPromote = await stockEdit(target.cookie);
+  record('H: an administrator changes a role and the member\'s permissions change on their very next request',
+    beforePromote.status === 403 && promoted.status === 200 && promoted.json?.member?.role === 'manager' && afterPromote.status === 404,
+    `edit before=${beforePromote.status} change=${promoted.status} edit after=${afterPromote.status}`);
+  const demoted = await manageMember(A.cookie, target.membershipId, 'set_role', 'read_only');
+  const staleEdit = await stockEdit(target.cookie);
+  record('H: a demotion is enforced at once — the member\'s stale page cannot write',
+    demoted.status === 200 && staleEdit.status === 403, `change=${demoted.status} edit=${staleEdit.status}`);
+  const ownerByAdmin = await manageMember(members.administrator.cookie, A.membershipId, 'suspend');
+  const selfManage = await manageMember(A.cookie, A.membershipId, 'set_role', 'member');
+  const ownerRole = await manageMember(A.cookie, target.membershipId, 'set_role', 'owner');
+  const unknownRole = await manageMember(A.cookie, target.membershipId, 'set_role', 'superuser');
+  record('H: an administrator cannot touch the owner; nobody manages themselves; owner and unknown roles are refused',
+    ownerByAdmin.status === 403 && selfManage.status === 409 && ownerRole.status === 400 && unknownRole.status === 400,
+    `owner-by-admin=${ownerByAdmin.status} self=${selfManage.status} owner-role=${ownerRole.status} unknown=${unknownRole.status}`);
+  const soleOwner = (await q('owners', `SELECT count(*) AS n FROM public.builder_organisation_memberships
+    WHERE organisation_id = ${id(A.orgId)} AND membership_role = 'owner' AND status = 'active' AND revoked_at IS NULL`))[0];
+  record('H: the organisation keeps its one active owner', Number(soleOwner.n) === 1, `owners=${soleOwner.n}`);
+  const crossOrg = await manageMember(B.cookie, target.membershipId, 'remove');
+  record('H: another organisation cannot manage this organisation\'s member (reads as absent)', crossOrg.status === 404,
+    `status ${crossOrg.status}`);
+  const suspended = await manageMember(A.cookie, target.membershipId, 'suspend');
+  const suspendedCall = await call('builder-portal-verify', {}, target.cookie);
+  const reissue = await q('reissue', `SELECT EXISTS (SELECT 1 FROM public.builder_accessible_organisations(${id(target.userId)})) AS has_org`);
+  record('H: a suspended member loses access on their next request and cannot be issued a session',
+    suspended.status === 200 && suspended.json?.member?.status === 'suspended' && refused(suspendedCall.status) && reissue[0]?.has_org === false,
+    `suspend=${suspended.status} next=${suspendedCall.status} accessible_org=${reissue[0]?.has_org}`);
+  const reactivated = await manageMember(A.cookie, target.membershipId, 'reactivate');
+  const back = await mintSession(target.userId);
+  const backCall = await call('builder-portal-verify', {}, back.cookie);
+  record('H: a reactivated member can sign in again', reactivated.status === 200 && backCall.status === 200,
+    `reactivate=${reactivated.status} verify=${backCall.status}`);
+  const removed = await manageMember(A.cookie, target.membershipId, 'remove');
+  const removedCall = await call('builder-portal-verify', {}, back.cookie);
+  const afterRemove = await listMembers(A.cookie);
+  record('H: removal ends access and the member leaves the list',
+    removed.status === 200 && refused(removedCall.status) && !(afterRemove.json?.members ?? []).some((m) => m.builder_user_id === target.userId),
+    `remove=${removed.status} next=${removedCall.status}`);
+  const cancelled = await call('builder-portal-invite', { action: 'revoke_invite', builder_user_id: pendingListed?.builder_user_id }, A.cookie);
+  const afterCancel = await listMembers(A.cookie);
+  record('H: a pending invitation is cancelled and leaves the list',
+    cancelled.status === 200 && !(afterCancel.json?.invitations ?? []).some((m) => m.email === pendingEmail), `cancel=${cancelled.status}`);
+  const audited = (await q('member audit', `SELECT count(*) AS n FROM public.builder_portal_activity_log
+    WHERE organisation_id = ${id(A.orgId)} AND entity_type = 'membership' AND actor_type = 'builder_user'`))[0];
+  record('H: every membership act was audited', Number(audited.n) >= 5, `rows=${audited.n}`);
+
   // --- C. Sessions ----------------------------------------------------------------
   console.log('\nC. Sessions');
   const probe = (cookie) => call('builder-portal-verify', {}, cookie);
