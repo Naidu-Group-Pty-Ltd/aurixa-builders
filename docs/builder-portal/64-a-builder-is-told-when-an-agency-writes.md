@@ -87,3 +87,18 @@ counterpart of the Command Centre's popup (its `list_new_builder_messages`).
   wording, and the link.
 - `src/components/builder-portal/__tests__/agencyMessagePopups.spec.tsx`: the
   polling loop, driven with fake timers.
+- Production-rollout phase `message-speed-proof`: the whole change on the
+  live product, on disposable rows of its own. It times portal reads, each
+  side's send, delivery both ways and the first read that names a message.
+  It proves the new read's privacy rules and, in a real Chromium, the popup,
+  Open, and an open thread refreshing. `baseline` measures what is live
+  before a change.
+- Production-rollout phase `cc-frontend-build`: which build the Command
+  Centre's published frontend serves. Lovable reports a publish as started,
+  never as served, and this sandbox's egress refuses both Command Centre
+  origins, so a GitHub runner reads them. For each origin it reads
+  `/version.json` and the entry script the page loads. Both must name the same
+  build, because the manifest alone is a static file and says nothing about
+  the JavaScript a browser runs. `cc_build` also requires that build to be
+  that commit. The rules are `scripts/ops/ccFrontendBuild.pure.mjs`, tested
+  in `src/lib/__tests__/ccFrontendBuild.spec.ts`.

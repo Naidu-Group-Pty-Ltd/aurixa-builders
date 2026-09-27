@@ -243,6 +243,13 @@ name: Production rollout
 #            and skips what is not there yet — never a pass for a change.
 #            Playwright is installed for this phase only. Deletes everything
 #            it creates.
+#   cc-frontend-build
+#            read-only: which build the Command Centre's published frontend
+#            serves. Lovable reports a publish as started, never as served, so
+#            this reads each origin's `/version.json` and the entry script its
+#            page loads, and requires both to name the same build; `cc_build`
+#            also requires that build to be that commit. Public pages only: no
+#            token, no database, no write.
 #   portal-browser-proof
 #            opens the live portal in a real Chromium, signed in as a proof
 #            organisation of its own: every live route renders, the old
@@ -296,11 +303,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | cc-frontend-build | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1)'
         required: false
@@ -338,6 +345,11 @@ on:
         required: false
         default: false
         type: boolean
+      cc_build:
+        description: 'cc-frontend-build only: the Command Centre commit the published frontend should be (7-40 hex characters); blank records what is served'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: production-rollout
@@ -393,6 +405,7 @@ jobs:
           ONLY: ${{ inputs.only }}
           SCAN_PROOF_EXPECT: ${{ inputs.scan_expect }}
           MESSAGE_PROOF_BASELINE: ${{ inputs.baseline }}
+          CC_EXPECTED_BUILD: ${{ inputs.cc_build }}
         run: |
           set -euo pipefail
           case "${{ inputs.phase }}" in
@@ -428,6 +441,7 @@ jobs:
                                   npm install --no-save --no-package-lock --no-audit --no-fund playwright@1.55.0 \
                                     && npx playwright install --with-deps chromium \
                                     && node scripts/ops/message-speed-proof.mjs ;;
+            cc-frontend-build)    node scripts/ops/cc-frontend-build.mjs ;;
             portal-browser-proof)
                                   npm install --no-save --no-package-lock --no-audit --no-fund playwright@1.55.0 \
                                     && npx playwright install --with-deps chromium \
