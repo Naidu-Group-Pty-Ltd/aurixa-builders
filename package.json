@@ -26,7 +26,8 @@
     "ocr:vendor-language": "node scripts/ocr/vendor-language.mjs",
     "ocr:vendor-engine": "node scripts/ocr/vendor-engine.mjs",
     "db:agency-messaging:check": "node scripts/db/agency-messaging-check.mjs",
-    "db:agency-private-chat:check": "node scripts/db/agency-private-chat-check.mjs"
+    "db:agency-private-chat:check": "node scripts/db/agency-private-chat-check.mjs",
+    "db:member-management:check": "node scripts/db/member-management-check.mjs"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.2",

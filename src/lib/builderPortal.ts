@@ -296,6 +296,42 @@ export function builderInviteTeamMember(input: {
   }>('builder-portal-invite', { action: 'invite', ...input });
 }
 
+/** A member (or pending invitation) of the ACTIVE organisation, as an owner or administrator sees it. */
+export interface BuilderOrgMember {
+  membership_id: string;
+  builder_user_id: string;
+  name: string | null;
+  email: string;
+  role: string;
+  status: string;
+  is_self: boolean;
+  can_manage: boolean;
+}
+
+export function builderListOrgMembers() {
+  return invokeBuilderFunction<{ success?: boolean; members?: BuilderOrgMember[]; invitations?: BuilderOrgMember[] }>(
+    'builder-portal-invite', { action: 'list_members' });
+}
+
+export type BuilderMemberAction = 'set_role' | 'suspend' | 'reactivate' | 'remove';
+
+/** Change a member of the ACTIVE organisation. The server re-decides every act. */
+export function builderManageOrgMember(input: {
+  membership_id: string;
+  member_action: BuilderMemberAction;
+  role?: string;
+  reason?: string;
+}) {
+  return invokeBuilderFunction<{ success?: boolean; member?: { membership_id: string; role: string | null; status: string | null } }>(
+    'builder-portal-invite', { action: 'manage_member', ...input });
+}
+
+/** Withdraw a pending invitation (the existing `revoke_invite` act). */
+export function builderRevokeOrgInvite(builderUserId: string) {
+  return invokeBuilderFunction<{ success?: boolean }>(
+    'builder-portal-invite', { action: 'revoke_invite', builder_user_id: builderUserId });
+}
+
 /** A pending request to join the ACTIVE organisation, as the owner sees it. */
 export interface BuilderOrgJoinRequest {
   id: string;

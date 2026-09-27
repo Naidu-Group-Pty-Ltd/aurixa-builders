@@ -31,7 +31,14 @@
  *  * Every read and write is scoped to the caller's active organisation
  *    BEFORE the database is asked anything else.
  *
- * Actions: invite | resend | revoke_invite
+ * Actions: invite | resend | revoke_invite | list_members | manage_member
+ *
+ * MEMBER MANAGEMENT (20260927100000). `list_members` reads the active
+ * organisation's live memberships (members and pending invitations apart);
+ * `manage_member` changes a role, suspends, reactivates or removes one. Both
+ * sit behind the same owner/administrator gate as invitations, and every act
+ * is re-decided by `builder_org_manage_membership` in the database: owners
+ * only by owners, never oneself, never the last active owner, never `owner`.
  */
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0';
 import { createCorsHeaders } from '../_shared/auth.ts';
@@ -44,6 +51,7 @@ import {
   resolveBuilderSession,
   builderGovernanceError,
 } from '../_shared/builderPortalAuth.ts';
+import { MEMBER_ACTIONS, memberRefusal, shapeMembers } from '../_shared/builderMemberManagement.pure.ts';
 
 
 /** Roles an owner or administrator may hand out. Never 'owner' — see header. */
@@ -491,6 +499,53 @@ Deno.serve(async (req) => {
         request_id: decided?.request_id ?? requestId,
         status: decided?.request_status ?? (approve ? 'approved' : 'declined'),
         membership_created: decided?.membership_created === true,
+      });
+    }
+
+    // ───────────────────────── MEMBERS ─────────────────────────
+    if (action === 'list_members') {
+      const { data: memberships, error: membershipsError } = await supabase
+        .from('builder_organisation_memberships')
+        .select('id, builder_user_id, membership_role, status')
+        .eq('organisation_id', activeOrganisationId)
+        .is('revoked_at', null)
+        .limit(500);
+      if (membershipsError) throw membershipsError;
+      const ids = (memberships || []).map((m: any) => m.builder_user_id);
+      const { data: users, error: usersError } = ids.length
+        ? await supabase.from('builder_portal_users').select('id, name, email, status').in('id', ids)
+        : { data: [], error: null };
+      if (usersError) throw usersError;
+      return json({
+        success: true,
+        ...shapeMembers(memberships || [], users || [], { callerId: caller.id, callerRole: membershipRole }),
+      });
+    }
+
+    if (action === 'manage_member') {
+      const membershipId = typeof body.membership_id === 'string' ? body.membership_id : '';
+      const memberAction = typeof body.member_action === 'string' ? body.member_action : '';
+      if (!membershipId) return json({ error: 'membership_id is required' }, 400);
+      if (!(MEMBER_ACTIONS as readonly string[]).includes(memberAction)) {
+        return json({ error: 'That action is not recognised' }, 400);
+      }
+      const { data, error } = await supabase.rpc('builder_org_manage_membership', {
+        _actor_builder_user_id: caller.id,
+        _organisation_id: activeOrganisationId,
+        _membership_id: membershipId,
+        _action: memberAction,
+        _role: typeof body.role === 'string' ? body.role : null,
+        _reason: typeof body.reason === 'string' ? body.reason.slice(0, 500) : null,
+      });
+      if (error) {
+        const refusal = memberRefusal(String(error.message || ''));
+        if (refusal) return json({ error: refusal.error, code: refusal.code }, refusal.status);
+        throw error;
+      }
+      const row = Array.isArray(data) ? data[0] : data;
+      return json({
+        success: true,
+        member: { membership_id: row?.id ?? membershipId, role: row?.membership_role ?? null, status: row?.status ?? null },
       });
     }
 
