@@ -30,6 +30,7 @@
  *   list_notifications | mark_notifications_read | unread_counts
  *   collaboration_summary
  */
+import { createStageTimer } from '../_shared/serverTiming.pure.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0';
 import { createCorsHeaders } from '../_shared/auth.ts';
 import { enforceCsrf, csrfDenied } from '../_shared/csrfGuard.ts';
@@ -73,9 +74,11 @@ Deno.serve(async (req) => {
   const csrf = enforceCsrf(req);
   if (!csrf.ok) return csrfDenied(corsHeaders, csrf);
 
+  // Stage timings (observability only; the proxy does not forward them).
+  const timer = createStageTimer();
   const json = (payload: unknown, status = 200) => new Response(
     JSON.stringify(payload),
-    { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+    { status, headers: { ...corsHeaders, 'Content-Type': 'application/json', 'Server-Timing': timer.header() } },
   );
 
   try {
@@ -86,8 +89,10 @@ Deno.serve(async (req) => {
 
     const body = await req.json().catch(() => ({} as Record<string, any>));
     const operation = String(body.operation || '');
+    timer.mark('body');
 
     const session = await resolveBuilderSession(supabase, req);
+    timer.mark('session');
     if (!session.ok || !session.user) {
       return json({ error: session.error || 'Unauthorised', code: session.code }, session.status || 401);
     }
@@ -106,6 +111,7 @@ Deno.serve(async (req) => {
     > => {
       if (!projectId) return { ok: false, status: 400, error: 'project_id is required' };
       const access = await resolveBuilderProjectAccess(supabase, me.id, projectId);
+      timer.mark('project_access');
       if (!access) return { ok: false, status: 404, error: 'Not found' };
       if (access.organisation_id !== activeOrganisationId) {
         return { ok: false, status: 404, error: 'Not found' };
@@ -113,6 +119,7 @@ Deno.serve(async (req) => {
       const { data: project } = await supabase.from('builder_projects')
         .select('id, developer_organisation_id, builder_organisation_id')
         .eq('id', projectId).maybeSingle();
+      timer.mark('project_row');
       if (!project) return { ok: false, status: 404, error: 'Not found' };
       const sideOrg = access.organisation_side === 'developer'
         ? project.developer_organisation_id
@@ -121,6 +128,7 @@ Deno.serve(async (req) => {
         return { ok: false, status: 404, error: 'Not found' };
       }
       const perms = await resolveBuilderProjectPermissions(supabase, access);
+      timer.mark('permissions');
       if (!builderMatrixCan(perms, 'projects', 'view')) {
         return { ok: false, status: 403, error: 'You do not have access to this project' };
       }
@@ -216,6 +224,7 @@ Deno.serve(async (req) => {
       }
 
       const projectId = await projectIdForScope(scopeType, scopeId);
+      timer.mark('scope_project');
       if (!projectId) return { ok: false, status: 404, error: 'Not found' };
 
       const parent = await loadProject(projectId);
@@ -228,6 +237,7 @@ Deno.serve(async (req) => {
         _permission_key: permissionKey, _level: level,
       });
       if (error) throw error;
+      timer.mark('scope_permission');
       if (allowed !== true) {
         return level === 'view'
           ? { ok: false, status: 404, error: 'Not found' }
@@ -277,6 +287,7 @@ Deno.serve(async (req) => {
       if (!conversationId) return { ok: false, status: 400, error: 'conversation_id is required' };
       const { data: conversation } = await supabase.from('builder_conversations')
         .select(BUILDER_CONVERSATION_SELECT).eq('id', conversationId).maybeSingle();
+      timer.mark('conversation');
       if (!conversation) return { ok: false, status: 404, error: 'Conversation not found' };
 
       const scope = await loadScope(
@@ -301,6 +312,7 @@ Deno.serve(async (req) => {
       const { data: visible, error } = await supabase.rpc('builder_can_see_conversation', {
         _user_id: me.id, _conversation_id: conversationId, _level: level,
       });
+      timer.mark('conversation_visible');
       if (error) throw error;
       if (visible !== true) {
         return level === 'view'
@@ -799,6 +811,7 @@ Deno.serve(async (req) => {
         _display_name: me.name ?? null,
         _reason: null,
       });
+      timer.mark('post');
       if (error) return fail(String(error.message || ''), 400, 'The message could not be sent');
       return json({ success: true, record: data });
     }
