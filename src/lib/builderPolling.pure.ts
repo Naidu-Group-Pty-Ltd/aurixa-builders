@@ -16,6 +16,12 @@ export const TEAM_CONVERSATION_POLL_MS = AGENCY_CONVERSATION_POLL_MS;
 export const UNREAD_COUNTS_POLL_MS = 30_000;
 
 /**
+ * The Activated Properties list: the Command Centre delivers an activation
+ * within seconds, so an open Agencies page shows it within one tick.
+ */
+export const ACTIVATED_PROPERTIES_POLL_MS = TEAM_CONVERSATION_POLL_MS;
+
+/**
  * Keep polling unless the answer says there is nothing to poll for: a refusal
  * (401/403) or a record that is gone (404). Anything else — a 5xx, a network
  * failure — is transient, and the next tick tries again.
