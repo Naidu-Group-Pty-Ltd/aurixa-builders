@@ -17,7 +17,7 @@
 import { extractBuilderSessionToken, validateBuilderPortalHeaders } from './builderSessionToken.ts';
 import { resolveBuilderSessionToken } from './builderSessions.ts';
 import { getPortalClientIp } from './requestSecurity.ts';
-import { resolvePermissionMatrix } from './builderPermissionMatrix.pure.ts';
+import { matrixFromRows, resolvePermissionMatrix } from './builderPermissionMatrix.pure.ts';
 import {
   readAccessDenial,
   type AccessDenialReading,
@@ -385,8 +385,20 @@ export async function builderPermissionMatrix(
   session: BuilderSessionResult,
   organisationId: string,
 ): Promise<Record<string, { view: boolean; edit: boolean; delete: boolean }>> {
-  // Every key is still asked, forbidden ones included (builderCan denies them);
-  // only the waiting is concurrent. See builderPermissionMatrix.pure.ts.
+  // The same guards builderCan applies before it asks anything.
+  if (!session.ok || !session.user
+      || !session.organisations?.some((o) => o.organisation_id === organisationId)) {
+    return Object.fromEntries(BUILDER_PERMISSION_KEYS.map((k) => [k, { view: false, edit: false, delete: false }]));
+  }
+  // One round trip: builder_resolve_permission for every key, in the database.
+  const { data, error } = await supabase.rpc('builder_resolve_permission_matrix', {
+    _user_id: session.user.id,
+    _org_id: organisationId,
+    _keys: BUILDER_PERMISSION_KEYS.filter((k) => !BUILDER_FORBIDDEN_KEYS.has(k)),
+  });
+  const matrix = error ? null : matrixFromRows(BUILDER_PERMISSION_KEYS, BUILDER_FORBIDDEN_KEYS, data);
+  if (matrix) return matrix;
+  // Fallback, identical to before: every key through builderCan, concurrently.
   return await resolvePermissionMatrix(BUILDER_PERMISSION_KEYS, new Set<string>(),
     (key, level) => builderCan(supabase, session, organisationId, key, level));
 }
@@ -489,8 +501,15 @@ export async function resolveBuilderProjectPermissions(
   supabase: any,
   access: BuilderProjectAccess,
 ): Promise<BuilderPermissionMatrix> {
-  // The same (key, level) questions as before, asked concurrently rather than
-  // one key at a time: see builderPermissionMatrix.pure.ts.
+  // One round trip: builder_resolve_project_permission for every key, in the
+  // database (20260927090000). Falls back to asking key by key, concurrently.
+  const { data, error } = await supabase.rpc('builder_resolve_project_permission_matrix', {
+    _user_id: access.builder_user_id,
+    _project_id: access.project_id,
+    _keys: BUILDER_PERMISSION_KEYS.filter((k) => !BUILDER_FORBIDDEN_KEYS.has(k)),
+  });
+  const matrix = error ? null : matrixFromRows(BUILDER_PERMISSION_KEYS, BUILDER_FORBIDDEN_KEYS, data);
+  if (matrix) return matrix;
   return await resolvePermissionMatrix(BUILDER_PERMISSION_KEYS, BUILDER_FORBIDDEN_KEYS, async (key, level) => {
     const { data } = await supabase.rpc('builder_resolve_project_permission', {
       _user_id: access.builder_user_id,

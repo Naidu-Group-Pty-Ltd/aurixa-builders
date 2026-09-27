@@ -44,3 +44,37 @@ export async function resolvePermissionMatrix(
   await Promise.all(Array.from({ length: Math.min(concurrency, questions.length) }, worker));
   return matrix;
 }
+
+/** One row of `builder_resolve_(project_)permission_matrix`. */
+export interface PermissionMatrixRow {
+  permission_key: string;
+  can_view: boolean | null;
+  can_edit: boolean | null;
+  can_delete: boolean | null;
+}
+
+/**
+ * The matrix from the one-round-trip database answer, or `null` when that
+ * answer is not usable — not rows, or missing a key that was asked — so the
+ * caller falls back to asking key by key. A forbidden key is denied here
+ * whatever a row says, exactly as the per-key path never asks about it.
+ */
+export function matrixFromRows(
+  keys: readonly string[],
+  forbidden: ReadonlySet<string>,
+  rows: unknown,
+): PermissionMatrix | null {
+  if (!Array.isArray(rows)) return null;
+  const byKey = new Map<string, PermissionMatrixRow>();
+  for (const row of rows as PermissionMatrixRow[]) {
+    if (row && typeof row.permission_key === 'string') byKey.set(row.permission_key, row);
+  }
+  const matrix: PermissionMatrix = {};
+  for (const key of keys) {
+    if (forbidden.has(key)) { matrix[key] = { view: false, edit: false, delete: false }; continue; }
+    const row = byKey.get(key);
+    if (!row) return null;
+    matrix[key] = { view: row.can_view === true, edit: row.can_edit === true, delete: row.can_delete === true };
+  }
+  return matrix;
+}
