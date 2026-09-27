@@ -30,6 +30,7 @@
  *     through `resolveBuilderProjectAccess` and re-resolves permissions.
  */
 import { createStageTimer } from '../_shared/serverTiming.pure.ts';
+import { decideProjectGate } from '../_shared/builderProjectGate.pure.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0';
 import { createCorsHeaders } from '../_shared/auth.ts';
 import { enforceCsrf, csrfDenied } from '../_shared/csrfGuard.ts';
@@ -38,7 +39,7 @@ import {
   resolveBuilderSession,
   builderGovernanceError,
   resolveBuilderProjectAccess,
-  resolveBuilderProjectPermissions,
+  resolveBuilderProjectPermissionsFor,
   listAccessibleBuilderProjectIds,
   logBuilderProjectActivity,
   builderMatrixCan,
@@ -102,9 +103,13 @@ Deno.serve(async (req) => {
       return json({ error: 'Select an organisation to continue', code: 'organisation_selection_required' }, 403);
     }
 
-    const accessibleProjectIds = await listAccessibleBuilderProjectIds(
-      supabase, me.id, activeOrganisationId);
-    timer.mark('accessible_projects');
+    // Every project this user may see — read only by the operations that list
+    // or count across projects, never by one that names a single project.
+    const readAccessibleProjectIds = async () => {
+      const ids = await listAccessibleBuilderProjectIds(supabase, me.id, activeOrganisationId);
+      timer.mark('accessible_projects');
+      return ids;
+    };
 
     /** Load a project and confirm this builder user may see it. */
     const loadProject = async (projectId: string): Promise<
@@ -113,41 +118,28 @@ Deno.serve(async (req) => {
     > => {
       if (!projectId) return { ok: false, status: 400, error: 'project_id is required' };
 
-      const access = await resolveBuilderProjectAccess(supabase, me.id, projectId);
-      timer.mark('project_access');
-      // No live grant is reported as "not found", not "forbidden": a caller must
-      // not be able to discover that a project exists by probing ids.
-      if (!access) return { ok: false, status: 404, error: 'Project not found' };
-
-      // The grant must run through the organisation this session is acting as.
-      // Otherwise switching organisation would silently widen what is visible.
-      if (access.organisation_id !== activeOrganisationId) {
-        return { ok: false, status: 404, error: 'Project not found' };
+      // The grant, the project and the matrix are independent reads, so they
+      // are made at once; the answer is decided in the original order by
+      // `decideProjectGate` — no live grant, another organisation, a missing
+      // or moved project read as "not found" (probing ids must not reveal a
+      // project exists), and only then may a missing view answer 403.
+      const [access, { data: project }, perms] = await Promise.all([
+        resolveBuilderProjectAccess(supabase, me.id, projectId),
+        supabase
+          .from('builder_projects')
+          .select(BUILDER_PROJECT_PORTAL_DETAIL_SELECT)
+          .eq('id', projectId)
+          .maybeSingle(),
+        resolveBuilderProjectPermissionsFor(supabase, me.id, projectId),
+      ]);
+      timer.mark('project_gate');
+      const gate = decideProjectGate({ access, project, perms, activeOrganisationId });
+      if (!gate.ok) {
+        return gate.status === 403
+          ? { ok: false, status: 403, error: 'You do not have access to this project' }
+          : { ok: false, status: 404, error: 'Project not found' };
       }
-
-      const { data: project } = await supabase
-        .from('builder_projects')
-        .select(BUILDER_PROJECT_PORTAL_DETAIL_SELECT)
-        .eq('id', projectId)
-        .maybeSingle();
-      timer.mark('project_row');
-      if (!project) return { ok: false, status: 404, error: 'Project not found' };
-
-      // The project must still name the granting organisation on the granted
-      // side — the grant alone is not enough if the project has since moved.
-      const sideOrg = access.organisation_side === 'developer'
-        ? project.developer_organisation_id
-        : project.builder_organisation_id;
-      if (!sideOrg || sideOrg !== access.organisation_id) {
-        return { ok: false, status: 404, error: 'Project not found' };
-      }
-
-      const perms = await resolveBuilderProjectPermissions(supabase, access);
-      timer.mark('permissions');
-      if (!builderMatrixCan(perms, 'projects', 'view')) {
-        return { ok: false, status: 403, error: 'You do not have access to this project' };
-      }
-      return { ok: true, project, perms, accessRole: access.access_role };
+      return { ok: true, project, perms, accessRole: access!.access_role };
     };
 
     /**
@@ -251,6 +243,7 @@ Deno.serve(async (req) => {
 
     // ───────────────────────── LIST ─────────────────────────
     if (operation === 'list_projects') {
+      const accessibleProjectIds = await readAccessibleProjectIds();
       if (!accessibleProjectIds.length) {
         return json({
           success: true,
@@ -344,57 +337,65 @@ Deno.serve(async (req) => {
       if (!res.ok) return json({ error: res.error }, res.status);
       const { project, perms } = res;
 
-      const [{ data: parties }, { data: history }, { data: organisations }, { data: development }] =
-        await Promise.all([
-          builderMatrixCan(perms, 'projects', 'view')
-            ? supabase.from('builder_project_parties').select(BUILDER_PARTY_SELECT)
-              .eq('project_id', project.id).order('created_at', { ascending: true })
-            : Promise.resolve({ data: [] as any[] }),
-          supabase.from('builder_project_status_history')
-            .select(BUILDER_PROJECT_STATUS_HISTORY_SELECT)
-            .eq('project_id', project.id).order('created_at', { ascending: false }).limit(50),
-          supabase.from('builder_organisations')
-            .select('id, legal_name, trading_name, org_type')
-            .in('id', [project.developer_organisation_id, project.builder_organisation_id].filter(Boolean)),
-          project.development_id
-            ? supabase.from('builder_developments')
-              .select('id, name, development_reference, status')
-              .eq('id', project.development_id).maybeSingle()
-            : Promise.resolve({ data: null }),
-        ]);
-
-      timer.mark('details');
-      const organisationMap = new Map<string, any>((organisations || []).map((o: any) => [o.id, o]));
+      // Three independent strands, read at once: the project's own details,
+      // the property it IS (activation → stock link → property view, which
+      // depend on each other), and the view being recorded. The response is
+      // exactly what it was when they ran one after another.
+      const readDetails = () => Promise.all([
+        builderMatrixCan(perms, 'projects', 'view')
+          ? supabase.from('builder_project_parties').select(BUILDER_PARTY_SELECT)
+            .eq('project_id', project.id).order('created_at', { ascending: true })
+          : Promise.resolve({ data: [] as any[] }),
+        supabase.from('builder_project_status_history')
+          .select(BUILDER_PROJECT_STATUS_HISTORY_SELECT)
+          .eq('project_id', project.id).order('created_at', { ascending: false }).limit(50),
+        supabase.from('builder_organisations')
+          .select('id, legal_name, trading_name, org_type')
+          .in('id', [project.developer_organisation_id, project.builder_organisation_id].filter(Boolean)),
+        project.development_id
+          ? supabase.from('builder_developments')
+            .select('id, name, development_reference, status')
+            .eq('id', project.development_id).maybeSingle()
+          : Promise.resolve({ data: null }),
+      ]);
 
       // The activation that opened this project, with the property record it
       // was opened for. The stock read is organisation-pinned: the item is
       // served only when it belongs to the organisation this session acts as.
-      const activationByProject = await loadActivationContext([project.id]);
-      timer.mark('activation');
-      const activation = activationByProject.get(project.id) ?? null;
-      if (activation) {
-        // On this surface the project IS the property, so its name is the
-        // label — the same string the fan-out named the project with.
-        activation.property_label = project.name;
-      }
-      // The property this project IS, read exactly as the Stock List reads
-      // it — overlay, images and the documents its own row links to.
-      const stockIdByProject = await loadProjectStockIds([project.id], activationByProject);
-      timer.mark('stock_link');
-      const stockItemId = stockIdByProject.get(project.id) ?? null;
-      const views = await readPropertyViews(supabase, {
-        organisationId: activeOrganisationId,
-        stockItemIds: stockItemId ? [stockItemId] : [],
-      });
-      timer.mark('property_view');
-      const view = stockItemId ? views.get(stockItemId) ?? null : null;
-      const stockItem: Record<string, unknown> | null = view?.item ?? null;
+      const readProperty = async () => {
+        const activationByProject = await loadActivationContext([project.id]);
+        const activation = activationByProject.get(project.id) ?? null;
+        if (activation) {
+          // On this surface the project IS the property, so its name is the
+          // label — the same string the fan-out named the project with.
+          activation.property_label = project.name;
+        }
+        // The property this project IS, read exactly as the Stock List reads
+        // it — overlay, images and the documents its own row links to.
+        const stockIdByProject = await loadProjectStockIds([project.id], activationByProject);
+        const stockItemId = stockIdByProject.get(project.id) ?? null;
+        const views = await readPropertyViews(supabase, {
+          organisationId: activeOrganisationId,
+          stockItemIds: stockItemId ? [stockItemId] : [],
+        });
+        const view = stockItemId ? views.get(stockItemId) ?? null : null;
+        return { activation, view };
+      };
 
-      await logBuilderProjectActivity(supabase, req, {
-        builderUserId: me.id, organisationId: activeOrganisationId,
-        action: 'builder_project_viewed', entityType: 'project', entityId: project.id,
-      });
-      timer.mark('activity_log');
+      const [
+        [{ data: parties }, { data: history }, { data: organisations }, { data: development }],
+        { activation, view },
+      ] = await Promise.all([
+        readDetails(),
+        readProperty(),
+        logBuilderProjectActivity(supabase, req, {
+          builderUserId: me.id, organisationId: activeOrganisationId,
+          action: 'builder_project_viewed', entityType: 'project', entityId: project.id,
+        }),
+      ]);
+      timer.mark('details_property_log');
+      const organisationMap = new Map<string, any>((organisations || []).map((o: any) => [o.id, o]));
+      const stockItem: Record<string, unknown> | null = view?.item ?? null;
 
       return json({
         success: true,
@@ -589,6 +590,7 @@ Deno.serve(async (req) => {
     }
 
     if (operation === 'project_stats') {
+      const accessibleProjectIds = await readAccessibleProjectIds();
       if (!accessibleProjectIds.length) {
         return json({ success: true, total: 0, by_status: {}, at_risk: 0 });
       }

@@ -309,6 +309,10 @@ try {
       network_connection_id, builder_org_label, state, scopes, outbound_hmac_secret, network_inbound_url,
       accepted_at, builder_organisation_id)
     VALUES (${id(connection)}, ${sqlLit(orgName)}, 'active', ARRAY['stock:publish'], ${sqlLit(secret)}, ${sqlLit(networkDoor)}, now(), ${id(builder.orgId)})`);
+  // The Command Centre keys its outbox by ITS OWN connection row, not the network's id.
+  const ccConnection = (await cc('cc connection', `
+    SELECT id FROM public.builder_network_connections WHERE network_connection_id = ${id(connection)}`))[0]?.id;
+  if (!ccConnection) throw new Error('the proof transport was not written');
   const workspace = (await net('workspace', `
     INSERT INTO public.workspace_registry(mc_clone_id, slug, display_name)
     VALUES (gen_random_uuid(), ${sqlLit(`${MARK}-${TAG}-${RUN}`)}, 'Activation speed proof (temporary)')
@@ -373,7 +377,7 @@ try {
     }
     const outbox = (await cc(`outbox ${n}`, `
       SELECT created_at, delivered_at, attempts, status FROM public.builder_network_outbox
-       WHERE connection_id = ${id(connection)} AND dedupe_key LIKE ${sqlLit(`stock.selection:${selection.id}:%`)}
+       WHERE connection_id = ${id(ccConnection)} AND dedupe_key LIKE ${sqlLit(`stock.selection:${selection.id}:%`)}
        ORDER BY created_at`));
     const inbound = (await net(`inbound ${n}`, `
       SELECT received_at, processed_at FROM public.builder_network_inbound_events
@@ -421,8 +425,8 @@ try {
   const first = (await cc('replay row', `
     UPDATE public.builder_network_outbox SET status = 'pending', delivered_at = NULL, available_at = now(),
            locked_at = NULL, locked_by = NULL
-     WHERE connection_id = ${id(connection)} AND dedupe_key LIKE 'stock.selection:%'
-       AND id = (SELECT id FROM public.builder_network_outbox WHERE connection_id = ${id(connection)}
+     WHERE connection_id = ${id(ccConnection)} AND dedupe_key LIKE 'stock.selection:%'
+       AND id = (SELECT id FROM public.builder_network_outbox WHERE connection_id = ${id(ccConnection)}
                   AND dedupe_key LIKE 'stock.selection:%' ORDER BY created_at LIMIT 1)
     RETURNING id, dedupe_key`))[0];
   const redelivered = await waitFor('cron redelivery', async () => {

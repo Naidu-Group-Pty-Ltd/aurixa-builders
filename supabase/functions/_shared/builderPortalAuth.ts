@@ -501,19 +501,33 @@ export async function resolveBuilderProjectPermissions(
   supabase: any,
   access: BuilderProjectAccess,
 ): Promise<BuilderPermissionMatrix> {
+  return await resolveBuilderProjectPermissionsFor(supabase, access.builder_user_id, access.project_id);
+}
+
+/**
+ * The same matrix, from the user and the project id alone — so it can be read
+ * alongside the grant rather than after it. The database resolver re-checks
+ * the grant (a user with no live grant resolves to nothing), and the caller
+ * still decides with the grant it read (`decideProjectGate`).
+ */
+export async function resolveBuilderProjectPermissionsFor(
+  supabase: any,
+  builderUserId: string,
+  projectId: string,
+): Promise<BuilderPermissionMatrix> {
   // One round trip: builder_resolve_project_permission for every key, in the
   // database (20260927090000). Falls back to asking key by key, concurrently.
   const { data, error } = await supabase.rpc('builder_resolve_project_permission_matrix', {
-    _user_id: access.builder_user_id,
-    _project_id: access.project_id,
+    _user_id: builderUserId,
+    _project_id: projectId,
     _keys: BUILDER_PERMISSION_KEYS.filter((k) => !BUILDER_FORBIDDEN_KEYS.has(k)),
   });
   const matrix = error ? null : matrixFromRows(BUILDER_PERMISSION_KEYS, BUILDER_FORBIDDEN_KEYS, data);
   if (matrix) return matrix;
   return await resolvePermissionMatrix(BUILDER_PERMISSION_KEYS, BUILDER_FORBIDDEN_KEYS, async (key, level) => {
     const { data } = await supabase.rpc('builder_resolve_project_permission', {
-      _user_id: access.builder_user_id,
-      _project_id: access.project_id,
+      _user_id: builderUserId,
+      _project_id: projectId,
       _permission_key: key,
       _level: level,
     });

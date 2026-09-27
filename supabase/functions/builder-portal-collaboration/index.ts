@@ -31,6 +31,7 @@
  *   collaboration_summary
  */
 import { createStageTimer } from '../_shared/serverTiming.pure.ts';
+import { decideProjectGate } from '../_shared/builderProjectGate.pure.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0';
 import { createCorsHeaders } from '../_shared/auth.ts';
 import { enforceCsrf, csrfDenied } from '../_shared/csrfGuard.ts';
@@ -38,7 +39,7 @@ import {
   resolveBuilderSession,
   builderGovernanceError,
   resolveBuilderProjectAccess,
-  resolveBuilderProjectPermissions,
+  resolveBuilderProjectPermissionsFor,
   listAccessibleBuilderProjectIds,
   builderMatrixCan,
   logBuilderProjectActivity,
@@ -110,27 +111,20 @@ Deno.serve(async (req) => {
       { ok: true; perms: BuilderPermissionMatrix } | { ok: false; status: number; error: string }
     > => {
       if (!projectId) return { ok: false, status: 400, error: 'project_id is required' };
-      const access = await resolveBuilderProjectAccess(supabase, me.id, projectId);
-      timer.mark('project_access');
-      if (!access) return { ok: false, status: 404, error: 'Not found' };
-      if (access.organisation_id !== activeOrganisationId) {
-        return { ok: false, status: 404, error: 'Not found' };
-      }
-      const { data: project } = await supabase.from('builder_projects')
-        .select('id, developer_organisation_id, builder_organisation_id')
-        .eq('id', projectId).maybeSingle();
-      timer.mark('project_row');
-      if (!project) return { ok: false, status: 404, error: 'Not found' };
-      const sideOrg = access.organisation_side === 'developer'
-        ? project.developer_organisation_id
-        : project.builder_organisation_id;
-      if (!sideOrg || sideOrg !== access.organisation_id) {
-        return { ok: false, status: 404, error: 'Not found' };
-      }
-      const perms = await resolveBuilderProjectPermissions(supabase, access);
-      timer.mark('permissions');
-      if (!builderMatrixCan(perms, 'projects', 'view')) {
-        return { ok: false, status: 403, error: 'You do not have access to this project' };
+      // Independent reads, made at once; decided in the original order.
+      const [access, { data: project }, perms] = await Promise.all([
+        resolveBuilderProjectAccess(supabase, me.id, projectId),
+        supabase.from('builder_projects')
+          .select('id, developer_organisation_id, builder_organisation_id')
+          .eq('id', projectId).maybeSingle(),
+        resolveBuilderProjectPermissionsFor(supabase, me.id, projectId),
+      ]);
+      timer.mark('project_gate');
+      const gate = decideProjectGate({ access, project, perms, activeOrganisationId });
+      if (!gate.ok) {
+        return gate.status === 403
+          ? { ok: false, status: 403, error: 'You do not have access to this project' }
+          : { ok: false, status: 404, error: 'Not found' };
       }
       return { ok: true, perms };
     };
@@ -145,11 +139,10 @@ Deno.serve(async (req) => {
       scopeType: BuilderScopeType, scopeId: string,
     ): Promise<string | null> => {
       switch (scopeType) {
-        case 'project': {
-          const { data } = await supabase.from('builder_projects')
-            .select('id').eq('id', scopeId).maybeSingle();
-          return data?.id ?? null;
-        }
+        case 'project':
+          // A project scope IS its project: the project gate that follows
+          // reads the row and answers "not found" for one that does not exist.
+          return scopeId;
         case 'unit': {
           const { data } = await supabase.from('builder_units')
             .select('project_id').eq('id', scopeId).maybeSingle();
@@ -227,17 +220,21 @@ Deno.serve(async (req) => {
       timer.mark('scope_project');
       if (!projectId) return { ok: false, status: 404, error: 'Not found' };
 
-      const parent = await loadProject(projectId);
+      // The project gate and the database's scope resolver are asked at once;
+      // the gate is still decided first, and the resolver's answer (or its
+      // error) is only consulted once the gate has passed.
+      const [parent, { data: allowed, error }] = await Promise.all([
+        loadProject(projectId),
+        supabase.rpc('builder_resolve_scope_permission', {
+          _user_id: me.id, _scope_type: scopeType, _scope_id: scopeId,
+          _permission_key: permissionKey, _level: level,
+        }),
+      ]);
+      timer.mark('scope_permission');
       // A scope whose project the caller cannot see is reported as "not found",
       // never "forbidden" — probing ids must not reveal one exists.
       if (!parent.ok) return { ok: false, status: 404, error: 'Not found' };
-
-      const { data: allowed, error } = await supabase.rpc('builder_resolve_scope_permission', {
-        _user_id: me.id, _scope_type: scopeType, _scope_id: scopeId,
-        _permission_key: permissionKey, _level: level,
-      });
       if (error) throw error;
-      timer.mark('scope_permission');
       if (allowed !== true) {
         return level === 'view'
           ? { ok: false, status: 404, error: 'Not found' }
@@ -290,8 +287,15 @@ Deno.serve(async (req) => {
       timer.mark('conversation');
       if (!conversation) return { ok: false, status: 404, error: 'Conversation not found' };
 
-      const scope = await loadScope(
-        conversation.scope_type as BuilderScopeType, conversation.scope_id, 'messages', level);
+      // The scope gate and the conversation's own visibility are asked at once;
+      // the scope is still decided first, and visibility is consulted only
+      // once it has passed.
+      const [scope, { data: visible, error }] = await Promise.all([
+        loadScope(conversation.scope_type as BuilderScopeType, conversation.scope_id, 'messages', level),
+        supabase.rpc('builder_can_see_conversation', {
+          _user_id: me.id, _conversation_id: conversationId, _level: level,
+        }),
+      ]);
       if (!scope.ok) {
         // A reader who can SEE this conversation but may not write in it is
         // told so; anyone who cannot see it still gets 404, so its existence
@@ -309,9 +313,6 @@ Deno.serve(async (req) => {
         return { ok: false, status: 404, error: 'Conversation not found' };
       }
 
-      const { data: visible, error } = await supabase.rpc('builder_can_see_conversation', {
-        _user_id: me.id, _conversation_id: conversationId, _level: level,
-      });
       timer.mark('conversation_visible');
       if (error) throw error;
       if (visible !== true) {
