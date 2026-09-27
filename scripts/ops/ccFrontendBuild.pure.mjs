@@ -38,6 +38,24 @@ export function sameCommit(a, b) {
   return x.startsWith(y) || y.startsWith(x);
 }
 
+const CHALLENGE_PAGE = /just a moment|attention required|cf-chl|challenge-platform/i;
+
+/**
+ * Why an origin did not answer, in words. A bot-protection challenge is its
+ * own reading, recognised by what the edge said and never by the status digit
+ * (the same challenge arrives under 403 and 503): it refuses a scripted
+ * client, not the build, and nothing here tries to get past it.
+ */
+export function describeRefusal({ status, server, mitigated, body }) {
+  const text = String(body ?? '');
+  const title = /<title[^>]*>([^<]*)<\/title>/i.exec(text)?.[1]?.trim().slice(0, 80) || '';
+  const by = server ? `, ${server}` : '';
+  if (String(mitigated ?? '').toLowerCase() === 'challenge' || CHALLENGE_PAGE.test(title) || CHALLENGE_PAGE.test(text.slice(0, 4000))) {
+    return `challenged by bot protection (HTTP ${status}${by})`;
+  }
+  return `refused (HTTP ${status}${by}${title ? `, "${title}"` : ''})`;
+}
+
 /**
  * What one origin proves. `expected` is the commit the publish was meant to
  * serve; blank records whatever is served and requires only that the manifest

@@ -100,5 +100,8 @@ counterpart of the Command Centre's popup (its `list_new_builder_messages`).
   `/version.json` and the entry script the page loads. Both must name the same
   build, because the manifest alone is a static file and says nothing about
   the JavaScript a browser runs. `cc_build` also requires that build to be
-  that commit. The rules are `scripts/ops/ccFrontendBuild.pure.mjs`, tested
-  in `src/lib/__tests__/ccFrontendBuild.spec.ts`.
+  that commit. An origin that will not answer a scripted client is reported
+  as challenged by bot protection or as refused, and says by whom. That is
+  never a wrong build, and nothing here tries to get past it. The rules are
+  `scripts/ops/ccFrontendBuild.pure.mjs`, tested in
+  `src/lib/__tests__/ccFrontendBuild.spec.ts`.
