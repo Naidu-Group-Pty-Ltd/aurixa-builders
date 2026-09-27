@@ -37,8 +37,17 @@
  * states and counts — never a message body, a name, an email address or any
  * client data — and it writes nothing.
  *
+ * The real conversations are judged by what they hold, never by how much.
+ * People keep talking in them, so no message count is asserted; what must be
+ * zero is proof data in them, on either side: a message or participant that
+ * carries a proof marker, that a proof identity wrote or is, or that has no
+ * living author on the side that records who wrote it
+ * (`realConversationAudit.pure.mjs`, whose markers are this audit's too).
+ *
  * Runs from the production-rollout workflow (phase `step6-proof-audit`).
  */
+import { MARKER_RE, conversationRowsSql, proofDataFindings } from './realConversationAudit.pure.mjs';
+
 const NETWORK_REF = process.env.PROJECT_REF || 'htfluofznhxeumblwbww';
 const CC_REF = process.env.CLONE_PROJECT_REF || 'dduzbchuswwbefdunfct';
 const ACCESS_TOKEN = process.env.SUPABASE_ACCESS_TOKEN || '';
@@ -69,16 +78,6 @@ async function query(ref, sql) {
 const DB = { cc: CC_REF, net: NETWORK_REF };
 const sqlLit = (v) => `'${String(v).replace(/'/g, "''")}'`;
 const short = (v) => (v ? String(v).slice(0, 8) : '—');
-
-// Strings only a proof writes. Case-sensitive on purpose: generic words such
-// as "proof" appear in real data ("proof of identity").
-const MARKER_RE = [
-  'smoke-rollout', 'Smoke Rollout ', 'proof_no_access',
-  'Private Chat Proof', 'Messaging Proof', 'Media Proof Street', 'Project Proof', 'Agencies Proof',
-  'Proofvale', 'Proof only — not for sale', 'Proof description', 'A signed proof message',
-  'Proof Certifi', 'Proof Contact', 'Proof Client', 'Proof Sender', 'proof\\.contact@example\\.com',
-  '(private-chat|messaging|media|project|agencies)-proof',
-].join('|');
 
 // dddddd24 / 50c60e5f were added 26 Sep 2026 after verification by provenance
 // (agency-chat-state): organisation 484b9618 is a real, non-proof builder, the
@@ -497,7 +496,27 @@ async function realState() {
     console.log(`  CC  activation ${short(s.id)} status=${s.status} conversations=${s.conversations} notices=${s.notices}` +
       ` (${s.notice_outcomes ?? 'none'}) ack_email_outbox=${s.ack_emails} notifications_naming_it=${s.notifications_naming_it}`);
   }
-  return { ccConv, netConv, ccParts, netParts, selections };
+
+  // What the real conversations hold, on both sides: any number of genuine
+  // messages, and no proof data.
+  const conversationRows = [
+    ...await query(CC_REF, conversationRowsSql('cc', REAL_CONVERSATIONS)),
+    ...await query(NETWORK_REF, conversationRowsSql('net', REAL_CONVERSATIONS)),
+  ];
+  const proofData = proofDataFindings(conversationRows);
+  // Every real conversation has its participants on both sides, so a side
+  // that returned none for one of them was not read, and proves nothing.
+  const unread = REAL_CONVERSATIONS.flatMap((c) => ['cc', 'net']
+    .filter((db) => !conversationRows.some((r) => r.db === db && r.conversation === c && r.kind === 'participant'))
+    .map((db) => `${db === 'cc' ? 'CC' : 'NET'} ${c}`));
+  const read = (db, kind) => conversationRows.filter((r) => r.db === db && r.kind === kind).length;
+  console.log(`  real conversations read: CC ${read('cc', 'message')} messages, ${read('cc', 'participant')} participants;` +
+    ` NET ${read('net', 'message')} messages, ${read('net', 'participant')} participants; not read: ${unread.join(', ') || 'none'}`);
+  console.log(`  proof data in real conversations: ${proofData.length}`);
+  for (const f of proofData) {
+    console.log(`    ${f.db === 'cc' ? 'CC ' : 'NET'} ${f.kind} ${f.ref} in ${f.conversation} (${f.side}): ${f.reasons.join(', ')}`);
+  }
+  return { ccConv, netConv, ccParts, netParts, selections, proofData, unread };
 }
 
 // ---------------------------------------------------------------------------
@@ -592,8 +611,6 @@ async function main() {
 
   const mutableTotal = mutable.reduce((a, r) => a + (r.n ?? 0), 0);
   const byPrefix = (rows, p) => rows.find((r) => String(r.id).startsWith(p));
-  const conv0 = byPrefix(state.ccConv, '0c07fd71'); const conv1 = byPrefix(state.ccConv, '45e16763');
-  const net0 = byPrefix(state.netConv, '0c07fd71'); const net1 = byPrefix(state.netConv, '45e16763');
   const partsOk = ['0c07fd71', '45e16763'].every((c) => {
     const cp = state.ccParts.filter((p) => p.conv === c); const np = state.netParts.filter((p) => p.conv === c);
     return cp.length === 2 && np.length === 2
@@ -613,10 +630,10 @@ async function main() {
   const onlyReal = (rows) => rows.every((r) => REAL_CONVERSATIONS.some((p) => String(r.id).startsWith(p)));
   const realOk = onlyReal(state.ccConv) && onlyReal(state.netConv)
     && state.ccConv.length === state.netConv.length
-    && conv0?.messages === 3 && net0?.messages === 3 && conv1?.messages === 0 && net1?.messages === 0
+    && state.proofData.length === 0 && state.unread.length === 0
     && partsOk && unmatchedOk && noBackfillMail;
   console.log(`\nmutable proof artefacts: ${mutableTotal}; retained security evidence: ${retainedCount}; unverifiable: ${unverifiable.length}`);
-  console.log(`real state as agreed: ${realOk} (conversations, messages, participants, unmatched activations, no backfill mail)`);
+  console.log(`real state as agreed: ${realOk} (conversations, no proof data in real conversations, participants, unmatched activations, no backfill mail)`);
   const verdict = mutableTotal === 0 && unverifiable.length === 0 && realOk
     ? (retainedCount ? 'AUDIT CLEAN — WITH EXPECTED RETAINED SECURITY LOG EVIDENCE' : 'AUDIT CLEAN')
     : 'AUDIT NOT CLEAN';

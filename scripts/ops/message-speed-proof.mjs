@@ -49,6 +49,7 @@
  */
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
+import { conversationRowsSql, proofDataFindings } from './realConversationAudit.pure.mjs';
 
 const NETWORK_REF = process.env.PROJECT_REF || 'htfluofznhxeumblwbww';
 const CC_REF = process.env.CLONE_PROJECT_REF || 'dduzbchuswwbefdunfct';
@@ -607,6 +608,29 @@ try {
     const before = await counts();
     for (let i = 0; i < 3; i += 1) await portal({ operation: 'list_new_agency_messages', since: firsts.builder.json.cursor }, builderCookie);
     record('5: reading it writes nothing', (await counts()) === before);
+
+    // The cleanup audit's real-conversation check, run against THIS proof's
+    // disposable conversation, which holds nothing but proof data. Every
+    // message and participant in it must be flagged on the side that records
+    // who it is (ids are the same on both sides), and every row with a local
+    // author must be known as a proof identity's by that author, not only by
+    // what the message says. The real conversations are never touched.
+    const auditRows = [
+      ...await cc('audit check', conversationRowsSql('cc', [conversationId])),
+      ...await net('audit check', conversationRowsSql('net', [conversationId])),
+    ];
+    const flagged = new Set(proofDataFindings(auditRows).map((f) => `${f.kind}:${f.ref}`));
+    const items = new Set(auditRows.map((r) => `${r.kind}:${r.ref}`));
+    const readOn = (db, kind) => auditRows.filter((r) => r.db === db && r.kind === kind).length;
+    const authored = auditRows.filter((r) => r.local === 'present');
+    record('5: the cleanup audit\'s real-conversation check flags every message and participant of this proof\'s conversation',
+      ['cc', 'net'].every((db) => readOn(db, 'message') > 0 && readOn(db, 'participant') > 0)
+        && [...items].every((item) => flagged.has(item)),
+      `${[...items].filter((item) => flagged.has(item)).length} of ${items.size} flagged; CC ${readOn('cc', 'message')} messages, ` +
+        `${readOn('cc', 'participant')} people; network ${readOn('net', 'message')} messages, ${readOn('net', 'participant')} people`);
+    record('5: it knows a proof author by who wrote the message, not only by what it says',
+      authored.length > 0 && authored.every((r) => r.local_marker === true),
+      `${authored.filter((r) => r.local_marker === true).length} of ${authored.length} rows with a local author`);
 
     // 6. The popup on a real screen.
     let chromium = null;

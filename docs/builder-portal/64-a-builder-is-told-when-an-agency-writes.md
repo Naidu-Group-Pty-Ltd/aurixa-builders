@@ -92,7 +92,13 @@ counterpart of the Command Centre's popup (its `list_new_builder_messages`).
   side's send, delivery both ways and the first read that names a message.
   It proves the new read's privacy rules and, in a real Chromium, the popup,
   Open, and an open thread refreshing. `baseline` measures what is live
-  before a change.
+  before a change. It also runs the cleanup audit's real-conversation check
+  against its own disposable conversation, which must flag every message and
+  participant in it (`scripts/ops/realConversationAudit.pure.mjs`).
+- Production-rollout phase `step6-proof-audit` asks what the real
+  conversations hold, never how much: any number of genuine messages, and no
+  message or participant that carries a proof marker, that a proof identity
+  wrote or is, or that has no living author on the side that records it.
 - Production-rollout phase `cc-frontend-build`: which build the Command
   Centre's published frontend serves. Lovable reports a publish as started,
   never as served, and this sandbox's egress refuses both Command Centre
