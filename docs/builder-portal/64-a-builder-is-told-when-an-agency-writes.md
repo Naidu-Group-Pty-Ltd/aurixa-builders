@@ -105,3 +105,37 @@ counterpart of the Command Centre's popup (its `list_new_builder_messages`).
   never a wrong build, and nothing here tries to get past it. The rules are
   `scripts/ops/ccFrontendBuild.pure.mjs`, tested in
   `src/lib/__tests__/ccFrontendBuild.spec.ts`.
+
+## 5. Measured after the change
+
+Both columns come from the same instrument, `message-speed-proof`, run from a
+GitHub runner in the United States through the live proxy. That runner's own
+distance to the services is inside every figure. Each is the median of five,
+on 27 Sep 2026.
+
+| Measure | Before (run 36314425351) | After (run 36315572978) |
+| --- | --- | --- |
+| A portal read (`workspace_summary`) | 4.1 s | 0.8 s |
+| Opening the Messages list | 6.8 s | 1.1 s |
+| Opening a conversation | 5.6 s | 1.1 s |
+| A builder sending a message | 3.1 s | 1.0 s |
+| Builder → Command Centre, written to landed | 1.30 s | 1.37 s |
+| Command Centre → Builder, written to landed | 2.97 s | 2.35 s |
+| Command Centre message, written to first read by the portal | 11.0 s (conversation read) | 4.2 s (new-message read) |
+| "New message from <agency>" on the builder's screen | — | 4.9 s |
+| The next message shown in an open thread | — | 6.5 s |
+
+The gateway's own logs agree, and they do not include the runner's distance.
+From 11:15 UTC every `builder-portal-*` request was called from Sydney and
+executed in `ap-southeast-2`. Before, every one was called from Ashburn and
+executed in `us-east-1`.
+
+| Function | Median execution before | Median execution after |
+| --- | --- | --- |
+| `builder-portal-stock` | 5.1 s | 0.9 s |
+| `builder-portal-workspace` | 4.0 s | 0.5 s |
+| `builder-portal-verify` | 4.0 s | 0.5 s |
+| `builder-portal-login` | 1.4 s | 0.3 s |
+
+Database-to-database delivery did not change, and was not meant to: it runs
+through the two doors and workers §3 leaves alone.
