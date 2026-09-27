@@ -1,0 +1,89 @@
+# 64 — A builder is told when an agency writes, and messages arrive faster
+
+The owner, 27 Sep 2026: messages should arrive faster, and the Builder Portal
+needs the popup the Command Centre already has when a new message comes in.
+
+Messaging is still polling. Nothing here is pushed or realtime, and nothing
+should describe it that way.
+
+## 1. Where the time went
+
+Measured on 27 Sep 2026 from the gateway's own logs and the message rows, on
+real traffic:
+
+| Stage | Before |
+| --- | --- |
+| A Builder Portal request (send, read, poll) | 3–5.5 s; `builder-portal-stock` averaged 4.6 s |
+| Database work inside that request | 14–25 ms |
+| Builder → Command Centre, sent to landed | 1.3–1.5 s |
+| Command Centre → Builder, sent to landed | 2.4–3.3 s |
+| An open conversation noticing a new message | up to 10 s, then a ~4 s read |
+
+**The portal ran on the wrong side of the world.** The browser calls
+`/fn/<name>`, a Vercel function that calls the edge function. The edge
+runtime executes a function in the region closest to its caller, and the
+caller is that proxy. With no region declared, Vercel ran the proxy in `iad1`
+(Washington), so every portal request executed in `us-east-1`
+(`x_sb_edge_region` in `function_edge_logs`, called from Ashburn) against a
+database in Sydney. Each of a request's ten or so round trips crossed the
+Pacific.
+
+`vercel.json` now declares `"regions": ["syd1"]`, beside the database in
+`ap-southeast-2`. `fnProxyPolicy.spec.ts` ties the two together: it reads the
+database region from this repository's README and fails if the proxy is not in
+the Vercel region beside it.
+
+## 2. The popup
+
+"New message from <agency>" appears wherever the reader is in the portal, with
+who wrote it and the lot, and an **Open** button to that conversation
+(`/builder/messages?view=agencies&thread=<id>`). It is the builder-side
+counterpart of the Command Centre's popup (its `list_new_builder_messages`).
+
+- **The read.** `builder-portal-stock` `list_new_agency_messages` is read-only
+  and sits behind the session and the `inventory` view gate like every stock
+  operation. It returns the agency's messages that arrived after a cursor:
+  - only in conversations the reader has joined, in the organisation the
+    session acts for;
+  - only the agency's side, never what this organisation wrote;
+  - who wrote it, the agency, the lot, the address and when it landed, and
+    never the body or a user id.
+- **The cursor.** The cursor is this database's arrival clock (`created_at`).
+  The first read answers only the cursor, so opening the portal replays
+  nothing. A burst larger than 20 that landed in one sweep is named in part;
+  the thread holds all of it.
+- **The poll.** The popup checks every 5 s while the tab is in view, and at
+  once when the tab comes back. It stops on 401, 403 or 409 (the tab now
+  shows a different organisation from the session). Anything else is asked
+  again next time, from the same cursor.
+- **It is also the open thread's doorbell.** When a message arrives, the
+  conversation it arrived in and the Messages list re-read themselves at
+  once. A thread already on screen therefore shows it within one check,
+  instead of on its own 10 s cadence. No popup is raised over the thread the
+  reader is looking at.
+- **The reader can turn it off.** Settings → Your preferences → "Tell me when
+  a message is posted" (`notify_message_posted`, default on) now governs the
+  popup. With it off, the thread still refreshes.
+- **No sound.** The Command Centre's ping follows its own sound setting, and
+  the portal has no such setting.
+
+## 3. What was not changed
+
+- The signed network, both doors, both workers and the minute schedules are
+  unchanged. The Command Centre's own popup check is the same shape, and its
+  thread refresh is the Command Centre's change.
+- The two doors still execute in the region nearest their caller: the Builder
+  door in Singapore when the Command Centre delivers, the Command Centre door
+  in Sydney when the network delivers. Pinning each to its own database's
+  region would take roughly 1 s more off Command Centre → Builder. It needs
+  each side to know the other's region, which neither stores today.
+
+## 4. Proof
+
+- `src/lib/__tests__/fnProxyPolicy.spec.ts`: the proxy region.
+- `src/lib/__tests__/builderAgencyMessagePopups.spec.ts`: the read (members
+  only, this organisation only, the agency's side only, the cursor, no body or
+  user id), the edge operation (session identity, writes nothing), the
+  wording, and the link.
+- `src/components/builder-portal/__tests__/agencyMessagePopups.spec.tsx`: the
+  polling loop, driven with fake timers.

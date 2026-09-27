@@ -28,6 +28,7 @@ import { BuilderPortalUserCard } from './ui/BuilderPortalUserCard';
 import { BuilderOrganisationSwitcher } from './BuilderOrganisationSwitcher';
 import { BuilderOnboardingTour } from './BuilderOnboardingTour';
 import { NewerBuildBanner } from './NewerBuildBanner';
+import { AgencyMessagePopups } from './AgencyMessagePopups';
 import { BUILDER_TOUR_EVENT } from './BuilderOnboardingTour';
 import { usePartnerWorkspaceEnabled } from '@/lib/aml/usePartnerWorkspaceFlags';
 
@@ -285,6 +286,7 @@ export function BuilderPortalLayout() {
   return (
     <div className="builder-portal-theme flex min-h-screen flex-col">
       <BuilderOnboardingTour />
+      <AgencyMessagePopups />
 
       <a
         href="#main-content"

@@ -47,7 +47,7 @@ import {
   logBuilderProjectActivity,
 } from '../_shared/builderPortalAuth.ts';
 import { readActivatedProperties } from '../_shared/builderStock/activatedProperties.ts';
-import { listMyAgencyConversations, readAgencyConversation } from '../_shared/builderStock/agencyMessages.ts';
+import { listMyAgencyConversations, newAgencyMessages, readAgencyConversation } from '../_shared/builderStock/agencyMessages.ts';
 import { agencyMessageRefusal, projectAgencyMessages } from '../_shared/builderStock/agencyMessages.pure.ts';
 import {
   MAX_STOCK_FILE_BYTES, STOCK_LIST_BUCKET, STOCK_IMAGE_BUCKET,
@@ -2561,6 +2561,17 @@ Deno.serve(async (req) => {
       const read = await listMyAgencyConversations(supabase, { organisationId: activeOrganisationId, viewerUserId: me.id });
       if (!read.ok) return json({ success: false, error: 'conversations_could_not_be_read' }, 503);
       return json({ success: true, conversations: read.conversations });
+    }
+
+    // The "New message from <agency>" popup: what the agency wrote after the
+    // cursor, in the conversations the reader is in. Read-only; no body and no
+    // user id leave it.
+    if (operation === 'list_new_agency_messages') {
+      const sinceText = cleanText(body.since, 64);
+      const since = sinceText && Number.isFinite(Date.parse(sinceText)) ? sinceText : null;
+      const read = await newAgencyMessages(supabase, { organisationId: activeOrganisationId, viewerUserId: me.id, since });
+      if (!read.ok) return json({ success: false, error: 'messages_could_not_be_read' }, 503);
+      return json({ success: true, cursor: read.cursor, messages: read.messages });
     }
 
     if (operation === 'get_agency_conversation') {
