@@ -55,6 +55,22 @@ export function projectAgencyMessages(rows: readonly Row[], viewerUserId: string
     .sort((a, b) => (a.sent_at === b.sent_at ? (a.id < b.id ? -1 : 1) : (a.sent_at < b.sent_at ? -1 : 1)));
 }
 
+/**
+ * One message an agency wrote, as the portal's "New message from <agency>"
+ * popup names it (`list_new_agency_messages`): who wrote it, about which
+ * property, and when it landed here. Never its body and never a user id.
+ */
+export interface NewAgencyMessage {
+  message_id: string;
+  conversation_id: string;
+  agency_name: string | null;
+  sender_display_name: string;
+  lot_number: string | null;
+  address: string | null;
+  /** When it landed on this side: this database's clock, the popup's cursor. */
+  received_at: string;
+}
+
 export interface AgencyParticipantView {
   /** Random per (conversation, person): what tells two people with one name apart. */
   participant_ref: string;

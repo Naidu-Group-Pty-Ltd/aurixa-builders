@@ -11,7 +11,7 @@
  */
 import {
   projectAgencyMessages, projectAgencyParticipants,
-  type AgencyMessageView, type AgencyParticipantView,
+  type AgencyMessageView, type AgencyParticipantView, type NewAgencyMessage,
 } from './agencyMessages.pure.ts';
 
 // deno-lint-ignore no-explicit-any
@@ -181,30 +181,39 @@ function agencyNameOf(name: unknown, workspaceLabel: unknown): string | null {
   return clean(name) ?? clean(workspaceLabel);
 }
 
+/**
+ * Every conversation the viewer is in now, a page at a time: a response cap
+ * would otherwise drop threads with nothing saying so. Null when it could not
+ * be read, which is never the same answer as "none".
+ */
+async function joinedConversationIds(supabase: Client, viewerUserId: string): Promise<string[] | null> {
+  const ids: string[] = [];
+  for (let from = 0; ; from += LIST_PAGE) {
+    const { data, error } = await supabase.from('builder_agency_conversation_participants')
+      .select('conversation_id')
+      .eq('builder_user_id', viewerUserId).eq('side', 'builder').eq('state', 'joined')
+      .order('conversation_id', { ascending: true })
+      .range(from, from + LIST_PAGE - 1);
+    if (error) return null;
+    const page = (data ?? []) as Row[];
+    ids.push(...page.map((row) => String(row.conversation_id)));
+    if (page.length < LIST_PAGE) break;
+  }
+  return ids;
+}
+
 /** The conversations one member is in now, in the session's organisation. */
 export async function listMyAgencyConversations(
   supabase: Client, args: { organisationId: string; viewerUserId: string },
 ): Promise<{ ok: true; conversations: AgencyConversationSummary[] } | { ok: false }> {
-  // Every conversation the viewer is in, a page at a time: a response cap
-  // would otherwise drop threads with nothing saying so.
-  const mine: Row[] = [];
-  for (let from = 0; ; from += LIST_PAGE) {
-    const { data, error } = await supabase.from('builder_agency_conversation_participants')
-      .select('conversation_id')
-      .eq('builder_user_id', args.viewerUserId).eq('side', 'builder').eq('state', 'joined')
-      .order('conversation_id', { ascending: true })
-      .range(from, from + LIST_PAGE - 1);
-    if (error) return { ok: false };
-    const page = (data ?? []) as Row[];
-    mine.push(...page);
-    if (page.length < LIST_PAGE) break;
-  }
+  const mine = await joinedConversationIds(supabase, args.viewerUserId);
+  if (!mine) return { ok: false };
   if (!mine.length) return { ok: true, conversations: [] };
 
   // Only this organisation's conversations; every lookup scoped to it too.
   const org = { column: 'organisation_id', value: args.organisationId };
   const conversations = await readIn(supabase, 'builder_agency_conversations',
-    'id, connection_id, stock_item_id, selection_ref, last_message_at', 'id', mine.map((row) => row.conversation_id), org);
+    'id, connection_id, stock_item_id, selection_ref, last_message_at', 'id', mine, org);
   if (conversations.error) return { ok: false };
   const list = conversations.data;
   if (!list.length) return { ok: true, conversations: [] };
@@ -248,5 +257,95 @@ export async function listMyAgencyConversations(
       };
     }).sort((a, b) => String(b.last_message_at ?? '').localeCompare(String(a.last_message_at ?? ''))
       || a.conversation_id.localeCompare(b.conversation_id)),
+  };
+}
+
+/** How many new messages one read names: a popup names a few, never a flood. */
+const NEW_MESSAGE_LIMIT = 20;
+
+const byArrivalAsc = (a: Row, b: Row) =>
+  (a.created_at === b.created_at ? (String(a.id) < String(b.id) ? -1 : 1) : (String(a.created_at) < String(b.created_at) ? -1 : 1));
+
+/**
+ * The messages an agency wrote that arrived after `since`, in the
+ * conversations the viewer is in now, in the session's organisation — what
+ * the portal's "New message from <agency>" popup shows (the builder-side
+ * counterpart of the Command Centre's `list_new_builder_messages`).
+ *
+ * The cursor is THIS database's arrival clock (`created_at`, stamped when the
+ * message landed here), never a browser's or the agency's, so no clock skew
+ * can hide or repeat one. With no `since` it answers only the cursor: a page
+ * that has just opened is told nothing about messages it arrived after.
+ *
+ * Membership decides it, exactly as it decides a read of the conversation:
+ * only conversations the viewer has joined, only this organisation's, and
+ * only the agency's side — never what this organisation wrote. Nothing of a
+ * message's body, and no user id, is returned.
+ */
+export async function newAgencyMessages(
+  supabase: Client, args: { organisationId: string; viewerUserId: string; since: string | null },
+): Promise<{ ok: true; cursor: string; messages: NewAgencyMessage[] } | { ok: false }> {
+  const now = new Date().toISOString();
+  const joined = await joinedConversationIds(supabase, args.viewerUserId);
+  if (!joined) return { ok: false };
+  if (!joined.length) return { ok: true, cursor: args.since ?? now, messages: [] };
+
+  const conversations = await readIn(supabase, 'builder_agency_conversations', 'id', 'id', joined,
+    { column: 'organisation_id', value: args.organisationId });
+  if (conversations.error) return { ok: false };
+  const ids = conversations.data.map((row) => String(row.id));
+  if (!ids.length) return { ok: true, cursor: args.since ?? now, messages: [] };
+
+  const found: Row[] = [];
+  for (let i = 0; i < ids.length; i += IN_CHUNK) {
+    let query = supabase.from('builder_agency_messages')
+      .select('id, conversation_id, sender_display_name, created_at')
+      .in('conversation_id', ids.slice(i, i + IN_CHUNK))
+      .eq('side', 'command_centre');
+    query = args.since
+      ? query.gt('created_at', args.since).order('created_at', { ascending: true }).limit(NEW_MESSAGE_LIMIT)
+      : query.order('created_at', { ascending: false }).limit(1);
+    const { data, error } = await query;
+    if (error) return { ok: false };
+    found.push(...((data ?? []) as Row[]));
+  }
+
+  if (!args.since) {
+    const latest = found.reduce<string | null>(
+      (max, row) => (!max || String(row.created_at) > max ? String(row.created_at) : max), null);
+    return { ok: true, cursor: latest ?? now, messages: [] };
+  }
+
+  const fresh = found.sort(byArrivalAsc).slice(0, NEW_MESSAGE_LIMIT);
+  if (!fresh.length) return { ok: true, cursor: args.since, messages: [] };
+
+  // Named the way the Messages list names them, by the same read: the agency,
+  // the lot and the address. Asked only when something arrived. A message in
+  // a conversation the viewer left in the meantime is not named at all.
+  const summaries = await listMyAgencyConversations(supabase, args);
+  if (!summaries.ok) return { ok: false };
+  const summaryById = new Map(summaries.conversations.map((summary) => [summary.conversation_id, summary]));
+
+  return {
+    ok: true,
+    // The newest arrival returned: the next read starts after it. When the
+    // limit was reached, later arrivals are named by the next read; a burst
+    // larger than the limit that landed in one sweep (one instant) is named in
+    // part, because a popup names a few and the thread holds them all.
+    cursor: String(fresh[fresh.length - 1].created_at),
+    messages: fresh
+      .filter((message) => summaryById.has(String(message.conversation_id)))
+      .map((message) => {
+        const summary = summaryById.get(String(message.conversation_id))!;
+        return {
+          message_id: String(message.id),
+          conversation_id: String(message.conversation_id),
+          agency_name: summary.agency_name,
+          sender_display_name: String(message.sender_display_name ?? ''),
+          lot_number: summary.lot_number,
+          address: summary.address,
+          received_at: String(message.created_at),
+        };
+      }),
   };
 }

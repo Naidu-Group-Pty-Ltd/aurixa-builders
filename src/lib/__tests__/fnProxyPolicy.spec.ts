@@ -137,3 +137,28 @@ describe('the route is actually wired', () => {
     expect(transport.toLowerCase()).not.toContain('.supabase.co');
   });
 });
+
+/*
+ * WHERE THE PROXY RUNS DECIDES WHERE EVERY PORTAL REQUEST RUNS.
+ *
+ * The edge runtime executes a function in the region closest to its CALLER,
+ * and the caller of every portal function is this proxy, not the browser. With
+ * no region declared, Vercel ran the proxy in `iad1` (Washington), so every
+ * portal request executed in `us-east-1` while the database is in Sydney: each
+ * of a request's ten or so database round trips crossed the Pacific. Measured
+ * on 27 Sep 2026 from the gateway's own logs (`x_sb_edge_region: us-east-1`,
+ * called from Ashburn): `builder-portal-stock` averaged 4.6 s, sending a
+ * message took 3-5.5 s and each poll of an open conversation about 4 s. The
+ * database work in those requests was 14-25 ms.
+ */
+describe('where the proxy runs', () => {
+  /** A Supabase database region, and the Vercel function region beside it. */
+  const VERCEL_REGION_BESIDE: Record<string, string> = { 'ap-southeast-2': 'syd1' };
+
+  it('runs in the Vercel region beside the network database', () => {
+    const vercel = JSON.parse(read('vercel.json')) as { regions?: string[] };
+    const databaseRegion = /\| Supabase project \| `[a-z]{20}` \(([a-z]+-[a-z]+-\d)\) \|/.exec(read('README.md'))?.[1];
+    expect(databaseRegion, 'the README records the network database region').toBe('ap-southeast-2');
+    expect(vercel.regions).toEqual([VERCEL_REGION_BESIDE[databaseRegion!]]);
+  });
+});

@@ -22,6 +22,7 @@ import type {
 import {
   agencyConversationPollInterval, agencyConversationRefetchInterval, collectEveryPage, retryUnlessRefused, type ActivatedProperty, type AgencyConversation, type AgencyConversationSummary, type AgencyMessageView,
 } from '@/lib/builderAgency';
+import type { NewAgencyMessage } from '@/lib/agencyMessagePopups.pure';
 
 export const builderStockKeys = {
   root: () => ['builder', 'stock'] as const,
@@ -277,6 +278,17 @@ export function useMyAgencyConversations() {
     refetchInterval: 30_000,
     refetchIntervalInBackground: false,
     retry: retryUnlessRefused,
+  });
+}
+
+/**
+ * The "New message from <agency>" popup's read: what the agency wrote after
+ * `since`, in the reader's own conversations. With no `since` the server
+ * answers only the cursor, so a page that has just opened replays nothing.
+ */
+export function readNewAgencyMessages(since: string | null) {
+  return invoke<{ cursor?: string; messages?: NewAgencyMessage[] }>({
+    operation: 'list_new_agency_messages', ...(since ? { since } : {}),
   });
 }
 
