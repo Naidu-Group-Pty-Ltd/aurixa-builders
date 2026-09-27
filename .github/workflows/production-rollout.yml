@@ -231,6 +231,18 @@ name: Production rollout
 #            the proxy (end to end) and directly (the functions' Server-Timing
 #            stages) — and re-proves who may do what. PERF_SAMPLES rounds.
 #            Deletes everything it creates.
+#   message-speed-proof
+#            times messages both ways on the live product with an activation
+#            and conversation of its own: portal reads through the proxy, each
+#            side's send, database-to-database delivery, and the first read on
+#            the other side that names it; proves the portal's new-message
+#            read (members only, no body, the builder's own side never named,
+#            writes nothing) and, in a real Chromium, the "New message from
+#            <agency>" popup, Open, and an open thread refreshing without a
+#            reload or a popup. `baseline` true measures whatever is deployed
+#            and skips what is not there yet — never a pass for a change.
+#            Playwright is installed for this phase only. Deletes everything
+#            it creates.
 #   portal-browser-proof
 #            opens the live portal in a real Chromium, signed in as a proof
 #            organisation of its own: every live route renders, the old
@@ -284,11 +296,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1)'
         required: false
@@ -321,6 +333,11 @@ on:
         default: 'observe'
         type: choice
         options: [observe, read]
+      baseline:
+        description: 'message-speed-proof only: true measures whatever is deployed now (before a change) and skips what is not there yet'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: production-rollout
@@ -375,6 +392,7 @@ jobs:
           APPLY: ${{ inputs.apply }}
           ONLY: ${{ inputs.only }}
           SCAN_PROOF_EXPECT: ${{ inputs.scan_expect }}
+          MESSAGE_PROOF_BASELINE: ${{ inputs.baseline }}
         run: |
           set -euo pipefail
           case "${{ inputs.phase }}" in
@@ -406,6 +424,10 @@ jobs:
             portal-access-proof) node scripts/ops/portal-access-proof.mjs ;;
             portal-performance-proof) node scripts/ops/portal-performance-proof.mjs ;;
             activation-speed-proof) node scripts/ops/activation-speed-proof.mjs ;;
+            message-speed-proof)
+                                  npm install --no-save --no-package-lock --no-audit --no-fund playwright@1.55.0 \
+                                    && npx playwright install --with-deps chromium \
+                                    && node scripts/ops/message-speed-proof.mjs ;;
             portal-browser-proof)
                                   npm install --no-save --no-package-lock --no-audit --no-fund playwright@1.55.0 \
                                     && npx playwright install --with-deps chromium \
@@ -423,6 +445,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: portal-browser-proof
+          path: proof-artifacts/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: upload the message proof's screenshots
+        if: ${{ always() && inputs.phase == 'message-speed-proof' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: message-speed-proof
           path: proof-artifacts/
           if-no-files-found: warn
           retention-days: 7
