@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error — a plain .mjs module shared with the ops script
-import { entryScriptOf, judgeServedBuild, readBuildManifest, sameCommit } from '../../../scripts/ops/ccFrontendBuild.pure.mjs';
+import { describeRefusal, entryScriptOf, judgeServedBuild, readBuildManifest, sameCommit } from '../../../scripts/ops/ccFrontendBuild.pure.mjs';
 
 /**
  * WHICH BUILD THE COMMAND CENTRE SERVES (docs/builder-portal/64 §4).
@@ -92,5 +92,25 @@ describe('what an origin proves', () => {
     const verdict = served({ manifest: null, entryCarriesId: false });
     expect(verdict.ok).toBe(false);
     expect(verdict.reasons.join(' ')).toMatch(/version\.json/);
+  });
+});
+
+describe('an origin that would not answer', () => {
+  it('is challenged by bot protection when the edge says so, whatever the status digit', () => {
+    expect(describeRefusal({ status: 403, server: 'cloudflare', mitigated: 'challenge', body: '' }))
+      .toBe('challenged by bot protection (HTTP 403, cloudflare)');
+    expect(describeRefusal({ status: 503, server: 'cloudflare', mitigated: null,
+      body: '<html><head><title>Just a moment...</title></head><body></body></html>' }))
+      .toBe('challenged by bot protection (HTTP 503, cloudflare)');
+  });
+
+  it('is otherwise refused, and names who refused it and what its page said', () => {
+    expect(describeRefusal({ status: 403, server: 'cloudflare', mitigated: null,
+      body: '<title>Attention Required! | Cloudflare</title>' }))
+      .toBe('challenged by bot protection (HTTP 403, cloudflare)');
+    expect(describeRefusal({ status: 403, server: 'nginx', mitigated: null, body: '<title>403 Forbidden</title>' }))
+      .toBe('refused (HTTP 403, nginx, "403 Forbidden")');
+    expect(describeRefusal({ status: 404, server: null, mitigated: null, body: 'Not found' }))
+      .toBe('refused (HTTP 404)');
   });
 });

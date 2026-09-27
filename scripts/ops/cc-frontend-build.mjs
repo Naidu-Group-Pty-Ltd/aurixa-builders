@@ -21,7 +21,7 @@
  * no write. Runs from the production-rollout workflow (phase
  * `cc-frontend-build`).
  */
-import { entryScriptOf, judgeServedBuild, readBuildManifest } from './ccFrontendBuild.pure.mjs';
+import { describeRefusal, entryScriptOf, judgeServedBuild, readBuildManifest } from './ccFrontendBuild.pure.mjs';
 
 const ORIGINS = (process.env.CC_FRONTEND_ORIGINS
   || 'https://command-centre.npcservices.com.au,https://npc-property-dashbord.lovable.app')
@@ -54,8 +54,16 @@ async function get(url) {
     cache: 'no-store', redirect: 'follow', signal: AbortSignal.timeout(TIMEOUT_MS),
     headers: { 'cache-control': 'no-cache' },
   });
-  return { status: response.status, url: response.url, text: await response.text() };
+  return {
+    status: response.status, url: response.url, text: await response.text(),
+    server: response.headers.get('server'), mitigated: response.headers.get('cf-mitigated'),
+  };
 }
+
+/** What an answer that is not 200 says about who refused it. */
+const refusal = (answer) => (answer.status === 200 ? null : describeRefusal({
+  status: answer.status, server: answer.server, mitigated: answer.mitigated, body: answer.text,
+}));
 
 console.log(`Command Centre frontend build${EXPECTED ? ` (expected ${EXPECTED})` : ' (recording what is served)'}`);
 const served = [];
@@ -76,7 +84,7 @@ for (const origin of ORIGINS) {
     const landed = new URL(page.url).origin;
     record(`${origin} serves ${manifest?.buildId ?? 'no build id'}${landed !== origin ? ` (answered by ${landed})` : ''}`,
       verdict.ok,
-      [`version.json HTTP ${manifestAnswer.status}`, `page HTTP ${page.status}`,
+      [`version.json ${refusal(manifestAnswer) ?? 'HTTP 200'}`, `page ${refusal(page) ?? 'HTTP 200'}`,
         `entry ${entry ?? 'none'} HTTP ${entryStatus || '-'}`, ...verdict.reasons].join('; '));
     if (manifest) served.push(manifest.buildId);
   } catch (error) {
