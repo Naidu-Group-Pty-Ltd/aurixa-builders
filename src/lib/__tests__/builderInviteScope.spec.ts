@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   PENDING_MEMBERSHIP_STATUS,
   acceptanceActivation,
-  inviteLinkDisclosure,
+  mayHandLinkToInviter,
   membershipStatusForGrant,
 } from '../../../supabase/functions/_shared/builderInviteScope.pure';
 
@@ -77,48 +77,49 @@ describe('what status a granted membership starts in', () => {
   });
 });
 
-describe('whether the inviter may be shown the link', () => {
-  it('may, for a brand-new invitee who belongs nowhere else', () => {
-    const verdict = inviteLinkDisclosure({ liveMemberships: [pending(org.a)], invitingOrganisationId: org.a });
-    expect(verdict.mayReturnLink).toBe(true);
+describe('whether the response may carry the one-time link', () => {
+  /*
+   * The first fix withheld the link where the address belonged to another
+   * organisation. That closed the cross-organisation case and left two things
+   * the independent review found, each of which this narrower rule closes:
+   *
+   *  * a FAILED send is attacker-triggerable, and holding the link for an
+   *    unclaimed address lets the caller accept it themselves — owning an
+   *    account bearing somebody else's address, which pays off the first time
+   *    any organisation adds that established account live;
+   *  * the link's PRESENCE answered "does this address belong somewhere that is
+   *    not mine?", which is the oracle the invite function's header forbids.
+   *    Protecting WHICH organisation while disclosing THAT one exists is not
+   *    protection.
+   */
+  it('does not, when the email was sent — the email carries it', () => {
+    expect(mayHandLinkToInviter({ send: 'sent' })).toBe(false);
   });
 
-  it('may, when every membership the account holds is the inviter own organisation', () => {
-    const verdict = inviteLinkDisclosure({
-      liveMemberships: [pending(org.a), live(org.a)],
-      invitingOrganisationId: org.a,
-    });
-    expect(verdict.mayReturnLink).toBe(true);
+  it('does NOT, when a send merely failed', () => {
+    // The case the takeover was delivered through, and the one an attacker can
+    // force by running the provider over its per-second limit.
+    expect(mayHandLinkToInviter({ send: 'failed' })).toBe(false);
   });
 
-  it('MAY NOT, when the account is a pending invitee of another organisation', () => {
-    const verdict = inviteLinkDisclosure({
-      liveMemberships: [pending(org.a), pending(org.b, 'owner')],
-      invitingOrganisationId: org.a,
-    });
-    expect(verdict.mayReturnLink).toBe(false);
-    expect(verdict.reason).toBe('belongs_to_another_organisation');
+  it('does, and only, where the deployment has no mail provider at all', () => {
+    // The case the affordance was written for: the inviter is the only delivery
+    // channel there is, so withholding it means nobody can ever be invited.
+    // The residual is accepted there and unavoidable — whoever may invite is
+    // the postman.
+    expect(mayHandLinkToInviter({ send: 'not_configured' })).toBe(true);
   });
 
-  it('MAY NOT, when the account holds a live membership of another organisation', () => {
-    const verdict = inviteLinkDisclosure({
-      liveMemberships: [pending(org.a), live(org.b, 'owner')],
-      invitingOrganisationId: org.a,
-    });
-    expect(verdict.mayReturnLink).toBe(false);
-  });
-
-  it('refuses rather than guesses when it is not told which organisation is inviting', () => {
-    const verdict = inviteLinkDisclosure({ liveMemberships: [pending(org.a)], invitingOrganisationId: null });
-    expect(verdict.mayReturnLink).toBe(false);
-  });
-
-  it('names no organisation in its reason — the caller learns only that it may not have the link', () => {
-    const verdict = inviteLinkDisclosure({
-      liveMemberships: [pending(org.a), pending(org.b)],
-      invitingOrganisationId: org.a,
-    });
-    expect(JSON.stringify(verdict)).not.toContain(org.b);
+  it('answers the same for every address, so its answer discloses nothing', () => {
+    // The whole point: the decision reads the provider state and NOTHING about
+    // the invitee, so the response shape cannot vary per address.
+    const source = readFileSync(
+      join(__dirname, '..', '..', '..', 'supabase', 'functions', '_shared', 'builderInviteScope.pure.ts'),
+      'utf8',
+    );
+    const fn = source.slice(source.indexOf('export function mayHandLinkToInviter'));
+    const body = fn.slice(0, fn.indexOf('\n}'));
+    expect(body).not.toMatch(/membership|organisation|email|invitee/i);
   });
 });
 
@@ -202,8 +203,23 @@ describe('the handlers that must obey these rules', () => {
     expect(invite).toMatch(/invite_token_organisation_id/);
   });
 
-  it('the invite function asks this module whether it may return the link', () => {
-    expect(invite).toMatch(/inviteLinkDisclosure/);
+  it('both doors that can return a link ask this module — each its own rule', () => {
+    /*
+     * Exactly two functions return a one-time link, and the first fix guarded
+     * one of them: `builder-network-admin` had no membership read of the target
+     * at all, so an operator could mint a working credential for any address
+     * not yet established, a real tenant's pending invitee included.
+     *
+     * They ask DIFFERENT questions, deliberately. A tenant administrator gets a
+     * decision that reads nothing about the invitee, because any per-address
+     * variation is an oracle over other tenants' staff. A platform operator,
+     * who can already see the whole network, gets the membership rule: what is
+     * withheld from them is the credential, not the fact.
+     */
+    expect(invite).toMatch(/mayHandLinkToInviter/);
+    expect(invite).not.toMatch(/operatorMayHandLink/);
+    expect(admin).toMatch(/operatorMayHandLink/);
+    expect(admin).not.toMatch(/mayHandLinkToInviter/);
   });
 
   it('the invite function grants a membership at this module status, never a literal', () => {
@@ -326,7 +342,113 @@ describe('a seat that was left waiting', () => {
 
   it('returns its error rather than throwing, so each door decides', () => {
     const fn = helper.slice(helper.indexOf('export async function promoteWaitingMembership'));
-    expect(fn).toMatch(/return \{ error: error \?\? null \}/);
+    expect(fn).toMatch(/return \{ error: error \?\? null, promoted:/);
     expect(fn).not.toMatch(/\bthrow\b/);
+  });
+});
+
+describe('what the independent review found in the first fix', () => {
+  const read = (...parts: string[]) =>
+    readFileSync(join(__dirname, '..', '..', '..', 'supabase', 'functions', ...parts), 'utf8');
+  const invite = read('builder-portal-invite', 'index.ts');
+  const admin = read('builder-network-admin', 'index.ts');
+  const accept = read('builder-portal-accept-invite', 'index.ts');
+  const helper = read('_shared', 'builderInvite.ts');
+  const members = read('_shared', 'builderMemberManagement.pure.ts');
+  const mail = read('_shared', 'builderInviteEmail.ts');
+  const reset = read('builder-portal-forgot-password', 'index.ts');
+
+  it('the operator door decides its link by WHOSE the account is, and reads the memberships to do it', () => {
+    // `established` is `password_hash || invite_accepted_at`, and a real
+    // tenant's PENDING INVITEE has neither — so this door handed out a working
+    // credential for somebody else's person. It had no membership read at all.
+    expect(admin).toMatch(/operatorMayHandLink/);
+    const decision = admin.slice(admin.indexOf('WHOSE person is this'.toUpperCase()));
+    expect(decision.slice(0, 900)).toMatch(/\.from\('builder_organisation_memberships'\)/);
+    expect(admin).toMatch(/invite_url: established \|\| !linkIsTheirs \? null/);
+  });
+
+  it('the tenant door decides its link WITHOUT reading anything about the invitee', () => {
+    // Any per-address variation is an oracle over other tenants' staff. The
+    // decision reads the provider state alone.
+    expect(invite).toMatch(/mayHandLinkToInviter\(\{ send: sendState \}\)/);
+    expect(invite).not.toMatch(/inviteLinkDisclosure/);
+  });
+
+  it('a link is never handed over merely because one send failed', () => {
+    expect(mayHandLinkToInviter({ send: 'failed' })).toBe(false);
+    expect(invite).toMatch(/outcome\.reason === 'not_configured' \? 'not_configured' : 'failed'/);
+  });
+
+  it('reads the send outcome by narrowing the union, never through a derived string', () => {
+    /*
+     * `reason` exists only on the unsent arm of `InviteEmailOutcome`, and a
+     * derived `sendState` string cannot carry that discrimination back —
+     * `deno check` rejected exactly that (TS2339) after the whole local suite
+     * had passed, because Deno is not installed in the development sandbox and
+     * CI is the only place this class is caught. This assertion is the local
+     * half: every read of `outcome.reason` sits inside an `if (!outcome.sent)`.
+     */
+    const reads = [...invite.matchAll(/outcome\.reason/g)].map((m) => m.index ?? 0);
+    expect(reads.length).toBeGreaterThan(0);
+    const guard = invite.indexOf('if (!outcome.sent) {');
+    expect(guard).toBeGreaterThan(-1);
+    const guardEnd = invite.indexOf('\n      }', guard);
+    for (const at of reads) {
+      expect(at, 'a reason read outside the unsent branch').toBeGreaterThan(guard);
+      expect(at, 'a reason read after the unsent branch closes').toBeLessThan(guardEnd);
+    }
+  });
+
+  it('the promoter reports whether it promoted anything, and every caller reads it', () => {
+    // A zero-row update carries no error, so silence used to read as success:
+    // a `suspended` membership matched nothing and the caller emailed "you now
+    // have access" over a membership the portal still refuses.
+    expect(helper).toMatch(/\.select\('id'\)/);
+    expect(helper).toMatch(/promoted: Array\.isArray\(data\) \? data\.length : 0/);
+    expect(invite).toMatch(/promotion\.promoted === 0/);
+    expect((admin.match(/promotion\.promoted === 0/g) ?? []).length).toBe(2);
+  });
+
+  it('revoking an invitation destroys only this organisation own token', () => {
+    // The token slot is one per account, so nulling it by user id alone let any
+    // organisation cancel an invitation somebody else had issued.
+    const revoke = invite.slice(invite.indexOf("action === 'revoke_invite'"));
+    expect(revoke.slice(0, 2200)).toMatch(/\.eq\('invite_token_organisation_id', activeOrganisationId\)/);
+  });
+
+  it('the members list files a waiting membership with the invitations', () => {
+    // It partitioned on the ACCOUNT's status, so a membership waiting in THIS
+    // organisation drew as a full member with a Suspend the database refuses.
+    expect(members).toMatch(/view\.status === PENDING_MEMBERSHIP_STATUS/);
+  });
+
+  it('the acceptance lookup tells a failed read from an absent token', () => {
+    // The select names the new column, so functions deployed ahead of the
+    // migration would answer PGRST204 and every invitation would read as
+    // "invalid" with nothing logged.
+    expect(accept).toMatch(/error: portalUserError/);
+    expect(accept).toMatch(/503/);
+  });
+
+  it("the provider's own message is redacted before it is logged, on both send sites", () => {
+    // The promise "the recipient never reaches a log" is not the provider's to
+    // keep: its refusals quote the offending address.
+    expect(mail).toMatch(/export function redactAddresses/);
+    for (const [name, source] of [['invite email', mail], ['reset', reset]] as const) {
+      expect(source, `${name} logs an unredacted body`).toMatch(/redactAddresses\(detail\)/);
+      expect(source, `${name} logs a raw body`).not.toMatch(/provider_message: detail\./);
+    }
+  });
+
+  it('a join approval grants the waiting status too, and promotes a waiting row', () => {
+    // The rule reached three edge functions and not the one that grants in SQL.
+    const sql = readFileSync(
+      join(__dirname, '..', '..', '..', 'supabase', 'migrations',
+        '20260928120000_a_join_request_is_a_grant_so_it_waits.sql'), 'utf8');
+    expect(sql).toMatch(/v_grant_status := CASE/);
+    expect(sql).not.toMatch(/v_primary, 'active', _decided_by/);
+    expect(sql).toMatch(/SET status = 'active', granted_by = _decided_by/);
+    expect(sql).toMatch(/AND m\.status = 'invited'/);
   });
 });

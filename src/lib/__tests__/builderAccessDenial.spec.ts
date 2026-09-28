@@ -228,9 +228,19 @@ describe('a membership that is waiting on its own invitation', () => {
     expect(reading.message).not.toMatch(/withdrawn|expired/i);
   });
 
-  it('names the organisation that invited them, so the remedy is theirs to ask for', () => {
+  it('names NO organisation, exactly as the ended reading beside it does not', () => {
+    /*
+     * This assertion used to require the opposite, and requiring it was the
+     * defect: it pinned a disclosure as a feature instead of asking whether it
+     * should exist. The reading one block down has always said "a membership
+     * somebody removed is their record to explain, not ours" — and somebody
+     * whose address was invited speculatively, or by a typo, would otherwise
+     * learn that organisation's legal name from a refusal screen rather than
+     * from an invitation. The sentence is just as useful without it.
+     */
     const reading = readAccessDenial([org('invited')], new Date('2026-09-28T00:00:00Z'));
-    expect(reading.message).toContain('Kerrigan Homes');
+    expect(reading.message).not.toContain('Kerrigan Homes');
+    expect(reading.message).toMatch(/invited/i);
   });
 
   it('still reads as ended where the membership was revoked rather than pending', () => {

@@ -8,6 +8,8 @@
  * returns: the member list, and a sentence for each refusal. `can_manage` is a
  * journey aid for the page; the server re-decides every act.
  */
+import { PENDING_MEMBERSHIP_STATUS } from './builderInviteScope.pure.ts';
+
 
 /** The roles an owner or administrator may assign — the same set invitations offer. */
 export const MANAGEABLE_ROLES = ['administrator', 'manager', 'member', 'read_only'] as const;
@@ -46,8 +48,21 @@ export interface MemberView {
 }
 
 /**
- * Members (accepted accounts) and pending invitations (accounts still
- * `invited`), each carrying whether this caller could manage them.
+ * Members and pending invitations, each carrying whether this caller could
+ * manage them.
+ *
+ * THE SPLIT IS PER MEMBERSHIP, NOT PER ACCOUNT. It used to read the ACCOUNT's
+ * status alone, which was the same question until a membership could wait on
+ * its own (migration `20260928090000`): after the intended flow — A invites
+ * Bob, B invites Bob, Bob accepts B's link — Bob's account is `active` while
+ * A's membership is still `invited`, so A's list filed him under **members**
+ * and drew him as a full one. There is no badge for a waiting membership, and
+ * both Suspend and Remove rendered; Suspend is refused by the database
+ * (`BUILDER_MEMBER_NOT_ACTIVE`) on a row the page had just presented as
+ * active, Reactivate is refused too, and "Cancel invitation" was unreachable
+ * because he was not in the invitations list. An invitation this organisation
+ * is still waiting on belongs with the invitations, whatever the account has
+ * done elsewhere.
  */
 export function shapeMembers(
   memberships: MembershipRow[],
@@ -72,13 +87,17 @@ export function shapeMembers(
       can_manage: !isSelf && mayTouchRole && (caller.callerRole === 'owner' || caller.callerRole === 'administrator'),
     });
   }
-  const invitedIds = new Set(users.filter((u) => u.status === 'invited').map((u) => u.id));
+  // Either the account has never accepted anything, or THIS organisation's own
+  // membership is still waiting — both are invitations from here.
+  const invitedAccounts = new Set(users.filter((u) => u.status === 'invited').map((u) => u.id));
+  const isInvitation = (view: MemberView) =>
+    invitedAccounts.has(view.builder_user_id) || view.status === PENDING_MEMBERSHIP_STATUS;
   // Owners first, then by role, then by name.
   const rank = (role: string) => ['owner', ...MANAGEABLE_ROLES].indexOf(role as never);
   const byName = (a: MemberView, b: MemberView) =>
     rank(a.role) - rank(b.role) || (a.name ?? a.email).localeCompare(b.name ?? b.email);
   return {
-    members: views.filter((v) => !invitedIds.has(v.builder_user_id)).sort(byName),
-    invitations: views.filter((v) => invitedIds.has(v.builder_user_id)).sort(byName),
+    members: views.filter((v) => !isInvitation(v)).sort(byName),
+    invitations: views.filter(isInvitation).sort(byName),
   };
 }

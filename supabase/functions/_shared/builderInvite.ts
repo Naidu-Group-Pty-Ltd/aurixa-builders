@@ -87,6 +87,15 @@ export async function mintBuilderInvite(now: Date = new Date()): Promise<MintedI
  * Returns the error rather than throwing, so each caller can decide whether a
  * failed promotion should fail its act — on acceptance it must not, because
  * the single-use token has already been spent.
+ *
+ * AND IT REPORTS WHETHER IT PROMOTED ANYTHING. The first version returned only
+ * the error, and a zero-row update carries none: a membership that is
+ * `suspended` rather than waiting matched nothing, answered `error: null`, and
+ * the caller went on to email the colleague "You now have access — your
+ * existing sign-in still works" over a membership the portal still refuses.
+ * That is verbatim the failure the promotion exists to prevent, so silence may
+ * not read as success. Refusing to promote a suspended membership is right;
+ * reporting the refusal as a grant is not.
  */
 export async function promoteWaitingMembership(
   // deno-lint-ignore no-explicit-any
@@ -98,16 +107,20 @@ export async function promoteWaitingMembership(
     readonly membershipRole?: string;
     readonly grantedBy?: string;
   },
-): Promise<{ readonly error: { message: string } | null }> {
+): Promise<{ readonly error: { message: string } | null; readonly promoted: number }> {
   const patch: Record<string, unknown> = { status: 'active' };
   if (args.membershipRole) patch.membership_role = args.membershipRole;
   if (args.grantedBy) patch.granted_by = args.grantedBy;
-  const { error } = await supabase
+  // `.select('id')` is what makes the row count readable at all: without it
+  // PostgREST returns no representation and "changed nothing" is
+  // indistinguishable from "changed one".
+  const { data, error } = await supabase
     .from('builder_organisation_memberships')
     .update(patch)
     .eq('builder_user_id', args.builderUserId)
     .eq('organisation_id', args.organisationId)
     .eq('status', PENDING_MEMBERSHIP_STATUS)
-    .is('revoked_at', null);
-  return { error: error ?? null };
+    .is('revoked_at', null)
+    .select('id');
+  return { error: error ?? null, promoted: Array.isArray(data) ? data.length : 0 };
 }

@@ -216,12 +216,22 @@ export function readAccessDenial(
     (row) => row.status === "invited" && !row.revoked_at,
   );
   if (!live.length && invited) {
+    /*
+     * IT NAMES NO ORGANISATION, and its sibling below is why: "a membership
+     * somebody removed is their record to explain, not ours." The first version
+     * interpolated the organisation's legal name, chosen by `find` over an
+     * unordered result — so somebody whose address had been invited
+     * speculatively, or by a typo, learned that organisation's legal name from a
+     * refusal screen rather than from an invitation. The reader has proved their
+     * password, so this is a small disclosure; it is also an unnecessary one,
+     * and the sentence is just as useful without it.
+     */
     return {
       code: "invitation_pending",
       message:
-        `${naming(invited.organisation_legal_name, "Your organisation")} has invited you, and that ` +
-        `invitation has not been accepted yet. Open the invitation link that was emailed to you to ` +
-        `finish setting up your access. If you no longer have it, ask them to send it again.`,
+        `You have been invited, and that invitation has not been accepted yet. Open the invitation ` +
+        `link that was emailed to you to finish setting up your access. If you no longer have it, ` +
+        `ask whoever invited you to send it again.`,
     };
   }
 

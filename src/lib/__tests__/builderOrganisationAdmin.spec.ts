@@ -271,7 +271,16 @@ describe('bootstrapping the first owner', () => {
     // Nothing is minted at all on that branch, so nothing can be stamped.
     expect(code).toMatch(/const minted = established \? null : await mintBuilderInvite\(\)/);
     expect(code).toMatch(/if \(!established && minted\)[\s\S]{0,400}invite_token_hash/);
-    expect(code).toMatch(/invite_url: established \? null : minted!\.url/);
+    /*
+     * `established` is still the gate that decides whether a link EXISTS, which
+     * is what this test is about. It is no longer the only gate on whether the
+     * operator is HANDED it: `established` is `password_hash ||
+     * invite_accepted_at`, and a real tenant's PENDING INVITEE has neither — so
+     * this expression alone returned a working credential for somebody else's
+     * person, and an operator could accept it, set a password and take the
+     * account. `linkIsTheirs` is the second gate (`operatorMayHandLink`).
+     */
+    expect(code).toMatch(/invite_url: established \|\| !linkIsTheirs \? null : minted!\.url/);
   });
 
   it('attaches that account as owner instead of refusing it', () => {

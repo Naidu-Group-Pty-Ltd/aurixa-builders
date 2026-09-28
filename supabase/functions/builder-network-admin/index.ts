@@ -51,7 +51,10 @@ import {
   INVITE_EXPIRY_HOURS,
 } from '../_shared/builderInvite.ts';
 import { readOrganisationConflict } from '../_shared/builderOrganisationConflict.pure.ts';
-import { membershipStatusForGrant } from '../_shared/builderInviteScope.pure.ts';
+import {
+  membershipStatusForGrant,
+  operatorMayHandLink,
+} from '../_shared/builderInviteScope.pure.ts';
 import {
   APPLICATION_WINDOW_HOURS,
   ORIGIN_WINDOWS,
@@ -568,11 +571,22 @@ Deno.serve(async (req) => {
         // it up — and this is the operator's own door, so the stranding leaves
         // an organisation with NO reachable owner and no surface that can fix
         // it. See `promoteWaitingMembership`.
-        const { error: promoteError } = await promoteWaitingMembership(supabase, {
+        /*
+         * A NO-OP IS NOT AN ATTACHMENT. The insert carries `is_primary: true`,
+         * so its 23505 may be the one-primary key rather than the live key —
+         * in which case there is no waiting row to promote, the promoter
+         * changes nothing, and reporting success would settle the request
+         * `attached` and email "this organisation is now yours to run" over an
+         * organisation with no owner at all. The row count is what tells a
+         * refusal from a grant.
+         */
+        const promotion = await promoteWaitingMembership(supabase, {
           builderUserId: ownerId,
           organisationId: organisation.id,
           membershipRole: 'owner',
         });
+        const promoteError = promotion.error
+          ?? (promotion.promoted === 0 ? { message: 'no waiting owner seat to promote' } : null);
         if (promoteError) {
           await settle('refused', 'owner_not_attached', {
             organisation_id: organisation.id,
@@ -786,6 +800,28 @@ Deno.serve(async (req) => {
         }
       }
 
+      /*
+       * WHOSE PERSON IS THIS? Read BEFORE the grant below adds this
+       * organisation's own row, so the answer is about where the account
+       * already belonged. A read that FAILED withholds the link — fail closed,
+       * rather than decide on missing evidence.
+       */
+      const { data: ownerMemberships, error: ownerScopeError } = await supabase
+        .from('builder_organisation_memberships')
+        .select('organisation_id')
+        .eq('builder_user_id', ownerId)
+        .is('revoked_at', null);
+      const linkIsTheirs = !ownerScopeError && operatorMayHandLink({
+        liveMemberships: (ownerMemberships ?? []) as { organisation_id: string }[],
+        newOrganisationId: organisationId,
+      });
+      if (!linkIsTheirs) {
+        console.warn('[builder-network-admin] owner link withheld — the account belongs elsewhere', {
+          organisation_id: organisationId,
+          scope_unreadable: !!ownerScopeError,
+        });
+      }
+
       const { error: membershipError } = await supabase
         .from('builder_organisation_memberships')
         .insert({
@@ -799,11 +835,15 @@ Deno.serve(async (req) => {
       if (membershipError && String(membershipError.code) === '23505' && established) {
         // As on the access-request door above: a waiting owner seat that
         // nothing else can promote.
-        const { error: promoteError } = await promoteWaitingMembership(supabase, {
+        // As above: promoting nothing leaves this organisation with no owner, so
+        // it is a failure rather than a quiet success.
+        const promotion = await promoteWaitingMembership(supabase, {
           builderUserId: ownerId,
           organisationId: organisationId,
           membershipRole: 'owner',
         });
+        const promoteError = promotion.error
+          ?? (promotion.promoted === 0 ? { message: 'no waiting owner seat to promote' } : null);
         if (promoteError) {
           console.error('[builder-network-admin] owner seat still waiting', promoteError.message);
           return json({ error: 'invite_failed' }, 500);
@@ -873,7 +913,23 @@ Deno.serve(async (req) => {
       return json({
         success: true,
         outcome: established ? 'attached' : 'invited',
-        invite_url: established ? null : minted!.url,
+        /*
+         * THE OPERATOR DOOR ANSWERS TO THE SAME LINK RULE AS THE PORTAL'S.
+         *
+         * This returned a working one-time credential for any address that was
+         * not yet established — which includes a real tenant's PENDING
+         * INVITEE, since `established` is `password_hash || invite_accepted_at`
+         * and a pending invitee has neither. So an operator could create an
+         * empty organisation, invite that address as its owner, receive the
+         * link, accept it, set a password and stamp the mailbox verified: the
+         * account is then theirs, and every live membership it holds comes with
+         * it. The first fix guarded the portal door and left this one, which is
+         * the stronger of the two.
+         *
+         * `submit_access_request`, one door along, already got this right and
+         * says so: "the link is the credential".
+         */
+        invite_url: established || !linkIsTheirs ? null : minted!.url,
         expires_at: established ? null : minted!.expiresAt.toISOString(),
         expires_in_hours: established ? null : INVITE_EXPIRY_HOURS,
         organisation_legal_name: organisation.legal_name,

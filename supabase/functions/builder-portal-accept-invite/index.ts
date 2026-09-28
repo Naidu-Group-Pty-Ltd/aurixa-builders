@@ -98,13 +98,30 @@ Deno.serve(async (req) => {
     const tokenHash = await hashSessionToken(token);
     if (!tokenHash) return json({ error: GENERIC_INVITE_ERROR, valid: false }, 400);
 
-    const { data: portalUser } = await supabase
+    /*
+     * THE ERROR IS READ. A read that FAILED is not a row that is ABSENT, and
+     * this select is where that distinction became load-bearing: it now names
+     * `invite_token_organisation_id`, so a deployment whose functions ship
+     * ahead of migration `20260928090000` answers PostgREST's `PGRST204`, the
+     * row reads as undefined, and EVERY invitation on that deployment answers
+     * "Invalid or expired invite link" with nothing recorded anywhere. The same
+     * goes for any transient database fault. Both are fail-closed, which is
+     * right, and both were undiagnosable, which is not.
+     */
+    const { data: portalUser, error: portalUserError } = await supabase
       .from('builder_portal_users')
       .select(`id, email, name, job_title, status, is_active, revoked_at,
                invite_token_hash, invite_token_expires_at, invite_accepted_at, password_hash,
                invite_token_organisation_id`)
       .eq('invite_token_hash', tokenHash)
       .maybeSingle();
+    if (portalUserError) {
+      console.error('[builder-portal-accept-invite] the invitation lookup FAILED — this is not an absent token',
+        portalUserError.code, portalUserError.message);
+      // 503: the caller may retry, and an operator has something to read. The
+      // body stays generic so a failure discloses nothing a success would not.
+      return json({ error: 'This service is temporarily unavailable. Please try again.', valid: false }, 503);
+    }
 
     // Every rejection below uses the same generic message so an attacker cannot
     // learn whether a token exists, has expired, or was already used.
@@ -143,6 +160,7 @@ Deno.serve(async (req) => {
       tokenOrganisationId: portalUser.invite_token_organisation_id ?? null,
       liveMemberships: invitedOrganisations.map((organisation) => ({
         organisation_id: organisation.organisation_id,
+        status: organisation.status,
       })),
     });
     if (!scope.ok) {
@@ -368,6 +386,15 @@ interface InvitedOrganisation {
   organisation_id: string;
   legal_name: string;
   membership_role: string;
+  /*
+   * Carried so the scoping rule can see it. This list is every non-revoked
+   * membership, which includes `suspended` ones: promotion correctly no-ops on
+   * those, so nothing is over-activated, but a legacy token naming no
+   * organisation would otherwise pick a suspended membership as "the one" and
+   * the validate response would name that organisation to whoever held the
+   * link. A suspended membership is not an invitation waiting to be accepted.
+   */
+  status: string | null;
 }
 
 async function listInvitedOrganisations(
@@ -376,7 +403,7 @@ async function listInvitedOrganisations(
 ): Promise<InvitedOrganisation[]> {
   const { data: memberships } = await supabase
     .from('builder_organisation_memberships')
-    .select('organisation_id, membership_role')
+    .select('organisation_id, membership_role, status')
     .eq('builder_user_id', userId)
     .is('revoked_at', null);
   if (!Array.isArray(memberships) || !memberships.length) return [];
@@ -402,6 +429,7 @@ async function listInvitedOrganisations(
       organisation_id: membership.organisation_id,
       legal_name: detail.legal_name,
       membership_role: membership.membership_role,
+      status: membership.status ?? null,
     });
   }
   return invited;
