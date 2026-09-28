@@ -7,6 +7,18 @@ property can only have come from the fixture that states it.
 
 COMMON = dict(suburb='Truganina', state='VIC', postcode='3029')
 
+# Facade seeds the PRODUCT'S OWN classifier accepts as a clean photograph
+# (`assessMarketplaceEligibility`, version 4), measured before they were used.
+# A fixture photograph the rule refuses would make a proof about the fixture;
+# a refused seed is never used for a property that is meant to publish.
+ELIGIBLE = [102, 104, 201, 205, 206, 211, 212, 301, 307, 309, 311, 312, 314, 318, 319, 326, 329,
+            331, 332, 407, 413, 416, 418, 423, 424, 427, 433, 434, 435, 436, 437, 438, 441, 444,
+            445, 451, 452, 453, 455, 456, 459, 462, 463, 466, 469, 473, 476, 480, 505, 511, 700,
+            701, 718, 728, 729, 730, 735, 736, 745, 755, 757, 758, 759]
+_pool = iter(ELIGIBLE)
+def next_seed():
+    return next(_pool)
+
 def prop(ref, lot, street, design, ptype, beds, baths, car, land, build, price,
          status, completion=None, estate='Kestrel Grove', stage='Stage 3',
          unit=None, description=None, suburb='Truganina', state='VIC', postcode='3029',
@@ -38,18 +50,18 @@ CSV_V1 = [
     prop('T0-101', '101', '12 Proofline Way', 'Aspen 25', 'House & Land', 4, 2, 2, 448, 231.5,
          749900, 'Available', 'Dec 2026',
          description='PROOF ONLY — not for sale. Café-style kitchen, north-facing yard.',
-         photo_seed=101, plan=True, brochure=True),
+         photo_seed=next_seed(), plan=True, brochure=True),
     prop('T0-102', '102', '14 Proofline Way', 'Birch 22', 'House', 4, 2.5, 2, 400, 205.2,
          712500, 'Under Offer', 'Mar 2027', description='PROOF ONLY — not for sale.',
-         photo_seed=102, plan=True),
+         photo_seed=next_seed(), plan=True),
     prop('T0-103', '103', '16 Proofline Way', 'Cedar 18', 'Townhouse', 3, 2, 1, 250, 168,
-         655000, 'Deposit Taken', description='PROOF ONLY — not for sale.', photo_seed=103),
+         655000, 'Deposit Taken', description='PROOF ONLY — not for sale.', photo_seed=next_seed()),
     prop('T0-104', '104', '18 Proofline Way', 'Duo 30', 'House', 5, 3, 2, 512, 280.75,
          'POA', 'Available', description='PROOF ONLY — not for sale. Price on application.',
-         photo_seed=104),
+         photo_seed=next_seed()),
     prop('T0-105', '7A', '20 Tierzero Crescent', 'Elm 16', 'Townhouse', 3, 2, 1, 180, 150,
          599000, 'Sold', estate='Wren Heights', stage='Stage 1', unit='3',
-         suburb='Tarneit', description='PROOF ONLY — not for sale.', photo_seed=105),
+         suburb='Tarneit', description='PROOF ONLY — not for sale.', photo_seed=next_seed()),
 ]
 
 # v2 of the same list: the re-upload. Every change is one a builder makes.
@@ -57,7 +69,7 @@ CSV_V2 = [
     # price and status change; brochure unchanged
     dict(CSV_V1[0], price=739900, status='Under Offer'),
     # bedrooms and build size change; a DIFFERENT facade photograph
-    dict(CSV_V1[1], beds=5, build=210.0, photo_seed=202),
+    dict(CSV_V1[1], beds=5, build=210.0, photo_seed=next_seed()),
     # CSV_V1[2] (T0-103) is REMOVED from the list
     # POA becomes a price; description changes
     dict(CSV_V1[3], price=799000, description='PROOF ONLY — not for sale. Now priced.'),
@@ -65,7 +77,7 @@ CSV_V2 = [
     dict(CSV_V1[4], build=None),
     # a new property
     prop('T0-106', '106', '22 Proofline Way', 'Fern 20', 'House', 4, 2, 2, 420, 198,
-         689000, 'Available', description='PROOF ONLY — not for sale.', photo_seed=106),
+         689000, 'Available', description='PROOF ONLY — not for sale.', photo_seed=next_seed()),
 ]
 
 def lots(start, n, designs, **kw):
@@ -75,7 +87,7 @@ def lots(start, n, designs, **kw):
         out.append(prop(f'T0-{lot}', lot, f'{10 + 2 * i} Formatcheck Street', designs[i],
                         'House', 3 + i, 2, 2, 350 + 25 * i, 180.5 + 10 * i,
                         600000 + 12500 * i, 'Available',
-                        description='PROOF ONLY — not for sale.', photo_seed=start + i, **kw))
+                        description='PROOF ONLY — not for sale.', photo_seed=next_seed(), **kw))
     return out
 
 FORMATS = {

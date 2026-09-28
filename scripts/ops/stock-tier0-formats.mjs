@@ -83,7 +83,7 @@ const CASES = [
 ].filter((c) => !ONLY.length || ONLY.includes(c.key));
 
 /** A photograph a builder would choose, from the pinned media, for the remedy. */
-const REMEDY_PHOTO = () => fixture('media/facade-101.jpg');
+const REMEDY_PHOTO = () => fixture('media/remedy.jpg');
 
 const matrix = [];
 
@@ -155,11 +155,12 @@ async function runCase(c, storage, staff) {
   const waitReady = async (deadline) => waitFor(`${c.key} publication`, async () => {
     const now = await itemsOf(org.orgId);
     const u = await uploadRow(sent.uploadId);
-    const settled = now.every((i) => i.image_work_stage === 'settled' || i.lifecycle_status === 'active');
-    return { done: now.length > 0 && (now.every((i) => i.lifecycle_status === 'active') || (settled && c.photos === 'none')),
-      now, upload: u };
+    // The image engine's own terminal answers: a property is live, or its
+    // work is `settled` / `failed` and nothing further will happen unaided.
+    const final = now.every((i) => i.lifecycle_status === 'active' || ['settled', 'failed'].includes(i.image_work_stage));
+    return { done: now.length > 0 && final, now, upload: u };
   }, deadline, 10_000);
-  let ready = await waitReady(c.photos === 'none' ? 6 * 60_000 : PUBLISH_DEADLINE_MS);
+  let ready = await waitReady(PUBLISH_DEADLINE_MS);
   const photoless = (ready.now ?? []).filter((i) => i.lifecycle_status !== 'active');
   row.fromDocument = (ready.now ?? []).length - photoless.length;
   if (photoless.length) {
@@ -180,7 +181,11 @@ async function runCase(c, storage, staff) {
       record(`${c.key}: the document's own photographs reached every property it states`, false,
         `${photoless.length} of ${(ready.now ?? []).length} needed a builder-supplied picture`);
     }
-    ready = await waitReady(PUBLISH_DEADLINE_MS);
+    ready = await waitFor(`${c.key} publication after the remedy`, async () => {
+      const now = await itemsOf(org.orgId);
+      const u = await uploadRow(sent.uploadId);
+      return { done: now.every((i) => i.lifecycle_status === 'active'), now, upload: u };
+    }, PUBLISH_DEADLINE_MS, 10_000);
   }
   row.publishMs = Date.now() - publishStarted;
   const active = (ready.now ?? []).filter((i) => i.lifecycle_status === 'active');

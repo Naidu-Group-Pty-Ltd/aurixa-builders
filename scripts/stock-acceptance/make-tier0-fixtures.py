@@ -57,6 +57,8 @@ os.makedirs(os.path.join(OUT, 'media'), exist_ok=True)
 for s in sorted(seeds):
     write(f'media/facade-{s}.jpg', facade_bytes(s))
 write('media/floorplan.jpg', plan_bytes())
+# The picture a builder adds through "Add picture" where a document carries none.
+write('media/remedy.jpg', facade_bytes(511))
 
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
@@ -227,7 +229,7 @@ def schedule_pdf(props, path):
         vals = [p['lot'], p['street'], p['design'], str(p['beds']), str(p['baths']), str(p['car']),
                 str(p['land']), str(p['build']), f"${p['price']:,}"]
         for (label, x), v in zip(cols, vals): corpus.text(c, x, y, v, 9)
-        c.drawImage(ImageReader(io.BytesIO(facade_bytes(p['photo_seed'], 640, 400))), 15 * mm,
+        c.drawImage(ImageReader(io.BytesIO(facade_bytes(p['photo_seed']))), 15 * mm,
                     H - (y + 62) * mm, width=90 * mm, height=56 * mm, preserveAspectRatio=True, mask=None)
         y += 72
     c.showPage(); c.save()

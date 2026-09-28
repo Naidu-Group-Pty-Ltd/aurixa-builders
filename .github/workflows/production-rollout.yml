@@ -308,6 +308,26 @@ name: Production rollout
 #            through the Command Centre's own endpoint with its photograph.
 #            Kicks nothing and writes no lifecycle. `items` narrows it to some
 #            formats (comma-separated keys). Deletes everything on both sides.
+#   stock-tier0-lifecycle
+#            TIER-0: one stock list through its whole life on both products:
+#            imported, published and mirrored field by field with its typed
+#            documents; the builder's Stock List and the Command Centre's
+#            property page rendered in a real Chromium at three widths; an
+#            activation through the Command Centre's OWN select_for_client
+#            (a sold property refused, the builder told THAT and never for
+#            whom), acknowledged through the portal; a v2 re-upload (changed,
+#            removed, blank and new rows) applied and converged; the
+#            builder's own edits; a second organisation with the same estate
+#            and lot; a deleted list and a withdrawn activation. Playwright is
+#            installed for this phase only. Deletes everything on both sides.
+#   stock-tier0-edges
+#            TIER-0: what a builder gets when the file or the click is wrong —
+#            refused files with actionable reasons, malformed / partial /
+#            duplicate / unusual / Unicode / oversized content read without
+#            invention, the same upload processed twice at once, two lists
+#            uploaded one after the other, "Read again", rights, another
+#            organisation's ids, and links that must never be fetched.
+#            Detached organisations only. Deletes everything it creates.
 #   network-connection-remap
 #            points the live connection at the builder organisation named in
 #            `organisation_id` and backfills its active stock. It refuses
@@ -330,11 +350,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | cc-frontend-build | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures | email-delivery-proof | stock-tier0-formats'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | cc-frontend-build | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures | email-delivery-proof | stock-tier0-formats | stock-tier0-lifecycle | stock-tier0-edges'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures, email-delivery-proof, stock-tier0-formats]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures, email-delivery-proof, stock-tier0-formats, stock-tier0-lifecycle, stock-tier0-edges]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1)'
         required: false
@@ -488,6 +508,11 @@ jobs:
                                   deno run -A --config supabase/functions/deno.json scripts/ops/stock-brochure-figures.ts ;;
             email-delivery-proof) node scripts/ops/email-delivery-proof.mjs ;;
             stock-tier0-formats)  node scripts/ops/stock-tier0-formats.mjs ;;
+            stock-tier0-lifecycle)
+                                  npm install --no-save --no-package-lock --no-audit --no-fund playwright@1.55.0 \
+                                    && npx playwright install --with-deps chromium \
+                                    && node scripts/ops/stock-tier0-lifecycle.mjs ;;
+            stock-tier0-edges)    node scripts/ops/stock-tier0-edges.mjs ;;
           esac
 
       - name: upload the browser proof's screenshots
@@ -495,6 +520,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: portal-browser-proof
+          path: proof-artifacts/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: upload the Tier-0 lifecycle screenshots
+        if: ${{ always() && inputs.phase == 'stock-tier0-lifecycle' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: stock-tier0-lifecycle
           path: proof-artifacts/
           if-no-files-found: warn
           retention-days: 7
