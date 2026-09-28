@@ -91,9 +91,11 @@ try {
   // The acknowledgement emails the activator: point that at Resend's sink.
   await cc('agent sink', `UPDATE public.custom_users SET email = ${sqlLit(`delivered+tier0-${RUN}@resend.dev`)}
                            WHERE id = ${id(agent.userId)}`);
-  const clientId = await seedClient(TAG);
-  record('0: two proof builders on proof transports, a Command Centre agent and a client',
-    !!alpha.connection && !!beta.connection && !!agent.token && !!clientId);
+  const clientId = await seedClient(TAG, { owner: agent.userId });
+  // A client of somebody else's: the agent may not act for it.
+  const othersClientId = await seedClient(TAG, { label: 'unowned' });
+  record('0: two proof builders on proof transports, a Command Centre agent, its client and one that is not its',
+    !!alpha.connection && !!beta.connection && !!agent.token && !!clientId && !!othersClientId);
 
   // === L1. The first upload ====================================================
   const v1 = new TextEncoder().encode(await withLinks(storage, alpha.orgId, new TextDecoder().decode(fixture('csv-v1.csv'))));
@@ -210,6 +212,9 @@ try {
   const selectionId = selected.json?.record?.id ?? null;
   record('L3: a Command Centre agent activates lot 101 for a client through select_for_client',
     selected.status === 200 && !!selectionId, `HTTP ${selected.status}${selected.json?.error ? ` ${selected.json.error}` : ''}`);
+  const notTheirs = await commandCentre('select_for_client', { stock_item_id: ids1['101'], client_id: othersClientId }, agent.token);
+  record('L3: an agent cannot activate stock for a client that is not theirs — not found, and nothing written',
+    notTheirs.status === 404 && !notTheirs.json?.record, `HTTP ${notTheirs.status}`);
   const again = await commandCentre('select_for_client', { stock_item_id: ids1['101'], client_id: clientId }, agent.token);
   record('L3: selecting the same pair again is recognised, not duplicated', again.status === 200 && again.json?.already_selected === true,
     `HTTP ${again.status}, already_selected ${again.json?.already_selected}`);

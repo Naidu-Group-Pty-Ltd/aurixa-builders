@@ -470,14 +470,20 @@ export async function inspectCommandCentrePage(browser, { token, path, viewport,
   return { page, context, url, calls, errors, ...drawn };
 }
 
-/** An invented client NOTHING may react to: every user trigger is off for this one insert. */
-export async function seedClient(tag) {
+/**
+ * An invented client NOTHING may react to: every user trigger is off for this
+ * one insert. `owner` is the proof staff member who created it — a staff
+ * member who is not a superadmin acts only for their own and assigned
+ * clients, so a proof agent is given a client of its own.
+ */
+export async function seedClient(tag, { owner = null, label = '' } = {}) {
   const n = names(tag);
-  const surname = `${n.clientSurname} ${RUN}`;
+  const surname = `${n.clientSurname} ${RUN}${label ? ` ${label}` : ''}`;
   const rows = await cc('client', `
     SET LOCAL lock_timeout = '5s';
     ALTER TABLE public.clients DISABLE TRIGGER USER;
-    INSERT INTO public.clients(primary_first_name, primary_surname) VALUES ('Proof', ${sqlLit(surname)});
+    INSERT INTO public.clients(primary_first_name, primary_surname, created_by)
+      VALUES ('Proof', ${sqlLit(surname)}, ${owner ? id(owner) : 'NULL'});
     ALTER TABLE public.clients ENABLE TRIGGER USER;
     SELECT id FROM public.clients WHERE primary_surname = ${sqlLit(surname)}`);
   return rows[0]?.id;

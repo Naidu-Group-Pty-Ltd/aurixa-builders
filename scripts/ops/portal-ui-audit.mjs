@@ -73,7 +73,7 @@ try {
   record('0: the organisation holds a published stock list', published.done, `${items.length} live in ${secs(published)}`);
   const staff = await seedStaff(TAG, 'agent', ['listings', 'client_management']);
   await cc('agent sink', `UPDATE public.custom_users SET email = ${sqlLit(`delivered+ui-audit-${RUN}@resend.dev`)} WHERE id = ${id(staff.userId)}`);
-  const clientId = await seedClient(TAG);
+  const clientId = await seedClient(TAG, { owner: staff.userId });
   await waitFor('mirrored', async () => {
     const rows = await cc('mirror', `SELECT count(*)::int AS n FROM public.builder_network_stock_items
       WHERE organisation_id = ${id(owner.orgId)} AND lifecycle_status = 'active'`);
