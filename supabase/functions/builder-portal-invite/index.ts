@@ -259,8 +259,7 @@ Deno.serve(async (req) => {
           invite_requires_password: requiresPassword,
           invite_link_handed: handed,
           ...(invitedNameIfMissing ? { invited_name: invitedNameIfMissing } : {}),
-          // A changed role is this caller's grant now, as member management
-          // records it (the third review).
+          // A changed role is this caller's grant now (the third review).
           ...(roleIfChanged ? { membership_role: roleIfChanged, granted_by: caller.id } : {}),
         })
         .eq('id', seatId)

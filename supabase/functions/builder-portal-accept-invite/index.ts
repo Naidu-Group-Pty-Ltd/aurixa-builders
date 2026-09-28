@@ -42,9 +42,11 @@
  * anyway — so somebody invited by two organisations before they had an
  * account can accept both (the second review). But only where the account's
  * own password was set through such a link too: a password an inviter set
- * through a HANDED link belongs to whoever set it, and a link that followed
- * that account would join the inviter's account to another organisation (the
- * third review). Every account-slot token was minted for an account with no
+ * through a HANDED link belongs to whoever set it, and a link minted before
+ * that, had it followed the account, would join the inviter's account to
+ * another organisation (the third review). A join minted after it is accepted
+ * like any other — with no mail provider, the inviter holds the account they
+ * set a password for (doc 68 §8). Every account-slot token was minted for an account with no
  * password and may be an operator's, so an account that has one is turned
  * away there, as it always was.
  *

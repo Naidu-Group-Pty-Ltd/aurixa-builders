@@ -28,8 +28,11 @@
 --     invited by two organisations before they had an account can accept both
 --     (the second review) — but only where the account's own password was set
 --     through such a link too (`builder_portal_users.password_set_by_mailbox_link_at`),
---     so a password an inviter set through a handed link never gains the
---     account a membership through the mailbox (the third review).
+--     so a link minted before an inviter set the password through a handed link
+--     does not become a join for the inviter's account (the third review). A
+--     join minted AFTER that is the person's to accept like any other; on a
+--     deployment with no mail provider the inviter holds whatever account they
+--     set a password for (doc 68 §8).
 --
 --  2. THE NAME THE INVITER TYPED. A waiting seat is drawn on the members list
 --     under the name this organisation typed, never the account's: the account

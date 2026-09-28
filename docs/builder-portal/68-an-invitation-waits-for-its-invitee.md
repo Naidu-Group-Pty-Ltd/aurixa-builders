@@ -60,11 +60,12 @@ it, established accounts included.
   - **A password set any other way is not the mailbox's.** Acceptance records
     `password_set_by_mailbox_link_at` only for a seat link nobody was handed. A
     password set through a handed link belongs to whoever set it, possibly the
-    inviter. Had a mailbox link followed that account, it would have joined the
-    inviter's account to another organisation (the third review). So for any
-    account without that record (a handed link, an operator's link, a
+    inviter. Had a link minted before then followed that account, it would have
+    joined the inviter's account to another organisation (the third review). So
+    for any account without that record (a handed link, an operator's link, a
     registration), a mailbox link keeps the kind it was minted for, as the
-    handed one does.
+    handed one does. A join minted after the password was set is a different
+    matter, recorded in §8.
   - Every account-slot token was minted for an account with no password, and
     may be an operator's, so the slot path still refuses an account that has
     one (`already_active`), as it always did.
@@ -243,7 +244,20 @@ and the write was deactivated.
   - a link the inviter holds stops working if the person starts signing in
     elsewhere, which tells the inviter so over time;
   - an established account can never be sent an invitation, because there is no
-    email and its link is never handed over. Its seat waits.
+    email and its link is never handed over. Its seat waits;
+  - **the inviter who is handed a password-setting link holds the account**, if
+    they set the password themselves rather than passing the link on. That was
+    so before this change. If a mail provider is configured later, every
+    invitation that account is sent afterwards is a join the inviter can use
+    too, since they sign in as the person (the fourth review). On `main` such
+    an account was added to an inviting organisation at once, with nothing to
+    click. Closing it needs a decision about deployments with no mail provider,
+    such as refusing every join for an account whose password came through a
+    handed link until the person resets it by email.
+- **Account-slot links still validate with the account's own name** — an
+  operator's owner link, and any tenant link issued before this change (those
+  expire within 72 hours of the deploy). A seat link answers only the name its
+  organisation typed.
 - **A missing token pepper** answers 503 for every kind except a revoked account,
   which answers 200. That misconfiguration stops every invitation, so it cannot
   persist unnoticed.
