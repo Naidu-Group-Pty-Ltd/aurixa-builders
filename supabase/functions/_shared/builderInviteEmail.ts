@@ -252,10 +252,30 @@ export async function sendBuilderEmail(args: {
       }),
     });
     if (!response.ok) {
-      // Resend's own refusal — an unverified sender domain is the one this
-      // deployment hits most, and it is a configuration fault rather than a
-      // network one.
-      console.error('[builderInviteEmail] Resend refused the send', response.status);
+      /*
+       * Resend's own refusal. Two faults arrive here and they send an operator
+       * to opposite remedies — an unverified SENDER is this deployment's
+       * configuration, an undeliverable RECIPIENT is the address that was
+       * asked for — and the status cannot tell them apart.
+       *
+       * THE STATUS ALONE WAS NOT A DIAGNOSIS, and that cost a wrong
+       * conclusion. 110 invitations were refused from 16 Sep 2026, all this
+       * line said was `422`, and the cause was accordingly inferred from the
+       * provider's domain list: reported as an unverified sender when in fact
+       * every one of them was a proof-suite address on a reserved name the
+       * provider will never deliver to (doc 65 §4). The provider NAMES the
+       * fault in its body, so the body is what gets logged.
+       *
+       * The recipient is deliberately not logged with it: an operational log
+       * is no place for a customer's address, and naming the SENDER is enough
+       * to tell the two faults apart. `to` appears nowhere here.
+       */
+      const detail = await response.text().catch(() => '');
+      console.error('[builderInviteEmail] Resend refused the send', response.status, {
+        provider_message: detail.slice(0, 300),
+        from: args.brand.fromHeaderAdmin,
+        category: args.category,
+      });
       return { sent: false, reason: 'refused' };
     }
     return { sent: true };

@@ -206,3 +206,45 @@ describe('where this may be consulted', () => {
     expect(source).not.toMatch(/\bfrom\s*\(|\brpc\s*\(|\bsupabase\b/);
   });
 });
+
+describe('a membership that is waiting on its own invitation', () => {
+  const org = (status: string, name: string | null = 'Kerrigan Homes') => ({
+    status,
+    revoked_at: null,
+    valid_from: null,
+    valid_until: null,
+    organisation_status: 'active',
+    organisation_legal_name: name,
+  });
+
+  it('reads as a pending invitation, never as access that was withdrawn', () => {
+    // `invited` arrived with 20260928090000: a grant to an account that has not
+    // accepted THIS organisation's invitation. Before this reading existed it
+    // fell through to `membership_ended` and told the invitee their access had
+    // been withdrawn or had expired.
+    const reading = readAccessDenial([org('invited')], new Date('2026-09-28T00:00:00Z'));
+    expect(reading.code).toBe('invitation_pending');
+    expect(reading.message).toMatch(/invitation/i);
+    expect(reading.message).not.toMatch(/withdrawn|expired/i);
+  });
+
+  it('names the organisation that invited them, so the remedy is theirs to ask for', () => {
+    const reading = readAccessDenial([org('invited')], new Date('2026-09-28T00:00:00Z'));
+    expect(reading.message).toContain('Kerrigan Homes');
+  });
+
+  it('still reads as ended where the membership was revoked rather than pending', () => {
+    const revoked = { ...org('revoked'), revoked_at: '2026-09-01T00:00:00Z' };
+    expect(readAccessDenial([revoked], new Date('2026-09-28T00:00:00Z')).code).toBe('membership_ended');
+  });
+
+  it('prefers a live organisation problem over a pending invitation elsewhere', () => {
+    // A live membership means the reader can get in somewhere; the suspended
+    // organisation is the fact that explains the refusal.
+    const reading = readAccessDenial(
+      [{ ...org('active'), organisation_status: 'suspended' }, org('invited', 'Other Homes')],
+      new Date('2026-09-28T00:00:00Z'),
+    );
+    expect(reading.code).toBe('organisation_suspended');
+  });
+});

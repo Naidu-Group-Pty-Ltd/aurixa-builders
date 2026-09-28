@@ -31,6 +31,8 @@ import {
   explainNoAccessibleOrganisation,
   listAccessibleOrganisations,
 } from '../_shared/builderPortalAuth.ts';
+import { acceptanceActivation } from '../_shared/builderInviteScope.pure.ts';
+import { promoteWaitingMembership } from '../_shared/builderInvite.ts';
 import { parseJsonBody } from '../_shared/validate.ts';
 import { AcceptInviteRequest, AUTH_MAX_BODY_BYTES } from '../_shared/authBodySchemas.ts';
 import { enforceAuthRateLimit } from '../_shared/authRateLimit.ts';
@@ -99,7 +101,8 @@ Deno.serve(async (req) => {
     const { data: portalUser } = await supabase
       .from('builder_portal_users')
       .select(`id, email, name, job_title, status, is_active, revoked_at,
-               invite_token_hash, invite_token_expires_at, invite_accepted_at, password_hash`)
+               invite_token_hash, invite_token_expires_at, invite_accepted_at, password_hash,
+               invite_token_organisation_id`)
       .eq('invite_token_hash', tokenHash)
       .maybeSingle();
 
@@ -123,17 +126,50 @@ Deno.serve(async (req) => {
     const invitedOrganisations = await listInvitedOrganisations(supabase, portalUser.id);
     if (!invitedOrganisations.length) return json({ error: GENERIC_INVITE_ERROR, valid: false }, 400);
 
+    /*
+     * ONE INVITATION, ONE ORGANISATION.
+     *
+     * This is the whole of the cross-organisation takeover fix on the read
+     * side. The token names the organisation it was minted for, and that is
+     * the only membership this acceptance may promote. An account pending in
+     * several organisations therefore needs each organisation's own
+     * invitation, and a link that reached the wrong hands opens nothing else.
+     *
+     * A refusal is the SAME generic message as every other rejection above, so
+     * a holder learns nothing about where the address belongs.
+     * `builderInviteScope.pure.ts` holds the rule and its reasoning.
+     */
+    const scope = acceptanceActivation({
+      tokenOrganisationId: portalUser.invite_token_organisation_id ?? null,
+      liveMemberships: invitedOrganisations.map((organisation) => ({
+        organisation_id: organisation.organisation_id,
+      })),
+    });
+    if (!scope.ok) {
+      console.warn('[builder-portal-accept-invite] refused an out-of-scope invitation', {
+        reason: scope.reason,
+        builder_user_id: portalUser.id,
+      });
+      return json({ error: GENERIC_INVITE_ERROR, valid: false }, 400);
+    }
+    const acceptingOrganisation = invitedOrganisations.find(
+      (organisation) => organisation.organisation_id === scope.activate,
+    )!;
+
     if (action === 'validate') {
       return json({
         valid: true,
         email: portalUser.email,
         name: portalUser.name,
         job_title: portalUser.job_title,
-        organisations: invitedOrganisations.map((organisation) => ({
-          organisation_id: organisation.organisation_id,
-          legal_name: organisation.legal_name,
-          membership_role: organisation.membership_role,
-        })),
+        // The organisation THIS invitation joins, and no other. Listing every
+        // organisation the address is pending in told its holder — who may not
+        // be its owner — where else that person has been invited.
+        organisations: [{
+          organisation_id: acceptingOrganisation.organisation_id,
+          legal_name: acceptingOrganisation.legal_name,
+          membership_role: acceptingOrganisation.membership_role,
+        }],
       });
     }
 
@@ -158,6 +194,8 @@ Deno.serve(async (req) => {
         password_changed_at: new Date().toISOString(),
         invite_token_hash: null,
         invite_token_expires_at: null,
+        // The scope goes with the token it scoped.
+        invite_token_organisation_id: null,
         invite_accepted_at: new Date().toISOString(),
         // Accepting an emailed token proves the mailbox (network governance
         // reads this; see builderPortalAuth.builderGovernanceError).
@@ -179,6 +217,31 @@ Deno.serve(async (req) => {
       return json({ error: 'Failed to activate your account' }, 500);
     }
     if (!updatedUser) return json({ error: GENERIC_INVITE_ERROR, valid: false }, 400);
+
+    /*
+     * PROMOTE EXACTLY ONE MEMBERSHIP — the organisation this token was for.
+     *
+     * Deliberately AFTER the single-use update above, which is the statement
+     * that decides the race. If this promotion then fails, the account is
+     * active with nothing accessible: `builder_issue_session` refuses, and the
+     * "activated, not yet allowed in" branch below explains it and invites a
+     * sign-in. That fails CLOSED and is recoverable by re-sending the
+     * invitation. Promoting first would risk the opposite — a live membership
+     * on an account a later, different token activates, which is the very
+     * cross-organisation activation this scoping exists to prevent.
+     *
+     * Scoped by organisation id as well as user: an update naming only the
+     * user would light up every organisation again.
+     */
+    const { error: promoteError } = await promoteWaitingMembership(supabase, {
+      builderUserId: portalUser.id,
+      organisationId: scope.activate,
+    });
+    if (promoteError) {
+      // Not fatal to an act that has already committed: say nothing new, let
+      // the refusal below be read from the memberships themselves.
+      console.error('[builder-portal-accept-invite] membership promotion failed', promoteError.message);
+    }
 
     await supabase.rpc('builder_ensure_onboarding_steps', { _builder_user_id: portalUser.id });
 

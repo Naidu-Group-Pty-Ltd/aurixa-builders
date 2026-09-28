@@ -243,6 +243,18 @@ name: Production rollout
 #            and skips what is not there yet — never a pass for a change.
 #            Playwright is installed for this phase only. Deletes everything
 #            it creates.
+#   email-delivery-proof
+#            does a Builder email actually reach a mailbox? It first settles
+#            the diagnosis from the log rather than from an opinion — the
+#            recipient KIND of every invitation ever sent, counted in the
+#            database, so no address is selected and no real domain is named —
+#            then drives an invitation and a password reset to ONE mailbox the
+#            operator supplies in `email_recipient`. The address is never
+#            committed and never printed; only its domain appears. A reserved
+#            name (`example.com` and the like) is refused up front, because
+#            every send on record had gone to one and that is exactly why the
+#            corpus could prove nothing. Creates a disposable organisation and
+#            deletes it, and the mailbox's account, at the end.
 #   cc-frontend-build
 #            read-only: which build the Command Centre's published frontend
 #            serves. Lovable reports a publish as started, never as served, so
@@ -303,11 +315,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | cc-frontend-build | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | cc-frontend-build | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures | email-delivery-proof'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures, email-delivery-proof]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1)'
         required: false
@@ -347,6 +359,11 @@ on:
         type: boolean
       cc_build:
         description: 'cc-frontend-build only: the Command Centre commit the published frontend should be (7-40 hex characters); blank records what is served'
+        required: false
+        default: ''
+        type: string
+      email_recipient:
+        description: 'email-delivery-proof only: ONE mailbox the operator controls. Never committed and never printed — only its domain appears in the log. A reserved name (example.com and the like) is refused, because a pass against one would mean nothing.'
         required: false
         default: ''
         type: string
@@ -406,6 +423,7 @@ jobs:
           SCAN_PROOF_EXPECT: ${{ inputs.scan_expect }}
           MESSAGE_PROOF_BASELINE: ${{ inputs.baseline }}
           CC_EXPECTED_BUILD: ${{ inputs.cc_build }}
+          PROOF_EMAIL_RECIPIENT: ${{ inputs.email_recipient }}
         run: |
           set -euo pipefail
           case "${{ inputs.phase }}" in
@@ -452,6 +470,7 @@ jobs:
             stock-field-coverage) deno run -A --config supabase/functions/deno.json scripts/ops/stock-field-coverage.ts ;;
             stock-brochure-figures)
                                   deno run -A --config supabase/functions/deno.json scripts/ops/stock-brochure-figures.ts ;;
+            email-delivery-proof) node scripts/ops/email-delivery-proof.mjs ;;
           esac
 
       - name: upload the browser proof's screenshots
