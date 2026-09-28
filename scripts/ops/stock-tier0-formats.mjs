@@ -230,7 +230,7 @@ async function runCase(c, storage, staff) {
     + `upload published_at ${ready.upload?.published_at ? 'set' : 'null'}; blocked: ${ready.upload?.publication_blocked_reason ?? '—'}`);
   if (!active.length) {
     row.verdict = 'not published';
-    printPropertyEvidence(c.key, { expected, stored: ready.now ?? items, served, mirror: [], ccByItem: new Map(), fields: c.fields });
+    printPropertyEvidence(c.key, { expected, stored: ready.now ?? items, served, mirror: [], ccByItem: new Map(), fields: c.fields, caseless: !!c.caseless });
     return;
   }
 
@@ -281,6 +281,7 @@ async function runCase(c, storage, staff) {
   printPropertyEvidence(c.key, {
     expected, stored: ready.now ?? items, served, mirror: mirrored.rows ?? [], ccByItem, fields: c.fields,
     photoSource: (item) => (photoless.some((p) => p.id === item.id) ? 'added through "Add picture"' : 'from the document'),
+    caseless: !!c.caseless,
   });
 }
 

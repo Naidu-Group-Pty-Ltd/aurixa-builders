@@ -566,8 +566,14 @@ export function differences(wantRows, haveRows, fields = ITEM_FIELDS, key = 'lot
  */
 export function printPropertyEvidence(source, {
   expected, stored = [], served = [], mirror = [], ccByItem = new Map(), fields = ITEM_FIELDS, photoSource = null, extra = {},
+  caseless = false,
 }) {
   const verdict = (diffs) => (diffs.length ? diffs.join('; ') : 'exact');
+  // A brochure sets its text in capitals and the product stores what the page
+  // says, so the source is compared the way its own check compares it — and
+  // the line says so, rather than reporting a difference that check excuses.
+  const fold = (row) => (caseless && row
+    ? Object.fromEntries(Object.entries(row).map(([k, v]) => [k, typeof v === 'string' ? v.toLowerCase() : v])) : row);
   for (const want of expected) {
     const lot = String(want.lot_number);
     const row = stored.find((i) => String(i.lot_number) === lot) ?? null;
@@ -578,7 +584,7 @@ export function printPropertyEvidence(source, {
     console.log(`PROPERTY ${JSON.stringify({
       source, lot,
       stated: Object.fromEntries(statedFields.map((f) => [f, want[f]])),
-      builder_db: row ? verdict(differences([want], [row], statedFields)) : 'MISSING',
+      builder_db: row ? `${verdict(differences([fold(want)], [fold(row)], statedFields))}${caseless ? ' (letter case aside: the document sets it in capitals)' : ''}` : 'MISSING',
       builder_portal: !row ? '—' : shown ? verdict(differences([row], [shown], statedFields.filter((f) => f in shown), 'id')) : 'not listed',
       lifecycle: row?.lifecycle_status ?? null,
       availability: row?.availability_status ?? null,
