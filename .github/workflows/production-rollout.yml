@@ -346,7 +346,11 @@ name: Production rollout
 #            record's tasks, "Add user" and "Send again" in an agency thread,
 #            and a list's "Source images" and "Refresh brochure links" — each
 #            for a role that may act and one that may not, with the effect
-#            read from the database. Deletes everything it creates.
+#            read from the database. Then, in a real Chromium, the controls no
+#            other browser proof pressed (bell, user menu, organisation
+#            switcher, phone drawer, thread send, task status, schedule
+#            dialog, project status, device revocation, password toggle).
+#            Deletes everything it creates.
 #   storage-residue-sweep
 #            the files proofs left in the Builder's stock buckets: in a stock
 #            bucket, under an organisation that no longer exists, named by no
@@ -485,7 +489,7 @@ jobs:
       # secrets (independent review, 28 September 2026). Only the two packages
       # the proofs import are copied into place.
       - name: a browser for the proof, installed without secrets
-        if: ${{ inputs.phase == 'message-speed-proof' || inputs.phase == 'portal-browser-proof' || inputs.phase == 'stock-tier0-lifecycle' || inputs.phase == 'portal-ui-audit' || inputs.phase == 'cc-page-probe' }}
+        if: ${{ inputs.phase == 'message-speed-proof' || inputs.phase == 'portal-browser-proof' || inputs.phase == 'stock-tier0-lifecycle' || inputs.phase == 'portal-ui-audit' || inputs.phase == 'cc-page-probe' || inputs.phase == 'portal-controls-proof' }}
         run: |
           set -euo pipefail
           npm install --prefix "$RUNNER_TEMP/pw" --no-save --no-package-lock --ignore-scripts --no-audit --no-fund playwright@1.55.0

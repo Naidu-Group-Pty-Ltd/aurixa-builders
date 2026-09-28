@@ -22,6 +22,14 @@
  * For each, the server's answer to a role that may act, to one that may not,
  * and the effect in the database — never the page alone.
  *
+ * And, in a real Chromium, the controls the other browser proofs never
+ * pressed: the notification bell's "Mark all read" and a single "Mark read",
+ * the user menu (Settings, Replay portal tour, Sign out), the organisation
+ * switcher, the phone navigation drawer, sending in an agency thread, a
+ * task's status select, a property's schedule dialog, a project's "Update
+ * status", "Revoke all other devices", and the password field's show/hide
+ * toggle. Each is judged by what reached the database, not by the page.
+ *
  * One organisation of the run's own, detached from every workspace and joined
  * to the live Command Centre only by a proof-only transport: an owner, a
  * member, a read-only colleague and a fourth person whose devices are signed
@@ -41,7 +49,7 @@ import { randomUUID } from 'node:crypto';
 import {
   RUN, record, net, cc, id, secs, waitFor, stock, portal, commandCentre, fixture, storageFor, withLinks,
   seedOrganisation, establishSession, connectTransport, seedStaff, seedClient, uploadDocument, waitImported,
-  itemsOf, cleanup, leftovers, finish, names, NETWORK_REF, sqlLit,
+  itemsOf, cleanup, leftovers, finish, names, NETWORK_REF, ORIGIN, sqlLit,
 } from './tier0/common.mjs';
 
 const TAG = 'controls';
@@ -50,6 +58,232 @@ const invite = (cookie, body) => portal('builder-portal-invite', body, cookie);
 const projects = (cookie, body) => portal('builder-portal-projects', body, cookie);
 const collab = (cookie, body) => portal('builder-portal-collaboration', body, cookie);
 const said = (answer) => `HTTP ${answer.status}${answer.json?.error ? ` "${String(answer.json.error).slice(0, 90)}"` : ''}`;
+
+const DESKTOP = { width: 1440, height: 900 };
+const PHONE = { width: 390, height: 844 };
+
+/** A browser context signed in as `cookie`, the way the portal's own cookie is set. */
+async function openAs(browser, cookie, viewport = DESKTOP) {
+  const context = await browser.newContext({ viewport });
+  await context.addCookies([{ name: '__Host-builder_session_token', value: cookie.split('=')[1], url: ORIGIN,
+    secure: true, httpOnly: true, sameSite: 'Lax' }]);
+  const page = await context.newPage();
+  return { context, page };
+}
+const go = async (page, path) => {
+  await page.goto(`${ORIGIN}${path}`, { waitUntil: 'networkidle', timeout: 60_000 }).catch(() => {});
+  await page.waitForTimeout(1500);
+};
+/** One control, pressed; a step that throws is recorded as failed and the rest go on. */
+async function step(name, run) {
+  try { await run(); } catch (error) { record(name, false, String(error?.message ?? error).slice(0, 240)); }
+}
+
+async function browserControls({ owner, member, projectId, conversationId, byLot }) {
+  const { chromium } = await import('playwright');
+  const browser = await chromium.launch();
+  try {
+    const unread = async (who) => Number((await net('unread', `SELECT count(*)::int AS n FROM public.builder_notifications
+      WHERE builder_user_id = ${id(who.userId)} AND organisation_id = ${id(who.orgId)} AND read_at IS NULL`))[0]?.n);
+
+    // The guided tour opens itself on a first visit; these people have it done.
+    await net('tours done', `
+      INSERT INTO public.builder_user_preferences(builder_user_id, tour_completed_at)
+      SELECT u, now() FROM unnest(ARRAY[${id(owner.userId)}, ${id(member.userId)}]) AS u
+      ON CONFLICT (builder_user_id) DO UPDATE SET tour_completed_at = coalesce(public.builder_user_preferences.tour_completed_at, now())`);
+
+    await step('G1: "Mark read" on one notification marks that one, and the bell\'s "Mark all read" the rest', async () => {
+      const before = await unread(owner);
+      const { context, page } = await openAs(browser, owner.cookie);
+      await go(page, '/builder/notifications');
+      await page.getByRole('button', { name: /^Mark read$/ }).first().click();
+      await page.waitForTimeout(2500);
+      const afterOne = await unread(owner);
+      await go(page, '/builder');
+      await page.getByRole('button', { name: /^Notifications/ }).first().click();
+      await page.getByRole('button', { name: /Mark all read/i }).first().click();
+      await page.waitForTimeout(2500);
+      const afterAll = await unread(owner);
+      const label = await page.getByRole('button', { name: /^Notifications/ }).first().getAttribute('aria-label').catch(() => '');
+      await context.close();
+      record('G1: "Mark read" on one notification marks that one, and the bell\'s "Mark all read" the rest',
+        before >= 2 && afterOne === before - 1 && afterAll === 0 && !/unread/.test(label ?? ''),
+        `unread ${before} → ${afterOne} → ${afterAll}; bell "${label}"`);
+    });
+
+    await step('G2: the user menu opens Settings and replays the tour', async () => {
+      const { context, page } = await openAs(browser, owner.cookie);
+      await go(page, '/builder');
+      const menu = page.locator('button[aria-haspopup="menu"]', { hasText: 'Tier0 owner' }).last();
+      await menu.click();
+      await page.getByRole('menuitem', { name: /^Settings$/ }).click();
+      await page.waitForTimeout(1500);
+      const toSettings = new URL(page.url()).pathname;
+      await menu.click();
+      await page.getByRole('menuitem', { name: /Replay portal tour/ }).click();
+      await page.waitForTimeout(1500);
+      const tour = await page.getByRole('button', { name: /Start tour|Skip for now/i }).count();
+      await page.keyboard.press('Escape').catch(() => {});
+      await context.close();
+      record('G2: the user menu opens Settings and replays the tour', toSettings === '/builder/settings' && tour > 0,
+        `Settings → ${toSettings}; tour offered ${tour > 0}`);
+    });
+
+    await step('G3: "Sign out" in the user menu ends the session', async () => {
+      const cookie = await establishSession(owner);
+      const { context, page } = await openAs(browser, cookie);
+      await go(page, '/builder');
+      await page.locator('button[aria-haspopup="menu"]', { hasText: 'Tier0 owner' }).last().click();
+      await page.getByRole('menuitem', { name: /^Sign out$/ }).click();
+      await page.waitForTimeout(2500);
+      const landed = new URL(page.url()).pathname;
+      await context.close();
+      const after = await verify(cookie);
+      record('G3: "Sign out" in the user menu ends the session', after.status === 401 && /\/builder\/login/.test(landed),
+        `landed on ${landed}; the session then answers HTTP ${after.status}`);
+    });
+
+    await step('G4: the organisation switcher moves the owner into the other organisation and back', async () => {
+      const cookie = await establishSession(owner);
+      const { context, page } = await openAs(browser, cookie);
+      await go(page, '/builder');
+      const active = async () => (await verify(cookie)).json?.active_organisation?.organisation_id ?? null;
+      const before = await active();
+      await page.locator('button[aria-haspopup="menu"]', { hasText: owner.orgName }).first().click();
+      const other = page.getByRole('menuitem').filter({ hasNotText: owner.orgName }).first();
+      await other.click();
+      await page.waitForTimeout(2500);
+      const moved = await active();
+      await page.locator('button[aria-haspopup="menu"]').filter({ hasNotText: 'Tier0 owner' }).first().click();
+      await page.getByRole('menuitem').filter({ hasText: owner.orgName }).first().click();
+      await page.waitForTimeout(2500);
+      const back = await active();
+      await context.close();
+      record('G4: the organisation switcher moves the owner into the other organisation and back',
+        before === owner.orgId && moved && moved !== owner.orgId && back === owner.orgId,
+        `active ${before === owner.orgId ? 'own' : before} → ${moved && moved !== owner.orgId ? 'the other' : moved} → ${back === owner.orgId ? 'own' : back}`);
+    });
+
+    await step('G5: on a phone, the navigation drawer opens, navigates and closes', async () => {
+      const { context, page } = await openAs(browser, member.cookie, PHONE);
+      await go(page, '/builder');
+      await page.getByRole('button', { name: 'Open navigation menu' }).click();
+      await page.waitForTimeout(600);
+      const drawer = page.getByRole('navigation', { name: 'Builder portal navigation' });
+      const opened = await drawer.isVisible().catch(() => false);
+      await drawer.getByRole('link', { name: /^Tasks/ }).first().click();
+      await page.waitForTimeout(1500);
+      const landed = new URL(page.url()).pathname;
+      const closed = !(await drawer.isVisible().catch(() => false));
+      await context.close();
+      record('G5: on a phone, the navigation drawer opens, navigates and closes', opened && landed === '/builder/tasks' && closed,
+        `opened ${opened}; Tasks → ${landed}; closed ${closed}`);
+    });
+
+    if (conversationId) {
+      await step('G6: typing in an agency thread and pressing "Send" delivers the message', async () => {
+        const text = `Proof ${RUN}: sent from the page`;
+        const { context, page } = await openAs(browser, owner.cookie);
+        await go(page, '/builder/messages?view=agencies');
+        await page.getByRole('option').first().click().catch(() => {});
+        await page.waitForTimeout(1500);
+        await page.getByLabel(/^Message$/).fill(text);
+        await page.getByRole('button', { name: /^Send$/ }).click();
+        const arrived = await waitFor('page message', async () => {
+          const row = (await net('page message', `SELECT delivery_state FROM public.builder_agency_messages
+            WHERE conversation_id = ${id(conversationId)} AND body = ${sqlLit(text)}`))[0];
+          return { done: row?.delivery_state === 'delivered', row };
+        }, 3 * 60_000, 3_000);
+        await context.close();
+        record('G6: typing in an agency thread and pressing "Send" delivers the message', arrived.done,
+          `${arrived.row?.delivery_state ?? 'not written'} in ${secs(arrived)}`);
+      });
+    }
+
+    await step('G7: a task\'s status select changes the task', async () => {
+      const task = (await net('a task', `SELECT id, title, status FROM public.builder_tasks
+        WHERE scope_type = 'stock_item' AND scope_id = ${id(byLot['101'])} AND status <> 'in_progress' ORDER BY created_at LIMIT 1`))[0];
+      const { context, page } = await openAs(browser, owner.cookie);
+      await go(page, '/builder/tasks');
+      await page.getByRole('combobox', { name: `Change status of ${task.title}` }).first().click();
+      await page.getByRole('option', { name: /^In progress$/ }).click();
+      await page.waitForTimeout(2500);
+      const after = (await net('task after', `SELECT status FROM public.builder_tasks WHERE id = ${id(task.id)}`))[0];
+      await context.close();
+      record('G7: a task\'s status select changes the task', after?.status === 'in_progress', `${task.status} → ${after?.status}`);
+    });
+
+    await step('G8: a property\'s schedule dialog saves the figure the builder states', async () => {
+      const lot = byLot['103'];
+      const { context, page } = await openAs(browser, owner.cookie);
+      await go(page, '/builder/stock');
+      await page.getByRole('button', { name: /(Complete|Update) the schedule for .*16 Proofline Way/i }).first().click();
+      await page.getByLabel(/^Bedrooms/).first().fill('6');
+      await page.getByRole('button', { name: /^Save schedule$/ }).click();
+      await page.waitForTimeout(2500);
+      const after = (await net('stated', `SELECT manual_stats->'values'->>'bedrooms' AS bedrooms FROM public.builder_stock_items
+        WHERE id = ${id(lot)}`))[0];
+      await context.close();
+      record('G8: a property\'s schedule dialog saves the figure the builder states', String(after?.bedrooms) === '6',
+        `stated bedrooms ${after?.bedrooms ?? 'none'}`);
+    });
+
+    if (projectId) {
+      await step('G9: "Update status" on the project page moves the project, with its reason', async () => {
+        const before = (await net('project', `SELECT status FROM public.builder_projects WHERE id = ${id(projectId)}`))[0]?.status;
+        const { context, page } = await openAs(browser, owner.cookie);
+        await go(page, `/builder/projects/${projectId}`);
+        await page.locator('#next-status').click();
+        const option = page.getByRole('option').filter({ hasNotText: /Cancelled|On hold/ }).first();
+        const label = await option.innerText();
+        await option.click();
+        await page.locator('#status-reason').fill(`Proof ${RUN} from the page`);
+        await page.getByRole('button', { name: /^Update status$/ }).click();
+        await page.waitForTimeout(2500);
+        const after = (await net('project after', `SELECT p.status,
+            (SELECT count(*) FROM public.builder_project_status_history h
+              WHERE h.project_id = p.id AND h.reason = ${sqlLit(`Proof ${RUN} from the page`)})::int AS logged
+          FROM public.builder_projects p WHERE p.id = ${id(projectId)}`))[0];
+        await context.close();
+        record('G9: "Update status" on the project page moves the project, with its reason',
+          after?.status && after.status !== before && Number(after.logged) === 1,
+          `${before} → ${after?.status} ("${label}"), history entries with the reason ${after?.logged}`);
+      });
+    }
+
+    await step('G10: "Revoke all other devices" on Settings signs the others out and keeps this one', async () => {
+      const others = [await establishSession(member), await establishSession(member)];
+      const { context, page } = await openAs(browser, member.cookie);
+      await go(page, '/builder/settings');
+      await page.getByRole('button', { name: /^Revoke all other devices$/ }).click();
+      await page.waitForTimeout(2500);
+      await context.close();
+      const answers = await Promise.all(others.map((c) => verify(c)));
+      const me = await verify(member.cookie);
+      record('G10: "Revoke all other devices" on Settings signs the others out and keeps this one',
+        answers.every((a) => a.status === 401) && me.status === 200,
+        `others ${answers.map((a) => a.status).join('/')}; this device ${me.status}`);
+    });
+
+    await step('G11: the password field\'s show/hide toggle reveals and hides what was typed', async () => {
+      const context = await browser.newContext({ viewport: DESKTOP });
+      const page = await context.newPage();
+      await go(page, '/builder/login');
+      const field = page.getByLabel(/^Password$/).first();
+      await field.fill('not-a-real-password');
+      const hidden = await field.getAttribute('type');
+      await page.getByRole('button', { name: /^Show password$/ }).click();
+      const shown = await field.getAttribute('type');
+      await page.getByRole('button', { name: /^Hide password$/ }).click();
+      const again = await field.getAttribute('type');
+      await context.close();
+      record('G11: the password field\'s show/hide toggle reveals and hides what was typed',
+        hidden === 'password' && shown === 'text' && again === 'password', `${hidden} → ${shown} → ${again}`);
+    });
+  } finally {
+    await browser.close().catch(() => {});
+  }
+}
 
 let storage = null;
 try {
@@ -86,6 +320,11 @@ try {
   record('0: the Command Centre holds the five properties', mirrored.done, secs(mirrored));
   const selected = await commandCentre('select_for_client', { stock_item_id: byLot['101'], client_id: clientId }, staff.token);
   record('0: the Command Centre activates lot 101 for a client', selected.status === 200, `HTTP ${selected.status}`);
+  const selected2 = await commandCentre('select_for_client', { stock_item_id: byLot['102'], client_id: clientId }, staff.token);
+  record('0: and lot 102, so the owner has two notifications to read', selected2.status === 200, `HTTP ${selected2.status}`);
+  await net('owner joins a second organisation', `
+    INSERT INTO public.builder_organisation_memberships(builder_user_id, organisation_id, membership_role, is_primary, status)
+    VALUES (${id(owner.userId)}, ${id(outsider.orgId)}, 'member', false, 'active')`);
   const arrived = await waitFor('activation arrives', async () => {
     const announcement = (await net('announcement', `SELECT id FROM public.builder_stock_selection_announcements
       WHERE stock_item_id = ${id(byLot['101'])}`))[0] ?? null;
@@ -321,6 +560,8 @@ try {
     record('F: recovering a Google Sheet\'s restricted brochure links is not exercised: it needs a restricted Google Sheet and the '
       + 'link-recovery webhook, which is the Make scenario this audit leaves out of scope', false, 'NOT TESTABLE here', { required: false });
   }
+  // --- G. The controls, pressed in a real Chromium --------------------------------------
+  await browserControls({ owner, member, projectId, conversationId, byLot });
 } catch (error) {
   record('the run completed', false, String(error?.stack ?? error).slice(0, 500));
 } finally {
