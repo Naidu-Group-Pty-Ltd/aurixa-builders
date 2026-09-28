@@ -436,7 +436,7 @@ export const uploadRow = (uploadId) => net('upload', `
   SELECT id, status, records_detected, records_imported, processing_started_at, processing_completed_at,
          published_at, error_code, error_message, publication_blocked_reason, image_failure_state,
          import_claim_token IS NOT NULL AS claimed, import_recovery_attempts, source_type,
-         replaces_upload_ids, deleted_at, parse_strategy, records_updated, records_failed
+         replaces_upload_ids, deleted_at, parse_strategy, records_updated, records_failed, storage_path
     FROM public.builder_stock_uploads WHERE id = ${id(uploadId)}`).then((rows) => rows[0] ?? null);
 
 /** The import has finished when the product says so, and not before. */

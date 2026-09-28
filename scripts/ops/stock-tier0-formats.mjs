@@ -132,7 +132,10 @@ async function runCase(c, storage, staff) {
   // 3. Served by the Builder Portal's own reads.
   const listed = await stock({ operation: 'list_stock', lifecycle_status: 'staged', page_size: 50 }, org.cookie);
   const listedActive = await stock({ operation: 'list_stock', page_size: 50 }, org.cookie);
-  const served = [...(listed.json?.items ?? listed.json?.records ?? []), ...(listedActive.json?.items ?? listedActive.json?.records ?? [])];
+  // One property, once: a list that publishes BETWEEN the two reads is served
+  // by both (staged, then active), which is the product working, not a copy.
+  const served = [...new Map([...(listed.json?.items ?? listed.json?.records ?? []),
+    ...(listedActive.json?.items ?? listedActive.json?.records ?? [])].map((row) => [row.id, row])).values()];
   const servedDiff = differences(items.map((i) => ({ ...i })), served,
     ['address_line', 'suburb', 'state', 'postcode', 'bedrooms', 'bathrooms', 'car_spaces', 'land_size_sqm',
       'building_size_sqm', 'price', 'price_display', 'availability_status'], 'lot_number');

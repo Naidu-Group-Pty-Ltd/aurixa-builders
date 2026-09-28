@@ -78,10 +78,22 @@ try {
   record('E1: 4 MB PUT against an upload that declared 4 MB (control) — the declared size is what is stored',
     !!lie.uploadId, `create ${lie.created?.status}, put ${lie.put ?? '—'}, process ${lie.processed?.status ?? '—'}, `
     + `upload ${lieRow?.status ?? '—'} ${lieRow?.error_code ?? ''}`, { required: false });
+  /*
+   * The create answer carries no storage path (the projection does not
+   * publish it), so the stored row is read. What matters is the SEGMENTS: the
+   * object must sit in this organisation's folder, under its own upload id,
+   * as ONE segment — a name like `..-..-other-org-..-stock.csv` is a file
+   * called that, not a way out, so a `..` substring is not the test.
+   */
   const trav = await portal_create(org, '../../other-org/../stock.csv', 100);
-  const travPath = trav.json?.upload?.storage_path ?? trav.json?.storage_path ?? '';
+  const travRow = trav.json?.upload?.id ? await uploadRow(trav.json.upload.id) : null;
+  const travPath = String(travRow?.storage_path ?? '');
+  const travSegments = travPath.split('/');
+  const orgAt = travSegments.indexOf(org.orgId);
   record('E1: a path in the file name never leaves the organisation\'s own folder', trav.status !== 200
-    || (!travPath.includes('..') && travPath.includes(org.orgId)), `create ${trav.status}, path ${travPath.replace(org.orgId, '<org>')}`);
+    || (orgAt >= 0 && travSegments[orgAt + 1] === trav.json.upload.id && travSegments.length === orgAt + 3
+      && !travSegments.some((segment) => segment === '..' || segment === '.' || segment === '')),
+    `create ${trav.status}, path ${travPath.replace(org.orgId, '<org>').replace(trav.json?.upload?.id ?? '§', '<upload>')}`);
   const headerOnly = await importedAs(org, 'header-only.csv', fixture('neg/header-only.csv'), 'text/csv');
   record('E1: a list with a heading and no rows imports nothing and says so', headerOnly.items.length === 0
     && Number(headerOnly.upload?.records_detected ?? 0) === 0, brief(headerOnly));
