@@ -47,6 +47,7 @@
  * Runs from the production-rollout workflow (phase `step6-proof-audit`).
  */
 import { MARKER_RE, conversationRowsSql, proofDataFindings } from './realConversationAudit.pure.mjs';
+import { objectOrganisationSql, STOCK_BUCKETS } from './proofStorage.mjs';
 
 const NETWORK_REF = process.env.PROJECT_REF || 'htfluofznhxeumblwbww';
 const CC_REF = process.env.CLONE_PROJECT_REF || 'dduzbchuswwbefdunfct';
@@ -289,6 +290,27 @@ async function audit() {
              AND NOT EXISTS (SELECT 1 FROM public.builder_portal_users u WHERE u.id::text = substr(x.bucket_key, 11)))
          OR (x.bucket_key LIKE 'binv\\_org:%'
              AND NOT EXISTS (SELECT 1 FROM public.builder_organisations o WHERE o.id::text = substr(x.bucket_key, 10))))`);
+
+  // ---- stored files ----------------------------------------------------------
+  // A row goes with its organisation because its foreign keys cascade. A stored
+  // object has no foreign key, so it stays. A file in a stock bucket whose path
+  // names an organisation that no longer exists is therefore what a proof's
+  // cleanup left behind: 112 were found this way on 28 Sep 2026. The rule for
+  // which organisation a path names is `proofStorage.mjs`'s, on both projects.
+  const owner = objectOrganisationSql('f.name');
+  const stockFiles = `f.bucket_id IN (${STOCK_BUCKETS.map(sqlLit).join(', ')}) AND ${owner} ~ '^[0-9a-f-]{36}$'`;
+  await count('stored files', 'net', 'storage.objects: stock-bucket file → missing organisation',
+    ['builder_organisations.id'], `
+    SELECT count(*)::int AS n, (array_agg(left(md5(f.name), 8)))[1:5] AS refs
+      FROM storage.objects f
+     WHERE ${stockFiles}
+       AND NOT EXISTS (SELECT 1 FROM public.builder_organisations o WHERE o.id::text = ${owner})`);
+  await count('stored files', 'cc', 'storage.objects: stock-bucket file → missing mirrored organisation',
+    ['builder_network_stock_organisations.id'], `
+    SELECT count(*)::int AS n, (array_agg(left(md5(f.name), 8)))[1:5] AS refs
+      FROM storage.objects f
+     WHERE ${stockFiles}
+       AND NOT EXISTS (SELECT 1 FROM public.builder_network_stock_organisations o WHERE o.id::text = ${owner})`);
 }
 
 // ---------------------------------------------------------------------------

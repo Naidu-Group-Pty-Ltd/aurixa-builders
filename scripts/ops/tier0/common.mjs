@@ -38,6 +38,7 @@ import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { objectOrganisationSql, removeOrganisationObjects, STOCK_BUCKETS } from '../proofStorage.mjs';
 
 export const NETWORK_REF = process.env.PROJECT_REF || 'htfluofznhxeumblwbww';
 export const CC_REF = process.env.CLONE_PROJECT_REF || 'dduzbchuswwbefdunfct';
@@ -183,32 +184,6 @@ export const CONTENT_TYPES = {
 export const contentTypeOf = (name) => CONTENT_TYPES[name.split('.').pop().toLowerCase()] ?? 'application/octet-stream';
 
 // --- Storage -------------------------------------------------------------------
-export async function listObjects(storage, bucket, prefix, depth = 0) {
-  if (depth > 6) return [];
-  const response = await fetch(`${storage.base}/object/list/${bucket}`, {
-    method: 'POST', headers: { ...storage.headers, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prefix, limit: 1000, offset: 0 }),
-  });
-  if (!response.ok) return [];
-  const entries = await response.json();
-  const out = [];
-  for (const entry of Array.isArray(entries) ? entries : []) {
-    const path = `${prefix}${entry.name}`;
-    if (entry.id) out.push(path);
-    else out.push(...await listObjects(storage, bucket, `${path}/`, depth + 1));
-  }
-  return out;
-}
-export async function deletePrefix(storage, bucket, prefix) {
-  const paths = await listObjects(storage, bucket, prefix);
-  for (let i = 0; i < paths.length; i += 100) {
-    await fetch(`${storage.base}/object/${bucket}`, {
-      method: 'DELETE', headers: { ...storage.headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prefixes: paths.slice(i, i + 100) }),
-    });
-  }
-  return paths.length;
-}
 /** A fixture object in the organisation's OWN folder, and a signed link to it. */
 export async function stageLinked(storage, orgId, name, bytes) {
   const path = `stock-lists/${orgId}/tier0-linked/${name}`;
@@ -610,11 +585,12 @@ export async function cleanup(tag, stage, storage) {
     }
   }
 
+  // Every file the organisations hold, in both stock buckets and every path
+  // family, read from `storage.objects` (`proofStorage.mjs`). The two folder
+  // prefixes this used to name left `builder-supplied/<org>/` behind: 18 of
+  // this suite's pictures were still stored after their organisations had gone.
   if (storage && orgIds.length) {
-    for (const orgId of orgIds) {
-      await deletePrefix(storage, STOCK_LIST_BUCKET, `stock-lists/${orgId}/`);
-      await deletePrefix(storage, STOCK_IMAGE_BUCKET, `${orgId}/`);
-    }
+    await removeOrganisationObjects(storage, (text) => net(`${stage}: proof files`, text), orgIds);
   }
 
   if (orgIds.length) {
@@ -686,6 +662,7 @@ export async function cleanup(tag, stage, storage) {
 /** What the cleanup left, counted on both sides. Every count must be zero. */
 export async function leftovers(tag) {
   const n = names(tag);
+  const oursText = [...seededOrganisations].map(sqlLit).join(', ') || "''";
   const [network] = await net('leftovers', `
     SELECT (SELECT count(*) FROM public.builder_organisations WHERE legal_name LIKE ${sqlLit(`${n.orgPrefix} %`)})::int AS orgs,
            (SELECT count(*) FROM public.builder_portal_users WHERE email LIKE ${sqlLit(`${n.emailPrefix}%`)})::int AS users,
@@ -693,7 +670,10 @@ export async function leftovers(tag) {
            (SELECT count(*) FROM public.builder_stock_items i WHERE NOT EXISTS
               (SELECT 1 FROM public.builder_organisations o WHERE o.id = i.organisation_id))::int AS orphan_items,
            (SELECT count(*) FROM public.builder_stock_uploads u WHERE NOT EXISTS
-              (SELECT 1 FROM public.builder_organisations o WHERE o.id = u.organisation_id))::int AS orphan_uploads`);
+              (SELECT 1 FROM public.builder_organisations o WHERE o.id = u.organisation_id))::int AS orphan_uploads,
+           (SELECT count(*) FROM storage.objects o
+             WHERE o.bucket_id IN (${STOCK_BUCKETS.map(sqlLit).join(', ')})
+               AND ${objectOrganisationSql('o.name')} IN (${oursText}))::int AS files`);
   // THIS run's organisations, by id: the mirror holds genuine stock of
   // organisations with no connection row, so "unconnected" is not a leftover.
   const ours = [...seededOrganisations].map(id).join(', ') || 'NULL::uuid';

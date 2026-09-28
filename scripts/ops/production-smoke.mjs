@@ -31,6 +31,7 @@
  */
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
+import { objectOrganisationSql, removeOrganisationObjects, storageClient, STOCK_BUCKETS } from './proofStorage.mjs';
 
 const PROJECT_REF = process.env.PROJECT_REF || 'htfluofznhxeumblwbww';
 const ACCESS_TOKEN = process.env.SUPABASE_ACCESS_TOKEN || '';
@@ -117,6 +118,8 @@ function detachFromNetwork(orgIdsSql) {
     DELETE FROM public.workspace_connections WHERE builder_organisation_id IN (${orgIdsSql});`;
 }
 const SMOKE_ORGS = `SELECT id FROM public.builder_organisations WHERE legal_name LIKE 'Smoke Rollout %'`;
+/** Every smoke organisation a cleanup found, so the last check can ask about its files once it is gone. */
+const cleanedOrganisations = [];
 
 async function cleanup(stage) {
   // Order matters only where FKs RESTRICT (announcements, connection events →
@@ -124,6 +127,16 @@ async function cleanup(stage) {
   // activity log and operational events keep their rows: append-only audit,
   // by design.
   const orgIds = (await q(`cleanup (${stage}): smoke organisations`, SMOKE_ORGS)).map((r) => r.id);
+  cleanedOrganisations.push(...orgIds);
+  // The files first, while the organisations that name them still exist: a
+  // row cascades with its organisation and a stored object does not. Until
+  // 28 Sep 2026 this cleanup removed the rows alone, and 94 of this suite's
+  // files (every run's stock list, brochure list, "Add picture" facade and
+  // the pictures read out of the brochure) were still stored afterwards.
+  if (orgIds.length) {
+    await removeOrganisationObjects(await storageClient(PROJECT_REF, ACCESS_TOKEN),
+      (text) => q(`cleanup (${stage}): smoke files`, text), orgIds);
+  }
   const sql = `
     DO $$
     DECLARE v_conn uuid;
@@ -1208,14 +1221,17 @@ const leftovers = await q('leftover check', `
     (SELECT count(*) FROM public.builder_organisations WHERE legal_name LIKE 'Smoke Rollout %') AS orgs,
     (SELECT count(*) FROM public.workspace_registry WHERE slug LIKE '${MARK}-%') AS workspaces,
     (SELECT count(*) FROM public.builder_network_outbox o WHERE NOT EXISTS
-       (SELECT 1 FROM public.workspace_connections c WHERE c.id = o.connection_id)) AS orphan_outbox`);
+       (SELECT 1 FROM public.workspace_connections c WHERE c.id = o.connection_id)) AS orphan_outbox,
+    (SELECT count(*) FROM storage.objects o
+      WHERE o.bucket_id IN (${STOCK_BUCKETS.map(sqlLit).join(', ')})
+        AND ${objectOrganisationSql('o.name')} IN (${cleanedOrganisations.map(sqlLit).join(', ') || "''"})) AS files`);
 const ccLeftovers = await cc('leftover check', `
   SELECT
     (SELECT count(*) FROM public.builder_network_connections WHERE builder_org_label LIKE 'Smoke Rollout %') AS connections,
     (SELECT count(*) FROM public.builder_network_stock_organisations WHERE legal_name LIKE 'Smoke Rollout %') AS orgs,
     (SELECT count(*) FROM public.builder_network_inbound_events
       WHERE event_type = 'connection.authorised' AND payload::text ~ 'Smoke Rollout ') AS announcements`);
-record('cleanup: no smoke rows remain, on the network or on the Command Centre',
+record('cleanup: no smoke rows or files remain, on the network or on the Command Centre',
   Object.values(leftovers[0] ?? { x: 1 }).every((n) => Number(n) === 0)
     && Object.values(ccLeftovers[0] ?? { x: 1 }).every((n) => Number(n) === 0),
   `${JSON.stringify(leftovers[0] ?? {})} cc=${JSON.stringify(ccLeftovers[0] ?? {})}`);

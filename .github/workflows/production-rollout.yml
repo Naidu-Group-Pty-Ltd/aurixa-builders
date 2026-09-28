@@ -337,6 +337,14 @@ name: Production rollout
 #            state wording it met and every function it called with the status.
 #            No page text, no screenshot (this repository is public). Deletes
 #            the staff member and session.
+#   storage-residue-sweep
+#            the files proofs left in the Builder's stock buckets: in a stock
+#            bucket, under an organisation that no longer exists, named by no
+#            row, AND at a path a proof writes (proofResidue.pure.mjs). A real
+#            builder's disowned files are kept and counted. Dry run by default,
+#            by kind and count only (no file name: this log is public);
+#            removes only with apply=true AND items = the count the dry run
+#            printed.
 #   portal-ui-audit
 #            the portal as each role sees it: an organisation of the run's own
 #            (detached, proof-only transport) holding a published stock list,
@@ -373,13 +381,13 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | cc-frontend-build | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures | email-delivery-proof | stock-tier0-formats | stock-tier0-lifecycle | stock-tier0-edges | portal-ui-audit | cc-page-probe'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | cc-frontend-build | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures | email-delivery-proof | stock-tier0-formats | stock-tier0-lifecycle | stock-tier0-edges | portal-ui-audit | cc-page-probe | storage-residue-sweep'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures, email-delivery-proof, stock-tier0-formats, stock-tier0-lifecycle, stock-tier0-edges, portal-ui-audit, cc-page-probe]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures, email-delivery-proof, stock-tier0-formats, stock-tier0-lifecycle, stock-tier0-edges, portal-ui-audit, cc-page-probe, storage-residue-sweep]
       items:
-        description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1)'
+        description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1). storage-residue-sweep: with apply, the count its dry run printed'
         required: false
         default: ''
         type: string
@@ -394,7 +402,7 @@ on:
         default: ''
         type: string
       apply:
-        description: 'item-reopen / stock-collateral-reprocess / network-connection-remap / stock-source-restore / agency-chat-backfill: false is a dry run that writes nothing'
+        description: 'item-reopen / stock-collateral-reprocess / network-connection-remap / stock-source-restore / agency-chat-backfill / storage-residue-sweep: false is a dry run that writes nothing'
         required: false
         default: false
         type: boolean
@@ -499,6 +507,7 @@ jobs:
           CC_EXPECTED_BUILD: ${{ inputs.cc_build }}
           PROOF_EMAIL_RECIPIENT: ${{ inputs.email_recipient }}
           TIER0_ONLY: ${{ inputs.items }}
+          SWEEP_EXPECT: ${{ inputs.items }}
         run: |
           set -euo pipefail
           case "${{ inputs.phase }}" in
@@ -550,6 +559,8 @@ jobs:
                                   node scripts/ops/portal-ui-audit.mjs ;;
             cc-page-probe)
                                   node scripts/ops/cc-page-probe.mjs ;;
+            storage-residue-sweep)
+                                  node scripts/ops/storage-residue-sweep.mjs ;;
           esac
 
       - name: upload the browser proof's screenshots
