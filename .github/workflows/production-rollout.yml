@@ -293,6 +293,21 @@ name: Production rollout
 #            deterministic PDF reader over it, printing the figures read and
 #            whether the brochure's lot and design agree with the row's.
 #            SELECT and a document GET only; prints no link; writes nothing.
+#   stock-tier0-formats
+#            TIER-0: every format the Stock List accepts, imported by the live
+#            product exactly as a builder's browser imports it
+#            (`scripts/ops/fixtures/tier0`, digests pinned, nothing any
+#            customer's), each into an organisation of the run's own detached
+#            from every workspace and carried over a PROOF-ONLY transport to
+#            the live Command Centre door. Asserts, per format and per
+#            property: parsed and stored field by field against what the
+#            DOCUMENT states, served by the portal's own reads, published by
+#            the product's own settler (a property its document gave no
+#            photograph of gets one through the builder's own "Add picture"),
+#            mirrored by the Command Centre field by field, and read back
+#            through the Command Centre's own endpoint with its photograph.
+#            Kicks nothing and writes no lifecycle. `items` narrows it to some
+#            formats (comma-separated keys). Deletes everything on both sides.
 #   network-connection-remap
 #            points the live connection at the builder organisation named in
 #            `organisation_id` and backfills its active stock. It refuses
@@ -315,11 +330,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | cc-frontend-build | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures | email-delivery-proof'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | cc-frontend-build | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures | email-delivery-proof | stock-tier0-formats'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures, email-delivery-proof]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures, email-delivery-proof, stock-tier0-formats]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1)'
         required: false
@@ -424,6 +439,7 @@ jobs:
           MESSAGE_PROOF_BASELINE: ${{ inputs.baseline }}
           CC_EXPECTED_BUILD: ${{ inputs.cc_build }}
           PROOF_EMAIL_RECIPIENT: ${{ inputs.email_recipient }}
+          TIER0_ONLY: ${{ inputs.items }}
         run: |
           set -euo pipefail
           case "${{ inputs.phase }}" in
@@ -471,6 +487,7 @@ jobs:
             stock-brochure-figures)
                                   deno run -A --config supabase/functions/deno.json scripts/ops/stock-brochure-figures.ts ;;
             email-delivery-proof) node scripts/ops/email-delivery-proof.mjs ;;
+            stock-tier0-formats)  node scripts/ops/stock-tier0-formats.mjs ;;
           esac
 
       - name: upload the browser proof's screenshots

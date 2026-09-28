@@ -1,0 +1,46 @@
+{
+  "properties": [
+    {
+      "Stock Ref": "T0-471",
+      "Estate": "Kestrel Grove",
+      "Stage": "Stage 3",
+      "Lot": "471",
+      "Street Address": "10 Formatcheck Street",
+      "Suburb": "Truganina",
+      "State": "VIC",
+      "Postcode": "3029",
+      "Design": "Sage 18",
+      "Type": "House",
+      "Beds": "3",
+      "Baths": "2",
+      "Car": "2",
+      "Land Size (m2)": "350",
+      "House Size (m2)": "180.5",
+      "Package Price": "$600,000",
+      "Status": "Available",
+      "Description": "PROOF ONLY — not for sale.",
+      "Facade Image": "{{PHOTO:471}}"
+    },
+    {
+      "Stock Ref": "T0-472",
+      "Estate": "Kestrel Grove",
+      "Stage": "Stage 3",
+      "Lot": "472",
+      "Street Address": "12 Formatcheck Street",
+      "Suburb": "Truganina",
+      "State": "VIC",
+      "Postcode": "3029",
+      "Design": "Sage 20",
+      "Type": "House",
+      "Beds": "4",
+      "Baths": "2",
+      "Car": "2",
+      "Land Size (m2)": "375",
+      "House Size (m2)": "190.5",
+      "Package Price": "$612,500",
+      "Status": "Available",
+      "Description": "PROOF ONLY — not for sale.",
+      "Facade Image": "{{PHOTO:472}}"
+    }
+  ]
+}
