@@ -153,6 +153,24 @@ describe('every way builder-portal-invite can answer an invitation', () => {
     expect(conflict.indexOf(".select('status')")).toBeLessThan(conflict.search(/409\)/));
   });
 
+  it('a promotion that finds nothing to promote re-reads the seat rather than refusing', () => {
+    /*
+     * The re-review's one remaining path: two concurrent repeats of an `invited`
+     * seat whose account has started signing in both read `invited`; one
+     * promotes, the other promotes nothing and used to answer 409 — while an
+     * account that does not sign in answers 200 twice. The seat decides here
+     * too: now `active` (the other request promoted it) is answered as everyone
+     * is, with no second notice; `suspended` is refused as before.
+     */
+    const zero = block.indexOf('promotion.promoted === 0');
+    expect(zero).toBeGreaterThan(-1);
+    const after = block.slice(zero, zero + 900);
+    expect(after).toMatch(/\.select\('status'\)/);
+    expect(after).toMatch(/return json\(tenantInviteResponse\(\{ inviteUrl: null \}\)\)/);
+    // The re-read precedes any refusal on this path.
+    expect(after.indexOf(".select('status')")).toBeLessThan(after.search(/409\)/));
+  });
+
   it('resend answers the same whether or not the person already signs in', () => {
     // Reached for ANY address once one invitation has given the caller a seat
     // for it, so `invite` then `resend` was the same oracle by another route.

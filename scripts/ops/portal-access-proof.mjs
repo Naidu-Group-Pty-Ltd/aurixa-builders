@@ -1095,6 +1095,8 @@ try {
   // invitations go through the real door. Positioning rather than sending forty
   // is what keeps this from spending forty sends at the provider every tenant
   // shares — the counting itself is shown on the calls section J just made.
+  // (Section J spends 33 of D's owner's 40 and K's two invitations take it to
+  // 35; anything added to J must stay under the ceiling, or it meets its own 429.)
   console.log('\nK. The invitation ceiling — per person, then per organisation');
   const bucket = async (key) => {
     const row = (await q('ceiling bucket', `

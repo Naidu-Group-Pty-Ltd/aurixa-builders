@@ -101,7 +101,9 @@ administrators already see on the members list, never by the account: a
 be suspended from the portal, so this is the case that refused before); an
 `active` seat of an account that signs in is a working member already, so there
 is nothing to grant or send; an `invited` seat is re-sent, or promoted at once
-for an account that has since started signing in, as before. `resend` of an
+for an account that has since started signing in, as before. Where a
+promotion finds nothing left to promote (a concurrent repeat got there first),
+the seat is read again and decides the same way. `resend` of an
 account that already signs in sends nothing, because there is nothing for it to
 accept, and answers as a re-sent invitation does. `resend`'s answer lost
 `email_sent` and `expires_at` for the same reason `invite`'s did. Nothing in the
@@ -115,10 +117,13 @@ about it", or, where there is no mail provider, the link to pass on.
 
 Stated so nobody reads the response fix as more than it is.
 
-- **The members list still separates them.** This is now the one place a
-  tenant administrator can still tell. An address that already signs in joins
-  as a live member at once, which is the owner's recorded decision: there is
-  nothing for it to accept. So after one invitation, `list_members` shows:
+- **The members list still separates them.** This, together with the member
+  actions that answer by the state the list shows, is where a tenant
+  administrator can still tell. (Suspending an `invited` seat is refused, and
+  cancelling an invitation removes the seat only for an account that has not
+  signed in.) An address that already signs in joins as a live member at once,
+  which is the owner's recorded decision: there is nothing for it to accept. So
+  after one invitation, `list_members` shows:
   - a member, under the account's own registered name, for an address that
     already signs in;
   - a pending invitation for a new address;
@@ -133,9 +138,16 @@ Stated so nobody reads the response fix as more than it is.
   password" from "need not". There the inviter is the only postman, and
   withholding the link would stop the deployment inviting anybody. Production
   has a provider, so it never returns a link.
-- **Response time** differs by path. A revoked account, and a repeat for an
-  active member, send no email, so they answer sooner. Measured in production
-  by the proof run. The remedy is to answer first and send afterwards.
+- **Response time** differs by path. These send no email, so they answer
+  sooner:
+  - a revoked account;
+  - a repeat for an active member;
+  - a `resend` to an account that signs in.
+
+  This change removed the value that used to differ on the last two; the
+  timing difference beside it is as it was. It is measured in production by
+  the proof run. The remedy is to answer first and send afterwards
+  (`EdgeRuntime.waitUntil` or an outbox).
 - **A missing token pepper** makes new and pending addresses answer 503 while
   established ones answer 200. That misconfiguration also stops every
   invitation, so it cannot persist unnoticed.
@@ -148,11 +160,26 @@ Stated so nobody reads the response fix as more than it is.
   varied with the address, which was the leak. What is missing is a
   deployment-level delivery-health signal; a per-address one would reopen the
   oracle.
-- **Unchanged, and out of scope here:** the colleague's `name` has no length
-  bound before it reaches an email (now capped at the ceiling's volume); one
-  organisation re-inviting another's pending invitee still replaces that
-  invitee's single token (doc 65); join-request emails are unbudgeted but
-  bounded, because nothing creates join requests any more.
+- **Two quiet answers, by design.**
+  - A repeat for an active member ignores a different role in the request;
+    changing a role is `manage_member`'s job.
+  - A `resend` to a waiting seat whose account now signs in sends nothing and
+    does not promote the seat; inviting again does. No screen calls `resend`.
+- **An organisation learns when an operator later revokes an account it has
+  already seated.** `resend` answers 409, and a repeat for that seat answers
+  200. This is about its own member, not about whether an address exists.
+- **Unchanged, and out of scope here:**
+  - The colleague's `name` has no length bound before it reaches an email; its
+    volume is now capped by the ceiling.
+  - One organisation re-inviting another's pending invitee still replaces that
+    invitee's single token (doc 65).
+  - Join-request emails are unbudgeted but bounded, because nothing creates
+    join requests any more.
+  - The token update in `issueInvite` sets the account `invited` and inactive
+    without checking it is still unaccepted. An account that activated between
+    the read and that write would be deactivated. The window is a few
+    milliseconds, and the repeat path's seat read adds one query to it. The fix
+    is a conditional update with a row count.
 
 ## 4. How it is held
 

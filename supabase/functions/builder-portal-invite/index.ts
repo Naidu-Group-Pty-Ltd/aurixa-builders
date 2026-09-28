@@ -438,6 +438,24 @@ Deno.serve(async (req) => {
          * screen, which is where that decision belongs.
          */
         if (promotion.promoted === 0) {
+          /*
+           * NOTHING WAS WAITING BY THE TIME THE PROMOTION RAN. The seat read above
+           * was `invited`, so a concurrent repeat promoted it first, or an
+           * administrator changed it since. The seat decides here too: answered
+           * on the account instead, two concurrent repeats were the last way to
+           * tell whether an address signs in (the re-review of doc 67). Now
+           * `active` is the grant the other request made, and sent the notice
+           * for; anything else is refused as before.
+           */
+          const { data: seatNow, error: seatNowError } = await supabase
+            .from('builder_organisation_memberships')
+            .select('status')
+            .eq('builder_user_id', target.id)
+            .eq('organisation_id', activeOrganisationId)
+            .is('revoked_at', null)
+            .maybeSingle();
+          if (seatNowError) throw seatNowError;
+          if (seatNow?.status === 'active') return json(tenantInviteResponse({ inviteUrl: null }));
           return json({
             error: 'That person already has a membership here that is not waiting on an invitation. '
               + 'Reactivate them on the members list instead.',
