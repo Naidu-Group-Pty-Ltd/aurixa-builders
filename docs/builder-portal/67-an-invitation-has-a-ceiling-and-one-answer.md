@@ -210,3 +210,62 @@ Stated so nobody reads the response fix as more than it is.
   invites removes its own buckets, and the cleanup audit counts any bucket used
   in the last week that names an account or organisation which no longer
   exists.
+
+## 5. Proved in production
+
+28 Sep 2026, after #142 merged (47e4919) and deployed through the normal path.
+`builder-portal-invite` moved from v833 to v838 with a new bundle hash; the
+migration ledger was untouched (66 rows, newest `20260928120000`); the Vercel
+production deployment of 47e4919 was READY. Every proof ran on disposable
+organisations only.
+
+**`portal-access-proof`, 138 of 138** (run `4b2c03d1`):
+
+- **J — one answer.** Every answer was the same bytes, `{"success":true}`:
+  12 first invitations (three each of new, pending elsewhere, already signed
+  in, revoked), 12 repeats and 9 resends. Underneath, the server handled the
+  four kinds four different ways (`invited/invited`, `invited/invited` plus the
+  other organisation's waiting seat, `active/active`, `revoked/none`). The
+  operator-only log still recorded 6 invitation sends and 3 grant notices, and
+  a repeat of an address that already signs in granted and sent nothing.
+- **Response time, measured, median of three:** new 1,438 ms, pending 1,441,
+  signed in 1,335, revoked 932. A revoked account answers about half a second
+  sooner because it sends no email (§3).
+- **K — the ceiling.**
+  - Each of D's 33 invitation and resend calls was counted once, against the
+    person and against the organisation.
+  - A member was refused 403 before the ceiling; the organisation's count
+    stayed at 35.
+  - A burst past the person's ceiling answered 200, 200, 429 (the 41st). It
+    said to wait 3,501 s, and the function's own `Retry-After` matched its
+    body (3,494).
+  - The refused requests left no account, no membership, no activity (25 → 25)
+    and none of the organisation's allowance (37 → 37).
+  - A refused resend re-minted nothing. Listing members and cancelling an
+    invitation still answered.
+  - A second administrator with a fresh allowance was refused once the
+    organisation's was spent. Another organisation invited as normal.
+- **I — the takeover fix** held throughout, and its two answers are now the
+  same bytes.
+- **Cleanup:** zero of everything, the ceiling's buckets included.
+
+**The regression sequence**, one phase at a time:
+
+| Phase | Result |
+|---|---|
+| `verify` | nothing pending, nothing changed |
+| `smoke` | 81 checks, 0 failures |
+| `proxy-trust` | 12 of 12 |
+| `stock-messaging-proof` | 42 of 42 |
+| `stock-private-chat-proof` | 38 of 38 |
+| `portal-performance-proof` | 5 of 5 |
+| `activation-speed-proof` | 12 of 12 |
+| `portal-browser-proof` | 19 of 19 |
+| `message-speed-proof` | 24 of 24 |
+
+**The cleanup audit, last:** `AUDIT CLEAN — WITH EXPECTED RETAINED SECURITY LOG
+EVIDENCE`. It found 0 mutable proof artefacts, 0 orphaned ceiling buckets and
+no proof data in the real conversations, and it wrote nothing. The 9 retained
+entries are earlier runs' deliberate refusals. Read afterwards, production held
+0 ceiling buckets and 0 proof accounts or organisations. The 6 genuine accounts
+and 6 live seats were unchanged.
