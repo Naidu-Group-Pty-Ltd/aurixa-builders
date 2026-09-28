@@ -220,9 +220,16 @@ try {
         : `${rows.length} page renders`);
   }
   const compliance = matrix.filter((r) => r.route === 'compliance' && r.viewport === 'desktop');
-  record('R: /builder/compliance (the Passport email\'s "View in your portal") loads for a signed-in builder',
+  // PARTIAL BY DESIGN, and said so rather than failed: the Builders Network
+  // holds no AML workspace yet (it arrives with E4, `usePartnerWorkspaceFlags`),
+  // so its compliance page asks an `aml-reliance` this backend does not have.
+  // Nothing links a builder to it — the navigation entry fails closed, and the
+  // Command Centre refuses to offer the builder "View in your portal" door
+  // (`MOVED_SURFACES` in its partnerPortalHandoff.pure.ts) — so only a typed
+  // URL reaches it. Recorded, not required.
+  record('R: /builder/compliance — reachable only by a typed URL (no link, no nav entry); its backend is not on the network yet',
     compliance.every((r) => !r.refusals.some((x) => /aml-reliance 404/.test(x))),
-    compliance.map((r) => `${r.role}: ${r.refusals.join(',') || 'no refusals'}`).join('; '));
+    compliance.map((r) => `${r.role}: ${r.refusals.join(',') || 'no refusals'}`).join('; '), { required: false });
 
   // --- Controls, desktop, per role ---------------------------------------------------------
   const CAN_EDIT_STOCK = { owner: true, admin: true, manager: true, member: false, viewer: false };
@@ -231,6 +238,20 @@ try {
     const context = await openAs(person, VIEWPORTS[0]);
     const page = await context.newPage();
     const toast = async () => (await page.locator('[role="status"], [data-sonner-toast], li[role="status"]').allInnerTexts().catch(() => [])).join(' | ').slice(0, 200);
+    // What the page ASKED and what the server ANSWERED, per write, so a
+    // missing message can be told apart from a request that never went out.
+    // Operation names and statuses only — this is a proof organisation, and
+    // nothing else is recorded.
+    const writes = [];
+    page.on('response', async (res) => {
+      const m = /\/fn\/(builder-portal-[a-z-]+)/.exec(res.url());
+      if (!m || res.request().method() !== 'POST') return;
+      let op = '';
+      try { op = JSON.parse(res.request().postData() ?? '{}').operation ?? ''; } catch { /* not JSON */ }
+      if (/^(list|get|my|read|search|count)_/.test(op)) return;
+      writes.push(`${m[1]}:${op || '?'}:${res.status()}`);
+    });
+    const lastWrites = (n = 3) => writes.slice(-n).join(' ') || 'no write sent';
 
     // Stock List: search, filter, availability, schedule, remove.
     await page.goto(`${ORIGIN}/builder/stock`, { waitUntil: 'networkidle', timeout: 60_000 }).catch(() => {});
@@ -261,7 +282,7 @@ try {
       } else {
         record(`S: ${label} — the Stock List refuses an availability change this role may not make, and says so`,
           after[0]?.availability_status === 'reserved' && /permission|not allowed|could not/i.test(availabilityResult),
-          availabilityResult);
+          `${availabilityResult}; sent: ${lastWrites()}`);
         record(`S: ${label} — the availability control is not offered to a role that cannot use it`, false,
           'the control is drawn and the server refuses (UI: none)', { required: false });
       }
@@ -279,7 +300,8 @@ try {
         await page.waitForTimeout(2000);
         const after = await itemsOf(person.orgId, `AND i.id = ${id(byLot['104'])}`);
         record(`S: ${label} — removing a property is refused for a role without delete rights, and the page says so`,
-          after[0]?.lifecycle_status === 'active' && /permission|could not/i.test(await toast()), `${after[0]?.lifecycle_status}; ${await toast()}`);
+          after[0]?.lifecycle_status === 'active' && /permission|could not/i.test(await toast()),
+          `${after[0]?.lifecycle_status}; ${await toast()}; sent: ${lastWrites()}`);
       } else if (dialog) {
         await page.getByRole('button', { name: /^Cancel$/ }).first().click().catch(() => {});
         record(`S: ${label} — the remove confirmation opens and cancels without removing`, true);
@@ -324,7 +346,7 @@ try {
       await page.getByRole('option', { name: /Weekly/ }).click().catch(() => {});
       await save.click().catch(() => {});
       await page.waitForTimeout(2000);
-      record(`N: ${label} — saving preferences`, /saved/i.test(await toast()), await toast());
+      record(`N: ${label} — saving preferences`, /saved/i.test(await toast()), `${await toast()}; sent: ${lastWrites()}`);
     }
     const teamCard = await page.getByText(/Team members/i).count();
     record(`N: ${label} — the team card is ${['owner', 'admin'].includes(label) ? 'shown' : 'not shown'}`,
