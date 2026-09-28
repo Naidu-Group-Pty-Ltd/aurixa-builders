@@ -280,6 +280,160 @@ async function browserControls({ owner, member, projectId, conversationId, byLot
       record('G11: the password field\'s show/hide toggle reveals and hides what was typed',
         hidden === 'password' && shown === 'text' && again === 'password', `${hidden} → ${shown} → ${again}`);
     });
+
+    // --- The read-only and navigation controls, swept (owner, desktop) -------------------
+    const at = (page) => new URL(page.url()).pathname + new URL(page.url()).search;
+    {
+      const { context, page } = await openAs(browser, owner.cookie);
+      const errors = [];
+      page.on('pageerror', () => errors.push('uncaught'));
+
+      await step('G12a: the dashboard\'s Refresh, "Open projects" and "View all" do what they say', async () => {
+        await go(page, '/builder');
+        await page.getByRole('button', { name: /^Refresh$/ }).first().click();
+        await page.waitForTimeout(1200);
+        await page.getByRole('link', { name: /Open projects/ }).first().click();
+        await page.waitForTimeout(1200);
+        const projectsAt = at(page);
+        await go(page, '/builder');
+        await page.getByRole('link', { name: /^View all$/ }).first().click();
+        await page.waitForTimeout(1200);
+        record('G12a: the dashboard\'s Refresh, "Open projects" and "View all" do what they say',
+          projectsAt.startsWith('/builder/projects') && at(page).startsWith('/builder/activity') && errors.length === 0,
+          `Open projects → ${projectsAt}; View all → ${at(page)}; script errors ${errors.length}`);
+      });
+
+      await step('G12b: the projects list searches, clears and filters by status', async () => {
+        await go(page, '/builder/projects');
+        const rows = async () => page.locator('main a[href^="/builder/projects/"]').count();
+        const all = await rows();
+        await page.getByPlaceholder(/Search project name, reference or address/).fill('no-such-project-zz');
+        await page.waitForTimeout(1800);
+        const none = await rows();
+        await page.getByRole('button', { name: /^Clear / }).first().click();
+        await page.waitForTimeout(1800);
+        const cleared = await page.getByPlaceholder(/Search project name, reference or address/).inputValue();
+        const back = await rows();
+        await page.getByRole('combobox').filter({ hasText: /All statuses/ }).first().click();
+        await page.getByRole('option', { name: /^Completed$/ }).click();
+        await page.waitForTimeout(1800);
+        const completed = await rows();
+        record('G12b: the projects list searches, clears and filters by status',
+          all >= 1 && none === 0 && cleared === '' && back === all && completed === 0,
+          `rows ${all}; searched ${none}; cleared "${cleared}" → ${back}; Completed ${completed}`);
+      });
+
+      await step('G12c: the activity feed filters by record type', async () => {
+        await go(page, '/builder/activity');
+        await page.getByRole('combobox', { name: 'Filter by record type' }).click();
+        await page.getByRole('option').nth(1).click();
+        await page.waitForTimeout(1500);
+        record('G12c: the activity feed filters by record type', /[?&]type=/.test(at(page)) && errors.length === 0, at(page));
+      });
+
+      await step('G12d: the Messages tabs switch between agency and project conversations', async () => {
+        await go(page, '/builder/messages?view=agencies');
+        await page.getByRole('tab', { name: /Project conversations/ }).click();
+        await page.waitForTimeout(1000);
+        const projects = at(page);
+        await page.getByRole('tab', { name: /Agency conversations/ }).click();
+        await page.waitForTimeout(1000);
+        record('G12d: the Messages tabs switch between agency and project conversations',
+          /view=projects/.test(projects) && /view=agencies/.test(at(page)), `${projects} → ${at(page)}`);
+      });
+
+      await step('G12e: Tasks switches to "By record", and "New task" opens and cancels without writing', async () => {
+        const before = Number((await net('tasks before', `SELECT count(*)::int AS n FROM public.builder_tasks t
+          JOIN public.builder_stock_items i ON i.id = t.scope_id WHERE i.organisation_id = ${id(owner.orgId)}`))[0]?.n);
+        await go(page, '/builder/tasks');
+        await page.getByRole('tab', { name: /^By record$/ }).click();
+        await page.waitForTimeout(1000);
+        const byRecord = await page.getByRole('tab', { name: /^By record$/ }).getAttribute('aria-selected');
+        await page.getByRole('button', { name: /New task/ }).first().click();
+        const opened = await page.getByRole('dialog', { name: /New task/ }).isVisible().catch(() => false);
+        await page.getByRole('button', { name: /^Cancel$/ }).first().click();
+        await page.waitForTimeout(800);
+        const closed = !(await page.getByRole('dialog', { name: /New task/ }).isVisible().catch(() => false));
+        const after = Number((await net('tasks after', `SELECT count(*)::int AS n FROM public.builder_tasks t
+          JOIN public.builder_stock_items i ON i.id = t.scope_id WHERE i.organisation_id = ${id(owner.orgId)}`))[0]?.n);
+        record('G12e: Tasks switches to "By record", and "New task" opens and cancels without writing',
+          byRecord === 'true' && opened && closed && after === before, `by record ${byRecord}; dialog ${opened} → closed ${closed}; tasks ${before} → ${after}`);
+      });
+
+      await step('G12f: the Stock List filters by availability and by stock list', async () => {
+        const asked = [];
+        const listen = (req) => {
+          if (!req.url().includes('/fn/builder-portal-stock') || req.method() !== 'POST') return;
+          try { const b = JSON.parse(req.postData() ?? '{}'); if (b.operation === 'list_stock') asked.push(b); } catch { /* not JSON */ }
+        };
+        page.on('request', listen);
+        await go(page, '/builder/stock');
+        await page.getByRole('combobox', { name: 'Filter by availability' }).click();
+        await page.getByRole('option', { name: /^Reserved$/ }).click();
+        await page.waitForTimeout(1800);
+        await page.getByRole('combobox', { name: 'Filter by stock list' }).click();
+        await page.getByRole('option').nth(1).click();
+        await page.waitForTimeout(1800);
+        page.off('request', listen);
+        record('G12f: the Stock List filters by availability and by stock list',
+          asked.some((b) => b.availability_status === 'reserved') && asked.some((b) => typeof b.upload_id === 'string' && b.upload_id.length > 0),
+          `list_stock asked with availability ${asked.some((b) => b.availability_status === 'reserved')}, with a stock list ${asked.some((b) => !!b.upload_id)}`);
+      });
+
+      await step('G12g: Settings links to Change password and replays the tour', async () => {
+        await go(page, '/builder/settings');
+        await page.getByRole('link', { name: /Change password/ }).first().click();
+        await page.waitForTimeout(1200);
+        const changeAt = at(page);
+        await go(page, '/builder/settings');
+        await page.getByRole('button', { name: /Replay portal tour/ }).first().click();
+        await page.waitForTimeout(1200);
+        const tour = await page.getByRole('button', { name: /Start tour|Skip for now/i }).count();
+        record('G12g: Settings links to Change password and replays the tour', changeAt === '/builder/change-password' && tour > 0,
+          `Change password → ${changeAt}; tour offered ${tour > 0}`);
+      });
+      await context.close();
+    }
+
+    // --- Signed out: forgotten password, for an address with no account (no email is sent) ----
+    await step('G13: signed out, "Forgot your password?" leads to a code form that never names an account', async () => {
+      const context = await browser.newContext({ viewport: DESKTOP });
+      const page = await context.newPage();
+      const nobody = `nobody-${RUN}@example.com`;
+      await go(page, '/builder/login');
+      await page.getByRole('link', { name: /Forgot your password/ }).click();
+      await page.waitForTimeout(1200);
+      const forgotAt = at(page);
+      await page.getByLabel(/Email/i).first().fill(nobody);
+      await page.getByRole('button', { name: /^Send reset code$/ }).click();
+      await page.waitForTimeout(2500);
+      const sentState = await page.getByRole('button', { name: /I have the code/ }).count();
+      await page.getByRole('button', { name: /Use a different email address/ }).click();
+      await page.waitForTimeout(800);
+      const formBack = await page.getByRole('button', { name: /^Send reset code$/ }).count();
+      await page.getByLabel(/Email/i).first().fill(nobody);
+      await page.getByRole('button', { name: /^Send reset code$/ }).click();
+      await page.waitForTimeout(2500);
+      await page.getByRole('button', { name: /I have the code/ }).click();
+      await page.waitForTimeout(1200);
+      const resetAt = at(page);
+      const prefilled = await page.getByLabel(/Email/i).first().inputValue().catch(() => '');
+      const verifyButton = page.getByRole('button', { name: /^Verify code$/ });
+      const disabledEmpty = await verifyButton.isDisabled();
+      await page.getByLabel('Digit 1 of 6').click().catch(() => {});
+      await page.keyboard.type('123456', { delay: 60 });
+      const enabledFull = !(await verifyButton.isDisabled());
+      await page.getByRole('link', { name: /Back to sign in/ }).first().click();
+      await page.waitForTimeout(1200);
+      const loginAt = at(page);
+      await context.close();
+      const wrote = Number((await net('nobody', `SELECT count(*)::int AS n FROM public.builder_portal_users WHERE email = ${sqlLit(nobody)}`))[0]?.n);
+      record('G13: signed out, "Forgot your password?" leads to a code form that never names an account',
+        forgotAt === '/builder/forgot-password' && sentState > 0 && formBack > 0 && resetAt.startsWith('/builder/reset-password')
+          && prefilled === nobody && disabledEmpty && enabledFull && loginAt.startsWith('/builder/login') && wrote === 0,
+        `forgot at ${forgotAt}; "sent" state ${sentState > 0}; a different address ${formBack > 0}; reset at ${resetAt}, email carried ${prefilled === nobody}; `
+        + `Verify code disabled empty ${disabledEmpty}, enabled with 6 digits ${enabledFull}; back to ${loginAt}; accounts written ${wrote}`);
+    });
   } finally {
     await browser.close().catch(() => {});
   }
