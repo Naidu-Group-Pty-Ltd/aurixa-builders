@@ -25,9 +25,16 @@ interface TurnstileWidgetProps {
   onVerify: (token: string) => void;
   onExpire?: () => void;
   onError?: () => void;
+  /**
+   * Change it to ask for a fresh check. A token is spent by the server's
+   * first siteverify, and the widget issues no new one until it is reset —
+   * so a form that clears its token after a refusal must also reset here, or
+   * its next submit goes out with none.
+   */
+  resetKey?: number;
 }
 
-export function TurnstileWidget({ onVerify, onExpire, onError }: TurnstileWidgetProps) {
+export function TurnstileWidget({ onVerify, onExpire, onError, resetKey = 0 }: TurnstileWidgetProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const widgetIdRef = useRef<string | null>(null);
   const { currentTheme } = useWhiteLabel();
@@ -116,6 +123,11 @@ export function TurnstileWidget({ onVerify, onExpire, onError }: TurnstileWidget
       }
     };
   }, [renderWidget, attempt, siteKey]);
+
+  useEffect(() => {
+    if (resetKey === 0 || !widgetIdRef.current || !window.turnstile) return;
+    try { window.turnstile.reset(widgetIdRef.current); } catch { /* the next render issues one */ }
+  }, [resetKey]);
 
   const retry = () => {
     setUnavailable(false);

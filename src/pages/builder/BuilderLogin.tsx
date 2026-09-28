@@ -38,6 +38,9 @@ export default function BuilderLogin() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  // Bumped after a refused sign-in: the server spent the token, so the widget
+  // is asked for a fresh one rather than leaving the next attempt without.
+  const [turnstileResetKey, setTurnstileResetKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -90,6 +93,7 @@ export default function BuilderLogin() {
       // a password that was never wrong.
       setError(result.error);
       setTurnstileToken(null);
+      setTurnstileResetKey((key) => key + 1);
       return;
     }
     navigate(destination, { replace: true });
@@ -162,6 +166,7 @@ export default function BuilderLogin() {
         </div>
 
         <TurnstileWidget
+          resetKey={turnstileResetKey}
           onVerify={(token) => setTurnstileToken(token)}
           onExpire={() => setTurnstileToken(null)}
           onError={() => setTurnstileToken(null)}
