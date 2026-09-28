@@ -38,7 +38,10 @@ export interface DelimitedReport {
   /** Every record read, blank ones dropped. A malformed record is never here. */
   rows: string[][];
   /** Every record whose quotation marks did not pair up, in the order read. */
+  /** The first `MALFORMED_ROWS_KEPT` broken records, in order. */
   malformed: MalformedRecord[];
+  /** How many records were broken in all. */
+  malformedTotal: number;
 }
 
 /** How much of a broken record is quoted back to the builder. */
@@ -91,6 +94,7 @@ export function parseDelimitedReport(input: string, delimiter?: string): Delimit
   const sep = delimiter ?? sniffDelimiter(text);
   const rows: string[][] = [];
   const malformed: MalformedRecord[] = [];
+  let malformedTotal = 0;
   let row: string[] = [];
   let field = '';
   let quoted = false;
@@ -110,7 +114,12 @@ export function parseDelimitedReport(input: string, delimiter?: string): Delimit
   const endRecord = (end: number) => {
     row.push(field);
     if (recordBroken) {
-      malformed.push({ line: recordLine, preview: previewOf(text.slice(recordStart, end)) });
+      malformedTotal += 1;
+      // Bounded: a pathological file can break every line, and only the first
+      // few are ever named to the builder.
+      if (malformed.length < MALFORMED_ROWS_KEPT) {
+        malformed.push({ line: recordLine, preview: previewOf(text.slice(recordStart, end)) });
+      }
     } else if (row.some((cell) => cell.trim() !== '')) {
       rows.push(row);
     }
@@ -144,7 +153,7 @@ export function parseDelimitedReport(input: string, delimiter?: string): Delimit
         if (text[i + 1] === '"') { field += '"'; i++; } else {
           quoted = false;
           // Shape 2: it crossed a line, and did not close where a cell ends.
-          if (crossedLine && !endsCell(text[i + 1], sep)) i = takeBack();
+          if (crossedLine && !closesCell(text, i + 1, sep)) i = takeBack();
         }
       } else {
         if (char === '\n') { crossedLine = true; line++; }
@@ -174,12 +183,23 @@ export function parseDelimitedReport(input: string, delimiter?: string): Delimit
   }
 
   if (field.length || row.length) endRecord(text.length);
-  return { rows, malformed };
+  return { rows, malformed, malformedTotal };
 }
 
 /** Where a quoted cell may close: before a separator, a line break or the end. */
 function endsCell(next: string | undefined, sep: string): boolean {
   return next === undefined || next === sep || next === '\r' || next === '\n';
+}
+
+/**
+ * Where a quoted cell may close, allowing the spaces a hand-edited sheet puts
+ * after a closing quote (`"…with pool" ,500000`) — never the separator itself,
+ * so a tab-separated file keeps its tabs.
+ */
+function closesCell(text: string, from: number, sep: string): boolean {
+  let at = from;
+  while ((text[at] === ' ' || text[at] === '\t') && text[at] !== sep) at += 1;
+  return endsCell(text[at], sep);
 }
 
 /** A broken record's text on one line, cut to what a sentence can quote. */
@@ -190,6 +210,8 @@ function previewOf(raw: string): string {
 
 /** Broken rows named one by one; any beyond this are counted in one line. */
 const MALFORMED_ROWS_NAMED = 10;
+/** Broken records a report holds; any beyond this are counted, not kept. */
+export const MALFORMED_ROWS_KEPT = 100;
 
 /**
  * What a builder is told about the records `parseDelimitedReport` could not
@@ -200,12 +222,15 @@ const MALFORMED_ROWS_NAMED = 10;
  * again re-reads the same bytes (`sourceReread.pure.ts`), so the corrected
  * list has to arrive as a new upload, or through its link if it was linked.
  */
-export function malformedRecordWarnings(malformed: readonly MalformedRecord[]): string[] {
+export function malformedRecordWarnings(
+  malformed: readonly MalformedRecord[],
+  total: number = malformed.length,
+): string[] {
   const warnings = malformed.slice(0, MALFORMED_ROWS_NAMED).map(({ line, preview }) =>
     `Line ${line} could not be read: its quotation marks do not pair up, so its columns `
     + `cannot be told apart. Correct the quotes in that row${preview ? ` (it begins “${preview}”)` : ''} `
     + 'and import the corrected list.');
-  const rest = malformed.length - warnings.length;
+  const rest = Math.max(total, malformed.length) - warnings.length;
   if (rest > 0) {
     warnings.push(`…and ${rest} more row${rest === 1 ? '' : 's'} could not be read for the same reason.`);
   }

@@ -716,7 +716,7 @@ export async function extractStockFile(
        * read as text, the whole file goes to the model, and a prose file's
        * quotation marks are not columns.
        */
-      result.warnings.push(...malformedRecordWarnings(parsed.malformed));
+      result.warnings.push(...malformedRecordWarnings(parsed.malformed, parsed.malformedTotal));
     } else {
       result.strategy = 'delimited_text';
       result.text = text.slice(0, MAX_TEXT_CHARS);

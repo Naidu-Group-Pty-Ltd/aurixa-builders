@@ -6,6 +6,7 @@ import {
   parseDelimited,
   parseDelimitedReport,
   sniffDelimiter,
+  MALFORMED_ROWS_KEPT,
 } from '../../../supabase/functions/_shared/builderStock/table.pure.ts';
 import { extractStockFile } from '../../../supabase/functions/_shared/builderStock/extract.ts';
 import { classifyStockFile } from '../../../supabase/functions/_shared/builderStock/fileTypes.pure.ts';
@@ -219,6 +220,7 @@ describe('what was never broken reads exactly as before', () => {
     expect(parseDelimitedReport('Lot,Description\n101,"Stunning" home\n')).toEqual({
       rows: [['Lot', 'Description'], ['101', 'Stunning home']],
       malformed: [],
+      malformedTotal: 0,
     });
   });
 
@@ -442,7 +444,8 @@ describe('several broken rows in one file', () => {
     const bad = 'T0-2,Kestrel Grove,2,"$500,000,Available';
     const rows = Array.from({ length: 4000 }, (_, index) => (index % 3 === 1 ? bad : good));
     const report = parseDelimitedReport(`Stock Ref,Estate,Lot,Package Price,Status\n${rows.join('\n')}\n`);
-    expect(report.malformed).toHaveLength(rows.filter((row) => row === bad).length);
+    expect(report.malformedTotal).toBe(rows.filter((row) => row === bad).length);
+    expect(report.malformed).toHaveLength(MALFORMED_ROWS_KEPT);
     expect(report.rows).toHaveLength(1 + rows.filter((row) => row === good).length);
 
     const quotesOnly = '"\n'.repeat(3000) + '"'.repeat(3001) + '\n"x\n'.repeat(3000);
@@ -502,5 +505,41 @@ describe('the builder is told, once per row', () => {
       new TextEncoder().encode(prose), 'notes.txt', classifyStockFile('notes.txt', 'text/plain'));
     expect(result.strategy).toBe('delimited_text');
     expect(result.warnings).toEqual(['No column headings were recognised, so the file was read as text.']);
+  });
+});
+
+/*
+ * FOUND BY THE INDEPENDENT REVIEW (28 September 2026), both reproduced here
+ * before they were fixed.
+ */
+describe('what the review found', () => {
+  it('reads a multi-line quoted cell followed by spaces before its separator, as the old reader did', () => {
+    const input = 'Lot,Description,Price\n1,"Stunning home\nwith pool" ,500000\n2,Plain,510000\n';
+    const report = parseDelimitedReport(input);
+    expect(report.malformed).toEqual([]);
+    expect(report.rows).toEqual([
+      ['Lot', 'Description', 'Price'],
+      ['1', 'Stunning home\nwith pool ', '500000'],
+      ['2', 'Plain', '510000'],
+    ]);
+  });
+
+  it('keeps the same reading for a tab-separated file, where a tab IS the separator', () => {
+    const input = 'Lot\tDescription\tPrice\n1\t"Stunning home\nwith pool"\t500000\n';
+    expect(parseDelimitedReport(input, '\t').rows).toEqual([
+      ['Lot', 'Description', 'Price'],
+      ['1', 'Stunning home\nwith pool', '500000'],
+    ]);
+  });
+
+  it('holds a bounded record of broken rows however many a file carries, and still counts every one', () => {
+    const lines = ['Lot,Description,Price'];
+    for (let i = 0; i < 5000; i += 1) lines.push(`${i},"broken\nrow ${i}"x,1`);
+    const report = parseDelimitedReport(`${lines.join('\n')}\n`);
+    expect(report.malformed).toHaveLength(MALFORMED_ROWS_KEPT);
+    expect(report.malformedTotal).toBeGreaterThanOrEqual(5000);
+    const warnings = malformedRecordWarnings(report.malformed, report.malformedTotal);
+    expect(warnings).toHaveLength(11);
+    expect(warnings[10]).toBe(`…and ${report.malformedTotal - 10} more rows could not be read for the same reason.`);
   });
 });
