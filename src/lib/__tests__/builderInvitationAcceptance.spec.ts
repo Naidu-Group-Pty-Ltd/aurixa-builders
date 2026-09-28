@@ -1,0 +1,365 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import {
+  PENDING_MEMBERSHIP_STATUS,
+  invitationRequiresPassword,
+  inviterMayHoldInvitationLink,
+} from '../../../supabase/functions/_shared/builderInviteScope.pure';
+import { invitationEmail } from '../../../supabase/functions/_shared/builderInvitationCopy.pure';
+import { shapeMembers } from '../../../supabase/functions/_shared/builderMemberManagement.pure';
+
+/**
+ * AN INVITATION WAITS FOR ITS INVITEE — WHOEVER THEY ALREADY ARE (doc 68).
+ *
+ * An address that already signed in somewhere joined an inviting organisation
+ * at once: the membership was granted `active`, nothing was minted, and a
+ * notice said "you now have access". Two things followed from that one rule.
+ *
+ *  * Nobody agreed to it. Any owner or administrator could put an existing
+ *    account into their organisation, and it appeared in that person's
+ *    switcher with a role somebody else chose.
+ *  * It was the last oracle. The members list filed that address as a live
+ *    member under its registered name the moment it was invited, while a new
+ *    address waited as an invitation under the name the inviter typed — so one
+ *    invitation told an administrator whether an arbitrary address already had
+ *    an account (doc 67 §3).
+ *
+ * The owner's rule (28 Sep 2026): every organisation invitation waits for the
+ * invitee to accept it, established accounts included. Existing memberships are
+ * not touched. The acceptance is the emailed link, and for an account that
+ * already signs in it is ONE deliberate click: no password is set or changed,
+ * and no session is issued by the link, because a link that signed somebody in
+ * without their password would be a weaker door than the one they already use.
+ */
+
+const functions = (...parts: string[]) =>
+  readFileSync(join(__dirname, '..', '..', '..', 'supabase', 'functions', ...parts), 'utf8');
+const stripComments = (source: string) =>
+  source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+
+describe('which invitation an account is offered', () => {
+  it('a brand-new or never-accepted account sets a password', () => {
+    expect(invitationRequiresPassword({ password_hash: null, invite_accepted_at: null })).toBe(true);
+    expect(invitationRequiresPassword({})).toBe(true);
+  });
+
+  it('an account that already signs in only accepts — nothing about its password changes', () => {
+    expect(invitationRequiresPassword({ password_hash: '$2b$10$x', invite_accepted_at: null })).toBe(false);
+    expect(invitationRequiresPassword({ password_hash: null, invite_accepted_at: '2026-09-01T00:00:00Z' })).toBe(false);
+  });
+});
+
+describe('who may hold the link', () => {
+  it('never the inviter, where there is a postman', () => {
+    for (const requiresPassword of [true, false]) {
+      expect(inviterMayHoldInvitationLink({ send: 'sent', requiresPassword })).toBe(false);
+      expect(inviterMayHoldInvitationLink({ send: 'failed', requiresPassword })).toBe(false);
+    }
+  });
+
+  it('never the inviter for an account that already signs in — even with no mail provider', () => {
+    // That link joins the account to the inviting organisation with one click.
+    // Handed to the inviter, the inviter could accept on the person's behalf:
+    // the auto-activation this rule removes, by another route.
+    expect(inviterMayHoldInvitationLink({ send: 'not_configured', requiresPassword: false })).toBe(false);
+  });
+
+  it('only a password-setting link, and only where the deployment has no mail provider', () => {
+    expect(inviterMayHoldInvitationLink({ send: 'not_configured', requiresPassword: true })).toBe(true);
+  });
+});
+
+describe('what the invitee is sent', () => {
+  const base = {
+    organisationName: 'Acme Builders',
+    companyName: 'Aurixa',
+    inviterName: 'Pat Owner',
+    inviteeName: 'Sam',
+    url: 'https://builders.example/builder/accept-invite?token=t',
+    expiryHours: 72,
+  };
+
+  it('a first invitation asks for a password, as it always has', () => {
+    const mail = invitationEmail({ ...base, requiresPassword: true });
+    expect(mail.content.action?.label).toBe('Set your password');
+    expect(mail.content.action?.url).toBe(base.url);
+  });
+
+  it('an account that already signs in is asked to ACCEPT, and told nothing changes until it does', () => {
+    const mail = invitationEmail({ ...base, requiresPassword: false });
+    expect(mail.content.action?.label).toBe('Accept invitation');
+    expect(mail.content.action?.url).toBe(base.url);
+    const words = [mail.subject, mail.content.heading, ...mail.content.paragraphs, mail.content.footnote ?? ''].join(' ');
+    expect(words).not.toMatch(/you now have access|has added you|password/i);
+    expect(words).toMatch(/until you accept/i);
+  });
+
+  it('greets the invitee by the name THIS organisation typed, never a name from the account', () => {
+    // The account row carries whatever the first inviter typed, or the
+    // person's registered name; neither is this organisation's to repeat.
+    const mail = invitationEmail({ ...base, requiresPassword: false, inviteeName: 'Sam' });
+    expect(mail.content.paragraphs[0]).toBe('Hi Sam,');
+  });
+});
+
+describe('the members list, where the last oracle was', () => {
+  const caller = { callerId: 'owner', callerRole: 'owner' };
+  const seats = [
+    { id: 's-new', builder_user_id: 'u-new', membership_role: 'member', status: PENDING_MEMBERSHIP_STATUS, invited_name: 'Nina New' },
+    { id: 's-est', builder_user_id: 'u-est', membership_role: 'member', status: PENDING_MEMBERSHIP_STATUS, invited_name: 'Eddie' },
+    { id: 's-else', builder_user_id: 'u-else', membership_role: 'member', status: PENDING_MEMBERSHIP_STATUS, invited_name: 'Ellie' },
+  ];
+  const users = [
+    { id: 'u-new', name: 'Nina New', email: 'nina@x.test', status: 'invited' },
+    // Signs in already, under the name they registered with.
+    { id: 'u-est', name: 'Edward Registered-Name', email: 'eddie@x.test', status: 'active' },
+    // Pending in ANOTHER organisation, which typed its own name for them.
+    { id: 'u-else', name: 'Name Another Organisation Typed', email: 'ellie@x.test', status: 'invited' },
+  ];
+
+  it('files every waiting seat as an invitation, whatever the account behind it has done', () => {
+    const shaped = shapeMembers(seats, users, caller);
+    expect(shaped.members).toEqual([]);
+    expect(shaped.invitations.map((v) => v.builder_user_id).sort()).toEqual(['u-else', 'u-est', 'u-new']);
+  });
+
+  it('shows the name this organisation typed for a waiting seat — never the account\'s', () => {
+    const byUser = new Map(shapeMembers(seats, users, caller).invitations.map((v) => [v.builder_user_id, v]));
+    expect(byUser.get('u-est')?.name).toBe('Eddie');
+    expect(byUser.get('u-else')?.name).toBe('Ellie');
+    expect(byUser.get('u-new')?.name).toBe('Nina New');
+  });
+
+  it('shows a member the account\'s own name once they have accepted — they agreed to join', () => {
+    const accepted = shapeMembers(
+      [{ ...seats[1], status: 'active' }], users, caller);
+    expect(accepted.members[0]?.name).toBe('Edward Registered-Name');
+  });
+
+  it('keeps a seat recorded before the typed name existed readable', () => {
+    const legacy = shapeMembers(
+      [{ id: 's-old', builder_user_id: 'u-new', membership_role: 'member', status: PENDING_MEMBERSHIP_STATUS }],
+      users, caller);
+    expect(legacy.invitations[0]?.name).toBe('Nina New');
+  });
+});
+
+describe('the invite door grants nothing an invitee has not accepted', () => {
+  const code = stripComments(functions('builder-portal-invite', 'index.ts'));
+
+  it('every membership it creates waits', () => {
+    const grants = code.match(/\.from\('builder_organisation_memberships'\)\s*\.insert\(\{[\s\S]*?\}\)/g) ?? [];
+    expect(grants.length).toBeGreaterThan(0);
+    for (const grant of grants) {
+      expect(grant).toMatch(/status:\s*PENDING_MEMBERSHIP_STATUS/);
+      expect(grant).not.toMatch(/status:\s*'active'/);
+    }
+    // The rule that made an established account's grant live is gone from this door.
+    expect(code).not.toMatch(/membershipStatusForGrant/);
+  });
+
+  it('never brings a seat up itself — only the invitee\'s acceptance does', () => {
+    expect(code).not.toMatch(/promoteWaitingMembership/);
+    const updates = code.match(/\.from\('builder_organisation_memberships'\)\s*\.update\(\{[\s\S]*?\}\)/g) ?? [];
+    for (const update of updates) expect(update).not.toMatch(/status:\s*'active'/);
+  });
+
+  it('sends no "you now have access" notice, because nobody has access until they accept', () => {
+    expect(code).not.toMatch(/You now have access/);
+    expect(code).not.toMatch(/builder_membership_granted/);
+  });
+
+  it('carries each invitation on its own seat, so an established account has something to accept', () => {
+    const grant = (code.match(/\.from\('builder_organisation_memberships'\)\s*\.insert\(\{[\s\S]*?\}\)/g) ?? [])[0] ?? '';
+    expect(grant).toMatch(/invite_token_hash:/);
+    expect(grant).toMatch(/invite_token_expires_at:/);
+    expect(grant).toMatch(/invited_name:/);
+  });
+
+  it('records what each token was minted for — a password-setting link or a join — wherever it mints one', () => {
+    // Found by the independent review: decided only at acceptance, a
+    // password-setting link the inviter held (no mail provider) became a
+    // one-click join once the person started signing in elsewhere.
+    const grant = (code.match(/\.from\('builder_organisation_memberships'\)\s*\.insert\(\{[\s\S]*?\}\)/g) ?? [])[0] ?? '';
+    expect(grant).toMatch(/invite_requires_password: requiresPassword/);
+    const reissue = code.slice(code.indexOf('const reissueSeatInvitation'));
+    expect(reissue.slice(0, reissue.indexOf('};'))).toMatch(/invite_requires_password: requiresPassword/);
+  });
+
+  it('records whether each link was handed to the inviter, and hands over exactly the link it recorded', () => {
+    // The second review: only a link somebody other than the mailbox holds
+    // needs to keep the kind it was minted for. Recorded at mint, from the one
+    // rule that decides whether the inviter is handed the link at all.
+    const grant = (code.match(/\.from\('builder_organisation_memberships'\)\s*\.insert\(\{[\s\S]*?\}\)/g) ?? [])[0] ?? '';
+    expect(grant).toMatch(/invite_link_handed: handed/);
+    const reissue = code.slice(code.indexOf('const reissueSeatInvitation'));
+    expect(reissue.slice(0, reissue.indexOf('};'))).toMatch(/invite_link_handed: handed/);
+    for (const action of ["if (action === 'invite')", "if (action === 'resend')"]) {
+      const start = code.indexOf(action);
+      const body = code.slice(start, code.indexOf("if (action === '", start + 20));
+      expect(body, action).toMatch(/const handed = inviterMayHoldInvitationLink\(\{/);
+      expect(body, action).toMatch(/inviteUrl: handed \? minted\.url : null/);
+      // Decided before anything is minted, so what is recorded is what is handed.
+      expect(body.indexOf('const handed ='), action).toBeLessThan(body.indexOf('mintBuilderInvite()'));
+    }
+  });
+
+  it('re-inviting a waiting seat applies the role chosen now — and never re-roles an owner\'s seat', () => {
+    // The second review: the re-invite kept the role of the first invitation,
+    // so lowering a waiting colleague's role by inviting them again did not
+    // take, and they accepted the higher one.
+    const reissue = code.slice(code.indexOf('const reissueSeatInvitation'));
+    expect(reissue.slice(0, reissue.indexOf('};'))).toMatch(/membership_role: roleIfChanged/);
+    const repeat = code.slice(code.indexOf("if (membershipError && String(membershipError.code) === '23505')"));
+    expect(repeat).toMatch(/\.select\('id, status, invited_name, membership_role'\)/);
+    expect(repeat).toMatch(/seat\.membership_role !== 'owner' && seat\.membership_role !== role \? role : null/);
+    // The resend act chooses no role, so it changes none.
+    const resend = code.slice(code.indexOf("if (action === 'resend')"));
+    expect(resend.slice(0, resend.indexOf("if (action === 'revoke_invite')")))
+      .toMatch(/reissueSeatInvitation\(seat\.id, minted, requiresPassword, handed, null, null\)/);
+  });
+
+  it('a role changed by inviting again is recorded — who changed it, from what, to what', () => {
+    // The third review: the change left no record, and `granted_by` still
+    // named the first inviter, while member management logs the same act.
+    const reissue = code.slice(code.indexOf('const reissueSeatInvitation'));
+    expect(reissue.slice(0, reissue.indexOf('};')))
+      .toMatch(/roleIfChanged \? \{ membership_role: roleIfChanged, granted_by: caller\.id \} : \{\}/);
+    const record = code.slice(code.indexOf('const recordInvitation'));
+    expect(record.slice(0, record.indexOf(');\n') + 3)).toMatch(/membership_role:/);
+    expect(record.slice(0, record.indexOf(');\n') + 3)).toMatch(/previous_role:/);
+    const invite = code.slice(code.indexOf("if (action === 'invite')"), code.indexOf("if (action === 'resend')"));
+    expect(invite).toMatch(/recordInvitation\(target\.id, false, minted, requiresPassword, seatRole, previousRole\)/);
+  });
+
+  it('files every invitation\'s typed name for the list, and the list reads it', () => {
+    const invite = functions('builder-portal-invite', 'index.ts');
+    const list = invite.slice(invite.indexOf("if (action === 'list_members')"));
+    expect(list.slice(0, 800)).toMatch(/invited_name/);
+  });
+
+  it('cancels a waiting seat whatever the account behind it has done', () => {
+    // It used to cancel only for an account that had never signed in, so the
+    // same button left an established invitee's seat standing — another
+    // difference an administrator could read.
+    const revoke = code.slice(code.indexOf("if (action === 'revoke_invite')"),
+      code.indexOf("if (action === 'list_join_requests')"));
+    expect(revoke.length).toBeGreaterThan(200);
+    expect(revoke).not.toMatch(/invite_accepted_at|password_hash/);
+    expect(revoke).toMatch(/PENDING_MEMBERSHIP_STATUS/);
+  });
+});
+
+describe('the acceptance door: one click for an account that already signs in', () => {
+  const source = functions('builder-portal-accept-invite', 'index.ts');
+  const code = stripComments(source);
+
+  it('looks the token up on the seat first, and tells a failed read from an absent token', () => {
+    expect(code).toMatch(/\.from\('builder_organisation_memberships'\)[\s\S]{0,300}\.eq\('invite_token_hash', tokenHash\)/);
+    expect(code).toMatch(/error: seatError/);
+  });
+
+  it('says on validation whether a password is asked for', () => {
+    expect(code).toMatch(/requires_password:/);
+  });
+
+  it('joins an established account without writing its password, its status or a session', () => {
+    const start = code.indexOf('const joinOnly = async');
+    expect(start, 'the join-only acceptance exists').toBeGreaterThan(-1);
+    const end = code.indexOf('\n    };', start);
+    const joinOnly = code.slice(start, end);
+    expect(joinOnly.length).toBeGreaterThan(200);
+    expect(joinOnly).not.toMatch(/password_hash|hashPassword|must_change_password/);
+    expect(joinOnly).not.toMatch(/issueBuilderSession|createBuilderSessionCookie|Set-Cookie/);
+    expect(joinOnly).not.toMatch(/\.from\('builder_portal_users'\)/);
+    // It reads whether the promotion brought anything up, and answers no
+    // session.
+    expect(joinOnly).toMatch(/\.promoted === 0/);
+    expect(joinOnly).toMatch(/signed_in: false/);
+    // Reached only from a seat token minted as a join, bringing the seat up
+    // through the one promoter immediately before; the branch is chosen by the
+    // account and the token together, never by the request.
+    const joins = [...code.matchAll(/return await joinOnly\(/g)].map((m) => m.index ?? 0);
+    expect(joins.length).toBe(1);
+    for (const at of joins) {
+      const before = code.slice(Math.max(0, at - 700), at);
+      expect(before).toMatch(/promoteWaitingMembership\(supabase, \{/);
+      expect(before).toMatch(/if \(!requiresPassword\) \{/);
+    }
+  });
+
+  it('a link handed to the inviter never becomes a join — on the seat or in the account slot', () => {
+    // The seat path compares what a token was minted for with the account as
+    // it is now, and refuses a mismatch before anything else is done — unless
+    // nobody but the mailbox has ever held a credential for the account: not
+    // this link (never handed), and not the link that set its password (the
+    // third review: a password set through a HANDED link is not the mailbox's,
+    // so a link that followed the account would join the inviter's account).
+    expect(code).toMatch(
+      /const kindFollowsAccount = !seat\.invite_link_handed && !!account\.password_set_by_mailbox_link_at;/);
+    const mismatch = code.indexOf('seat.invite_requires_password !== requiresPassword && !kindFollowsAccount');
+    expect(mismatch).toBeGreaterThan(-1);
+    expect(code.slice(mismatch, mismatch + 200)).toMatch(/GENERIC_INVITE_ERROR/);
+    expect(mismatch).toBeLessThan(code.indexOf("if (action === 'validate')"));
+    expect(code).not.toMatch(/if \(seat\.invite_requires_password !== requiresPassword\)/);
+    // Every account-slot token was minted for an account with no password, and
+    // may be held by an operator, so an account that has one is turned away
+    // there, as it always was.
+    expect(code).toMatch(/if \(portalUser\.invite_accepted_at \|\| portalUser\.password_hash\) \{\s*return json\(\{ error: GENERIC_INVITE_ERROR, valid: false, already_active: true \}, 400\);/);
+  });
+
+  it('records that a password was set through a link only the mailbox held — and only then', () => {
+    const activations = code.match(/\.from\('builder_portal_users'\)\s*\.update\(\{[\s\S]*?password_hash: hashedPassword[\s\S]*?\.maybeSingle\(\)/g) ?? [];
+    expect(activations.length).toBe(1);
+    expect(activations[0]).toMatch(/\.\.\.\(mailboxOnly \? \{ password_set_by_mailbox_link_at: new Date\(\)\.toISOString\(\) \} : \{\}\)/);
+    // The seat path says so only for a link it never handed out; the account
+    // slot never does, since an operator may have held that link.
+    expect(code).toMatch(/activateAccount\(account\.id, false, !seat\.invite_link_handed\)/);
+    expect(code).toMatch(/activateAccount\(portalUser\.id, true, false\)/);
+  });
+
+  it('tells a link\'s holder nothing about the account beyond the address and this invitation', () => {
+    // The third review: `validate` on the seat path answered the account's
+    // own name and job title — another organisation's typed name, or the
+    // person's registered one — to whoever held the link.
+    const seatPath = code.slice(code.indexOf('if (seat) {'), code.indexOf('const { data: portalUser'));
+    const answer = seatPath.slice(seatPath.indexOf("if (action === 'validate')"));
+    expect(answer.slice(0, 400)).toMatch(/name: seat\.invited_name \?\? null/);
+    expect(answer.slice(0, 400)).toMatch(/job_title: null/);
+    expect(answer.slice(0, 400)).not.toMatch(/account\.name|account\.job_title/);
+  });
+
+  it('offers a password form only while the account is still an invitation — validate agrees with accept', () => {
+    // The second review: activation requires `invited`, so an account an
+    // operator suspended before it accepted was shown a form that then failed.
+    const validate = code.indexOf("if (action === 'validate')");
+    const seatGate = code.indexOf("if (requiresPassword && account.status !== 'invited')");
+    expect(seatGate).toBeGreaterThan(-1);
+    expect(seatGate).toBeLessThan(validate);
+    expect(code.slice(seatGate, seatGate + 160)).toMatch(/GENERIC_INVITE_ERROR/);
+    const slotGate = code.indexOf("if (portalUser.status !== 'invited')");
+    expect(slotGate).toBeGreaterThan(-1);
+    expect(slotGate).toBeLessThan(code.indexOf("if (action === 'validate')", validate + 20));
+    expect(code.slice(slotGate, slotGate + 160)).toMatch(/GENERIC_INVITE_ERROR/);
+  });
+
+  it('promotes the seat the token is on, and uses the token up in the same statement', () => {
+    expect(code).toMatch(/inviteTokenHash: tokenHash/);
+    const helper = functions('_shared', 'builderInvite.ts');
+    const fn = helper.slice(helper.indexOf('export async function promoteWaitingMembership'));
+    expect(fn).toMatch(/\.eq\('invite_token_hash', args\.inviteTokenHash\)/);
+  });
+
+
+  it('activates a never-accepted account only while it is still unaccepted and not withdrawn', () => {
+    const activations = code.match(/\.from\('builder_portal_users'\)\s*\.update\(\{[\s\S]*?password_hash: hashedPassword[\s\S]*?\.maybeSingle\(\)/g) ?? [];
+    expect(activations.length).toBeGreaterThan(0);
+    for (const activation of activations) {
+      expect(activation).toMatch(/\.is\('invite_accepted_at', null\)/);
+      expect(activation).toMatch(/\.is\('revoked_at', null\)/);
+      // An account an operator suspended before it accepted stays suspended.
+      expect(activation).toMatch(/\.eq\('status', 'invited'\)/);
+    }
+  });
+});

@@ -455,9 +455,12 @@ describe('the rest of the remediation, pinned where it lives', () => {
     expect(source).toContain("from('builder_organisation_memberships')");
     expect(source).toContain("status: 'revoked'");
     expect(source).toContain('revoked_at:');
-    // Only for a seat that was never accepted — an active colleague is not
-    // silently removed by an invitation revocation.
-    expect(source).toContain('if (!target.invite_accepted_at && !target.password_hash)');
+    // Only for a seat that is still WAITING — an active colleague is not
+    // silently removed by an invitation revocation. Keyed on the seat since
+    // doc 68, not the account: every invitation now waits, an established
+    // account's included, and the account's history said nothing about this
+    // organisation's seat.
+    expect(source).toContain('if (seat.status === PENDING_MEMBERSHIP_STATUS) {');
   });
 
   it('the JWKS grace period has a ceiling and every fallback honours it', () => {

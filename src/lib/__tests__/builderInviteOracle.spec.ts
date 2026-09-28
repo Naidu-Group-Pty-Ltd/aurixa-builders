@@ -77,11 +77,13 @@ describe('every way builder-portal-invite can answer an invitation', () => {
     // Every 2xx the invite action can return. Errors (400 for a bad address,
     // 409 for a membership of THIS organisation) are about the caller's own
     // request or own organisation and disclose nothing about anyone else's.
-    const successes = [...block.matchAll(/return (?:await )?json\((?![^)]*\b(?:400|401|403|404|409|500)\))/g)];
+    // Every answer now waits for the floor first (doc 68), so each is
+    // `return await answer(json(...))`; the shape inside is what is pinned.
+    const successes = [...block.matchAll(/return await answer\(json\((?![^)]*\b(?:400|401|403|404|409|500|503)\))/g)];
     expect(successes.length).toBeGreaterThan(0);
     for (const m of successes) {
       const call = block.slice(m.index, m.index + 160);
-      expect(call, 'a success answer not shaped by tenantInviteResponse').toMatch(/json\(tenantInviteResponse\(/);
+      expect(call, 'a success answer not shaped by tenantInviteResponse').toMatch(/answer\(json\(tenantInviteResponse\(/);
     }
   });
 
@@ -142,31 +144,38 @@ describe('every way builder-portal-invite can answer an invitation', () => {
     // The seat is read, and it is what decides.
     expect(conflict).toMatch(/\.select\('status'\)/);
     const suspended = conflict.indexOf("seat.status === 'suspended'");
-    const alreadyHere = conflict.indexOf("seat.status === 'active' && accountIsActive");
+    const alreadyHere = conflict.indexOf("seat.status === 'active'");
     expect(suspended).toBeGreaterThan(-1);
     expect(alreadyHere).toBeGreaterThan(-1);
+    // Doc 68: the account is not consulted here at all any more — an active
+    // seat is a working member whoever they are, a waiting one is re-sent.
+    expect(conflict).not.toMatch(/accountIsActive/);
     // A suspended seat is refused, whatever the account is ...
     expect(conflict.slice(suspended, suspended + 400)).toMatch(/409\)/);
     // ... and an active member of this organisation is answered as everyone is.
-    expect(conflict.slice(alreadyHere, alreadyHere + 200)).toMatch(/return json\(tenantInviteResponse\(\{ inviteUrl: null \}\)\)/);
-    // The seat is read before any 409 in the branch can be reached.
-    expect(conflict.indexOf(".select('status')")).toBeLessThan(conflict.search(/409\)/));
+    expect(conflict.slice(alreadyHere, alreadyHere + 200)).toMatch(/return await answer\(json\(tenantInviteResponse\(\{ inviteUrl: null \}\)\)\)/);
+    // The seat is read before any 409 in the branch can be reached. (Its role
+    // is read with it since the second review of doc 68, so an invitation
+    // sent again can carry the role chosen now — never onto an owner's seat.)
+    const seatRead = ".select('id, status, invited_name, membership_role')";
+    expect(conflict.indexOf(seatRead)).toBeGreaterThan(-1);
+    expect(conflict.indexOf(seatRead)).toBeLessThan(conflict.search(/409\)/));
   });
 
-  it('a promotion that finds nothing to promote re-reads the seat rather than refusing', () => {
+  it('a re-sent invitation that finds nothing waiting re-reads the seat rather than refusing', () => {
     /*
-     * The re-review's one remaining path: two concurrent repeats of an `invited`
-     * seat whose account has started signing in both read `invited`; one
-     * promotes, the other promotes nothing and used to answer 409 — while an
-     * account that does not sign in answers 200 twice. The seat decides here
-     * too: now `active` (the other request promoted it) is answered as everyone
-     * is, with no second notice; `suspended` is refused as before.
+     * The re-review's remaining path, as it reads under doc 68: two concurrent
+     * repeats of an `invited` seat both read `invited`; the invitee accepts
+     * between the read and the re-mint, or the other request's re-mint wins —
+     * either way this one re-mints nothing. The seat decides here too: now
+     * `active` is a working member, answered as everyone is; anything else is
+     * refused as before, and nothing is sent.
      */
-    const zero = block.indexOf('promotion.promoted === 0');
+    const zero = block.indexOf('if (!reissued)');
     expect(zero).toBeGreaterThan(-1);
     const after = block.slice(zero, zero + 900);
     expect(after).toMatch(/\.select\('status'\)/);
-    expect(after).toMatch(/return json\(tenantInviteResponse\(\{ inviteUrl: null \}\)\)/);
+    expect(after).toMatch(/return await answer\(json\(tenantInviteResponse\(\{ inviteUrl: null \}\)\)\)/);
     // The re-read precedes any refusal on this path.
     expect(after.indexOf(".select('status')")).toBeLessThan(after.search(/409\)/));
   });
@@ -177,29 +186,30 @@ describe('every way builder-portal-invite can answer an invitation', () => {
     const resend = code.slice(code.indexOf("if (action === 'resend')"), code.indexOf("if (action === 'revoke_invite')"));
     expect(resend.length).toBeGreaterThan(200);
     expect(resend).not.toMatch(/already_active/);
-    const successes = [...resend.matchAll(/return (?:await )?json\((?![^)]*\b[45]\d\d\))/g)];
+    const successes = [...resend.matchAll(/return await answer\(json\((?![^)]*\b[45]\d\d\))/g)];
     expect(successes.length).toBeGreaterThanOrEqual(2);
     for (const m of successes) {
       expect(resend.slice(m.index, m.index + 160), 'a resend success not shaped by tenantInviteResponse')
-        .toMatch(/json\(tenantInviteResponse\(/);
+        .toMatch(/answer\(json\(tenantInviteResponse\(/);
     }
     expect(resend).not.toMatch(/\bexpires_at\s*:/);
     expect(resend).not.toMatch(/\bemail_sent\s*:/);
   });
 
   it('still records whether the email left — in the activity log, where an operator reads it', () => {
-    // Removing the field from the answer must not remove the evidence: the
-    // invitation's send, and the access notice to an address that already
-    // signs in, which only the answer used to report.
-    expect(code).toMatch(/logInviteActivity\([\s\S]{0,200}email_sent: emailSent/);
-    expect(code).toMatch(/logInviteActivity\('builder_membership_granted'[\s\S]{0,120}email_sent: notice\.sent/);
+    // Removing the field from the answer must not remove the evidence. Doc 68
+    // sends after answering, so the act is logged when it happens and whether
+    // its email left is logged when THAT happens — for every invitation, since
+    // an established account is now sent one too.
+    expect(code).toMatch(/logInviteActivity\(resent \? 'builder_invite_resent' : 'builder_invite_sent'/);
+    expect(code).toMatch(/logInviteActivity\('builder_invite_delivery'[\s\S]{0,160}email_sent: outcome\.sent/);
   });
 
   it('keeps expiry enforced where it matters — at acceptance, not in the answer', () => {
     const accept = readFileSync(join(__dirname, '..', '..', '..', 'supabase', 'functions',
       'builder-portal-accept-invite', 'index.ts'), 'utf8');
     expect(accept).toMatch(/invite_token_expires_at/);
-    expect(code).toMatch(/invite_token_expires_at: expiresAt\.toISOString\(\)/);
+    expect(code).toMatch(/invite_token_expires_at: minted\.expiresAt\.toISOString\(\)/);
   });
 });
 

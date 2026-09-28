@@ -13,6 +13,12 @@ interface InviteDetails {
   email: string;
   name: string | null;
   job_title: string | null;
+  /**
+   * False for an account that already signs in: its invitation is a JOIN, one
+   * click and nothing else (doc 68). Absent from an older server, which is read
+   * as a first invitation — the form this page has always drawn.
+   */
+  requires_password?: boolean;
   organisations: { organisation_id: string; legal_name: string; membership_role: string }[];
 }
 
@@ -52,6 +58,14 @@ interface InviteDetails {
  *    else's approval, not anything the applicant can do or did wrong. Routing
  *    to `/builder` here would bounce off the same gate and land them on the
  *    login page with no explanation at all.
+ *
+ * ## An account that already signs in joins with one click (doc 68)
+ *
+ * Every organisation invitation waits for its invitee now, established
+ * accounts included. For them this page asks one question and shows no
+ * password form: there is nothing to set, the password they have is not
+ * touched, and the link signs nobody in — so after the click the page sends
+ * them to the portal, where they sign in as they always do.
  */
 export default function BuilderAcceptInvite() {
   const [searchParams] = useSearchParams();
@@ -66,6 +80,7 @@ export default function BuilderAcceptInvite() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [pending, setPending] = useState<{ code: string; message: string } | null>(null);
+  const [joined, setJoined] = useState<{ legal_name: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -119,6 +134,46 @@ export default function BuilderAcceptInvite() {
     // them to terms or onboarding as required.
     navigate('/builder', { replace: true });
   };
+
+  // A join sends no password and signs nobody in: the server decides both,
+  // and this only asks.
+  const handleJoin = async () => {
+    setError(null);
+    setSubmitting(true);
+    const result = await acceptInvite(token);
+    setSubmitting(false);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    setJoined(result.accepted ?? { legal_name: invite?.organisations[0]?.legal_name ?? '' });
+  };
+
+  if (joined) {
+    return (
+      <BuilderAuthShell
+        title="Invitation accepted"
+        footer={
+          <Link to="/builder" className="text-primary underline-offset-4 hover:underline">
+            Open the Builder Portal
+          </Link>
+        }
+      >
+        <div className="flex items-start gap-3 rounded-lg border border-border/60 bg-muted/40 px-4 py-3 text-sm">
+          <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-primary" aria-hidden />
+          <div className="space-y-1">
+            <p className="font-medium text-foreground">
+              {joined.legal_name || 'The organisation'} is now one of your organisations.
+            </p>
+            <p className="text-muted-foreground">
+              Sign in as you always do and it will be in your organisation switcher. If the
+              workspace is not open yet, the sign-in page will say why.
+            </p>
+          </div>
+        </div>
+      </BuilderAuthShell>
+    );
+  }
 
   if (pending) {
     return (
@@ -176,6 +231,46 @@ export default function BuilderAcceptInvite() {
             send a new invitation.
           </AlertDescription>
         </Alert>
+      </BuilderAuthShell>
+    );
+  }
+
+  if (invite.requires_password === false) {
+    return (
+      <BuilderAuthShell
+        title="Join an organisation"
+        description={`You have been invited to join with ${invite.email}.`}
+        footer={
+          <Link to="/builder/login" className="text-primary underline-offset-4 hover:underline">
+            Not now — back to sign in
+          </Link>
+        }
+      >
+        <div className="space-y-5">
+          {error ? (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          ) : null}
+          <div className="rounded-lg border border-border/60 bg-muted/40 px-4 py-3 text-sm">
+            <p className="font-medium text-foreground">You are invited to join</p>
+            <ul className="mt-1 space-y-0.5 text-muted-foreground">
+              {invite.organisations.map((organisation) => (
+                <li key={organisation.organisation_id}>
+                  {organisation.legal_name} · {organisation.membership_role.replace(/_/g, ' ')}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            You already have a Builder Portal account, so there is no password to set and your
+            sign-in stays as it is. Nothing changes until you accept.
+          </p>
+          <Button type="button" className="w-full" disabled={submitting} aria-busy={submitting} onClick={handleJoin}>
+            {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden /> : null}
+            Accept invitation
+          </Button>
+        </div>
       </BuilderAuthShell>
     );
   }

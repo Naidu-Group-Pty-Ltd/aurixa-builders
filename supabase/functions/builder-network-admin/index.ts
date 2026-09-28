@@ -527,7 +527,17 @@ Deno.serve(async (req) => {
       }
 
       if (!established && minted) {
-        const { error: stampError } = await supabase
+        /*
+         * ONLY WHILE THE ACCOUNT IS STILL AN UNACCEPTED INVITATION (doc 68).
+         * `established` was read above, and an account that accepts an
+         * organisation's invitation in between would otherwise be written back
+         * to `invited` and inactive — deactivated by somebody else's
+         * application. Nor is an operator's suspension of an account that never
+         * accepted lifted by somebody applying in its name (the second review).
+         * Stated in the statement, and the row count read: no row means the
+         * account moved on, and this refuses rather than overwrite it.
+         */
+        const { data: stamped, error: stampError } = await supabase
           .from('builder_portal_users')
           .update({
             name: fields.contact_name,
@@ -540,13 +550,19 @@ Deno.serve(async (req) => {
             status: 'invited',
             is_active: false,
           })
-          .eq('id', ownerId);
-        if (stampError) {
+          .eq('id', ownerId)
+          .eq('status', 'invited')
+          .is('password_hash', null)
+          .is('invite_accepted_at', null)
+          .is('revoked_at', null)
+          .select('id');
+        if (stampError || !Array.isArray(stamped) || stamped.length === 0) {
           await settle('refused', 'invite_not_issued', {
             organisation_id: organisation.id,
             builder_user_id: ownerId,
           });
-          console.error('[builder-network-admin] access request invite stamp failed', stampError);
+          console.error('[builder-network-admin] access request invite stamp failed',
+            stampError ?? 'the account is no longer an unaccepted invitation; nothing was overwritten');
           return json({ error: 'invite_not_issued', request_id: request.id }, 500);
         }
       }
@@ -780,7 +796,9 @@ Deno.serve(async (req) => {
       // accepted would take their access away until they clicked a link
       // nobody sent them.
       if (!established && minted) {
-        const { error: inviteError } = await supabase
+        // Only while still an unaccepted invitation, and the count read — as
+        // above (doc 68): never over an activation, nor over a suspension.
+        const { data: stamped, error: inviteError } = await supabase
           .from('builder_portal_users')
           .update({
             name,
@@ -793,9 +811,15 @@ Deno.serve(async (req) => {
             status: 'invited',
             is_active: false,
           })
-          .eq('id', ownerId);
-        if (inviteError) {
-          console.error('[builder-network-admin] invite stamp failed', inviteError);
+          .eq('id', ownerId)
+          .eq('status', 'invited')
+          .is('password_hash', null)
+          .is('invite_accepted_at', null)
+          .is('revoked_at', null)
+          .select('id');
+        if (inviteError || !Array.isArray(stamped) || stamped.length === 0) {
+          console.error('[builder-network-admin] invite stamp failed',
+            inviteError ?? 'the account is no longer an unaccepted invitation; nothing was overwritten');
           return json({ error: 'invite_failed' }, 500);
         }
       }

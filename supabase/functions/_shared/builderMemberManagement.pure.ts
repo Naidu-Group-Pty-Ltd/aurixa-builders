@@ -34,7 +34,14 @@ export function memberRefusal(message: string): { status: number; error: string;
   return code ? { ...REFUSALS[code], code } : null;
 }
 
-export interface MembershipRow { id: string; builder_user_id: string; membership_role: string; status: string }
+export interface MembershipRow {
+  id: string;
+  builder_user_id: string;
+  membership_role: string;
+  status: string;
+  /** The name the inviting organisation typed (doc 68); null on a seat recorded before it existed. */
+  invited_name?: string | null;
+}
 export interface MemberUserRow { id: string; name: string | null; email: string; status: string }
 export interface MemberView {
   membership_id: string;
@@ -63,6 +70,12 @@ export interface MemberView {
  * because he was not in the invitations list. An invitation this organisation
  * is still waiting on belongs with the invitations, whatever the account has
  * done elsewhere.
+ *
+ * AND A WAITING SEAT IS NAMED BY WHAT THIS ORGANISATION TYPED (doc 68). The
+ * account row carries another organisation's typed name, or the person's
+ * registered one, so drawing it under an invitation told an administrator
+ * where the address already belonged — the last oracle doc 67 left. Once the
+ * invitee accepts, they are a member and are shown as they call themselves.
  */
 export function shapeMembers(
   memberships: MembershipRow[],
@@ -76,10 +89,11 @@ export function shapeMembers(
     if (!user) continue;
     const isSelf = m.builder_user_id === caller.callerId;
     const mayTouchRole = m.membership_role !== 'owner' || caller.callerRole === 'owner';
+    const waiting = m.status === PENDING_MEMBERSHIP_STATUS;
     views.push({
       membership_id: m.id,
       builder_user_id: m.builder_user_id,
-      name: user.name,
+      name: waiting ? (m.invited_name ?? user.name) : user.name,
       email: user.email,
       role: m.membership_role,
       status: m.status,

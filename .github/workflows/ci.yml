@@ -68,6 +68,12 @@ jobs:
       # ALONE, and these functions were created after it, so nothing else looks.
       - name: a rebuilt AI spend ceiling answers to service_role and nobody else
         run: npm run db:ai-budget:check
+      # Doc 68: a seat carries its own invitation (unique, only while it waits,
+      # destroyed by whatever moves it on), the migration changes no existing
+      # row, the typed name is bounded, send slots are spaced under concurrency
+      # and bounded, and the delivery reading is one row claimed by one checker.
+      - name: an invitation waits for its invitee, and invitations are paced
+        run: npm run db:invitation-acceptance:check
 
   edge:
     name: edge functions typecheck + gates

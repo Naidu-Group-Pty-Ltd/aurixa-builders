@@ -234,7 +234,44 @@ export function redactAddresses(text: string): string {
 
 export type InviteEmailOutcome =
   | { readonly sent: true }
-  | { readonly sent: false; readonly reason: 'not_configured' | 'refused' | 'unreachable' };
+  | {
+    readonly sent: false;
+    readonly reason: 'not_configured' | 'refused' | 'unreachable';
+    /** The provider's HTTP status, where it refused. */
+    readonly status?: number;
+    /**
+     * The provider's own name for the refusal, where it gave one. A 429 is a
+     * throttle (`rate_limit_exceeded`) or an exhausted quota, and only the
+     * first is a statement about how busy the provider is.
+     */
+    readonly code?: string;
+  };
+
+/**
+ * The `name` Resend puts on a refusal (`{ "name": "rate_limit_exceeded", … }`),
+ * or undefined when the body carries none. Only a short identifier is kept:
+ * nothing else from the body leaves this module.
+ */
+export function providerErrorName(body: string): string | undefined {
+  try {
+    const parsed = JSON.parse(body);
+    const name = parsed && typeof parsed === 'object' ? (parsed as { name?: unknown }).name : undefined;
+    return typeof name === 'string' && /^[a-z_]{1,64}$/.test(name) ? name : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether this deployment has a mail provider at all — a fact about the
+ * DEPLOYMENT, readable before anything is sent. The invitation door decides
+ * whether an inviter may hold a link from this alone (doc 68 sends after the
+ * answer, so no send's outcome can reach that decision).
+ */
+export function builderEmailConfigured(): boolean {
+  // @ts-ignore Deno-only global.
+  return !!Deno.env.get('RESEND_API_KEY');
+}
 
 /**
  * Hand it to Resend.
@@ -296,7 +333,7 @@ export async function sendBuilderEmail(args: {
         from: args.brand.fromHeaderAdmin,
         category: args.category,
       });
-      return { sent: false, reason: 'refused' };
+      return { sent: false, reason: 'refused', status: response.status, code: providerErrorName(detail) };
     }
     return { sent: true };
   } catch (error) {

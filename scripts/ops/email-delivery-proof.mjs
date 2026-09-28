@@ -221,7 +221,10 @@ try {
            count(*)::int AS n
       FROM public.builder_portal_activity_log l
       LEFT JOIN public.builder_portal_users u ON u.id = l.entity_id
-     WHERE l.action IN ('builder_invite_sent', 'builder_invite_resent')
+     -- Since doc 68 the outcome is its own entry, written when the email
+     -- leaves (after the answer); older invitations carried it on the act.
+     WHERE l.action IN ('builder_invite_delivery', 'builder_invite_sent', 'builder_invite_resent')
+       AND l.metadata ? 'email_sent'
      GROUP BY 1, 2 ORDER BY 1, 2`));
   const tally = (kind, sent) =>
     split.filter((r) => r.kind === kind && r.sent === sent).reduce((t, r) => t + Number(r.n), 0);
@@ -287,13 +290,18 @@ try {
   MAILBOX.createdId = (await q('the account this run created', `
     SELECT id FROM public.builder_portal_users WHERE email = ${sqlLit(RECIPIENT)}`))[0]?.id ?? null;
   // The provider's verdict, as the function recorded it for this account in
-  // this organisation. The response is `{"success":true}` for every address.
-  const sendRow = MAILBOX.createdId ? (await q('the recorded send outcome', `
-    SELECT l.metadata->>'email_sent' AS email_sent
-      FROM public.builder_portal_activity_log l
-     WHERE l.entity_id = ${id(MAILBOX.createdId)} AND l.organisation_id = ${id(orgId)}
-       AND l.action = 'builder_invite_sent'
-     ORDER BY l.created_at DESC LIMIT 1`))[0] : null;
+  // this organisation. The response is `{"success":true}` for every address,
+  // and since doc 68 the email leaves after it, so the record is waited for.
+  let sendRow = null;
+  for (const deadline = Date.now() + 150_000; MAILBOX.createdId && !sendRow && Date.now() < deadline;) {
+    sendRow = (await q('the recorded send outcome', `
+      SELECT l.metadata->>'email_sent' AS email_sent
+        FROM public.builder_portal_activity_log l
+       WHERE l.entity_id = ${id(MAILBOX.createdId)} AND l.organisation_id = ${id(orgId)}
+         AND l.action = 'builder_invite_delivery'
+       ORDER BY l.created_at DESC LIMIT 1`))[0] ?? null;
+    if (!sendRow) await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
   record('1: THE PROVIDER ACCEPTED THE INVITATION EMAIL — it left this platform',
     sendRow?.email_sent === 'true',
     `email_sent (activity log)=${sendRow?.email_sent}. false means the provider refused it; the reason is ` +
