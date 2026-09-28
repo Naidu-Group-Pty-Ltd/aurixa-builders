@@ -57,3 +57,25 @@ describe('OpenDocument cell text', () => {
     expect(readOpenDocument(xml).text).toBe('Kestrel Grove — Stage 3');
   });
 });
+
+/*
+ * FOUND BY THE INDEPENDENT REVIEW (28 September 2026): the space-count pattern
+ * backtracked on an unterminated `<text:s` carrying many `text:c` attributes —
+ * 172 KB took 4.3 s — so a crafted cell could stall its own import.
+ */
+describe('a crafted space element', () => {
+  it('is read in linear time', () => {
+    const cell = `<text:p>Lot<text:s ${'text:c="2" '.repeat(15_000)}</text:p>`;
+    const started = performance.now();
+    readOpenDocument(table(['<text:p>Stock Ref</text:p>'], [cell]));
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it('still counts the spaces a well-formed element asks for', () => {
+    const { tables } = readOpenDocument(table(
+      ['<text:p>Stock Ref</text:p>', '<text:p>Street Address</text:p>'],
+      ['<text:p>T0-1</text:p>', '<text:p>12<text:s text:c="3"/>Proofline<text:s/>Way</text:p>'],
+    ));
+    expect(tables[0][1][1]).toBe('12 Proofline Way');
+  });
+});

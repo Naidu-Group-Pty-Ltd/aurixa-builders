@@ -58,10 +58,15 @@ function textOf(fragment: string): string {
  * contributes nothing of its own.
  */
 function odfTextOf(fragment: string): string {
+  // `[^<>]*` rather than a lazy match hunting for `text:c`: an element cannot
+  // contain `<`, so a crafted, unterminated `<text:s …` is read in one pass
+  // (the lazy form backtracked — 172 KB took 4.3 s).
   const spaced = fragment
-    .replace(/<text:s\b[^>]*?\btext:c\s*=\s*"(\d+)"[^>]*\/>/g,
-      (_whole, count: string) => ' '.repeat(Math.min(Math.max(Number(count) || 1, 1), 64)))
-    .replace(/<text:(?:s|tab|line-break)\b[^>]*\/>/g, ' ')
+    .replace(/<text:s\b[^<>]*\/>/g, (element) => {
+      const count = /\btext:c\s*=\s*"(\d+)"/.exec(element)?.[1];
+      return ' '.repeat(Math.min(Math.max(Number(count) || 1, 1), 64));
+    })
+    .replace(/<text:(?:tab|line-break)\b[^<>]*\/>/g, ' ')
     .replace(/<\/text:(?:p|h)>/g, ' ')
     .replace(/<[^>]*>/g, '');
   return decodeXmlEntities(spaced).replace(/\s+/g, ' ').trim();
