@@ -77,12 +77,19 @@ export function parseWorkbookSheets(workbookXml: string): Array<{ name: string; 
  */
 export function parseDrawingAnchors(drawingXml: string): Array<{ rid: string; row: number }> {
   const out: Array<{ rid: string; row: number }> = [];
-  const anchorPattern = /<xdr:(twoCellAnchor|oneCellAnchor|absoluteAnchor)\b[\s\S]*?<\/xdr:\1>/g;
+  /*
+   * ANY PREFIX, OR NONE. A namespace is bound to a prefix by the document that
+   * declares it, so `xdr:` is Excel's CHOICE, not the format: a generator that
+   * declares the drawing namespace as the default writes `<oneCellAnchor>`,
+   * and Excel opens it with every picture on its row. Matching the literal
+   * prefix left such a workbook's pictures anchored to nothing.
+   */
+  const anchorPattern = /<((?:[\w.-]+:)?)(twoCellAnchor|oneCellAnchor|absoluteAnchor)\b[\s\S]*?<\/\1\2>/g;
   let match: RegExpExecArray | null;
   while ((match = anchorPattern.exec(drawingXml)) !== null) {
     const fragment = match[0];
-    const from = /<xdr:from>[\s\S]*?<xdr:row>(\d+)<\/xdr:row>[\s\S]*?<\/xdr:from>/.exec(fragment);
-    const rid = /<a:blip\b[^>]*r:embed\s*=\s*"([^"]+)"/.exec(fragment)?.[1];
+    const from = /<(?:[\w.-]+:)?from>[\s\S]*?<(?:[\w.-]+:)?row>(\d+)<\/(?:[\w.-]+:)?row>[\s\S]*?<\/(?:[\w.-]+:)?from>/.exec(fragment);
+    const rid = /<(?:[\w.-]+:)?blip\b[^>]*\b[\w.-]+:embed\s*=\s*"([^"]+)"/.exec(fragment)?.[1];
     if (!rid || !from) continue;
     out.push({ rid, row: Number(from[1]) });
   }

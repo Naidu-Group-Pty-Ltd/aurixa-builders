@@ -42,6 +42,32 @@ function textOf(fragment: string): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * An OpenDocument fragment's TEXT — what the document displays, not its markup.
+ *
+ * `textOf` makes every tag a space, which is right for a generic XML record
+ * and wrong here. ODF marks up INSIDE words: a formatting span, a bookmark,
+ * and `<text:soft-page-break/>`, the marker LibreOffice writes where a page
+ * break fell as it laid the document out. Measured 28 September 2026 on the
+ * live product: an ODT stock list whose table crossed a page imported
+ * `T0-42 2`, `12 For matcheck Street` and `Truga nina`, and lost the row's
+ * price and status with them.
+ *
+ * So whitespace comes only from the elements the format defines as whitespace
+ * — `text:s` (with its count), `text:tab`, `text:line-break` — and from a
+ * paragraph ending, which separates a cell's lines. Every other element
+ * contributes nothing of its own.
+ */
+function odfTextOf(fragment: string): string {
+  const spaced = fragment
+    .replace(/<text:s\b[^>]*?\btext:c\s*=\s*"(\d+)"[^>]*\/>/g,
+      (_whole, count: string) => ' '.repeat(Math.min(Math.max(Number(count) || 1, 1), 64)))
+    .replace(/<text:(?:s|tab|line-break)\b[^>]*\/>/g, ' ')
+    .replace(/<\/text:(?:p|h)>/g, ' ')
+    .replace(/<[^>]*>/g, '');
+  return decodeXmlEntities(spaced).replace(/\s+/g, ' ').trim();
+}
+
+/**
  * `content.xml` from an ODS or ODT.
  *
  * Both use `<table:table>` for a grid, so one reader serves the spreadsheet
@@ -81,7 +107,7 @@ export function readOpenDocument(contentXml: string): {
       let match: RegExpExecArray | null;
       while ((match = cellPattern.exec(rowXml)) !== null) {
         const attributes = match[1] ?? '';
-        const value = match[2] === undefined ? '' : textOf(match[2]);
+        const value = match[2] === undefined ? '' : odfTextOf(match[2]);
         const repeatRaw = /table:number-columns-repeated\s*=\s*"(\d+)"/.exec(attributes)?.[1];
         // Expanded even when the cell is EMPTY: a repeated blank is a run of
         // real column positions, and collapsing it shifts every column after
@@ -101,7 +127,7 @@ export function readOpenDocument(contentXml: string): {
   });
 
   const paragraphs = (contentXml.match(/<text:(?:p|h)\b[\s\S]*?<\/text:(?:p|h)>/g) ?? [])
-    .map(textOf)
+    .map(odfTextOf)
     .filter((line) => line.length > 0);
 
   return { tables, tableSections, text: paragraphs.join('\n') };
