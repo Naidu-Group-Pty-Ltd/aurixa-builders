@@ -186,15 +186,15 @@ try {
       const ccFacts = ['12 Proofline Way', 'Truganina', '749,900', 'Aspen 25', 'Kestrel Grove', '448', '231.5']
         .filter((s) => ccText.includes(s));
       const ccPictures = await seen.page.evaluate(() => [...document.images].filter((img) => img.complete && img.naturalWidth > 64).length);
-      await seen.page.screenshot({ path: `${ARTIFACTS}/cc-property-${name}.png`, fullPage: true }).catch(() => {});
-      const why = ccFacts.length === 7 ? '' : `; headings ${JSON.stringify(seen.headings)}; calls ${seen.calls.join(' ')}; text "${seen.snippet.slice(0, 200)}"`;
+      // No screenshot of a Command Centre page: this repository is public.
+      const why = ccFacts.length === 7 ? '' : `; states ${JSON.stringify(seen.states)}; calls ${seen.calls.join(' ')}`;
       record(`L2: the Command Centre's property page shows lot 101's facts (${name})`, ccFacts.length === 7,
         `${ccFacts.length}/7: ${ccFacts.join(', ')}; url ${seen.url}; ${Date.now() - t2} ms${why}`);
       record(`L2: the Command Centre's property page draws the photograph (${name})`, ccPictures >= 1, `${ccPictures} drawn`);
       record(`L2: the Command Centre's property page fits the ${name} width`, !seen.overflow,
         seen.overflow ? `wider than the viewport: ${seen.width}px, widest ${JSON.stringify(seen.widest)}` : 'fits');
       record(`L2: no script error on the Command Centre's property page (${name})`,
-        !seen.errors.some((e) => !e.startsWith('console:')), seen.errors.slice(0, 2).join(' | '));
+        seen.errors.length === 0, seen.errors.length ? `${seen.errors.length} uncaught` : '');
       await seen.context.close();
     }
   }
@@ -248,7 +248,8 @@ try {
   timings.acknowledgement_to_cc_ms = Date.now() - t4;
   record('L3: the Command Centre learns the builder acknowledged', acknowledged.done,
     `${JSON.stringify(acknowledged.rows?.[0] ?? {})} in ${secs(acknowledged)}`);
-  const ccSelections = await commandCentre('list_selections', {}, agent.token);
+  // Filtered to this run's property: the list is the Command Centre's own.
+  const ccSelections = await commandCentre('list_selections', { stock_item_id: ids1['101'] }, agent.token);
   record('L3: the Command Centre\'s own list shows the activation', ccSelections.status === 200
     && JSON.stringify(ccSelections.json ?? {}).includes(selectionId), `HTTP ${ccSelections.status}`);
   const activated = await stock({ operation: 'list_activated_properties' }, alpha.cookie);
@@ -307,10 +308,9 @@ try {
     const expected = await seen.page.evaluate((iso) => new Intl.DateTimeFormat('en-AU',
       { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(iso)), syncedAt[0].updated_at).catch(() => null);
     const shown = await seen.page.locator('body').innerText().catch(() => '');
-    await seen.page.screenshot({ path: `${ARTIFACTS}/cc-property-after-revision.png`, fullPage: true }).catch(() => {});
     record('L4: the Command Centre\'s property page says "Last synced" at the revision it just applied',
       !!expected && shown.includes(expected),
-      `expected "${expected}"; ${expected && shown.includes(expected) ? 'shown' : `not shown; headings ${JSON.stringify(seen.headings)}`}`);
+      `expected "${expected}"; ${expected && shown.includes(expected) ? 'shown' : `not shown; states ${JSON.stringify(seen.states)}`}`);
     await seen.context.close();
   }
   const ccRemoved = await cc('lot 103', `SELECT lifecycle_status FROM public.builder_network_stock_items WHERE id = ${id(ids1['103'])}`);

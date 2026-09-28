@@ -71,7 +71,7 @@ try {
   const items = published.now ?? [];
   const byLot = Object.fromEntries(items.map((i) => [i.lot_number, i.id]));
   record('0: the organisation holds a published stock list', published.done, `${items.length} live in ${secs(published)}`);
-  const staff = await seedStaff(TAG, 'agent', ['listings', 'clients']);
+  const staff = await seedStaff(TAG, 'agent', ['listings', 'client_management']);
   await cc('agent sink', `UPDATE public.custom_users SET email = ${sqlLit(`delivered+ui-audit-${RUN}@resend.dev`)} WHERE id = ${id(staff.userId)}`);
   const clientId = await seedClient(TAG);
   await waitFor('mirrored', async () => {

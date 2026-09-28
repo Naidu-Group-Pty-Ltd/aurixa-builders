@@ -417,10 +417,25 @@ export async function seedStaff(tag, label, modules = ['listings', 'client_manag
 }
 
 /**
- * What a Command Centre page actually drew for a proof staff session: where it
- * ended up, its headings and alerts, the start of its text, every function it
+ * The Command Centre's own fixed wording for the states a page can be in —
+ * product copy, never data — so a proof can say WHICH state it met without
+ * copying anything the page shows into a log. The Builder repository is
+ * public: its Actions logs and artifacts are readable by anyone.
+ */
+export const COMMAND_CENTRE_PAGE_STATES = [
+  'This property is not available', 'Builder Stock is switched off for this workspace',
+  'Permission required', 'Not included in your subscription', 'Configuration required',
+  'Not currently available', 'Entitlements temporarily unavailable', 'Open to you as a superadmin',
+  'Something went wrong', 'Sign in',
+];
+
+/**
+ * Where a Command Centre page ended up for a proof staff session, which of its
+ * FIXED states it shows (`COMMAND_CENTRE_PAGE_STATES`), every function it
  * called with the answer's status, script errors, and — when it is wider than
- * the screen — the widest element. Diagnostic only; it asserts nothing.
+ * the screen — the widest element's tag and width. Never the page's text, a
+ * class list or a screenshot: those can carry genuine data. The page stays
+ * open for the caller to read what IT seeded, and is the caller's to close.
  */
 export async function inspectCommandCentrePage(browser, { token, path, viewport, wait = 4_000 }) {
   const context = await browser.newContext({ viewport });
@@ -433,28 +448,25 @@ export async function inspectCommandCentrePage(browser, { token, path, viewport,
     const m = /\/functions\/v1\/([a-z0-9-]+)/.exec(res.url());
     if (m) calls.push(`${m[1]}:${res.status()}`);
   });
-  page.on('pageerror', (e) => errors.push(String(e?.message ?? e).slice(0, 160)));
-  page.on('console', (msg) => { if (msg.type() === 'error') errors.push(`console: ${msg.text().slice(0, 160)}`); });
+  page.on('pageerror', () => errors.push('uncaught script error'));
   await page.goto(`${CC_ORIGIN}${path}`, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {});
   await page.waitForTimeout(wait);
-  const drawn = await page.evaluate(() => {
-    const text = (el) => (el?.innerText ?? '').replace(/\s+/g, ' ').trim();
-    const headings = [...document.querySelectorAll('h1, h2, [role="alert"], [data-sonner-toast]')].map(text).filter(Boolean).slice(0, 8);
+  const drawn = await page.evaluate((known) => {
+    const text = document.body?.innerText ?? '';
     const overflow = document.documentElement.scrollWidth > window.innerWidth + 1;
     let widest = null;
     if (overflow) {
       for (const el of document.querySelectorAll('body *')) {
         const r = el.getBoundingClientRect();
         if (r.right > window.innerWidth + 1 && (!widest || r.right > widest.right)) {
-          widest = { right: Math.round(r.right), tag: el.tagName.toLowerCase(),
-            cls: String(el.className?.baseVal ?? el.className ?? '').slice(0, 120), text: text(el).slice(0, 60) };
+          widest = { tag: el.tagName.toLowerCase(), right: Math.round(r.right), width: Math.round(r.width) };
         }
       }
     }
-    return { headings, snippet: text(document.body).slice(0, 400), overflow,
+    return { states: known.filter((phrase) => text.includes(phrase)), overflow,
       width: document.documentElement.scrollWidth, widest };
-  }).catch((e) => ({ headings: [], snippet: `could not read the page: ${String(e?.message ?? e).slice(0, 120)}` }));
-  const url = page.url().replace(CC_ORIGIN, '');
+  }, COMMAND_CENTRE_PAGE_STATES).catch(() => ({ states: [], overflow: false, width: null, widest: null }));
+  const url = new URL(page.url()).pathname;
   return { page, context, url, calls, errors, ...drawn };
 }
 
