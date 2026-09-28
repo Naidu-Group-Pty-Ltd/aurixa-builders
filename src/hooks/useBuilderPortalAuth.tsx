@@ -40,8 +40,13 @@ interface BuilderPortalAuthContextType {
   signOut: () => Promise<void>;
   acceptInvite: (
     token: string,
-    password: string,
-  ) => Promise<{ error?: string; pending?: { code: string; message: string } }>;
+    password?: string,
+  ) => Promise<{
+    error?: string;
+    pending?: { code: string; message: string };
+    /** An account that already signs in joined; no session was issued (doc 68). */
+    accepted?: { legal_name: string };
+  }>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<{ error?: string }>;
   acceptTerms: (acknowledgements: PortalAcknowledgementKey[]) => Promise<{ error?: string }>;
   completeOnboarding: (stepKey?: string) => Promise<{ error?: string }>;
@@ -271,10 +276,19 @@ export function BuilderPortalAuthProvider({ children }: { children: ReactNode })
     clearAuthState();
   }, [clearAuthState]);
 
-  const acceptInvite = useCallback(async (token: string, password: string) => {
+  const acceptInvite = useCallback(async (token: string, password?: string) => {
     const { data, error } = await builderAcceptInvite(token, password);
     if (error || !data?.success) {
       return { error: (data as any)?.error || error?.message || 'Could not accept this invite' };
+    }
+    /*
+     * JOINED, AND DELIBERATELY NOT SIGNED IN (doc 68). An account that already
+     * signs in accepts an organisation's invitation with one click, and the
+     * link issues no session — reading one here would find none and present
+     * the join as a failure. The page sends them to the portal instead.
+     */
+    if ((data as any)?.accepted === true && (data as any)?.signed_in === false) {
+      return { accepted: { legal_name: String((data as any)?.organisation?.legal_name ?? '') } };
     }
     /*
      * ACTIVATED WITHOUT BEING SIGNED IN. The account is live and the password

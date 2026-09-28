@@ -22,9 +22,14 @@
  *  * Invitation is BY EMAIL. The Command Centre invited a pre-created row;
  *    an organisation owner names a colleague. An address that already
  *    holds an account is not an error and not an announcement — the
- *    membership is granted and the response is the same generic success,
- *    because "that email already exists on the network" is an oracle over
- *    other organisations' staff.
+ *    response is the same generic success, because "that email already
+ *    exists on the network" is an oracle over other organisations' staff.
+ *  * Every invitation WAITS for the invitee to accept it, an account that
+ *    already signs in included (doc 68). It used to be granted live at
+ *    once, which put people into organisations they had not agreed to join
+ *    and was the last way an administrator could tell an address had an
+ *    account. The invitation lives on this organisation's own seat, is
+ *    answered after a fixed floor, and is emailed after the answer, paced.
  *  * The `owner` role is NOT mintable here. Granting ownership is a
  *    transfer of control, not an invitation, and it gets its own surface
  *    with its own ceremony later.
@@ -47,11 +52,12 @@ import { getBrandConfig } from '../_shared/brand-config.ts';
 import {
   builderAppBaseUrl,
   INVITE_EXPIRY_HOURS,
-  inviteUrlFor,
   mintBuilderInvite,
-  promoteWaitingMembership,
+  type MintedInvite,
 } from '../_shared/builderInvite.ts';
-import { sendBuilderEmail } from '../_shared/builderInviteEmail.ts';
+import { builderEmailConfigured, sendBuilderEmail } from '../_shared/builderInviteEmail.ts';
+import { afterAnswer, holdAnswer, readDeliveryHealth, sendPacedBuilderEmail } from '../_shared/builderEmailDelivery.ts';
+import { invitationEmail } from '../_shared/builderInvitationCopy.pure.ts';
 import { getPortalClientIp } from '../_shared/requestSecurity.ts';
 import { authRateLimitedResponse, enforceSessionRateLimit } from '../_shared/authRateLimit.ts';
 import { INVITE_SEND_BUDGETS, INVITE_SEND_SCOPE } from '../_shared/sessionRateLimit.pure.ts';
@@ -61,9 +67,10 @@ import {
 } from '../_shared/builderPortalAuth.ts';
 import { MEMBER_ACTIONS, memberRefusal, shapeMembers } from '../_shared/builderMemberManagement.pure.ts';
 import {
-  type InviteSendState,
-  mayHandLinkToInviter,
-  membershipStatusForGrant,
+  invitationRequiresPassword,
+  inviterMayHoldInvitationLink,
+  PENDING_MEMBERSHIP_STATUS,
+  readInviteeName,
   tenantInviteResponse,
 } from '../_shared/builderInviteScope.pure.ts';
 
@@ -74,6 +81,7 @@ const INVITABLE_ROLES = new Set(['administrator', 'manager', 'member', 'read_onl
 const GENERIC_OK = { success: true as const };
 
 Deno.serve(async (req) => {
+  const receivedAt = Date.now();
   const corsHeaders = createCorsHeaders(req.headers.get('origin'));
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -82,9 +90,24 @@ Deno.serve(async (req) => {
       status, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
 
+  /*
+   * EVERY `invite` AND `resend` ANSWER TAKES THE SAME TIME (doc 68).
+   *
+   * Only some kinds of address used to send an email before answering, so the
+   * time an answer took told an administrator what kind of address it was — a
+   * revoked account answered ~450 ms sooner than the rest (doc 67 §5). Every
+   * email now leaves after the answer, and every answer waits for this floor.
+   */
+  const answer = async (response: Response) => {
+    await holdAnswer(receivedAt);
+    return response;
+  };
+
   const csrf = enforceCsrf(req);
   if (!csrf.ok) return csrfDenied(corsHeaders, csrf);
 
+  // A fault in `invite` or `resend` is held to the same floor as their answers.
+  let heldToFloor = false;
   try {
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
@@ -93,6 +116,7 @@ Deno.serve(async (req) => {
 
     const body = await req.json().catch(() => ({} as Record<string, unknown>));
     const action = typeof body.action === 'string' ? body.action : 'invite';
+    heldToFloor = action === 'invite' || action === 'resend';
 
     const session = await resolveBuilderSession(supabase, req);
     if (!session.ok || !session.user) {
@@ -166,191 +190,205 @@ Deno.serve(async (req) => {
       if (error) console.error('[builder-portal-invite] activity log failed', error.message);
     };
 
-    /** A target is in reach only through a live membership of THIS org. */
-    const loadScopedUser = async (builderUserId: string) => {
+    /**
+     * A target is in reach only through a live seat in THIS organisation, and
+     * since doc 68 it is the SEAT that decides what an invitation act does —
+     * whether it still waits, and the name this organisation typed for it —
+     * never what the account behind it has done anywhere else.
+     */
+    const loadScopedSeat = async (builderUserId: string) => {
       if (!builderUserId) return null;
-      const { data: membership } = await supabase
+      const { data: seat, error: seatError } = await supabase
         .from('builder_organisation_memberships')
-        .select('id, builder_user_id')
+        .select('id, builder_user_id, status, invited_name')
         .eq('builder_user_id', builderUserId)
         .eq('organisation_id', activeOrganisationId)
         .is('revoked_at', null)
         .maybeSingle();
-      if (!membership) return null;
-      const { data: user } = await supabase
+      if (seatError) throw seatError;
+      if (!seat) return null;
+      const { data: user, error: userError } = await supabase
         .from('builder_portal_users')
         .select('id, email, name, status, revoked_at, invite_accepted_at, password_hash')
         .eq('id', builderUserId)
         .maybeSingle();
-      return user ?? null;
+      if (userError) throw userError;
+      return user ? { seat, user } : null;
+    };
+
+    /** By the same lower(btrim(email)) identity the unique index holds. */
+    const findAccountByEmail = async (email: string) => {
+      const { data, error } = await supabase
+        .from('builder_portal_users')
+        .select('id, email, name, status, revoked_at, invite_accepted_at, password_hash')
+        .eq('email', email)
+        .maybeSingle();
+      if (error) throw error;
+      return data ?? null;
     };
 
     /**
-     * Mint, store, send and log an invitation. What the caller may be told is
-     * shaped by `tenantInviteResponse` at the call site: whether the email left
-     * and when the link expires go to the activity log, never to the answer,
-     * because an answer that varies with the address is an oracle (doc 67).
+     * RE-MINT THIS ORGANISATION'S OWN INVITATION, AND NOTHING ELSE (doc 68).
+     *
+     * The token lives on this organisation's seat, so a re-send replaces this
+     * organisation's link and can never reach another organisation's — which
+     * the account's single token slot could not promise. Only while the seat
+     * still waits: one the invitee has accepted, or an administrator has
+     * suspended or cancelled since, is not re-invited behind their back.
      */
-    const issueInvite = async (
-      target: { id: string; email: string; name: string | null },
-      resent: boolean,
-    ): Promise<{ readonly refused: Response } | { readonly refused: null; readonly handedLink: string | null }> => {
-      const minted = await mintBuilderInvite();
-      if (!minted) {
-        console.error('[builder-portal-invite] hashing unavailable — refusing to store an unpeppered invite token');
-        return { refused: json({ error: 'Invite service unavailable' }, 503) };
-      }
-      const { token: inviteToken, tokenHash: inviteTokenHash, expiresAt } = minted;
+    const reissueSeatInvitation = async (seatId: string, minted: MintedInvite) => {
+      const { data, error } = await supabase
+        .from('builder_organisation_memberships')
+        .update({
+          invite_token_hash: minted.tokenHash,
+          invite_token_expires_at: minted.expiresAt.toISOString(),
+        })
+        .eq('id', seatId)
+        .eq('organisation_id', activeOrganisationId)
+        .eq('status', PENDING_MEMBERSHIP_STATUS)
+        .is('revoked_at', null)
+        .select('id');
+      if (error) throw error;
+      return Array.isArray(data) && data.length > 0;
+    };
 
-      const { error: updateError } = await supabase.from('builder_portal_users').update({
-        invite_token_hash: inviteTokenHash,
-        invite_token_expires_at: expiresAt.toISOString(),
-        invited_by: caller.id,
-        invited_at: new Date().toISOString(),
-        // The token REMEMBERS the organisation it was minted for, so acceptance
-        // activates that membership and no other. Without it, acceptance could
-        // only infer a scope from the account's whole membership set, which is
-        // the cross-organisation takeover `builderInviteScope.pure.ts` records.
-        invite_token_organisation_id: activeOrganisationId,
-        status: 'invited',
-        is_active: false,
-      }).eq('id', target.id);
-      if (updateError) throw updateError;
+    /**
+     * The act, logged when it happens. Whether its email left is logged when
+     * THAT happens, after the answer, by `deliverInvitation` (doc 68).
+     */
+    const recordInvitation = (targetId: string, resent: boolean, minted: MintedInvite, requiresPassword: boolean) =>
+      logInviteActivity(resent ? 'builder_invite_resent' : 'builder_invite_sent', targetId, {
+        expires_at: minted.expiresAt.toISOString(),
+        requires_password: requiresPassword,
+      });
 
-      await supabase.rpc('builder_ensure_onboarding_steps', { _builder_user_id: target.id });
-
+    /**
+     * SEND THE INVITATION — AFTER THE ANSWER, AND IN ITS TURN (doc 68).
+     *
+     * Sent after answering, so how long the answer took cannot say what kind of
+     * address this was; sent through the deployment's pacer, so a burst cannot
+     * run the shared mail provider past its per-second ceiling. The copy
+     * depends on whether the account sets a password, and the greeting is the
+     * name this organisation typed. Whether the email left goes to the activity
+     * log, which only an operator reads — the inviter is never told, because an
+     * answer that varies with the address is an oracle (doc 67).
+     */
+    const deliverInvitation = async (invitation: {
+      readonly targetId: string;
+      readonly email: string;
+      readonly inviteeName: string | null;
+      readonly requiresPassword: boolean;
+      readonly url: string;
+      readonly resent: boolean;
+    }) => {
       const brand = await getBrandConfig();
-      const inviteUrl = inviteUrlFor(inviteToken);
-      const organisationName = session.active_organisation?.legal_name || brand.companyName;
-
-      // One send path, one letterhead. This was a paragraph of plain text
-      // composed here; `builderInviteEmail.ts` draws it in the portal's own
-      // colours and still sends a plain part beside the HTML. Escaping moved
-      // there too, so the `[<>]` strip this used to do by hand is a property
-      // of the renderer rather than of each call site.
-      const outcome = await sendBuilderEmail({
-        to: target.email,
-        subject: `You have been invited to ${organisationName} on the ${brand.companyName} Builder Portal`,
+      const mail = invitationEmail({
+        organisationName: session.active_organisation?.legal_name || brand.companyName,
+        companyName: brand.companyName,
+        inviterName: caller.name,
+        inviteeName: invitation.inviteeName,
+        url: invitation.url,
+        requiresPassword: invitation.requiresPassword,
+        expiryHours: INVITE_EXPIRY_HOURS,
+      });
+      const outcome = await sendPacedBuilderEmail(supabase, {
+        to: invitation.email,
+        subject: mail.subject,
         brand,
         category: 'builder_portal_invite',
-        content: {
-          heading: `You have been invited to ${organisationName}`,
-          paragraphs: [
-            `Hi ${String(target.name || 'there')},`,
-            `${String(caller.name || 'A colleague')} has invited you to join ${organisationName} on the ${brand.companyName} Builder / Developer Portal.`,
-          ],
-          action: { label: 'Set your password', url: inviteUrl },
-          footnote: `This link can be used once and expires in ${INVITE_EXPIRY_HOURS} hours.`,
-        },
+        content: mail.content,
       });
-      const emailSent = outcome.sent;
-
-      await logInviteActivity(
-        resent ? 'builder_invite_resent' : 'builder_invite_sent',
-        target.id,
-        { email_sent: emailSent, expires_at: expiresAt.toISOString() },
-      );
-
-      /*
-       * THE ONE-TIME LINK IS RETURNED ONLY WHERE THERE IS NO POSTMAN.
-       *
-       * It used to come back whenever a send merely failed, so an inviter could
-       * hold a credential for a mailbox they do not own. The first fix withheld
-       * it where the address belonged to another organisation — which closed the
-       * cross-organisation case and left two things the independent review
-       * found:
-       *
-       *  * a FAILED send is attacker-triggerable (the provider limits sends per
-       *    second, and this endpoint had no limiter of its own; the ceiling doc
-       *    67 added bounds that without making a failure impossible to provoke),
-       *    and holding the link for an unclaimed address lets the caller accept
-       *    it themselves — setting a password and stamping the mailbox verified
-       *    on an account bearing somebody else's address. Acceptance is scoped,
-       *    so that account reaches nowhere today; but an account that already signs in
-       *    is granted a LIVE membership whenever any organisation adds it
-       *    later, correctly and by design, so the claim pays off the first time
-       *    the real person is invited somewhere.
-       *  * the link's PRESENCE was itself the answer to "does this address hold
-       *    a membership somewhere that is not mine?" — the very oracle this
-       *    file's header forbids. Protecting WHICH organisation while disclosing
-       *    THAT one exists is not protection.
-       *
-       * So `mayHandLinkToInviter` keeps the affordance for the case it was
-       * written for — a deployment with no mail provider at all, where the
-       * inviter is the only delivery channel there is — and never for a send
-       * that went wrong. The response is now the SAME SHAPE for every address,
-       * which is what removes the oracle rather than narrowing it.
-       */
-      // Narrowed on `outcome` itself, not on `sendState`: `reason` exists only
-      // on the unsent arm of the union, and a derived string cannot carry that
-      // discrimination back. (`deno check` is what says so; it cannot run in
-      // this sandbox, so CI is where this class is caught.)
-      let sendState: InviteSendState = 'sent';
+      // Narrowed on `outcome` itself: `reason` exists only on the unsent arm of
+      // the union, and a derived string cannot carry that discrimination back.
+      let delivered = 'sent';
       if (!outcome.sent) {
-        sendState = outcome.reason === 'not_configured' ? 'not_configured' : 'failed';
-        if (sendState === 'failed') {
-          console.warn('[builder-portal-invite] the invitation email did not leave; no link is returned', {
-            reason: outcome.reason,
-            builder_user_id: target.id,
-          });
-        }
+        delivered = outcome.reason;
+        console.warn('[builder-portal-invite] the invitation email did not leave; the invitation still waits', {
+          reason: outcome.reason,
+          builder_user_id: invitation.targetId,
+        });
       }
-
-      return { refused: null, handedLink: mayHandLinkToInviter({ send: sendState }) ? inviteUrl : null };
+      await logInviteActivity('builder_invite_delivery', invitation.targetId, {
+        email_sent: outcome.sent,
+        outcome: delivered,
+        resent: invitation.resent,
+      });
     };
+
+    // -------------------------------------------------------- delivery_health
+    /*
+     * ONE READING FOR THE WHOLE DEPLOYMENT (doc 68).
+     *
+     * An administrator whose invitation never arrives had no way to know
+     * whether mail was working at all — the per-invitation answer that used to
+     * hint at it varied with the address, which was the leak. This answers
+     * from a check sent to a sink that belongs to nobody and from the length
+     * of the send queue, and reads no invitation, address or message to do it.
+     */
+    if (action === 'delivery_health') {
+      const delivery = await readDeliveryHealth(supabase, getBrandConfig);
+      return json({ success: true, delivery });
+    }
 
     // ---------------------------------------------------------------- invite
     if (action === 'invite') {
       const email = String(body.email || '').trim().toLowerCase();
       if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-        return json({ error: 'A valid email address is required' }, 400);
+        return await answer(json({ error: 'A valid email address is required' }, 400));
       }
-      const name = String(body.name || '').trim();
-      if (!name) return json({ error: "The colleague's name is required" }, 400);
+      const invitee = readInviteeName(body.name);
+      if (!invitee.ok) return await answer(json({ error: invitee.error }, 400));
       const role = String(body.membership_role || 'member');
       if (!INVITABLE_ROLES.has(role)) {
-        return json({ error: 'Choose a role: administrator, manager, member or read_only' }, 400);
+        return await answer(json({ error: 'Choose a role: administrator, manager, member or read_only' }, 400));
       }
 
-      // Find or create — by the same lower(btrim(email)) identity the unique
-      // index holds. The RESPONSE never says which happened.
-      const { data: existing } = await supabase
-        .from('builder_portal_users')
-        .select('id, email, name, status, revoked_at, invite_accepted_at, password_hash')
-        .eq('email', email)
-        .maybeSingle();
-
-      let target = existing ?? null;
-      if (target && (target.revoked_at || target.status === 'revoked')) {
-        // A revoked account is an operator decision this surface may not
-        // undo — and saying so would confirm the account exists. The same
-        // answer a brand-new address gets; it used to add `email_sent: false`,
-        // which beside a working mail provider said exactly that.
-        return json(tenantInviteResponse({ inviteUrl: null }));
-      }
+      // Find or create. The RESPONSE never says which happened.
+      let target = await findAccountByEmail(email);
       if (!target) {
         const { data: created, error: createError } = await supabase
           .from('builder_portal_users')
-          .insert({ email, name, status: 'invited', is_active: false, created_by: null })
+          .insert({
+            email, name: invitee.name, status: 'invited', is_active: false, created_by: null,
+            invited_by: caller.id, invited_at: new Date().toISOString(),
+          })
           .select('id, email, name, status, revoked_at, invite_accepted_at, password_hash')
           .single();
-        if (createError) {
-          if (String(createError.code) === '23505') {
-            // The case-variant race: the account exists. Same generic answer.
-            return json(tenantInviteResponse({ inviteUrl: null }));
-          }
-          throw createError;
-        }
-        target = created;
+        if (createError && String(createError.code) !== '23505') throw createError;
+        // 23505 is two invitations of one new address racing: the other one
+        // created the account, and this invitation is for it too.
+        target = created ?? await findAccountByEmail(email);
+      }
+      if (!target || target.revoked_at || target.status === 'revoked') {
+        /*
+         * A revoked account is an operator decision this surface may not undo,
+         * and the database refuses any live seat for one
+         * (`builder_guard_membership`), so nothing is created. The answer is
+         * the one every address gets. The members list is where this still
+         * differs (doc 68 §6): a seat that cannot exist cannot be listed.
+         */
+        return await answer(json(tenantInviteResponse({ inviteUrl: null })));
       }
 
-      // Membership in the CALLER'S organisation, idempotent on the live key.
-      //
-      // A grant to an account that cannot sign in yet WAITS: the invitation for
-      // this organisation is what promotes it, and nothing else can. An account
-      // that already signs in is being added by its own organisation's
-      // administrator, so that membership is live at once — unchanged.
-      const accountIsActive = !!(target.invite_accepted_at || target.password_hash);
+      const requiresPassword = invitationRequiresPassword(target);
+      const minted = await mintBuilderInvite();
+      if (!minted) {
+        console.error('[builder-portal-invite] hashing unavailable — refusing to store an unpeppered invite token');
+        return await answer(json({ error: 'Invite service unavailable' }, 503));
+      }
+
+      /*
+       * THE SEAT WAITS, AND CARRIES ITS OWN INVITATION (doc 68).
+       *
+       * Every organisation invitation waits for its invitee, an account that
+       * already signs in included: nobody joins an organisation they have not
+       * agreed to join, and the members list files every invitation alike. The
+       * token is on this seat, never in the account's single slot, so no other
+       * organisation's invitation can be replaced by this one, and this door
+       * writes nothing to an account that already exists — there is no status
+       * of theirs to deactivate or downgrade if it changes meanwhile.
+       */
+      let inviteeName = invitee.name;
       const { error: membershipError } = await supabase
         .from('builder_organisation_memberships')
         .insert({
@@ -358,32 +396,30 @@ Deno.serve(async (req) => {
           organisation_id: activeOrganisationId,
           membership_role: role,
           is_primary: false,
-          status: membershipStatusForGrant({ accountIsActive }),
+          status: PENDING_MEMBERSHIP_STATUS,
           granted_by: caller.id,
+          invited_name: invitee.name,
+          invite_token_hash: minted.tokenHash,
+          invite_token_expires_at: minted.expiresAt.toISOString(),
         });
       if (membershipError && String(membershipError.code) === '23505') {
         /*
          * THIS ORGANISATION ALREADY HOLDS A LIVE SEAT FOR THEM, AND THE SEAT DECIDES.
          *
-         * What happens next is read from that seat — this organisation's own row,
-         * which its administrators already see on the members list — never from
-         * the account behind it. Keyed on the account, a SECOND invitation of the
-         * same address answered 409 exactly when the address already signed in
-         * somewhere and 200 when it did not: the oracle the first answer stopped
-         * giving, one request later (doc 67 §2; found by the independent review).
+         * Read from this organisation's own row, which its administrators
+         * already see on the members list — never from the account behind it,
+         * which is what made a repeat an oracle (doc 67 §2).
          *
-         *  * `suspended` — an administrator's decision an invitation may not undo,
-         *    so it is refused whatever the account is. Only an `active` seat can
-         *    be suspended from the portal, so this is the case that refused before.
-         *  * `active`, for an account that signs in — already a working member
-         *    here: nothing to grant and nothing to send, answered as every
-         *    invitation is.
-         *  * `invited` — the invitation still owed: promoted at once below for an
-         *    account that has since started signing in, re-sent otherwise.
+         *  * `suspended` — an administrator's decision an invitation may not
+         *    undo, so it is refused.
+         *  * `active` — a working member here already: nothing to grant and
+         *    nothing to send, answered as every invitation is.
+         *  * `invited` — the invitation still owed: this organisation's own
+         *    token is re-minted and sent again.
          */
         const { data: seat, error: seatError } = await supabase
           .from('builder_organisation_memberships')
-          .select('status')
+          .select('id, status, invited_name')
           .eq('builder_user_id', target.id)
           .eq('organisation_id', activeOrganisationId)
           .is('revoked_at', null)
@@ -391,61 +427,22 @@ Deno.serve(async (req) => {
         if (seatError) throw seatError;
         if (!seat) throw new Error('the seat that refused the grant is no longer live');
         if (seat.status === 'suspended') {
-          return json({
+          return await answer(json({
             error: 'That person already has a membership here that is not waiting on an invitation. '
               + 'Reactivate them on the members list instead.',
             code: 'membership_not_promotable',
-          }, 409);
+          }, 409));
         }
-        if (seat.status === 'active' && accountIsActive) {
-          return json(tenantInviteResponse({ inviteUrl: null }));
+        if (seat.status === 'active') {
+          return await answer(json(tenantInviteResponse({ inviteUrl: null })));
         }
-      }
-      if (membershipError && String(membershipError.code) === '23505' && accountIsActive) {
-        /*
-         * A LIVE ACCOUNT MUST END UP LIVE IN THIS ORGANISATION.
-         *
-         * 23505 on the live key means a membership already exists — and it may
-         * be one that is still WAITING, from an invitation issued before this
-         * account accepted somebody else's. Adding a colleague who already
-         * signs in is not an invitation and mints nothing, so nothing would
-         * ever promote that row: the notice below would promise access the
-         * portal then refused, and the seat would be stuck for good.
-         *
-         * Only ever from `invited`. A `suspended` membership is an
-         * administrator's decision and an invitation may not undo it.
-         */
-        const promotion = await promoteWaitingMembership(supabase, {
-          builderUserId: target.id,
-          organisationId: activeOrganisationId,
-          membershipRole: role,
-          grantedBy: caller.id,
-        });
-        if (promotion.error) throw promotion.error;
-        /*
-         * A REFUSAL TO PROMOTE MAY NOT BE REPORTED AS A GRANT.
-         *
-         * Promoting nothing is the right answer for a `suspended` membership —
-         * that is an administrator's decision and an invitation may not undo
-         * it — but the branch below then emailed "You now have access … your
-         * existing sign-in still works" over a membership the portal still
-         * refuses, which is the exact failure this promotion exists to
-         * prevent. The row count is what tells the two apart; without it a
-         * zero-row update carries no error and reads as success.
-         *
-         * 409 rather than 403: the act is refused because of the state this
-         * membership is in, and the remedy is to reactivate it on the members
-         * screen, which is where that decision belongs.
-         */
-        if (promotion.promoted === 0) {
+        const reissued = await reissueSeatInvitation(seat.id, minted);
+        if (!reissued) {
           /*
-           * NOTHING WAS WAITING BY THE TIME THE PROMOTION RAN. The seat read above
-           * was `invited`, so a concurrent repeat promoted it first, or an
-           * administrator changed it since. The seat decides here too: answered
-           * on the account instead, two concurrent repeats were the last way to
-           * tell whether an address signs in (the re-review of doc 67). Now
-           * `active` is the grant the other request made, and sent the notice
-           * for; anything else is refused as before.
+           * NOTHING WAS WAITING BY THE TIME THE RE-MINT RAN: the invitee
+           * accepted in between, or a concurrent repeat or an administrator
+           * changed the seat. The seat decides here too — `active` is a member,
+           * answered as everyone is; anything else is refused as above.
            */
           const { data: seatNow, error: seatNowError } = await supabase
             .from('builder_organisation_memberships')
@@ -455,94 +452,94 @@ Deno.serve(async (req) => {
             .is('revoked_at', null)
             .maybeSingle();
           if (seatNowError) throw seatNowError;
-          if (seatNow?.status === 'active') return json(tenantInviteResponse({ inviteUrl: null }));
-          return json({
+          if (seatNow?.status === 'active') return await answer(json(tenantInviteResponse({ inviteUrl: null })));
+          return await answer(json({
             error: 'That person already has a membership here that is not waiting on an invitation. '
               + 'Reactivate them on the members list instead.',
             code: 'membership_not_promotable',
-          }, 409);
+          }, 409));
         }
-      } else if (membershipError && String(membershipError.code) !== '23505') {
+        inviteeName = seat.invited_name ?? invitee.name;
+      } else if (membershipError) {
         throw membershipError;
       }
 
-      if (accountIsActive) {
-        // Already active on the network: access granted, nothing to accept.
-        // The notice goes to the MAILBOX, not the caller.
-        const brand = await getBrandConfig();
-        const organisationName = session.active_organisation?.legal_name || brand.companyName;
-        const notice = await sendBuilderEmail({
-          to: target.email,
-          subject: `You now have access to ${organisationName} on the ${brand.companyName} Builder Portal`,
-          brand,
-          category: 'builder_portal_invite',
-          content: {
-            heading: `You now have access to ${organisationName}`,
-            paragraphs: [
-              `Hi ${String(target.name || 'there')},`,
-              `${String(caller.name || 'A colleague')} has added you to ${organisationName} on the ${brand.companyName} Builder / Developer Portal.`,
-              'Your existing sign-in still works — nothing about your account has changed. The organisation is in the switcher next time you sign in.',
-            ],
-            action: { label: 'Open the Builder Portal', url: builderAppBaseUrl() },
-          },
-        });
-        // Whether the notice left is the operator's to read, in the activity
-        // log; it used to be the response's `email_sent`, and the response is
-        // no place for anything that differs from a brand-new address's.
-        await logInviteActivity('builder_membership_granted', target.id,
-          { membership_role: role, email_sent: notice.sent });
-        return json(tenantInviteResponse({ inviteUrl: null }));
-      }
+      // A first invitation's account needs its onboarding steps when it
+      // activates. An account that signs in already has its own, and adding
+      // steps behind its back could park it at a gate it had already passed.
+      if (requiresPassword) await supabase.rpc('builder_ensure_onboarding_steps', { _builder_user_id: target.id });
+      await recordInvitation(target.id, false, minted, requiresPassword);
 
-      const issued = await issueInvite(target, false);
-      if (issued.refused) return issued.refused;
-      return json(tenantInviteResponse({ inviteUrl: issued.handedLink }));
+      const providerConfigured = builderEmailConfigured();
+      if (providerConfigured) {
+        afterAnswer(deliverInvitation({
+          targetId: target.id, email: target.email, inviteeName, requiresPassword, url: minted.url, resent: false,
+        }), 'invitation email');
+      }
+      const handedLink = inviterMayHoldInvitationLink({
+        send: providerConfigured ? 'sent' : 'not_configured',
+        requiresPassword,
+      }) ? minted.url : null;
+      return await answer(json(tenantInviteResponse({ inviteUrl: handedLink })));
     }
 
     // ---------------------------------------------------------------- resend
     if (action === 'resend') {
-      const target = await loadScopedUser(String(body.builder_user_id || ''));
-      if (!target) return json({ error: 'No such member of this organisation' }, 404);
+      const scoped = await loadScopedSeat(String(body.builder_user_id || ''));
+      if (!scoped) return await answer(json({ error: 'No such member of this organisation' }, 404));
+      const { seat, user: target } = scoped;
       if (target.revoked_at || target.status === 'revoked') {
-        return json({ error: 'This user has been revoked.' }, 409);
+        return await answer(json({ error: 'This user has been revoked.' }, 409));
       }
-      if (target.invite_accepted_at || target.password_hash) {
+      if (seat.status !== PENDING_MEMBERSHIP_STATUS) {
         /*
-         * NOTHING IS OWED: THE PERSON ALREADY SIGNS IN.
-         *
-         * This answered 409 `already_active`. One invitation gives the caller a
-         * seat for ANY address it typed, so `invite` then `resend` told an
-         * administrator whether that address already had an account — the
-         * oracle `invite` no longer gives, by a second route (doc 67 §2; found
-         * by the independent review). It is answered as a re-sent invitation is,
-         * and nothing is sent: an account that signs in has nothing to accept.
+         * NOTHING IS OWED: THE SEAT IS NOT WAITING. A member here has nothing
+         * to accept, and a suspended seat is an administrator's decision. It
+         * is answered as a re-sent invitation is, and nothing is sent — the
+         * seat decides, never whether the account signs in elsewhere, which
+         * made `invite` then `resend` an oracle (doc 67 §2).
          */
-        return json(tenantInviteResponse({ inviteUrl: null }));
+        return await answer(json(tenantInviteResponse({ inviteUrl: null })));
       }
-      const issued = await issueInvite(target, true);
-      if (issued.refused) return issued.refused;
-      return json(tenantInviteResponse({ inviteUrl: issued.handedLink }));
+      const requiresPassword = invitationRequiresPassword(target);
+      const minted = await mintBuilderInvite();
+      if (!minted) {
+        console.error('[builder-portal-invite] hashing unavailable — refusing to store an unpeppered invite token');
+        return await answer(json({ error: 'Invite service unavailable' }, 503));
+      }
+      const reissued = await reissueSeatInvitation(seat.id, minted);
+      if (!reissued) return await answer(json(tenantInviteResponse({ inviteUrl: null })));
+      await recordInvitation(target.id, true, minted, requiresPassword);
+
+      const providerConfigured = builderEmailConfigured();
+      if (providerConfigured) {
+        afterAnswer(deliverInvitation({
+          targetId: target.id,
+          email: target.email,
+          inviteeName: seat.invited_name ?? target.name,
+          requiresPassword,
+          url: minted.url,
+          resent: true,
+        }), 'invitation email');
+      }
+      const handedLink = inviterMayHoldInvitationLink({
+        send: providerConfigured ? 'sent' : 'not_configured',
+        requiresPassword,
+      }) ? minted.url : null;
+      return await answer(json(tenantInviteResponse({ inviteUrl: handedLink })));
     }
 
     // ---------------------------------------------------------- revoke_invite
     if (action === 'revoke_invite') {
-      const target = await loadScopedUser(String(body.builder_user_id || ''));
-      if (!target) return json({ error: 'No such member of this organisation' }, 404);
+      const scoped = await loadScopedSeat(String(body.builder_user_id || ''));
+      if (!scoped) return json({ error: 'No such member of this organisation' }, 404);
+      const { seat, user: target } = scoped;
       /*
-       * ONLY THIS ORGANISATION'S OWN TOKEN IS DESTROYED.
-       *
-       * The token slot is one per account, so nulling it by user id alone let
-       * any organisation cancel an invitation somebody else had issued: A
-       * invites an address B is also inviting, calls `revoke_invite`, and B's
-       * live link stops working with nothing to say why. `loadScopedUser`
-       * admits any non-revoked membership, including the `invited` one A just
-       * created itself, so no other check stood in the way.
-       *
-       * `invite_token_organisation_id` exists for exactly this, and the first
-       * fix added it without using it here. Scoped, the statement clears a
-       * token this organisation minted and no other; a token belonging
-       * elsewhere is left standing, and A's own membership is still revoked
-       * below either way.
+       * ONLY THIS ORGANISATION'S OWN TOKEN IS DESTROYED. An invitation issued
+       * before doc 68 may still be in the account's single slot; it is cleared
+       * only where this organisation minted it, so cancelling can never stop
+       * another organisation's link. Invitations since then live on the seat
+       * and go with it below.
        */
       const { error } = await supabase.from('builder_portal_users').update({
         invite_token_hash: null,
@@ -552,28 +549,18 @@ Deno.serve(async (req) => {
       if (error) throw error;
 
       /*
-       * THE MEMBERSHIP GOES WITH THE INVITATION.
+       * THE SEAT GOES WITH THE INVITATION — WHENEVER IT IS STILL WAITING.
        *
-       * `invite` grants the membership BEFORE it issues the token, so clearing
-       * the token alone left the invitee a member of this organisation holding
-       * the role it chose. That is not a dead end for them: accepting a
-       * DIFFERENT organisation's invitation later activates the same account,
-       * and this organisation is then sitting in their switcher — revoked in
-       * name only.
-       *
-       * ONLY FOR AN ACCOUNT THAT HAS NOT ACCEPTED, tested exactly as `resend`
-       * tests it. An already-active account was never invited into this seat:
-       * `invite` grants a live user their membership outright and issues no
-       * token at all, so revoking an INVITATION here must not silently remove a
-       * working colleague. Removing a member is a different act and belongs to
-       * a surface that says so.
-       *
-       * The representation is the one `builder_admin_revoke_membership` writes
-       * and `builder_memberships_revocation_stamp` requires — status, stamp and
-       * reason together — scoped to the ACTIVE organisation and this user, so
-       * no membership of theirs anywhere else is touched.
+       * It used to go only for an account that had never signed in, because an
+       * established account's grant was live at once; the same button then
+       * cancelled one kind of invitation and left the other standing. Since
+       * doc 68 every invitation is a waiting seat, and a waiting seat is
+       * cancelled whoever it is for. A seat that is active is a working
+       * colleague, and removing one is `manage_member`'s act, not this one.
+       * The representation is the one `builder_admin_revoke_membership`
+       * writes, and the trigger destroys the seat's token with it.
        */
-      if (!target.invite_accepted_at && !target.password_hash) {
+      if (seat.status === PENDING_MEMBERSHIP_STATUS) {
         const { error: membershipError } = await supabase
           .from('builder_organisation_memberships')
           .update({
@@ -581,8 +568,8 @@ Deno.serve(async (req) => {
             revoked_at: new Date().toISOString(),
             revoked_reason: 'invitation revoked',
           })
-          .eq('builder_user_id', target.id)
-          .eq('organisation_id', activeOrganisationId)
+          .eq('id', seat.id)
+          .eq('status', PENDING_MEMBERSHIP_STATUS)
           .is('revoked_at', null);
         if (membershipError) throw membershipError;
       }
@@ -741,7 +728,7 @@ Deno.serve(async (req) => {
     if (action === 'list_members') {
       const { data: memberships, error: membershipsError } = await supabase
         .from('builder_organisation_memberships')
-        .select('id, builder_user_id, membership_role, status')
+        .select('id, builder_user_id, membership_role, status, invited_name')
         .eq('organisation_id', activeOrganisationId)
         .is('revoked_at', null)
         .limit(500);
@@ -787,6 +774,7 @@ Deno.serve(async (req) => {
     return json({ error: `Unknown action: ${action}` }, 400);
   } catch (error) {
     console.error('[builder-portal-invite]', error);
-    return json({ error: 'Internal server error' }, 500);
+    const failure = json({ error: 'Internal server error' }, 500);
+    return heldToFloor ? await answer(failure) : failure;
   }
 });

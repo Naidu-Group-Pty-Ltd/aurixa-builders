@@ -216,9 +216,22 @@ describe('the acceptance door: one click for an account that already signs in', 
     expect(joinOnly.length).toBeGreaterThan(200);
     expect(joinOnly).not.toMatch(/password_hash|hashPassword|must_change_password/);
     expect(joinOnly).not.toMatch(/issueBuilderSession|createBuilderSessionCookie|Set-Cookie/);
-    expect(joinOnly).not.toMatch(/\.from\('builder_portal_users'\)\s*\.update\(\{[^}]*status:/);
-    expect(joinOnly).toMatch(/promoteWaitingMembership\(/);
+    expect(joinOnly).not.toMatch(/\.from\('builder_portal_users'\)/);
+    // It reads whether the promotion brought anything up, and answers no
+    // session.
+    expect(joinOnly).toMatch(/\.promoted === 0/);
     expect(joinOnly).toMatch(/signed_in: false/);
+    // Both ways to reach it — a seat token and an account-slot token — bring
+    // the seat up through the one promoter immediately before, and the
+    // established branch is chosen by the account, never by the request.
+    const joins = [...code.matchAll(/return await joinOnly\(/g)].map((m) => m.index ?? 0);
+    expect(joins.length).toBe(2);
+    for (const at of joins) {
+      const before = code.slice(Math.max(0, at - 700), at);
+      expect(before).toMatch(/promoteWaitingMembership\(supabase, \{/);
+      expect(before).toMatch(/if \(!requiresPassword\) \{/);
+    }
+    expect(code.match(/const requiresPassword = invitationRequiresPassword\((account|portalUser)\)/g)?.length).toBe(2);
   });
 
   it('promotes the seat the token is on, and uses the token up in the same statement', () => {

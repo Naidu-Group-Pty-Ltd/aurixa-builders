@@ -410,12 +410,15 @@ record('B: the invitation seeded the four mandatory onboarding steps',
 // B3. Accepting the invitation — the token path replayed faithfully, its hash
 // computed with the same pepper the deploy ships to the functions.
 if (PEPPER && inviteUserId) {
+  // Since doc 68 an organisation's invitation lives on its own waiting seat,
+  // so the known token is written there — the path the real door uses.
   const inviteToken = `${randomUUID()}-${randomUUID()}`;
   await q('mint invite token', `
-    UPDATE public.builder_portal_users
+    UPDATE public.builder_organisation_memberships
        SET invite_token_hash = ${sqlLit(hmacHex(PEPPER, inviteToken))},
            invite_token_expires_at = now() + interval '1 hour'
-     WHERE id = ${sqlLit(inviteUserId)}::uuid`);
+     WHERE builder_user_id = ${sqlLit(inviteUserId)}::uuid AND organisation_id = ${sqlLit(alpha.orgId)}::uuid
+       AND status = 'invited' AND revoked_at IS NULL`);
   const acceptInvite = await call('builder-portal-accept-invite', {
     action: 'accept', token: inviteToken, password: invitePassword,
   });
@@ -425,9 +428,12 @@ if (PEPPER && inviteUserId) {
   record('B: accepting the invitation activates the account and issues a session',
     acceptInvite.status === 200 && !!cookie, `status ${acceptInvite.status}`);
   const activated = await q('activated?', `
-    SELECT is_active, email_verified_at IS NOT NULL AS verified,
-           invite_token_hash IS NULL AS token_cleared
-    FROM public.builder_portal_users WHERE id = ${sqlLit(inviteUserId)}::uuid`);
+    SELECT u.is_active, u.email_verified_at IS NOT NULL AS verified,
+           (m.invite_token_hash IS NULL AND m.status = 'active') AS token_cleared
+    FROM public.builder_portal_users u
+    JOIN public.builder_organisation_memberships m
+      ON m.builder_user_id = u.id AND m.organisation_id = ${sqlLit(alpha.orgId)}::uuid AND m.revoked_at IS NULL
+    WHERE u.id = ${sqlLit(inviteUserId)}::uuid`);
   record('B: the accepted account is active, verified, and its invite token is spent',
     activated[0]?.is_active === true && activated[0]?.verified === true
       && activated[0]?.token_cleared === true,

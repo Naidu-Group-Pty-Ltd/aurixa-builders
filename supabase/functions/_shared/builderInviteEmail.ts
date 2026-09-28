@@ -237,6 +237,17 @@ export type InviteEmailOutcome =
   | { readonly sent: false; readonly reason: 'not_configured' | 'refused' | 'unreachable' };
 
 /**
+ * Whether this deployment has a mail provider at all — a fact about the
+ * DEPLOYMENT, readable before anything is sent. The invitation door decides
+ * whether an inviter may hold a link from this alone (doc 68 sends after the
+ * answer, so no send's outcome can reach that decision).
+ */
+export function builderEmailConfigured(): boolean {
+  // @ts-ignore Deno-only global.
+  return !!Deno.env.get('RESEND_API_KEY');
+}
+
+/**
  * Hand it to Resend.
  *
  * NEVER throws and never returns a bare boolean: the caller has already

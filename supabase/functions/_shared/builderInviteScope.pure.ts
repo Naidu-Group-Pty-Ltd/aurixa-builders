@@ -148,6 +148,68 @@ export function mayHandLinkToInviter(args: { readonly send: InviteSendState }): 
   return args.send === "not_configured";
 }
 
+/**
+ * IS THIS AN ACCOUNT'S FIRST INVITATION, OR ONE TO AN ACCOUNT THAT SIGNS IN?
+ *
+ * The one reading every door used to spell for itself (`accountIsActive`,
+ * `established`): a stored password or an accepted invitation means the
+ * account already signs in. Its invitation then asks for nothing but consent —
+ * no password is set or changed — and a first invitation sets the password.
+ *
+ * Since doc 68 BOTH wait for the invitee. This decides only what the invitee
+ * is asked to do, never whether they are asked.
+ */
+export function invitationRequiresPassword(
+  account: { readonly password_hash?: string | null; readonly invite_accepted_at?: string | null },
+): boolean {
+  return !(account.password_hash || account.invite_accepted_at);
+}
+
+/**
+ * MAY THE INVITER HOLD THIS INVITATION'S LINK?
+ *
+ * `mayHandLinkToInviter` still decides first, and on a deployment with a mail
+ * provider — production — it says no to every address. Where there is none, it
+ * used to hand every minted link over; since doc 68 an account that already
+ * signs in is minted one too, and ITS link joins the account to the inviting
+ * organisation with one click and no password. Held by the inviter, that link
+ * would let them accept on the person's behalf — the auto-activation doc 68
+ * removes, by another route. So only a link that SETS a password may be handed
+ * over, and the person who sets it is then the account's holder.
+ *
+ * The residual is the one `tenantInviteResponse` already states: on a
+ * deployment with no mail provider the link's presence separates "must set a
+ * password" from "need not". Nowhere else does this read the account.
+ */
+export function inviterMayHoldInvitationLink(
+  args: { readonly send: InviteSendState; readonly requiresPassword: boolean },
+): boolean {
+  return mayHandLinkToInviter({ send: args.send }) && args.requiresPassword;
+}
+
+/**
+ * The longest name an inviter may type — the registration door's own ceiling
+ * (`BuilderRegisterRequest.name`), so the two doors that name a person agree.
+ */
+export const INVITEE_NAME_MAX_CHARS = 200;
+
+/**
+ * The invitee's name as the inviter typed it: trimmed, required, and REFUSED
+ * past the ceiling rather than cut — a truncated name is a different name, and
+ * the inviter is there to shorten it. Counted in characters, not UTF-16 units,
+ * the way the column's `char_length` counts it.
+ */
+export function readInviteeName(
+  raw: unknown,
+): { readonly ok: true; readonly name: string } | { readonly ok: false; readonly error: string } {
+  const name = typeof raw === "string" ? raw.trim() : "";
+  if (!name) return { ok: false, error: "The colleague's name is required" };
+  if (Array.from(name).length > INVITEE_NAME_MAX_CHARS) {
+    return { ok: false, error: `Use a name of ${INVITEE_NAME_MAX_CHARS} characters or fewer` };
+  }
+  return { ok: true, name };
+}
+
 /** Everything a tenant administrator's `invite` may be told. */
 export interface TenantInviteResponse {
   readonly success: true;

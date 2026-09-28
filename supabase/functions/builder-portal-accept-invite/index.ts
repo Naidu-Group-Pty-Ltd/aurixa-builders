@@ -18,7 +18,20 @@
  * Collapsing them into one `organisations` binding is what made this function
  * fail to parse.
  *
- * Actions: `validate` (render the form) and accept (default).
+ * Since doc 68 there are two kinds of invitation and two places a token
+ * lives. An organisation's invitation is on its own waiting SEAT; the
+ * operator's doors, and anything issued before doc 68, use the account's one
+ * slot. Either kind is accepted in one of two ways:
+ *
+ *  * an account's FIRST invitation sets its password, activates it and signs
+ *    it in, as it always has;
+ *  * an invitation to an account that already signs in is a JOIN — one click,
+ *    the seat comes up, and nothing about the account is written and no
+ *    session is issued. It used to be refused (`already_active`); the
+ *    invitation it answers used to be granted without anyone accepting it.
+ *
+ * Actions: `validate` (render the form, and say whether a password is asked
+ * for) and accept (default).
  */
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0';
 import { hashPassword } from '../_shared/password.ts';
@@ -31,7 +44,11 @@ import {
   explainNoAccessibleOrganisation,
   listAccessibleOrganisations,
 } from '../_shared/builderPortalAuth.ts';
-import { acceptanceActivation } from '../_shared/builderInviteScope.pure.ts';
+import {
+  acceptanceActivation,
+  invitationRequiresPassword,
+  PENDING_MEMBERSHIP_STATUS,
+} from '../_shared/builderInviteScope.pure.ts';
 import { promoteWaitingMembership } from '../_shared/builderInvite.ts';
 import { parseJsonBody } from '../_shared/validate.ts';
 import { AcceptInviteRequest, AUTH_MAX_BODY_BYTES } from '../_shared/authBodySchemas.ts';
@@ -99,6 +116,305 @@ Deno.serve(async (req) => {
     if (!tokenHash) return json({ error: GENERIC_INVITE_ERROR, valid: false }, 400);
 
     /*
+     * A FIRST INVITATION SETS THE ACCOUNT'S PASSWORD — ONLY WHILE IT HAS NONE.
+     *
+     * The update is the statement that decides the race, so it states every
+     * condition it depends on: still unaccepted, still no password, not
+     * withdrawn. A second concurrent acceptance, an account that started
+     * signing in some other way, and one an operator revoked meanwhile all
+     * match no row, and are refused rather than activated over.
+     *
+     * An account-slot token is used up here, in the same statement. A seat's
+     * own token is used up by the promotion that follows, in its statement.
+     */
+    const activateAccount = async (accountId: string, consumeSlotToken: boolean) => {
+      if (!password || typeof password !== 'string') {
+        return json({ error: 'Password is required' }, 400);
+      }
+      const strength = await validatePasswordStrength(password);
+      if (!strength.isValid) {
+        return json({ error: strength.error || 'Password does not meet the required strength' }, 400);
+      }
+
+      const hashedPassword = await hashPassword(password);
+      let activation = supabase
+        .from('builder_portal_users')
+        .update({
+          password_hash: hashedPassword,
+          must_change_password: false,
+          password_changed_at: new Date().toISOString(),
+          // The scope goes with the token it scoped.
+          ...(consumeSlotToken
+            ? { invite_token_hash: null, invite_token_expires_at: null, invite_token_organisation_id: null }
+            : {}),
+          invite_accepted_at: new Date().toISOString(),
+          // Accepting an emailed token proves the mailbox (network governance
+          // reads this; see builderPortalAuth.builderGovernanceError).
+          email_verified_at: new Date().toISOString(),
+          status: 'active',
+          is_active: true,
+          last_login_at: new Date().toISOString(),
+          failed_login_attempts: 0,
+          locked_until: null,
+        })
+        .eq('id', accountId)
+        .is('invite_accepted_at', null)
+        .is('password_hash', null)
+        .is('revoked_at', null);
+      if (consumeSlotToken) activation = activation.eq('invite_token_hash', tokenHash);
+      const { data: updatedUser, error: updateError } = await activation
+        .select('id, email, name, phone, job_title, must_change_password')
+        .maybeSingle();
+
+      if (updateError) {
+        console.error('[builder-portal-accept-invite] activation failed', updateError.message);
+        return json({ error: 'Failed to activate your account' }, 500);
+      }
+      if (!updatedUser) return json({ error: GENERIC_INVITE_ERROR, valid: false }, 400);
+      return updatedUser;
+    };
+
+    /*
+     * AN ACCOUNT THAT ALREADY SIGNS IN JOINS — AND NOTHING ELSE HAPPENS (doc 68).
+     *
+     * Every organisation invitation now waits for its invitee, established
+     * accounts included, and for them the emailed link is the whole of the
+     * acceptance: one deliberate click. The seat has already been brought up
+     * by the promoter by the time this runs. Nothing about the ACCOUNT is
+     * written — its password, status and activity are not this link's to
+     * touch, since a link that could set one would be a password reset
+     * dressed as an invitation — and no session is issued, because a link
+     * that signed somebody in without their password would be a weaker door
+     * than the one they already use. They sign in as they always have, and the
+     * organisation is there.
+     */
+    const joinOnly = async (joined: {
+      readonly promotion: { readonly error: { message: string } | null; readonly promoted: number };
+      readonly builderUserId: string;
+      readonly organisation: { organisation_id: string; legal_name: string; membership_role: string };
+    }) => {
+      if (joined.promotion.error) {
+        console.error('[builder-portal-accept-invite] the join could not be recorded', joined.promotion.error.message);
+        return json({ error: 'This service is temporarily unavailable. Please try again.', valid: false }, 503);
+      }
+      // Nothing was waiting on this token any more: spent, cancelled or suspended.
+      if (joined.promotion.promoted === 0) return json({ error: GENERIC_INVITE_ERROR, valid: false }, 400);
+
+      await auditBuilderIdentity(supabase, req, {
+        userId: joined.builderUserId, organisationId: joined.organisation.organisation_id,
+        action: 'builder_invite_accepted', sessionId: null,
+        newState: { membership: 'active', joined_existing_account: true, signed_in: false },
+      });
+      return json({
+        success: true,
+        accepted: true,
+        activated: false,
+        signed_in: false,
+        organisation: joined.organisation,
+      });
+    };
+
+    const finishActivation = async (
+      accountId: string,
+      updatedUser: { id: string; email: string; name: string; phone: string | null; job_title: string | null },
+    ) => {
+      await supabase.rpc('builder_ensure_onboarding_steps', { _builder_user_id: accountId });
+
+      // Only now is the account active, so this is the first point at which
+      // `builder_accessible_organisations` can return anything. It is the
+      // authoritative post-activation list and the one the session is scoped to.
+      const accessibleOrganisations = await listAccessibleOrganisations(supabase, accountId);
+
+      /*
+       * ACTIVATED, AND NOT YET ALLOWED IN. These are different facts and this
+       * function used to conflate them.
+       *
+       * `listInvitedOrganisations` deliberately counts a membership of an
+       * organisation that is still `pending_activation` — its own comment says
+       * the invite is legitimately issued ahead of the organisation going live
+       * and "the organisation gate applies at login". The code then issued a
+       * session unconditionally, and `builder_issue_session` applies exactly
+       * that gate: it requires an accessible organisation and raises
+       * `BUILDER_SESSION_NOT_PERMITTED` when there is none.
+       *
+       * So the two halves of this handler contradicted each other, and the
+       * throw was caught by the outer `catch` and reported as **Internal server
+       * error** — measured in production on 18 Sep 2026, on the first real
+       * builder to accept an invitation into an organisation awaiting approval.
+       *
+       * The rule that makes the repair the right one: AN ACT THAT HAS ALREADY
+       * COMMITTED MUST NEVER BE REPORTED AS A FAILURE. The update above has
+       * happened — the password is set, the invite is spent, the account is
+       * active — so a 500 tells somebody nothing happened when everything did,
+       * and sends them back to a link that no longer works.
+       *
+       * `builder-portal-login` has answered this correctly since the access
+       * denial work; it reads the memberships and explains the refusal rather
+       * than guessing. This asks the same shared explainer, so the sentence a
+       * builder meets here is the one they meet at sign-in.
+       */
+      if (!accessibleOrganisations.length) {
+        const denial = await explainNoAccessibleOrganisation(supabase, accountId, new Date());
+        await auditBuilderIdentity(supabase, req, {
+          userId: accountId, organisationId: null,
+          action: 'builder_invite_accepted', sessionId: null,
+          newState: { status: 'active', signed_in: false, reason: denial.code },
+        });
+        return json({
+          success: true,
+          // The account IS active and the password IS set. Naming both stops a
+          // reader — or a future caller — treating this as a failed activation.
+          activated: true,
+          signed_in: false,
+          pending: { code: denial.code, message: denial.message || PENDING_FALLBACK },
+          user: {
+            id: updatedUser.id,
+            email: updatedUser.email,
+            name: updatedUser.name,
+          },
+        });
+      }
+
+      const autoSelected = accessibleOrganisations.find((organisation) => organisation.is_primary)
+        ?? (accessibleOrganisations.length === 1 ? accessibleOrganisations[0] : null);
+
+      const issued = await issueBuilderSession(supabase, accountId, req, {
+        deviceLabel: req.headers.get('user-agent') || undefined,
+      });
+      if (autoSelected) {
+        await supabase.rpc('builder_select_session_organisation', {
+          _session_id: issued.id,
+          _builder_user_id: accountId,
+          _organisation_id: autoSelected.organisation_id,
+        });
+      }
+
+      await auditBuilderIdentity(supabase, req, {
+        userId: accountId, organisationId: autoSelected?.organisation_id ?? null,
+        action: 'builder_invite_accepted', sessionId: issued.id,
+        newState: { status: 'active' },
+      });
+
+      return json({
+        success: true,
+        activated: true,
+        signed_in: true,
+        user: {
+          id: updatedUser.id,
+          email: updatedUser.email,
+          name: updatedUser.name,
+          phone: updatedUser.phone,
+          job_title: updatedUser.job_title,
+          must_change_password: false,
+          has_accepted_current_terms: false,
+          has_completed_onboarding: false,
+        },
+        organisations: accessibleOrganisations,
+        active_organisation: autoSelected,
+        requires_organisation_selection: !autoSelected,
+        session: {
+          id: issued.id,
+          absolute_expires_at: issued.absoluteExpiresAt.toISOString(),
+          idle_expires_at: issued.idleExpiresAt.toISOString(),
+        },
+      }, 200, { 'Set-Cookie': createBuilderSessionCookie(issued.token, issued.absoluteExpiresAt) });
+    };
+
+    /*
+     * A SEAT'S OWN INVITATION IS LOOKED FOR FIRST (doc 68).
+     *
+     * Since doc 68 an organisation's invitation lives on that organisation's
+     * seat, so the seat IS the scope: this token can bring up this seat and no
+     * other. The account's single slot is still read below, for the operator's
+     * doors and for any invitation issued before this. A read that FAILED is
+     * not a token that is ABSENT, so it answers 503, never "invalid".
+     */
+    const { data: seat, error: seatError } = await supabase
+      .from('builder_organisation_memberships')
+      .select('id, builder_user_id, organisation_id, membership_role, status, revoked_at, invite_token_expires_at')
+      .eq('invite_token_hash', tokenHash)
+      .maybeSingle();
+    if (seatError) {
+      console.error('[builder-portal-accept-invite] the seat invitation lookup FAILED — this is not an absent token',
+        seatError.code, seatError.message);
+      return json({ error: 'This service is temporarily unavailable. Please try again.', valid: false }, 503);
+    }
+
+    if (seat) {
+      // Every refusal is the same generic message, as below.
+      if (seat.revoked_at || seat.status !== PENDING_MEMBERSHIP_STATUS) {
+        return json({ error: GENERIC_INVITE_ERROR, valid: false }, 400);
+      }
+      if (!seat.invite_token_expires_at || new Date(seat.invite_token_expires_at) < new Date()) {
+        return json({ error: GENERIC_INVITE_ERROR, valid: false, expired: true }, 400);
+      }
+      const [{ data: account, error: accountError }, { data: organisation, error: organisationError }] =
+        await Promise.all([
+          supabase.from('builder_portal_users')
+            .select('id, email, name, job_title, status, revoked_at, invite_accepted_at, password_hash')
+            .eq('id', seat.builder_user_id)
+            .maybeSingle(),
+          supabase.from('builder_organisations')
+            .select('id, legal_name')
+            .eq('id', seat.organisation_id)
+            .neq('status', 'closed')
+            .maybeSingle(),
+        ]);
+      if (accountError || organisationError) {
+        console.error('[builder-portal-accept-invite] the invitation could not be read',
+          accountError?.message ?? organisationError?.message);
+        return json({ error: 'This service is temporarily unavailable. Please try again.', valid: false }, 503);
+      }
+      if (!account || account.revoked_at || account.status === 'revoked' || !organisation) {
+        return json({ error: GENERIC_INVITE_ERROR, valid: false }, 400);
+      }
+      const joining = {
+        organisation_id: organisation.id,
+        legal_name: organisation.legal_name,
+        membership_role: seat.membership_role,
+      };
+      const requiresPassword = invitationRequiresPassword(account);
+
+      if (action === 'validate') {
+        return json({
+          valid: true,
+          email: account.email,
+          name: account.name,
+          job_title: account.job_title,
+          requires_password: requiresPassword,
+          organisations: [joining],
+        });
+      }
+
+      if (!requiresPassword) {
+        const promotion = await promoteWaitingMembership(supabase, {
+          builderUserId: account.id,
+          organisationId: seat.organisation_id,
+          inviteTokenHash: tokenHash,
+        });
+        return await joinOnly({ promotion, builderUserId: account.id, organisation: joining });
+      }
+
+      const activated = await activateAccount(account.id, false);
+      if (activated instanceof Response) return activated;
+      /*
+       * THE SEAT THE TOKEN IS ON, AND IT IS USED UP HERE: promoted only while
+       * it still carries this token, which the promotion clears. After the
+       * update above, which decided the race, so a failure fails CLOSED —
+       * active, nothing accessible, explained below — never the other way.
+       */
+      const { error: promoteError } = await promoteWaitingMembership(supabase, {
+        builderUserId: account.id,
+        organisationId: seat.organisation_id,
+        inviteTokenHash: tokenHash,
+      });
+      if (promoteError) {
+        console.error('[builder-portal-accept-invite] membership promotion failed', promoteError.message);
+      }
+      return await finishActivation(account.id, activated);
+    }
+
+    /*
      * THE ERROR IS READ. A read that FAILED is not a row that is ABSENT, and
      * this select is where that distinction became load-bearing: it now names
      * `invite_token_organisation_id`, so a deployment whose functions ship
@@ -132,9 +448,6 @@ Deno.serve(async (req) => {
     }
     if (portalUser.revoked_at || portalUser.status === 'revoked') {
       return json({ error: GENERIC_INVITE_ERROR, valid: false }, 400);
-    }
-    if (portalUser.invite_accepted_at || portalUser.password_hash) {
-      return json({ error: GENERIC_INVITE_ERROR, valid: false, already_active: true }, 400);
     }
 
     // An invite is only usable if the account still has somewhere to go.
@@ -173,6 +486,7 @@ Deno.serve(async (req) => {
     const acceptingOrganisation = invitedOrganisations.find(
       (organisation) => organisation.organisation_id === scope.activate,
     )!;
+    const requiresPassword = invitationRequiresPassword(portalUser);
 
     if (action === 'validate') {
       return json({
@@ -180,6 +494,7 @@ Deno.serve(async (req) => {
         email: portalUser.email,
         name: portalUser.name,
         job_title: portalUser.job_title,
+        requires_password: requiresPassword,
         // The organisation THIS invitation joins, and no other. Listing every
         // organisation the address is pending in told its holder — who may not
         // be its owner — where else that person has been invited.
@@ -191,50 +506,39 @@ Deno.serve(async (req) => {
       });
     }
 
-    if (!password || typeof password !== 'string') {
-      return json({ error: 'Password is required' }, 400);
-    }
-    const strength = await validatePasswordStrength(password);
-    if (!strength.isValid) {
-      return json({ error: strength.error || 'Password does not meet the required strength' }, 400);
+    if (!requiresPassword) {
+      /*
+       * An account-slot invitation to an account that has since started signing
+       * in — an operator's owner invitation, typically, for an address that
+       * accepted an organisation's invitation first. It used to be refused as
+       * `already_active`, which stranded that owner seat for good; it is a
+       * join now, like any other (doc 68). The token is used up only once it
+       * has brought the seat up, and only if it is still this token.
+       */
+      const promotion = await promoteWaitingMembership(supabase, {
+        builderUserId: portalUser.id,
+        organisationId: scope.activate,
+      });
+      if (!promotion.error && promotion.promoted > 0) {
+        await supabase.from('builder_portal_users').update({
+          invite_token_hash: null,
+          invite_token_expires_at: null,
+          invite_token_organisation_id: null,
+        }).eq('id', portalUser.id).eq('invite_token_hash', tokenHash);
+      }
+      return await joinOnly({
+        promotion,
+        builderUserId: portalUser.id,
+        organisation: {
+          organisation_id: acceptingOrganisation.organisation_id,
+          legal_name: acceptingOrganisation.legal_name,
+          membership_role: acceptingOrganisation.membership_role,
+        },
+      });
     }
 
-    const hashedPassword = await hashPassword(password);
-
-    // Single-use: the WHERE clause requires the invite to still be unaccepted
-    // and still carry this exact hash, so a concurrent second acceptance
-    // matches no row.
-    const { data: updatedUser, error: updateError } = await supabase
-      .from('builder_portal_users')
-      .update({
-        password_hash: hashedPassword,
-        must_change_password: false,
-        password_changed_at: new Date().toISOString(),
-        invite_token_hash: null,
-        invite_token_expires_at: null,
-        // The scope goes with the token it scoped.
-        invite_token_organisation_id: null,
-        invite_accepted_at: new Date().toISOString(),
-        // Accepting an emailed token proves the mailbox (network governance
-        // reads this; see builderPortalAuth.builderGovernanceError).
-        email_verified_at: new Date().toISOString(),
-        status: 'active',
-        is_active: true,
-        last_login_at: new Date().toISOString(),
-        failed_login_attempts: 0,
-        locked_until: null,
-      })
-      .eq('id', portalUser.id)
-      .eq('invite_token_hash', tokenHash)
-      .is('invite_accepted_at', null)
-      .select('id, email, name, phone, job_title, must_change_password')
-      .maybeSingle();
-
-    if (updateError) {
-      console.error('[builder-portal-accept-invite] activation failed', updateError.message);
-      return json({ error: 'Failed to activate your account' }, 500);
-    }
-    if (!updatedUser) return json({ error: GENERIC_INVITE_ERROR, valid: false }, 400);
+    const activated = await activateAccount(portalUser.id, true);
+    if (activated instanceof Response) return activated;
 
     /*
      * PROMOTE EXACTLY ONE MEMBERSHIP — the organisation this token was for.
@@ -242,7 +546,7 @@ Deno.serve(async (req) => {
      * Deliberately AFTER the single-use update above, which is the statement
      * that decides the race. If this promotion then fails, the account is
      * active with nothing accessible: `builder_issue_session` refuses, and the
-     * "activated, not yet allowed in" branch below explains it and invites a
+     * "activated, not yet allowed in" branch explains it and invites a
      * sign-in. That fails CLOSED and is recoverable by re-sending the
      * invitation. Promoting first would risk the opposite — a live membership
      * on an account a later, different token activates, which is the very
@@ -261,106 +565,7 @@ Deno.serve(async (req) => {
       console.error('[builder-portal-accept-invite] membership promotion failed', promoteError.message);
     }
 
-    await supabase.rpc('builder_ensure_onboarding_steps', { _builder_user_id: portalUser.id });
-
-    // Only now is the account active, so this is the first point at which
-    // `builder_accessible_organisations` can return anything. It is the
-    // authoritative post-activation list and the one the session is scoped to.
-    const accessibleOrganisations = await listAccessibleOrganisations(supabase, portalUser.id);
-
-    /*
-     * ACTIVATED, AND NOT YET ALLOWED IN. These are different facts and this
-     * function used to conflate them.
-     *
-     * `listInvitedOrganisations` above deliberately counts a membership of an
-     * organisation that is still `pending_activation` — its own comment says
-     * the invite is legitimately issued ahead of the organisation going live
-     * and "the organisation gate applies at login". The code then issued a
-     * session unconditionally, and `builder_issue_session` applies exactly
-     * that gate: it requires an accessible organisation and raises
-     * `BUILDER_SESSION_NOT_PERMITTED` when there is none.
-     *
-     * So the two halves of this handler contradicted each other, and the
-     * throw was caught by the outer `catch` and reported as **Internal server
-     * error** — measured in production on 18 Sep 2026, on the first real
-     * builder to accept an invitation into an organisation awaiting approval.
-     *
-     * The rule that makes the repair the right one: AN ACT THAT HAS ALREADY
-     * COMMITTED MUST NEVER BE REPORTED AS A FAILURE. The update above has
-     * happened — the password is set, the invite is spent, the account is
-     * active — so a 500 tells somebody nothing happened when everything did,
-     * and sends them back to a link that now answers `already_active`.
-     *
-     * `builder-portal-login` has answered this correctly since the access
-     * denial work; it reads the memberships and explains the refusal rather
-     * than guessing. This asks the same shared explainer, so the sentence a
-     * builder meets here is the one they meet at sign-in.
-     */
-    if (!accessibleOrganisations.length) {
-      const denial = await explainNoAccessibleOrganisation(supabase, portalUser.id, new Date());
-      await auditBuilderIdentity(supabase, req, {
-        userId: portalUser.id, organisationId: null,
-        action: 'builder_invite_accepted', sessionId: null,
-        newState: { status: 'active', signed_in: false, reason: denial.code },
-      });
-      return json({
-        success: true,
-        // The account IS active and the password IS set. Naming both stops a
-        // reader — or a future caller — treating this as a failed activation.
-        activated: true,
-        signed_in: false,
-        pending: { code: denial.code, message: denial.message || PENDING_FALLBACK },
-        user: {
-          id: updatedUser.id,
-          email: updatedUser.email,
-          name: updatedUser.name,
-        },
-      });
-    }
-
-    const autoSelected = accessibleOrganisations.find((organisation) => organisation.is_primary)
-      ?? (accessibleOrganisations.length === 1 ? accessibleOrganisations[0] : null);
-
-    const issued = await issueBuilderSession(supabase, portalUser.id, req, {
-      deviceLabel: req.headers.get('user-agent') || undefined,
-    });
-    if (autoSelected) {
-      await supabase.rpc('builder_select_session_organisation', {
-        _session_id: issued.id,
-        _builder_user_id: portalUser.id,
-        _organisation_id: autoSelected.organisation_id,
-      });
-    }
-
-    await auditBuilderIdentity(supabase, req, {
-      userId: portalUser.id, organisationId: autoSelected?.organisation_id ?? null,
-      action: 'builder_invite_accepted', sessionId: issued.id,
-      newState: { status: 'active' },
-    });
-
-    return json({
-      success: true,
-      activated: true,
-      signed_in: true,
-      user: {
-        id: updatedUser.id,
-        email: updatedUser.email,
-        name: updatedUser.name,
-        phone: updatedUser.phone,
-        job_title: updatedUser.job_title,
-        must_change_password: false,
-        has_accepted_current_terms: false,
-        has_completed_onboarding: false,
-      },
-      organisations: accessibleOrganisations,
-      active_organisation: autoSelected,
-      requires_organisation_selection: !autoSelected,
-      session: {
-        id: issued.id,
-        absolute_expires_at: issued.absoluteExpiresAt.toISOString(),
-        idle_expires_at: issued.idleExpiresAt.toISOString(),
-      },
-    }, 200, { 'Set-Cookie': createBuilderSessionCookie(issued.token, issued.absoluteExpiresAt) });
+    return await finishActivation(portalUser.id, activated);
   } catch (error) {
     console.error('[builder-portal-accept-invite]', error);
     return json({ error: 'Internal server error' }, 500);

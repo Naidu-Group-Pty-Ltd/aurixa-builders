@@ -223,8 +223,13 @@ export function builderValidateInvite(token: string) {
   return invokeBuilderFunction('builder-portal-accept-invite', { action: 'validate', token });
 }
 
-export function builderAcceptInvite(token: string, password: string) {
-  return invokeBuilderFunction('builder-portal-accept-invite', { token, password });
+/**
+ * Accept an invitation. A first invitation sends the password it sets; an
+ * invitation to an account that already signs in sends none — it is a join,
+ * and nothing about the account changes (doc 68).
+ */
+export function builderAcceptInvite(token: string, password?: string) {
+  return invokeBuilderFunction('builder-portal-accept-invite', password === undefined ? { token } : { token, password });
 }
 
 /** Authenticated rotation. The server re-issues the cookie; nothing is stored here. */
@@ -296,6 +301,20 @@ export function builderInviteTeamMember(input: {
     success?: boolean;
     invite_url?: string;
   }>('builder-portal-invite', { action: 'invite', ...input });
+}
+
+/**
+ * The deployment's one email-delivery reading (doc 68). It says whether mail
+ * is leaving at all, and whether the queue is long; it never says anything
+ * about a particular invitation, address or message.
+ */
+export type BuilderDeliveryState = 'operational' | 'degraded' | 'delayed' | 'not_configured' | 'unknown';
+
+export function builderInviteDeliveryHealth() {
+  return invokeBuilderFunction<{
+    success?: boolean;
+    delivery?: { state: BuilderDeliveryState; checked_at: string | null };
+  }>('builder-portal-invite', { action: 'delivery_health' });
 }
 
 /** A member (or pending invitation) of the ACTIVE organisation, as an owner or administrator sees it. */

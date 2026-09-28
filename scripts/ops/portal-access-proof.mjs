@@ -41,6 +41,12 @@
  *      a burst refused past the person's ceiling with the shared 429, a
  *      refused request leaving nothing behind, the organisation's ceiling
  *      holding for a second administrator, and another organisation untouched.
+ *   L. an invitation waits for its invitee (doc 68): an account that already
+ *      signs in is invited rather than added, the invite writes nothing to it,
+ *      it joins with one click that sets no password and issues no session,
+ *      each organisation's invitation lives on its own seat, the name has a
+ *      ceiling, a burst answers alike while its emails leave paced, and one
+ *      delivery reading serves the whole deployment.
  *
  * Every organisation, user, session, project, conversation, task and
  * notification it creates is deleted before it exits and counted to zero.
@@ -140,6 +146,51 @@ const refused = (status) => status === 401 || status === 403;
 const shown = (text) => String(text ?? '').replace(/"invite_url"\s*:\s*"[^"]*"/g, '"invite_url":"[redacted]"');
 
 const cc = (label, sql) => q(`cc ${label}`, sql, CC_REF);
+
+/**
+ * Whether an invitation's email left, as the function recorded it. Since doc 68
+ * the email is sent AFTER the answer and in its turn, so the record is waited
+ * for rather than read once. Keyed on the organisation and the invitee's row;
+ * no address is printed. `after` skips that many earlier records.
+ */
+async function deliveryOf(email, orgId, { after = 0, timeoutMs = 150_000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const rows = await q('invitation delivery', `
+      SELECT l.metadata->>'email_sent' AS email_sent, l.metadata->>'outcome' AS outcome,
+             l.metadata->>'sent_at' AS sent_at
+        FROM public.builder_portal_activity_log l
+        JOIN public.builder_portal_users u ON u.id = l.entity_id
+       WHERE u.email = ${sqlLit(email)} AND l.organisation_id = ${id(orgId)}
+         AND l.action = 'builder_invite_delivery'
+       ORDER BY l.created_at`);
+    if (rows.length > after) return rows[rows.length - 1];
+    if (Date.now() > deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+}
+
+/** The token hash on an organisation's own seat for an address (doc 68), or null. */
+async function seatTokenOf(email, orgId) {
+  return (await q('seat token', `
+    SELECT m.invite_token_hash FROM public.builder_organisation_memberships m
+      JOIN public.builder_portal_users u ON u.id = m.builder_user_id
+     WHERE u.email = ${sqlLit(email)} AND m.organisation_id = ${id(orgId)} AND m.revoked_at IS NULL`))[0]
+    ?.invite_token_hash ?? null;
+}
+
+/** Write a known token's hash onto an organisation's waiting seat — the proof's twin of the emailed link. */
+async function replayOntoSeat(email, orgId) {
+  const token = `${randomUUID()}-${randomUUID()}`;
+  await q('mint seat token', `
+    UPDATE public.builder_organisation_memberships m
+       SET invite_token_hash = ${sqlLit(hmacHex(PEPPER, token))},
+           invite_token_expires_at = now() + interval '1 hour'
+      FROM public.builder_portal_users u
+     WHERE u.id = m.builder_user_id AND u.email = ${sqlLit(email)} AND m.organisation_id = ${id(orgId)}
+       AND m.status = 'invited' AND m.revoked_at IS NULL`);
+  return token;
+}
 
 // ------------------------------------------------------------------ cleanup
 /**
@@ -321,13 +372,13 @@ async function inviteAndAccept(owner, ownerCookie, role, label) {
   if (invite.status !== 200 || !userRow) {
     return { invite, user: null };
   }
+  // The invitation lives on the seat (doc 68); its known twin is written there.
   const inviteToken = `${randomUUID()}-${randomUUID()}`;
   await q('mint invite token', `
-    UPDATE public.builder_portal_users
+    UPDATE public.builder_organisation_memberships
        SET invite_token_hash = ${sqlLit(hmacHex(PEPPER, inviteToken))},
-           invite_token_expires_at = now() + interval '1 hour',
-           invite_token_organisation_id = ${id(owner.orgId)}
-     WHERE id = ${id(userRow.id)}`);
+           invite_token_expires_at = now() + interval '1 hour'
+     WHERE id = ${id(userRow.membership_id)} AND status = 'invited' AND revoked_at IS NULL`);
   const accepted = await call('builder-portal-accept-invite',
     { action: 'accept', token: inviteToken, password });
   const cookie = cookieFrom(accepted.setCookies);
@@ -817,20 +868,16 @@ try {
    *
    * That the send failed is read from the activity log, where the function
    * records the provider's answer: the response stopped carrying `email_sent`
-   * because it differed for a revoked account (section J).
+   * because it differed for a revoked account (section J). Since doc 68 the
+   * email leaves after the answer, so the record is waited for.
    */
-  const bSend = (await q('B invitation send outcome', `
-    SELECT l.metadata->>'email_sent' AS email_sent
-      FROM public.builder_portal_activity_log l
-      JOIN public.builder_portal_users u ON u.id = l.entity_id
-     WHERE u.email = ${sqlLit(victimEmail)} AND l.organisation_id = ${id(B.orgId)}
-       AND l.action = 'builder_invite_sent'
-     ORDER BY l.created_at DESC LIMIT 1`))[0];
+  const bSend = await deliveryOf(victimEmail, B.orgId);
   record('I: a failed send hands the inviter NO link, so nobody can claim the account behind an address',
     bInvite.status === 200 && bSend?.email_sent === 'false' && !bInvite.json?.invite_url,
-    `send (activity log)=${bSend?.email_sent} invite_url=${bInvite.json?.invite_url ? 'RETURNED' : 'absent'}`);
+    `send (activity log, after the answer)=${bSend?.email_sent ?? 'not recorded'} invite_url=${bInvite.json?.invite_url ? 'RETURNED' : 'absent'}`);
 
   // A now invites the same address. This is the attacker's move.
+  const bTokenBefore = await seatTokenOf(victimEmail, B.orgId);
   const aInvite = await call('builder-portal-invite',
     { action: 'invite', email: victimEmail, name: 'Access crossorg', membership_role: 'read_only' },
     A.cookie);
@@ -838,6 +885,17 @@ try {
   record('I: the second organisation may invite the same address, and its grant waits too',
     aInvite.status === 200 && aPending?.status === 'invited',
     `invite=${aInvite.status} A.status=${aPending?.status}`);
+  // Doc 68: each organisation's invitation lives on its own seat, so A's cannot
+  // replace B's — the account's single slot, which A used to overwrite, is not
+  // written at all.
+  const bTokenAfterA = await seatTokenOf(victimEmail, B.orgId);
+  const aToken = await seatTokenOf(victimEmail, A.orgId);
+  const victimSlot = (await q('the account slot', `
+    SELECT invite_token_hash FROM public.builder_portal_users WHERE email = ${sqlLit(victimEmail)}`))[0]?.invite_token_hash ?? null;
+  record('I: and it cannot replace the first organisation\'s invitation — each lives on its own seat',
+    !!bTokenBefore && bTokenAfterA === bTokenBefore && !!aToken && aToken !== bTokenBefore && victimSlot === null,
+    `B's token ${bTokenAfterA === bTokenBefore ? 'unchanged' : 'REPLACED'}; A's own=${!!aToken && aToken !== bTokenBefore}; `
+    + `account slot=${victimSlot === null ? 'empty' : 'WRITTEN'}`);
   // The link is the delivery mechanism the takeover needed, and this run's own
   // recipient is a reserved `@example.com` name the provider refuses — so the
   // send fails here for the same reason every proof send always has (doc 65
@@ -856,15 +914,7 @@ try {
     `belongs-nowhere=${shown(bInvite.text)} belongs-elsewhere=${shown(aInvite.text)}`);
 
   // Accept A's invitation, with A's own token, exactly as the portal would.
-  const crossToken = `${randomUUID()}-${randomUUID()}`;
-  const victimId = (await q('cross-org user', `
-    SELECT id FROM public.builder_portal_users WHERE email = ${sqlLit(victimEmail)}`))[0]?.id;
-  await q('mint cross-org token', `
-    UPDATE public.builder_portal_users
-       SET invite_token_hash = ${sqlLit(hmacHex(PEPPER, crossToken))},
-           invite_token_expires_at = now() + interval '1 hour',
-           invite_token_organisation_id = ${id(A.orgId)}
-     WHERE id = ${id(victimId)}`);
+  const crossToken = await replayOntoSeat(victimEmail, A.orgId);
 
   // What the form is told before a password is set: this organisation only.
   const validated = await call('builder-portal-accept-invite', { action: 'validate', token: crossToken });
@@ -882,8 +932,8 @@ try {
     crossAccepted.status === 200 && aAfter?.status === 'active',
     `status=${crossAccepted.status} A.status=${aAfter?.status}`);
   record('I: and leaves the OTHER organisation exactly where it was — the takeover is refused',
-    bAfter?.status === 'invited',
-    `B.status=${bAfter?.status} role=${bAfter?.membership_role}`);
+    bAfter?.status === 'invited' && await seatTokenOf(victimEmail, B.orgId) === bTokenBefore,
+    `B.status=${bAfter?.status} role=${bAfter?.membership_role} B's invitation ${await seatTokenOf(victimEmail, B.orgId) === bTokenBefore ? 'still standing' : 'CHANGED'}`);
 
   // Asked of the runtime rather than of the rows: the session cannot reach B.
   const crossRestore = crossCookie
@@ -900,16 +950,27 @@ try {
     intoB.status === 403 && intoB.json?.code === 'organisation_not_accessible',
     `status=${intoB.status} code=${intoB.json?.code}`);
 
-  // No lockout, and no seat stuck waiting for ever. The victim now has an
-  // account, so B adding them is no longer an invitation: B's administrator
-  // grants it and the waiting row is promoted on the spot.
+  // No lockout, and no seat stuck waiting for ever — but no seat brought up
+  // behind anybody's back either. The victim now signs in, and B adding them
+  // again used to promote B's waiting seat on the spot. Since doc 68 it is an
+  // invitation like any other: sent again, and still waiting for them.
   const bRegrant = await call('builder-portal-invite',
     { action: 'invite', email: victimEmail, name: 'Access crossorg', membership_role: 'manager' },
     B.cookie);
+  const bStill = await membershipStatus(B.orgId);
+  const bResent = await deliveryOf(victimEmail, B.orgId, { after: 1 });
+  record('I: the other organisation adding them again brings nothing up — its seat still waits for them',
+    bRegrant.status === 200 && bRegrant.text === '{"success":true}' && bStill?.status === 'invited' && !!bResent,
+    `regrant=${bRegrant.status} B.status=${bStill?.status} re-sent=${bResent ? 'recorded' : 'NOT RECORDED'}`);
+  const bJoinToken = await replayOntoSeat(victimEmail, B.orgId);
+  const bValidated = await call('builder-portal-accept-invite', { action: 'validate', token: bJoinToken });
+  const bJoined = await call('builder-portal-accept-invite', { action: 'accept', token: bJoinToken });
   const bFinal = await membershipStatus(B.orgId);
-  record('I: the other organisation can still add them itself, and the waiting seat is promoted',
-    bRegrant.status === 200 && bFinal?.status === 'active',
-    `regrant=${bRegrant.status} B.status=${bFinal?.status} role=${bFinal?.membership_role}`);
+  record('I: they accept it themselves, with one click — no password asked, no session issued — and only then is it live',
+    bValidated.json?.requires_password === false && bJoined.status === 200 && bJoined.json?.accepted === true
+      && bJoined.json?.signed_in === false && !cookieFrom(bJoined.setCookies) && bFinal?.status === 'active',
+    `validate requires_password=${bValidated.json?.requires_password} join=${bJoined.status} `
+    + `signed_in=${bJoined.json?.signed_in} cookie=${cookieFrom(bJoined.setCookies) ? 'SET' : 'none'} B.status=${bFinal?.status}`);
   /*
    * AND A REFUSAL TO PROMOTE IS NOT REPORTED AS A GRANT.
    *
@@ -1029,23 +1090,39 @@ try {
      GROUP BY 1, 2, 3, 4 ORDER BY 1`);
   const shape = (kind) => truth.filter((r) => r.kind === kind)
     .map((r) => `${r.account}/${r.in_d ?? 'none'}/${r.in_b ?? 'none'}x${r.n}`).join(',');
-  record('J: underneath, the four were handled four different ways (account / in D / in B)',
+  // Doc 68: an address that already signs in is INVITED, not added — its seat
+  // in D waits, exactly as a new address's does.
+  record('J: underneath, the kinds were handled differently — and an account that signs in was invited, not added',
     shape('new') === 'invited/invited/nonex3'
       && shape('pending') === 'invited/invited/invitedx3'
-      && shape('established') === 'active/active/nonex3'
+      && shape('established') === 'active/invited/nonex3'
       && shape('revoked') === 'revoked/none/nonex3',
     kinds.map((kind) => `${kind}=${shape(kind)}`).join(' '));
-  const logged = (await q('where the send outcomes went', `
-    SELECT count(*) FILTER (WHERE l.action = 'builder_invite_sent' AND l.metadata ? 'email_sent')::int AS invitations,
-           count(*) FILTER (WHERE l.action = 'builder_membership_granted' AND l.metadata ? 'email_sent')::int AS grants
+  // Each email leaves after its answer (doc 68), so its record is waited for.
+  const loggedInD = () => q('where the send outcomes went', `
+    SELECT count(*) FILTER (WHERE l.action = 'builder_invite_sent')::int AS invitations,
+           count(*) FILTER (WHERE l.action = 'builder_invite_delivery' AND l.metadata ? 'email_sent')::int AS deliveries,
+           count(*) FILTER (WHERE l.action = 'builder_membership_granted')::int AS grants
       FROM public.builder_portal_activity_log l
-     WHERE l.organisation_id = ${id(D.orgId)}`))[0] ?? {};
-  record('J: whether each email left is still recorded — in the operator-only activity log, for invitations and grants alike',
-    Number(logged.invitations) === 6 && Number(logged.grants) === 3,
-    `invitations=${logged.invitations} grants=${logged.grants}`);
+     WHERE l.organisation_id = ${id(D.orgId)}`).then((rows) => rows[0] ?? {});
+  let logged = await loggedInD();
+  for (const deadline = Date.now() + 120_000; Number(logged.deliveries) < 9 && Date.now() < deadline;) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    logged = await loggedInD();
+  }
+  record('J: whether each email left is still recorded — in the operator-only activity log, after the answer, for every invitation',
+    Number(logged.invitations) === 9 && Number(logged.deliveries) === 9 && Number(logged.grants) === 0,
+    `invitations=${logged.invitations} deliveries=${logged.deliveries} grants=${logged.grants}`);
   const median = (list) => [...list].sort((x, y) => x - y)[Math.floor(list.length / 2)];
-  record('J: response time by kind, median of three (ms) — measured, not asserted',
-    true, kinds.map((kind) => `${kind}=${median(answers[kind].map((a) => a.ms))}`).join(' '), { required: false });
+  const fastest = (list) => Math.min(...list);
+  const medians = kinds.map((kind) => median(answers[kind].map((a) => a.ms)));
+  // Measured end to end, through the portal's proxy, so every figure carries the
+  // network too; the floor is the server's, so no answer can be faster than it.
+  record('J: every kind answers no sooner than the floor, and the kinds take the same time',
+    kinds.every((kind) => fastest(answers[kind].map((a) => a.ms)) >= 1500)
+      && Math.max(...medians) - Math.min(...medians) <= 300,
+    `median ms ${kinds.map((kind, i) => `${kind}=${medians[i]}`).join(' ')}; `
+    + `fastest ${kinds.map((kind) => `${kind}=${fastest(answers[kind].map((a) => a.ms))}`).join(' ')}`);
 
   // A SECOND invitation of every address, and a resend of every seat D now
   // holds. The independent review found the first answer uniform and the
@@ -1079,11 +1156,18 @@ try {
       && resends.revoked.length === 0,
     `statuses=[${[...new Set(repeated.map((a) => a.status))]}] distinct bodies=${repeatBodies.length} `
     + `resends ${kinds.map((kind) => `${kind}=${resends[kind].length}`).join(' ')} (a revoked address gets no seat to resend)`);
+  const establishedSeats = await q('D seats for the addresses that sign in', `
+    SELECT m.status, count(*)::int AS n FROM public.builder_portal_users u
+      JOIN public.builder_organisation_memberships m
+        ON m.builder_user_id = u.id AND m.organisation_id = ${id(D.orgId)} AND m.revoked_at IS NULL
+     WHERE u.email LIKE ${sqlLit(`${EMAIL_PREFIX}oracle-established-%`)}
+     GROUP BY 1`);
   const grantsAfter = Number((await q('grants after the repeats', `
     SELECT count(*)::int AS n FROM public.builder_portal_activity_log
      WHERE organisation_id = ${id(D.orgId)} AND action = 'builder_membership_granted'`))[0]?.n);
-  record('J: repeating an address that already signs in grants nothing more and sends nothing',
-    grantsAfter === 3, `grants=${grantsAfter}`);
+  record('J: repeating an address that already signs in, and re-sending it, brings nothing up — every seat still waits',
+    establishedSeats.length === 1 && establishedSeats[0].status === 'invited' && establishedSeats[0].n === 3 && grantsAfter === 0,
+    `seats=${establishedSeats.map((r) => `${r.status}x${r.n}`).join(',')} grants=${grantsAfter}`);
   const inviteCallsByD = every.length + repeated.length;
 
   // --- K. The invitation ceiling ------------------------------------------------
@@ -1177,11 +1261,12 @@ try {
 
   // Resend is under the same ceiling, and the refused one re-mints nothing.
   const waiting = (await q('a waiting invitee of D', `
-    SELECT u.id, u.invite_token_hash FROM public.builder_portal_users u
+    SELECT u.id, m.invite_token_hash FROM public.builder_portal_users u
+      JOIN public.builder_organisation_memberships m
+        ON m.builder_user_id = u.id AND m.organisation_id = ${id(D.orgId)} AND m.revoked_at IS NULL
      WHERE u.email = ${sqlLit(addressOf('new', 1))}`))[0];
   const resent = await call('builder-portal-invite', { action: 'resend', builder_user_id: waiting?.id }, D.cookie);
-  const waitingAfter = (await q('the waiting invitee after', `
-    SELECT invite_token_hash FROM public.builder_portal_users WHERE id = ${id(waiting?.id)}`))[0];
+  const waitingAfter = { invite_token_hash: await seatTokenOf(addressOf('new', 1), D.orgId) };
   record('K: resend is under the same ceiling, and the refused resend re-minted nothing',
     resent.status === 429 && !!waiting?.invite_token_hash && waitingAfter?.invite_token_hash === waiting.invite_token_hash,
     `status=${resent.status} token ${waitingAfter?.invite_token_hash === waiting?.invite_token_hash ? 'unchanged' : 'CHANGED'}`);
@@ -1215,6 +1300,177 @@ try {
   record('K: another organisation is unaffected — its administrators invite as normal',
     elsewhere.status === 200 && elsewhere.text === '{"success":true}',
     `status=${elsewhere.status}`);
+
+  // --- L. An invitation waits for its invitee (doc 68) ---------------------------
+  //
+  // Every organisation invitation now waits for the invitee to accept it, an
+  // account that already signs in included, and the invite door's remaining
+  // hardening: each invitation on its own seat, a bounded name, a floor on the
+  // answer and its email sent after it in its turn, and one delivery reading
+  // for the whole deployment. Asked of the live deployment, over a disposable
+  // organisation (F) with its own allowance.
+  console.log('\nL. An invitation waits for its invitee, and the door\'s remaining hardening');
+  const F = await seedOrganisation('F');
+  F.cookie = (await mintSession(F.userId)).cookie;
+  {
+    const g = await govern(F.cookie);
+    record('L: owner F is governed and reaches the dashboard',
+      g.verify.status === 200 && g.verify.json?.governance === null, `governance=${String(g.verify.json?.governance)}`);
+  }
+  const accountRow = async (userId) => (await q('account row', `
+    SELECT status, is_active, password_hash, invite_token_hash, invite_accepted_at::text AS accepted_at,
+           updated_at::text AS updated_at
+      FROM public.builder_portal_users WHERE id = ${id(userId)}`))[0] ?? null;
+  const seatIn = async (userId, orgId) => (await q('seat', `
+    SELECT id, status, invited_name, invite_token_hash FROM public.builder_organisation_memberships
+     WHERE builder_user_id = ${id(userId)} AND organisation_id = ${id(orgId)} AND revoked_at IS NULL`))[0] ?? null;
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  // 1. An account that already signs in: invited, not added.
+  const est = await seedAccount('doc68-established', { revoked: false });
+  const estBefore = await accountRow(est.userId);
+  const estInvite = await call('builder-portal-invite',
+    { action: 'invite', email: est.email, name: 'Typed By F', membership_role: 'member' }, F.cookie);
+  const estSeat = await seatIn(est.userId, F.orgId);
+  record('L: an address that already signs in is invited, not added — its seat waits, carrying its own invitation',
+    estInvite.status === 200 && estInvite.text === '{"success":true}' && estSeat?.status === 'invited' && !!estSeat?.invite_token_hash,
+    `invite=${estInvite.status} seat=${estSeat?.status} token=${estSeat?.invite_token_hash ? 'on the seat' : 'NONE'}`);
+  record('L: the invitation wrote nothing to the account — status, activity, password, token and timestamp as they were',
+    same(await accountRow(est.userId), estBefore), 'compared whole');
+  const estSession = await mintSession(est.userId);
+  const beforeJoin = await call('builder-portal-verify', {}, estSession.cookie);
+  record('L: their own session does not reach the inviting organisation before they accept',
+    beforeJoin.status === 200 && !(beforeJoin.json?.organisations ?? []).some((o) => o.organisation_id === F.orgId),
+    `reachable=${(beforeJoin.json?.organisations ?? []).length}`);
+  const fList = await call('builder-portal-invite', { action: 'list_members' }, F.cookie);
+  const listedInvitation = (fList.json?.invitations ?? []).find((m) => m.builder_user_id === est.userId);
+  record('L: the inviting organisation lists them as an invitation, under the name IT typed — never the account\'s',
+    !!listedInvitation && listedInvitation.name === 'Typed By F'
+      && !(fList.json?.members ?? []).some((m) => m.builder_user_id === est.userId),
+    `listed as=${listedInvitation ? (listedInvitation.name === 'Typed By F' ? 'the typed name' : 'ANOTHER NAME') : 'NOT LISTED'}`);
+  const joinToken = await replayOntoSeat(est.email, F.orgId);
+  const joinValidate = await call('builder-portal-accept-invite', { action: 'validate', token: joinToken });
+  record('L: the link asks for no password, and names only the organisation it joins',
+    joinValidate.status === 200 && joinValidate.json?.requires_password === false
+      && (joinValidate.json?.organisations ?? []).length === 1 && joinValidate.json.organisations[0].organisation_id === F.orgId,
+    `status=${joinValidate.status} requires_password=${joinValidate.json?.requires_password}`);
+  const estBeforeJoin = await accountRow(est.userId);
+  // A password sent with the join is not used: a join cannot become a reset.
+  const joined = await call('builder-portal-accept-invite',
+    { action: 'accept', token: joinToken, password: `Hijack!${RUN}!pw9` });
+  const seatAfterJoin = await seatIn(est.userId, F.orgId);
+  record('L: one click joins — the seat comes up, its token is spent, and no session is issued',
+    joined.status === 200 && joined.json?.accepted === true && joined.json?.signed_in === false
+      && !cookieFrom(joined.setCookies) && seatAfterJoin?.status === 'active' && seatAfterJoin?.invite_token_hash === null,
+    `join=${joined.status} signed_in=${joined.json?.signed_in} cookie=${cookieFrom(joined.setCookies) ? 'SET' : 'none'} seat=${seatAfterJoin?.status}`);
+  record('L: the join wrote nothing to the account — a password sent with it was not set',
+    same(await accountRow(est.userId), estBeforeJoin), 'compared whole');
+  const afterJoin = await call('builder-portal-verify', {}, estSession.cookie);
+  record('L: their existing session now reaches the organisation they accepted',
+    afterJoin.status === 200 && (afterJoin.json?.organisations ?? []).some((o) => o.organisation_id === F.orgId),
+    `reachable=${(afterJoin.json?.organisations ?? []).length}`);
+  const replayedJoin = await call('builder-portal-accept-invite', { action: 'accept', token: joinToken });
+  record('L: the same link cannot be used twice', replayedJoin.status === 400, `status=${replayedJoin.status}`);
+  const fListAfter = await call('builder-portal-invite', { action: 'list_members' }, F.cookie);
+  record('L: having accepted, they are a member — shown as they call themselves',
+    (fListAfter.json?.members ?? []).some((m) => m.builder_user_id === est.userId && m.name === 'Access doc68-established'),
+    `members=${(fListAfter.json?.members ?? []).length}`);
+
+  // 2. Each organisation's invitation is its own: a re-send replaces only its own.
+  const sharedEmail = `${EMAIL_PREFIX}doc68-shared@example.com`;
+  await call('builder-portal-invite', { action: 'invite', email: sharedEmail, name: 'Shared F', membership_role: 'member' }, F.cookie);
+  await call('builder-portal-invite', { action: 'invite', email: sharedEmail, name: 'Shared E', membership_role: 'member' }, E.cookie);
+  const eToken = await seatTokenOf(sharedEmail, E.orgId);
+  const fToken = await seatTokenOf(sharedEmail, F.orgId);
+  const sharedUser = (await q('shared invitee', `
+    SELECT id, invite_token_hash FROM public.builder_portal_users WHERE email = ${sqlLit(sharedEmail)}`))[0];
+  const fResend = await call('builder-portal-invite', { action: 'resend', builder_user_id: sharedUser?.id }, F.cookie);
+  const eTokenAfter = await seatTokenOf(sharedEmail, E.orgId);
+  const fTokenAfter = await seatTokenOf(sharedEmail, F.orgId);
+  record('L: a re-sent invitation replaces its own organisation\'s token and never another\'s',
+    fResend.status === 200 && !!eToken && !!fToken && eToken !== fToken
+      && fTokenAfter !== fToken && eTokenAfter === eToken && sharedUser?.invite_token_hash === null,
+    `F's ${fTokenAfter !== fToken ? 're-minted' : 'UNCHANGED'}, E's ${eTokenAfter === eToken ? 'untouched' : 'REPLACED'}, `
+    + `account slot ${sharedUser?.invite_token_hash === null ? 'empty' : 'WRITTEN'}`);
+
+  // 3. The name has a ceiling, and a refusal writes nothing.
+  const longEmail = `${EMAIL_PREFIX}doc68-long@example.com`;
+  const tooLong = await call('builder-portal-invite',
+    { action: 'invite', email: longEmail, name: 'n'.repeat(201), membership_role: 'member' }, F.cookie);
+  const fitsEmail = `${EMAIL_PREFIX}doc68-fits@example.com`;
+  const fits = await call('builder-portal-invite',
+    { action: 'invite', email: fitsEmail, name: 'n'.repeat(200), membership_role: 'member' }, F.cookie);
+  const nameRows = (await q('what the names left', `
+    SELECT (SELECT count(*) FROM public.builder_portal_users WHERE email = ${sqlLit(longEmail)})::int AS refused_accounts,
+           (SELECT char_length(m.invited_name) FROM public.builder_organisation_memberships m
+              JOIN public.builder_portal_users u ON u.id = m.builder_user_id
+             WHERE u.email = ${sqlLit(fitsEmail)} AND m.organisation_id = ${id(F.orgId)} AND m.revoked_at IS NULL) AS kept`))[0] ?? {};
+  record('L: a name past 200 characters is refused before anything is written; one of 200 is kept whole',
+    tooLong.status === 400 && /200/.test(String(tooLong.json?.error)) && Number(nameRows.refused_accounts) === 0
+      && fits.status === 200 && Number(nameRows.kept) === 200,
+    `201=${tooLong.status} (${tooLong.json?.error}) accounts=${nameRows.refused_accounts} 200=${fits.status} kept=${nameRows.kept}`);
+
+  // 4. A burst: every answer at the floor, every email in its own turn.
+  const burstEmails = Array.from({ length: 6 }, (_, i) => `${EMAIL_PREFIX}doc68-burst-${i + 1}@example.com`);
+  const burstStarted = Date.now();
+  const burstAnswers = await Promise.all(burstEmails.map((email, i) => call('builder-portal-invite',
+    { action: 'invite', email, name: `Burst ${i + 1}`, membership_role: 'read_only' }, F.cookie)));
+  const burstMs = Date.now() - burstStarted;
+  const burstDeliveries = [];
+  for (const email of burstEmails) burstDeliveries.push(await deliveryOf(email, F.orgId));
+  const leftAt = burstDeliveries.map((d) => Date.parse(d?.sent_at ?? '')).filter(Number.isFinite).sort((a, b) => a - b);
+  const gaps = leftAt.slice(1).map((t, i) => t - leftAt[i]);
+  record('L: six invitations at once all answer alike, and their emails leave at least a second apart — paced for the deployment',
+    burstAnswers.every((a) => a.status === 200 && a.text === '{"success":true}') && leftAt.length === 6
+      && gaps.every((gap) => gap >= 900) && burstDeliveries.every((d) => d?.outcome !== 'paced_out'),
+    `answered together in ${burstMs} ms; emails left ${gaps.map((gap) => `${gap}`).join(' / ')} ms apart`);
+
+  // 5. One delivery reading for the whole deployment.
+  const readingF = await call('builder-portal-invite', { action: 'delivery_health' }, F.cookie);
+  const readingE = await call('builder-portal-invite', { action: 'delivery_health' }, E.cookie);
+  record('L: every administrator reads the same deployment-wide delivery reading, and it names nothing else',
+    readingF.status === 200 && readingE.status === 200
+      && same(Object.keys(readingF.json?.delivery ?? {}).sort(), ['checked_at', 'state'])
+      && readingF.json?.delivery?.state === readingE.json?.delivery?.state,
+    `state=${readingF.json?.delivery?.state} / ${readingE.json?.delivery?.state}`);
+  const readingByMember = await call('builder-portal-invite', { action: 'delivery_health' }, dMember?.cookie);
+  record('L: a member may not read it', readingByMember.status === 403, `status=${readingByMember.status}`);
+  let check = null;
+  for (const deadline = Date.now() + 150_000; Date.now() < deadline;) {
+    check = (await q('the delivery check', `
+      SELECT state, checked_at IS NOT NULL AS checked, check_started_at IS NOT NULL AS running
+        FROM public.builder_email_delivery_health WHERE id`))[0] ?? null;
+    if (check?.checked && !check.running) break;
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+  const readingAfter = await call('builder-portal-invite', { action: 'delivery_health' }, F.cookie);
+  record('L: the delivery check ran after an answer, to the provider\'s sink, and the reading says mail is leaving',
+    check?.checked === true && check.state === 'operational'
+      && ['operational', 'delayed'].includes(readingAfter.json?.delivery?.state),
+    `check=${check?.state ?? 'none'} reading=${readingAfter.json?.delivery?.state}`);
+
+  // 6. An account-slot invitation (the operator's doors, and anything issued
+  //    before doc 68) to an account that has since started signing in joins
+  //    too: it used to be refused `already_active`, stranding the seat.
+  const slotEst = await seedAccount('doc68-slot', { revoked: false });
+  const slotToken = `${randomUUID()}-${randomUUID()}`;
+  await q('an account-slot invitation to an account that signs in', `
+    INSERT INTO public.builder_organisation_memberships(builder_user_id, organisation_id, membership_role, is_primary, status)
+    VALUES (${id(slotEst.userId)}, ${id(F.orgId)}, 'member', false, 'invited');
+    UPDATE public.builder_portal_users
+       SET invite_token_hash = ${sqlLit(hmacHex(PEPPER, slotToken))},
+           invite_token_expires_at = now() + interval '1 hour',
+           invite_token_organisation_id = ${id(F.orgId)}
+     WHERE id = ${id(slotEst.userId)}`);
+  const slotBefore = await accountRow(slotEst.userId);
+  const slotJoined = await call('builder-portal-accept-invite', { action: 'accept', token: slotToken });
+  const slotAfter = await accountRow(slotEst.userId);
+  const slotSeat = await seatIn(slotEst.userId, F.orgId);
+  record('L: an account-slot invitation to an account that signs in joins too — no password, no session, its token spent',
+    slotJoined.status === 200 && slotJoined.json?.accepted === true && !cookieFrom(slotJoined.setCookies)
+      && slotSeat?.status === 'active' && slotAfter?.invite_token_hash === null
+      && slotAfter?.password_hash === slotBefore?.password_hash && slotAfter?.status === slotBefore?.status,
+    `join=${slotJoined.status} seat=${slotSeat?.status} token=${slotAfter?.invite_token_hash === null ? 'spent' : 'LEFT'}`);
 
   // --- C. Sessions ----------------------------------------------------------------
   console.log('\nC. Sessions');

@@ -115,7 +115,11 @@ about it", or, where there is no mail provider, the link to pass on.
 
 ## 3. What this does not close
 
-Stated so nobody reads the response fix as more than it is.
+Stated so nobody reads the response fix as more than it is. Doc 68 (28 Sep
+2026) closes most of these: every invitation now waits for its invitee, each
+lives on its own seat, the answer takes a fixed time, sends are paced, there is
+a deployment-wide delivery reading, and the name has a ceiling. Its §8 says what
+still stands.
 
 - **The members list still separates them.** This, together with the member
   actions that answer by the state the list shows, is where a tenant

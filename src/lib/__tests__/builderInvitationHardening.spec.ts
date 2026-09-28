@@ -173,7 +173,7 @@ describe('5. one organisation cannot replace another organisation\'s invitation'
     // The account's single token slot was the thing a second organisation
     // overwrote. Each invitation now lives on its own organisation's seat.
     const userWrites = invite.match(/\.from\('builder_portal_users'\)\s*\.update\(\{[\s\S]*?\}\)/g) ?? [];
-    for (const write of userWrites) expect(write).not.toMatch(/invite_token_hash:\s*(?!null)/);
+    for (const write of userWrites) expect(write).not.toMatch(/invite_token_hash:(?!\s*null\b)/);
   });
 
   it('a re-sent invitation replaces only its own seat\'s token, and only while that seat waits', () => {

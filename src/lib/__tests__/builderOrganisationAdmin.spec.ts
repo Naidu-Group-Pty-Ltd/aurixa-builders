@@ -302,19 +302,17 @@ describe('bootstrapping the first owner', () => {
     expect(revoked).toBeLessThan(established);
   });
 
-  it('answers the same question the portal answers, the same way', () => {
-    // Two surfaces, one question. The portal grants the membership for an
-    // address that already holds an account; the network used to refuse it.
+  it('never turns an established account away — the portal invites it to accept, the operator attaches it', () => {
+    // Two surfaces, one question: may an address that already has an account
+    // be given a seat? Neither refuses it. Since doc 68 the portal's seat
+    // WAITS for the person to accept, as every organisation invitation does;
+    // the operator's bootstrap of an EMPTY organisation still attaches its
+    // first owner, which is the operator plane's own decision (doc 68 §6).
     const portal = readCode('supabase/functions/builder-portal-invite/index.ts');
-    // It reads the same two columns...
-    expect(portal).toMatch(/invite_accepted_at \|\| \w+\.password_hash/);
-    // ...and the membership is inserted BEFORE that reading, so an
-    // established account is granted access rather than turned away. Asserted
-    // on the code's own order, not on a sentence in a comment.
+    expect(portal).toMatch(/const requiresPassword = invitationRequiresPassword\(target\)/);
     const insert = portal.indexOf("from('builder_organisation_memberships')\n        .insert(");
-    const established = portal.search(/if \(\w+\.invite_accepted_at \|\| \w+\.password_hash\)/);
     expect(insert, 'membership insert').toBeGreaterThan(-1);
-    expect(established, 'established branch').toBeGreaterThan(insert);
+    expect(portal.slice(insert, insert + 600)).toMatch(/status: PENDING_MEMBERSHIP_STATUS/);
     // And neither surface answers it with a refusal.
     expect(portal).not.toContain('that_person_already_has_an_account');
   });

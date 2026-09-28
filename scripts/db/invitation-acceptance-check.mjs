@@ -87,10 +87,10 @@ sql(`
   DELETE FROM public.workspace_connection_events;
   DELETE FROM public.workspace_connections;
   INSERT INTO public.builder_portal_users(id, email, name, status, is_active, email_verified_at, must_change_password, password_hash)
-  VALUES (${lit(OWNER)}, 'owen@invitation-check.example', 'Owen', 'active', true, now(), false, '$2b$10$abcdefghijklmnopqrstuv'),
-         (${lit(ESTABLISHED)}, 'eddie@invitation-check.example', 'Eddie', 'active', true, now(), false, '$2b$10$abcdefghijklmnopqrstuv'),
+  VALUES (${lit(OWNER)}, 'owen@invitation-check.example', 'Owen', 'active', true, now(), false, '$2b$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2uheWG/igi.'),
+         (${lit(ESTABLISHED)}, 'eddie@invitation-check.example', 'Eddie', 'active', true, now(), false, '$2b$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2uheWG/igi.'),
          (${lit(PENDING)}, 'penny@invitation-check.example', 'Penny', 'invited', false, NULL, false, NULL),
-         (${lit(SUSPENDED)}, 'sue@invitation-check.example', 'Sue', 'active', true, now(), false, '$2b$10$abcdefghijklmnopqrstuv');
+         (${lit(SUSPENDED)}, 'sue@invitation-check.example', 'Sue', 'active', true, now(), false, '$2b$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2uheWG/igi.');
   INSERT INTO public.builder_organisation_memberships(builder_user_id, organisation_id, membership_role, is_primary, status)
   VALUES (${lit(OWNER)}, ${lit(ORG_A)}, 'owner', true, 'active'),
          (${lit(ESTABLISHED)}, ${lit(ORG_B)}, 'member', true, 'active'),
@@ -151,6 +151,10 @@ check('a token is refused on a seat that is not waiting',
   /builder_memberships_token_on_waiting_seat/.test(refusal(`UPDATE public.builder_organisation_memberships
     SET invite_token_hash = ${lit(hash())}, invite_token_expires_at = now() + interval '1 hour'
     WHERE id = ${lit(seat(OWNER, ORG_A))}`) ?? ''));
+check('a token that is not a peppered hash (a plaintext link) is refused',
+  /builder_memberships_invite_token_hash_check/.test(refusal(`UPDATE public.builder_organisation_memberships
+    SET invite_token_hash = ${lit(`${randomUUID()}-${randomUUID()}`)}, invite_token_expires_at = now() + interval '1 hour'
+    WHERE id = ${lit(seat(PENDING, ORG_B))}`) ?? ''));
 check('a token is refused without an expiry',
   /builder_memberships_token_on_waiting_seat/.test(refusal(`UPDATE public.builder_organisation_memberships
     SET invite_token_hash = ${lit(hash())}, invite_token_expires_at = NULL WHERE id = ${lit(seat(PENDING, ORG_B))}`) ?? ''));
@@ -161,9 +165,9 @@ check('a role change leaves the invitation standing',
   })());
 check('acceptance — the seat brought up — destroys its token in the same statement',
   (() => {
-    sql(`UPDATE public.builder_organisation_memberships SET status = 'active'
+    const failed = refusal(`UPDATE public.builder_organisation_memberships SET status = 'active'
          WHERE id = ${lit(established)} AND invite_token_hash = ${lit(t1)} AND status = 'invited'`);
-    return tokenOf(established) === '|'
+    return failed === null && tokenOf(established) === '|'
       && sql(`SELECT status FROM public.builder_organisation_memberships WHERE id = ${lit(established)}`) === 'active';
   })());
 check('the same token cannot bring anything up twice',
@@ -171,8 +175,8 @@ check('the same token cannot bring anything up twice',
        WHERE invite_token_hash = ${lit(t1)} AND status = 'invited' RETURNING 1) SELECT count(*) FROM hit`) === '0');
 check('cancelling a waiting seat through member management destroys its token with it',
   (() => {
-    sql(`SELECT public.builder_org_manage_membership(${lit(OWNER)}, ${lit(ORG_A)}, ${lit(pendingInA)}, 'remove', NULL, 'check')`);
-    return tokenOf(pendingInA) === '|'
+    const failed = refusal(`SELECT public.builder_org_manage_membership(${lit(OWNER)}, ${lit(ORG_A)}, ${lit(pendingInA)}, 'remove', NULL, 'check')`);
+    return failed === null && tokenOf(pendingInA) === '|'
       && sql(`SELECT status || ':' || (revoked_at IS NOT NULL) FROM public.builder_organisation_memberships
               WHERE id = ${lit(pendingInA)}`) === 'revoked:true';
   })());
@@ -180,8 +184,8 @@ const t3 = hash();
 const suspendMe = sql(invite(SUSPENDED, ORG_B, t3));
 check('a seat moved to suspended loses its token',
   (() => {
-    sql(`UPDATE public.builder_organisation_memberships SET status = 'suspended' WHERE id = ${lit(suspendMe)}`);
-    return tokenOf(suspendMe) === '|';
+    const failed = refusal(`UPDATE public.builder_organisation_memberships SET status = 'suspended' WHERE id = ${lit(suspendMe)}`);
+    return failed === null && tokenOf(suspendMe) === '|';
   })());
 
 // --- The name an inviter types ----------------------------------------------------------
