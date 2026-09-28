@@ -280,6 +280,9 @@ export function names(tag) {
   };
 }
 
+/** Every organisation this run created, so what is left of it can be counted by id. */
+export const seededOrganisations = new Set();
+
 /** An organisation of the run's own with its owner, detached, through governance. */
 export async function seedOrganisation(tag, label, { role = 'owner', existingOrgId = null, contact = true } = {}) {
   const n = names(tag);
@@ -311,6 +314,7 @@ export async function seedOrganisation(tag, label, { role = 'owner', existingOrg
      WHERE p.email = ${sqlLit(email)} AND o.id IN (${orgFilter})`);
   const row = rows[0] ?? {};
   if (!row.user_id || !row.org_id) throw new Error(`the ${label} proof organisation could not be seeded`);
+  seededOrganisations.add(row.org_id);
   if (!existingOrgId && Number(row.connections) !== 0) {
     throw new Error(`the ${label} proof organisation is still connected to ${row.connections} workspace(s); refusing`);
   }
@@ -616,12 +620,16 @@ export async function leftovers(tag) {
               (SELECT 1 FROM public.builder_organisations o WHERE o.id = i.organisation_id))::int AS orphan_items,
            (SELECT count(*) FROM public.builder_stock_uploads u WHERE NOT EXISTS
               (SELECT 1 FROM public.builder_organisations o WHERE o.id = u.organisation_id))::int AS orphan_uploads`);
+  // THIS run's organisations, by id: the mirror holds genuine stock of
+  // organisations with no connection row, so "unconnected" is not a leftover.
+  const ours = [...seededOrganisations].map(id).join(', ') || 'NULL::uuid';
   const [command] = await cc('leftovers', `
     SELECT (SELECT count(*) FROM public.builder_network_connections WHERE builder_org_label LIKE ${sqlLit(`${n.orgPrefix} %`)})::int AS connections,
            (SELECT count(*) FROM public.custom_users WHERE username LIKE ${sqlLit(`${n.ccUserPrefix}%`)})::int AS staff,
            (SELECT count(*) FROM public.clients WHERE primary_surname LIKE ${sqlLit(`${n.clientSurname} %`)})::int AS clients,
-           (SELECT count(*) FROM public.builder_network_stock_items i WHERE NOT EXISTS
-              (SELECT 1 FROM public.builder_network_connections c WHERE c.builder_organisation_id = i.organisation_id))::int AS unconnected_items`);
+           (SELECT count(*) FROM public.builder_network_stock_items WHERE organisation_id IN (${ours}))::int AS items,
+           (SELECT count(*) FROM public.builder_network_stock_organisations WHERE id IN (${ours}))::int AS organisations,
+           (SELECT count(*) FROM public.builder_stock_selections WHERE organisation_id IN (${ours}))::int AS selections`);
   return { network, command };
 }
 
