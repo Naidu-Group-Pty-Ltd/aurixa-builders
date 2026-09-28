@@ -551,6 +551,7 @@ Deno.serve(async (req) => {
           .eq('id', ownerId)
           .is('password_hash', null)
           .is('invite_accepted_at', null)
+          .is('revoked_at', null)
           .select('id');
         if (stampError || !Array.isArray(stamped) || stamped.length === 0) {
           await settle('refused', 'invite_not_issued', {
@@ -809,6 +810,7 @@ Deno.serve(async (req) => {
           .eq('id', ownerId)
           .is('password_hash', null)
           .is('invite_accepted_at', null)
+          .is('revoked_at', null)
           .select('id');
         if (inviteError || !Array.isArray(stamped) || stamped.length === 0) {
           console.error('[builder-network-admin] invite stamp failed',

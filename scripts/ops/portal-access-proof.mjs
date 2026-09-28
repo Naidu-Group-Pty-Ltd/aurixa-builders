@@ -391,6 +391,37 @@ async function inviteAndAccept(owner, ownerCookie, role, label) {
   };
 }
 
+/**
+ * A member seeded straight into an organisation, signed in with a minted
+ * session — for sections that need somebody there and are not testing how they
+ * got there. The acceptance door is limited to 20 calls an hour per address
+ * (`bai`), and this run's own acceptances are spent where acceptance is the
+ * thing being proved.
+ */
+async function seedMember(owner, role, label) {
+  const email = `${EMAIL_PREFIX}${label}@example.com`;
+  const row = (await q(`seed member ${label}`, `
+    WITH person AS (
+      INSERT INTO public.builder_portal_users(
+        email, name, status, is_active, email_verified_at, must_change_password, password_hash)
+      VALUES (${sqlLit(email)}, ${sqlLit(`Access ${label}`)}, 'active', true, now(), false,
+              extensions.crypt(${sqlLit(`Acc3ss!${RUN}!${label}`)}, extensions.gen_salt('bf', 4)))
+      RETURNING id
+    ), membership AS (
+      INSERT INTO public.builder_organisation_memberships(
+        builder_user_id, organisation_id, membership_role, is_primary, status)
+      SELECT person.id, ${id(owner.orgId)}, ${sqlLit(role)}, true, 'active' FROM person
+      RETURNING id
+    )
+    SELECT person.id AS user_id, membership.id AS membership_id FROM person, membership`))[0];
+  await q(`seed member ${label} onboarding`, `SELECT public.builder_ensure_onboarding_steps(${id(row.user_id)})`);
+  const session = await mintSession(row.user_id);
+  return {
+    label, role, email, userId: row.user_id, membershipId: row.membership_id,
+    orgId: owner.orgId, cookie: session.cookie, storedRole: role,
+  };
+}
+
 const requiredFailed = () => results.some((r) => r.required && !r.ok);
 
 // ===========================================================================
@@ -954,6 +985,14 @@ try {
   // behind anybody's back either. The victim now signs in, and B adding them
   // again used to promote B's waiting seat on the spot. Since doc 68 it is an
   // invitation like any other: sent again, and still waiting for them.
+  // B's first link set a password. The victim now has one, so it no longer
+  // works — a password-setting link never becomes a one-click join, since on a
+  // deployment with no mail provider its holder may be the inviter.
+  const bOldLink = await replayOntoSeat(victimEmail, B.orgId);
+  const bOldAccept = await call('builder-portal-accept-invite', { action: 'accept', token: bOldLink, password: victimPassword });
+  record('I: the other organisation\'s first link, which set a password, stops working once they sign in',
+    bOldAccept.status === 400 && !cookieFrom(bOldAccept.setCookies) && (await membershipStatus(B.orgId))?.status === 'invited',
+    `accept=${bOldAccept.status} B.status=${(await membershipStatus(B.orgId))?.status}`);
   const bRegrant = await call('builder-portal-invite',
     { action: 'invite', email: victimEmail, name: 'Access crossorg', membership_role: 'manager' },
     B.cookie);
@@ -963,14 +1002,13 @@ try {
     bRegrant.status === 200 && bRegrant.text === '{"success":true}' && bStill?.status === 'invited' && !!bResent,
     `regrant=${bRegrant.status} B.status=${bStill?.status} re-sent=${bResent ? 'recorded' : 'NOT RECORDED'}`);
   const bJoinToken = await replayOntoSeat(victimEmail, B.orgId);
-  const bValidated = await call('builder-portal-accept-invite', { action: 'validate', token: bJoinToken });
   const bJoined = await call('builder-portal-accept-invite', { action: 'accept', token: bJoinToken });
   const bFinal = await membershipStatus(B.orgId);
   record('I: they accept it themselves, with one click — no password asked, no session issued — and only then is it live',
-    bValidated.json?.requires_password === false && bJoined.status === 200 && bJoined.json?.accepted === true
+    bJoined.status === 200 && bJoined.json?.accepted === true
       && bJoined.json?.signed_in === false && !cookieFrom(bJoined.setCookies) && bFinal?.status === 'active',
-    `validate requires_password=${bValidated.json?.requires_password} join=${bJoined.status} `
-    + `signed_in=${bJoined.json?.signed_in} cookie=${cookieFrom(bJoined.setCookies) ? 'SET' : 'none'} B.status=${bFinal?.status}`);
+    `join=${bJoined.status} signed_in=${bJoined.json?.signed_in} `
+    + `cookie=${cookieFrom(bJoined.setCookies) ? 'SET' : 'none'} B.status=${bFinal?.status}`);
   /*
    * AND A REFUSAL TO PROMOTE IS NOT REPORTED AS A GRANT.
    *
@@ -1194,9 +1232,10 @@ try {
     `person=${await bucket(personKey(D.userId))} organisation=${await bucket(orgKey(D.orgId))} `
     + `after ${inviteCallsByD} calls`);
 
-  // A second administrator and a member of D, through the real invitation and acceptance.
-  const { user: dAdmin } = await inviteAndAccept(D, D.cookie, 'administrator', 'ceiling-admin');
-  const { user: dMember } = await inviteAndAccept(D, D.cookie, 'member', 'ceiling-member');
+  // A second administrator and a member of D, seeded: section B proves the
+  // acceptance door, and this section is about the ceiling.
+  const dAdmin = await seedMember(D, 'administrator', 'ceiling-admin');
+  const dMember = await seedMember(D, 'member', 'ceiling-member');
   for (const u of [dAdmin, dMember]) if (u?.cookie) await govern(u.cookie);
   record('K: a second administrator and a member of D sign in', !!dAdmin?.cookie && !!dMember?.cookie,
     `admin=${!!dAdmin?.cookie} member=${!!dMember?.cookie}`);
@@ -1369,8 +1408,11 @@ try {
   record('L: their existing session now reaches the organisation they accepted',
     afterJoin.status === 200 && (afterJoin.json?.organisations ?? []).some((o) => o.organisation_id === F.orgId),
     `reachable=${(afterJoin.json?.organisations ?? []).length}`);
-  const replayedJoin = await call('builder-portal-accept-invite', { action: 'accept', token: joinToken });
-  record('L: the same link cannot be used twice', replayedJoin.status === 400, `status=${replayedJoin.status}`);
+  const joinTokenLeft = Number((await q('the join link after use', `
+    SELECT count(*)::int AS n FROM public.builder_organisation_memberships
+     WHERE invite_token_hash = ${sqlLit(hmacHex(PEPPER, joinToken))}`))[0]?.n);
+  record('L: the link is spent — no seat holds it any more, so it cannot be used twice',
+    joinTokenLeft === 0, `seats holding it=${joinTokenLeft}`);
   const fListAfter = await call('builder-portal-invite', { action: 'list_members' }, F.cookie);
   record('L: having accepted, they are a member — shown as they call themselves',
     (fListAfter.json?.members ?? []).some((m) => m.builder_user_id === est.userId && m.name === 'Access doc68-established'),
@@ -1392,6 +1434,29 @@ try {
       && fTokenAfter !== fToken && eTokenAfter === eToken && sharedUser?.invite_token_hash === null,
     `F's ${fTokenAfter !== fToken ? 're-minted' : 'UNCHANGED'}, E's ${eTokenAfter === eToken ? 'untouched' : 'REPLACED'}, `
     + `account slot ${sharedUser?.invite_token_hash === null ? 'empty' : 'WRITTEN'}`);
+
+  // What a link is for is fixed when it is minted. The person accepts E's
+  // invitation and sets a password; F's link, minted to set one, then stops
+  // working, and F inviting again sends a join instead.
+  const eLink = await replayOntoSeat(sharedEmail, E.orgId);
+  const eAccepted = await call('builder-portal-accept-invite',
+    { action: 'accept', token: eLink, password: `Sh4red!${RUN}!pw` });
+  const fOldLink = await replayOntoSeat(sharedEmail, F.orgId);
+  const fOldAccept = await call('builder-portal-accept-invite', { action: 'accept', token: fOldLink });
+  const fSeatAfterOld = await seatIn(sharedUser?.id, F.orgId);
+  record('L: a link minted to set a password never becomes a join once the person has one',
+    eAccepted.status === 200 && fOldAccept.status === 400 && fSeatAfterOld?.status === 'invited'
+      && !cookieFrom(fOldAccept.setCookies),
+    `E accept=${eAccepted.status} F's old link=${fOldAccept.status} F.seat=${fSeatAfterOld?.status}`);
+  // Inviting again re-mints the seat as a join (section I accepts one end to end).
+  const fAgain = await call('builder-portal-invite',
+    { action: 'invite', email: sharedEmail, name: 'Shared F', membership_role: 'member' }, F.cookie);
+  const fKind = (await q('what F\'s new link is for', `
+    SELECT m.invite_requires_password AS requires_password FROM public.builder_organisation_memberships m
+     WHERE m.builder_user_id = ${id(sharedUser?.id)} AND m.organisation_id = ${id(F.orgId)} AND m.revoked_at IS NULL`))[0];
+  record('L: inviting again, once they sign in, mints a join rather than another password link',
+    fAgain.status === 200 && fKind?.requires_password === false,
+    `invite=${fAgain.status} requires_password=${fKind?.requires_password}`);
 
   // 3. The name has a ceiling, and a refusal writes nothing.
   const longEmail = `${EMAIL_PREFIX}doc68-long@example.com`;
@@ -1450,8 +1515,9 @@ try {
     `check=${check?.state ?? 'none'} reading=${readingAfter.json?.delivery?.state}`);
 
   // 6. An account-slot invitation (the operator's doors, and anything issued
-  //    before doc 68) to an account that has since started signing in joins
-  //    too: it used to be refused `already_active`, stranding the seat.
+  //    before doc 68) was minted for an account with no password, so an
+  //    account that has since started signing in is refused, as it always was:
+  //    its holder may be an operator, and it must not become a join.
   const slotEst = await seedAccount('doc68-slot', { revoked: false });
   const slotToken = `${randomUUID()}-${randomUUID()}`;
   await q('an account-slot invitation to an account that signs in', `
@@ -1463,14 +1529,13 @@ try {
            invite_token_organisation_id = ${id(F.orgId)}
      WHERE id = ${id(slotEst.userId)}`);
   const slotBefore = await accountRow(slotEst.userId);
-  const slotJoined = await call('builder-portal-accept-invite', { action: 'accept', token: slotToken });
+  const slotRefused = await call('builder-portal-accept-invite', { action: 'accept', token: slotToken });
   const slotAfter = await accountRow(slotEst.userId);
   const slotSeat = await seatIn(slotEst.userId, F.orgId);
-  record('L: an account-slot invitation to an account that signs in joins too — no password, no session, its token spent',
-    slotJoined.status === 200 && slotJoined.json?.accepted === true && !cookieFrom(slotJoined.setCookies)
-      && slotSeat?.status === 'active' && slotAfter?.invite_token_hash === null
-      && slotAfter?.password_hash === slotBefore?.password_hash && slotAfter?.status === slotBefore?.status,
-    `join=${slotJoined.status} seat=${slotSeat?.status} token=${slotAfter?.invite_token_hash === null ? 'spent' : 'LEFT'}`);
+  record('L: an account-slot invitation to an account that now signs in is refused — it set a password, so it is no join',
+    slotRefused.status === 400 && !cookieFrom(slotRefused.setCookies) && slotSeat?.status === 'invited'
+      && same(slotAfter, slotBefore),
+    `accept=${slotRefused.status} seat=${slotSeat?.status} account ${same(slotAfter, slotBefore) ? 'unchanged' : 'CHANGED'}`);
 
   // --- C. Sessions ----------------------------------------------------------------
   console.log('\nC. Sessions');

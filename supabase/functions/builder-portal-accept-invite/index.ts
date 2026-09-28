@@ -27,8 +27,18 @@
  *    it in, as it always has;
  *  * an invitation to an account that already signs in is a JOIN — one click,
  *    the seat comes up, and nothing about the account is written and no
- *    session is issued. It used to be refused (`already_active`); the
- *    invitation it answers used to be granted without anyone accepting it.
+ *    session is issued. The invitation it answers used to be granted without
+ *    anyone accepting it.
+ *
+ * WHICH OF THE TWO A LINK IS WAS FIXED WHEN IT WAS MINTED, never read from the
+ * account at acceptance (independent review of doc 68). A password-setting
+ * link may be held by the inviter (a deployment with no mail provider) or an
+ * operator; had it become a one-click join once the person started signing in
+ * elsewhere, its holder could accept on their behalf. A seat records what its
+ * token was minted for and a mismatch is refused; every account-slot token was
+ * minted for an account with no password, so an account that has one is
+ * turned away there, as it always was. The inviting organisation invites again,
+ * and the person is emailed a join.
  *
  * Actions: `validate` (render the form, and say whether a password is asked
  * for) and accept (default).
@@ -158,6 +168,8 @@ Deno.serve(async (req) => {
           locked_until: null,
         })
         .eq('id', accountId)
+        // An account an operator suspended before it accepted stays suspended.
+        .eq('status', 'invited')
         .is('invite_accepted_at', null)
         .is('password_hash', null)
         .is('revoked_at', null);
@@ -331,7 +343,8 @@ Deno.serve(async (req) => {
      */
     const { data: seat, error: seatError } = await supabase
       .from('builder_organisation_memberships')
-      .select('id, builder_user_id, organisation_id, membership_role, status, revoked_at, invite_token_expires_at')
+      .select(`id, builder_user_id, organisation_id, membership_role, status, revoked_at,
+               invite_token_expires_at, invite_requires_password`)
       .eq('invite_token_hash', tokenHash)
       .maybeSingle();
     if (seatError) {
@@ -374,6 +387,13 @@ Deno.serve(async (req) => {
         membership_role: seat.membership_role,
       };
       const requiresPassword = invitationRequiresPassword(account);
+      // What the link was minted for must still be what the account needs: a
+      // password-setting link never becomes a join (header). Same answer as
+      // every other refusal, so the holder learns nothing more than that the
+      // link no longer works.
+      if (seat.invite_requires_password !== requiresPassword) {
+        return json({ error: GENERIC_INVITE_ERROR, valid: false }, 400);
+      }
 
       if (action === 'validate') {
         return json({
@@ -449,6 +469,12 @@ Deno.serve(async (req) => {
     if (portalUser.revoked_at || portalUser.status === 'revoked') {
       return json({ error: GENERIC_INVITE_ERROR, valid: false }, 400);
     }
+    // Every account-slot token was minted for an account with no password
+    // (header), so one that has since started signing in is refused here: a
+    // password-setting link never becomes a join.
+    if (portalUser.invite_accepted_at || portalUser.password_hash) {
+      return json({ error: GENERIC_INVITE_ERROR, valid: false, already_active: true }, 400);
+    }
 
     // An invite is only usable if the account still has somewhere to go.
     // This runs BEFORE activation, so it must not use
@@ -486,7 +512,6 @@ Deno.serve(async (req) => {
     const acceptingOrganisation = invitedOrganisations.find(
       (organisation) => organisation.organisation_id === scope.activate,
     )!;
-    const requiresPassword = invitationRequiresPassword(portalUser);
 
     if (action === 'validate') {
       return json({
@@ -494,7 +519,7 @@ Deno.serve(async (req) => {
         email: portalUser.email,
         name: portalUser.name,
         job_title: portalUser.job_title,
-        requires_password: requiresPassword,
+        requires_password: true,
         // The organisation THIS invitation joins, and no other. Listing every
         // organisation the address is pending in told its holder — who may not
         // be its owner — where else that person has been invited.
@@ -503,37 +528,6 @@ Deno.serve(async (req) => {
           legal_name: acceptingOrganisation.legal_name,
           membership_role: acceptingOrganisation.membership_role,
         }],
-      });
-    }
-
-    if (!requiresPassword) {
-      /*
-       * An account-slot invitation to an account that has since started signing
-       * in — an operator's owner invitation, typically, for an address that
-       * accepted an organisation's invitation first. It used to be refused as
-       * `already_active`, which stranded that owner seat for good; it is a
-       * join now, like any other (doc 68). The token is used up only once it
-       * has brought the seat up, and only if it is still this token.
-       */
-      const promotion = await promoteWaitingMembership(supabase, {
-        builderUserId: portalUser.id,
-        organisationId: scope.activate,
-      });
-      if (!promotion.error && promotion.promoted > 0) {
-        await supabase.from('builder_portal_users').update({
-          invite_token_hash: null,
-          invite_token_expires_at: null,
-          invite_token_organisation_id: null,
-        }).eq('id', portalUser.id).eq('invite_token_hash', tokenHash);
-      }
-      return await joinOnly({
-        promotion,
-        builderUserId: portalUser.id,
-        organisation: {
-          organisation_id: acceptingOrganisation.organisation_id,
-          legal_name: acceptingOrganisation.legal_name,
-          membership_role: acceptingOrganisation.membership_role,
-        },
       });
     }
 

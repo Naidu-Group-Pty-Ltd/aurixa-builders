@@ -18,6 +18,13 @@
 --     on — acceptance, suspension, removal, by any path (trigger) — so no
 --     second function has to remember to clear it.
 --
+--     And it RECORDS WHAT IT WAS MINTED FOR (`invite_requires_password`): a
+--     link that sets a password never becomes a one-click join because the
+--     account has since started signing in somewhere else. On a deployment
+--     with no mail provider the inviter holds that link, and letting it join
+--     would let the inviter accept on the person's behalf (independent review
+--     of doc 68).
+--
 --  2. THE NAME THE INVITER TYPED. A waiting seat is drawn on the members list
 --     under the name this organisation typed, never the account's: the account
 --     carries another organisation's typed name or the person's registered
@@ -27,7 +34,10 @@
 --  3. SENDS ARE PACED. Invitations are sent after the answer, one reservation
 --     at a time under a row lock: each send waits for its slot, slots are
 --     spaced as the caller asks, and a reservation past the longest wait is
---     refused rather than queued without end.
+--     refused rather than queued without end. A caller may name a SCOPE (an
+--     organisation) and a ceiling on how many of its sends may wait at once,
+--     so one organisation's burst cannot fill the queue that every other
+--     organisation's invitations wait in.
 --
 --  4. ONE DELIVERY READING FOR THE WHOLE DEPLOYMENT, taken by sending a check
 --     to a sink that belongs to nobody — never from a real invitation, so it
@@ -42,6 +52,7 @@
 ALTER TABLE public.builder_organisation_memberships
   ADD COLUMN IF NOT EXISTS invite_token_hash text,
   ADD COLUMN IF NOT EXISTS invite_token_expires_at timestamptz,
+  ADD COLUMN IF NOT EXISTS invite_requires_password boolean,
   ADD COLUMN IF NOT EXISTS invited_name text;
 
 ALTER TABLE public.builder_organisation_memberships
@@ -49,7 +60,8 @@ ALTER TABLE public.builder_organisation_memberships
 ALTER TABLE public.builder_organisation_memberships
   ADD CONSTRAINT builder_memberships_token_on_waiting_seat
   CHECK (invite_token_hash IS NULL OR (status = 'invited' AND revoked_at IS NULL
-                                       AND invite_token_expires_at IS NOT NULL));
+                                       AND invite_token_expires_at IS NOT NULL
+                                       AND invite_requires_password IS NOT NULL));
 
 -- The same shape the account slot holds (`builder_portal_users_invite_token_hash_check`):
 -- a peppered HMAC-SHA256 in hex, never a plaintext token.
@@ -72,6 +84,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS builder_memberships_invite_token_key
 COMMENT ON COLUMN public.builder_organisation_memberships.invite_token_hash IS
   'The peppered hash of THIS seat''s own invitation (doc 68). Only on a waiting, '
   'live seat; destroyed when the seat stops waiting. Never plaintext.';
+COMMENT ON COLUMN public.builder_organisation_memberships.invite_requires_password IS
+  'What this seat''s token was minted for: true, a first invitation that sets a '
+  'password; false, a join for an account that already signs in. Acceptance '
+  'refuses a token whose kind no longer matches the account.';
 COMMENT ON COLUMN public.builder_organisation_memberships.invited_name IS
   'The name the inviting organisation typed. The members list shows it for a '
   'waiting seat, never the account''s own name.';
@@ -85,6 +101,7 @@ BEGIN
   IF NEW.status IS DISTINCT FROM 'invited' OR NEW.revoked_at IS NOT NULL THEN
     NEW.invite_token_hash := NULL;
     NEW.invite_token_expires_at := NULL;
+    NEW.invite_requires_password := NULL;
   END IF;
   RETURN NEW;
 END $fn$;
@@ -108,9 +125,24 @@ ALTER TABLE public.builder_email_send_pacing ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.builder_email_send_pacing FROM PUBLIC, anon, authenticated;
 GRANT ALL ON public.builder_email_send_pacing TO service_role;
 
+-- One row per reserved send while it is still ahead, so a scope's queue can be
+-- counted. Rows older than five minutes are removed by the next reservation.
+CREATE TABLE IF NOT EXISTS public.builder_email_send_reservations (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  scope text NOT NULL CHECK (scope ~ '^[a-z0-9:_.-]{1,120}$'),
+  slot_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS builder_email_send_reservations_scope_idx
+  ON public.builder_email_send_reservations (scope, slot_at);
+ALTER TABLE public.builder_email_send_reservations ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.builder_email_send_reservations FROM PUBLIC, anon, authenticated;
+GRANT ALL ON public.builder_email_send_reservations TO service_role;
+
 -- How long this send must wait for its slot, in milliseconds; NULL when the
--- queue is already longer than _max_wait_ms, in which case nothing is reserved.
-CREATE OR REPLACE FUNCTION public.builder_reserve_email_send_slot(_spacing_ms integer, _max_wait_ms integer)
+-- queue is already longer than _max_wait_ms, or when _scope already has
+-- _scope_max_queued sends waiting — in either case nothing is reserved.
+CREATE OR REPLACE FUNCTION public.builder_reserve_email_send_slot(
+  _spacing_ms integer, _max_wait_ms integer, _scope text DEFAULT NULL, _scope_max_queued integer DEFAULT NULL)
 RETURNS integer
 LANGUAGE plpgsql
 SET search_path TO 'public'
@@ -119,7 +151,10 @@ DECLARE
   v_start timestamptz;
 BEGIN
   IF _spacing_ms IS NULL OR _spacing_ms < 1 OR _spacing_ms > 60000
-     OR _max_wait_ms IS NULL OR _max_wait_ms < 0 OR _max_wait_ms > 600000 THEN
+     OR _max_wait_ms IS NULL OR _max_wait_ms < 0 OR _max_wait_ms > 600000
+     OR (_scope IS NOT NULL AND (_scope !~ '^[a-z0-9:_.-]{1,120}$'
+                                 OR _scope_max_queued IS NULL OR _scope_max_queued < 1 OR _scope_max_queued > 1000))
+     OR (_scope IS NULL AND _scope_max_queued IS NOT NULL) THEN
     RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'BUILDER_EMAIL_PACING_INVALID';
   END IF;
 
@@ -136,6 +171,16 @@ BEGIN
     RETURN NULL;
   END IF;
 
+  IF _scope IS NOT NULL THEN
+    DELETE FROM public.builder_email_send_reservations
+     WHERE slot_at < clock_timestamp() - interval '5 minutes';
+    IF (SELECT count(*) FROM public.builder_email_send_reservations
+         WHERE scope = _scope AND slot_at > clock_timestamp()) >= _scope_max_queued THEN
+      RETURN NULL;
+    END IF;
+    INSERT INTO public.builder_email_send_reservations (scope, slot_at) VALUES (_scope, v_start);
+  END IF;
+
   UPDATE public.builder_email_send_pacing
      SET next_slot_at = v_start + make_interval(secs => _spacing_ms / 1000.0),
          updated_at = clock_timestamp()
@@ -144,8 +189,8 @@ BEGIN
   RETURN greatest(0, ceil(extract(epoch FROM (v_start - clock_timestamp())) * 1000))::integer;
 END $fn$;
 
-REVOKE ALL ON FUNCTION public.builder_reserve_email_send_slot(integer, integer) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.builder_reserve_email_send_slot(integer, integer) TO service_role;
+REVOKE ALL ON FUNCTION public.builder_reserve_email_send_slot(integer, integer, text, integer) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.builder_reserve_email_send_slot(integer, integer, text, integer) TO service_role;
 
 -- ---------------------------------------------------------------------------
 -- 4. One delivery reading for the deployment.

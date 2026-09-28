@@ -7,16 +7,20 @@
  *   * change no existing row: every membership and account reads the same
  *     after it as before it;
  *   * let a seat carry its own invitation — a token that is unique, only ever
- *     on a waiting, live seat, and destroyed by whatever moves the seat out of
- *     waiting (acceptance, suspension, removal), while a role change leaves it;
+ *     on a waiting, live seat, records what it was minted for, and is destroyed
+ *     by whatever moves the seat out of waiting (acceptance, suspension,
+ *     removal), while a role change leaves it;
  *   * bound the name an inviter types to the registration door's 200
  *     characters, and refuse an empty one;
  *   * reserve send slots one at a time under a lock, spaced as asked — also
  *     when many isolates ask at once — and refuse a reservation past the
- *     longest wait rather than queueing without end;
+ *     longest wait rather than queueing without end, or past one scope's own
+ *     ceiling on waiting sends, while another scope still gets its slot;
  *   * hold one deployment-wide delivery reading, claimed by one checker at a
  *     time and only once it is stale;
- *   * all of it callable and readable by service_role only.
+ *   * all of it callable and readable by service_role only — asked with
+ *     Supabase's own default privileges in force, which grant anon and
+ *     authenticated everything new in `public` unless a migration revokes it.
  *
  * Environment: LOCAL_PG_HOST (default /tmp), LOCAL_PG_PORT (55432),
  * LOCAL_PG_USER (postgres), INVITATION_ACCEPTANCE_DB.
@@ -67,12 +71,22 @@ psql(['-d', 'postgres', '-c', `CREATE DATABASE ${DB}`]);
 psql(['-d', DB, '-q', '-f', join(repoRoot, 'scripts/db/00-supabase-bootstrap.sql')]);
 psql(['-d', DB, '-q', '-c', 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;']);
 psql(['-d', DB, '-q', '-f', join(repoRoot, 'supabase/migrations/00000000000000_network_baseline.sql')]);
+// What Supabase grants on anything new in `public` (anon and authenticated
+// included), so a migration that forgets a REVOKE is caught here as it would be
+// in production — the bootstrap other checks share does not emulate it.
+psql(['-d', DB, '-q', '-c', `
+  ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated, service_role;
+  ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;
+  ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO anon, authenticated, service_role;`]);
 const migrations = readdirSync(join(repoRoot, 'supabase/migrations'))
   .filter((f) => /^\d{14}_.+\.sql$/.test(f) && !f.startsWith('00000000000000')).sort();
 check(`${MIGRATION} exists`, migrations.includes(MIGRATION));
 if (!migrations.includes(MIGRATION)) finish();
-check(`${MIGRATION} is the last migration, so every row below predates it`, migrations.at(-1) === MIGRATION);
-for (const file of migrations.filter((f) => f !== MIGRATION)) {
+// Everything before it runs first, so the rows seeded below predate it;
+// anything after it runs once it has been checked.
+const before = migrations.slice(0, migrations.indexOf(MIGRATION));
+const later = migrations.slice(migrations.indexOf(MIGRATION) + 1);
+for (const file of before) {
   psql(['-d', DB, '-q', '-f', join(repoRoot, 'supabase/migrations', file)]);
 }
 
@@ -105,29 +119,35 @@ const snapshot = () => sql(`
     SELECT concat_ws('|', u.id, u.email, u.name, u.status, u.is_active, u.password_hash,
                      u.invite_token_hash, u.invite_accepted_at, u.updated_at)
       FROM public.builder_portal_users u) rows`);
-const before = snapshot();
+const beforeMigration = snapshot();
 
 psql(['-d', DB, '-q', '-f', join(repoRoot, 'supabase/migrations', MIGRATION)]);
-check('the migration applies after every other', true);
-check('it changes no existing membership or account', snapshot() === before);
-check('it leaves every existing seat without a token or a typed name',
+check('the migration applies over the migrations before it', true);
+check('it changes no existing membership or account', snapshot() === beforeMigration);
+check('it leaves every existing seat without a token, a kind or a typed name',
   sql(`SELECT count(*) FROM public.builder_organisation_memberships
-       WHERE invite_token_hash IS NOT NULL OR invite_token_expires_at IS NOT NULL OR invited_name IS NOT NULL`) === '0');
+       WHERE invite_token_hash IS NOT NULL OR invite_token_expires_at IS NOT NULL
+          OR invite_requires_password IS NOT NULL OR invited_name IS NOT NULL`) === '0');
 check('it is re-runnable', (() => {
   psql(['-d', DB, '-q', '-f', join(repoRoot, 'supabase/migrations', MIGRATION)]);
-  return snapshot() === before;
+  return snapshot() === beforeMigration;
 })());
+for (const file of later) {
+  psql(['-d', DB, '-q', '-f', join(repoRoot, 'supabase/migrations', file)]);
+}
 
 // --- A seat carries its own invitation ---------------------------------------------
 const hash = () => randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '');
 const seat = (user, org) => sql(`SELECT id FROM public.builder_organisation_memberships
   WHERE builder_user_id = ${lit(user)} AND organisation_id = ${lit(org)} AND revoked_at IS NULL`);
 const tokenOf = (id) => sql(`SELECT coalesce(invite_token_hash, '') || '|' || coalesce(invite_token_expires_at::text, '')
+  || coalesce(invite_requires_password::text, '')
   FROM public.builder_organisation_memberships WHERE id = ${lit(id)}`);
-const invite = (user, org, token, name = 'Typed Name') => `
+const invite = (user, org, token, name = 'Typed Name', requiresPassword = false) => `
   INSERT INTO public.builder_organisation_memberships(builder_user_id, organisation_id, membership_role, is_primary, status,
-    invited_name, invite_token_hash, invite_token_expires_at, granted_by)
-  VALUES (${lit(user)}, ${lit(org)}, 'member', false, 'invited', ${lit(name)}, ${lit(token)}, now() + interval '72 hours', ${lit(OWNER)})
+    invited_name, invite_token_hash, invite_token_expires_at, invite_requires_password, granted_by)
+  VALUES (${lit(user)}, ${lit(org)}, 'member', false, 'invited', ${lit(name)}, ${lit(token)}, now() + interval '72 hours',
+          ${requiresPassword}, ${lit(OWNER)})
   RETURNING id`;
 
 const t1 = hash();
@@ -138,10 +158,11 @@ check('the account behind it is untouched by the invitation',
 // B's own invitation of Penny, re-sent under the new rule: its token is on B's seat.
 const tB = hash();
 sql(`UPDATE public.builder_organisation_memberships
-        SET invite_token_hash = ${lit(tB)}, invite_token_expires_at = now() + interval '72 hours'
+        SET invite_token_hash = ${lit(tB)}, invite_token_expires_at = now() + interval '72 hours',
+            invite_requires_password = true
       WHERE id = ${lit(seat(PENDING, ORG_B))}`);
 const t2 = hash();
-const pendingInA = sql(invite(PENDING, ORG_A, t2));
+const pendingInA = sql(invite(PENDING, ORG_A, t2, 'Typed Name', true));
 check('a second organisation\'s invitation of a pending invitee leaves the first organisation\'s token standing',
   tokenOf(pendingInA).startsWith(`${t2}|`) && tokenOf(seat(PENDING, ORG_B)).startsWith(`${tB}|`));
 check('two seats can never hold the same token',
@@ -155,6 +176,9 @@ check('a token that is not a peppered hash (a plaintext link) is refused',
   /builder_memberships_invite_token_hash_check/.test(refusal(`UPDATE public.builder_organisation_memberships
     SET invite_token_hash = ${lit(`${randomUUID()}-${randomUUID()}`)}, invite_token_expires_at = now() + interval '1 hour'
     WHERE id = ${lit(seat(PENDING, ORG_B))}`) ?? ''));
+check('a token is refused without a record of what it was minted for',
+  /builder_memberships_token_on_waiting_seat/.test(refusal(`UPDATE public.builder_organisation_memberships
+    SET invite_requires_password = NULL WHERE id = ${lit(seat(PENDING, ORG_B))}`) ?? ''));
 check('a token is refused without an expiry',
   /builder_memberships_token_on_waiting_seat/.test(refusal(`UPDATE public.builder_organisation_memberships
     SET invite_token_hash = ${lit(hash())}, invite_token_expires_at = NULL WHERE id = ${lit(seat(PENDING, ORG_B))}`) ?? ''));
@@ -201,7 +225,8 @@ check('an empty typed name is refused',
   /builder_memberships_invited_name_length/.test(refusal(invite(NEW, ORG_A, hash(), '')) ?? ''));
 
 // --- Send slots ----------------------------------------------------------------------------
-const reserve = (spacing, maxWait) => `SELECT public.builder_reserve_email_send_slot(${spacing}, ${maxWait})`;
+const reserve = (spacing, maxWait, scope = null, scopeMax = null) =>
+  `SELECT public.builder_reserve_email_send_slot(${spacing}, ${maxWait}, ${lit(scope)}, ${scopeMax === null ? 'NULL' : scopeMax})`;
 const waits = [0, 1, 2].map(() => Number(sql(reserve(1000, 90000))));
 check('sequential reservations are spaced as asked (0, ~1 s, ~2 s)',
   waits[0] <= 50 && waits[1] >= 900 && waits[1] <= 1050 && waits[2] >= 1900 && waits[2] <= 2050,
@@ -224,6 +249,22 @@ for (const [spacing, maxWait] of [[0, 1000], [-5, 1000], [1000, -1], [120000, 10
   check(`nonsense pacing (${spacing}, ${maxWait}) is refused`,
     /BUILDER_EMAIL_PACING_INVALID/.test(refusal(reserve(spacing, maxWait)) ?? ''));
 }
+for (const [scope, scopeMax] of [['org:A', null], ['org:A', 0], ['ORG A; drop', 3], [null, 3]]) {
+  check(`a nonsense scope (${scope}, ${scopeMax}) is refused`,
+    /BUILDER_EMAIL_PACING_INVALID/.test(refusal(reserve(1000, 90000, scope, scopeMax)) ?? ''));
+}
+sql(`UPDATE public.builder_email_send_pacing SET next_slot_at = now()`);
+// A send whose slot has arrived is not waiting, so a ceiling of three admits the
+// one going now and three behind it.
+const scoped = [0, 1, 2, 3, 4].map(() => sql(reserve(1000, 90000, 'org:burst', 3)));
+const other = sql(reserve(1000, 90000, 'org:other', 3));
+check('one scope may hold only its own ceiling of waiting sends; another scope still gets its slot',
+  scoped.slice(0, 4).every((w) => w !== '') && scoped[4] === '' && other !== '',
+  `burst=${scoped.map((w) => w || 'null').join(',')} other=${other || 'null'}`);
+check('a refused reservation does not move the queue for anybody else',
+  // Behind four slots (~4 s less the time the reservations themselves took),
+  // never behind five: the refused fifth reserved nothing.
+  Number(other) >= 3500 && Number(other) <= 4100, `other waits ${other} ms, behind the burst's four`);
 
 // --- The delivery reading -------------------------------------------------------------------
 const claim = () => sql(`SELECT public.builder_claim_email_delivery_check(1800, 120)`);
@@ -244,7 +285,7 @@ check('the reading reports the queue as one number for the whole deployment',
 
 // --- Nobody but service_role -----------------------------------------------------------------
 const fns = [
-  'public.builder_reserve_email_send_slot(integer,integer)',
+  'public.builder_reserve_email_send_slot(integer,integer,text,integer)',
   'public.builder_claim_email_delivery_check(integer,integer)',
   'public.builder_record_email_delivery_check(text)',
   'public.builder_email_delivery_reading()',
@@ -255,7 +296,8 @@ for (const fn of fns) {
       && sql(`SELECT has_function_privilege('anon', ${lit(fn)}, 'EXECUTE')`) === 'f'
       && sql(`SELECT has_function_privilege('authenticated', ${lit(fn)}, 'EXECUTE')`) === 'f');
 }
-for (const table of ['public.builder_email_send_pacing', 'public.builder_email_delivery_health']) {
+for (const table of ['public.builder_email_send_pacing', 'public.builder_email_delivery_health',
+  'public.builder_email_send_reservations']) {
   check(`${table} is unreadable to anon and authenticated, and RLS is on`,
     sql(`SELECT has_table_privilege('anon', ${lit(table)}, 'SELECT')`) === 'f'
       && sql(`SELECT has_table_privilege('authenticated', ${lit(table)}, 'SELECT')`) === 'f'

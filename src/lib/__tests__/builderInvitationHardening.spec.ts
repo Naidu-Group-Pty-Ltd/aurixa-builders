@@ -8,6 +8,7 @@ import {
 import {
   DELIVERY_BACKLOG_DELAYED_MS,
   DELIVERY_CHECK_RECIPIENT_DEFAULT,
+  EMAIL_SEND_MAX_QUEUED_PER_ORGANISATION,
   EMAIL_SEND_MAX_WAIT_MS,
   EMAIL_SEND_SPACING_MS,
   INVITE_ANSWER_FLOOR_MS,
@@ -56,11 +57,12 @@ describe('1. the answer takes the same time whatever the address is', () => {
     }
   });
 
-  it('sends nothing before answering — every email leaves after the answer', () => {
+  it('sends nothing before answering — every email starts only once the answer\'s floor has passed', () => {
     for (const body of [inviteBlock, resendBlock]) {
       expect(body).not.toMatch(/await sendBuilderEmail\(/);
       expect(body).not.toMatch(/await sendPacedBuilderEmail\(/);
-      expect(body).toMatch(/afterAnswer\(/);
+      expect(body).toMatch(/afterAnswer\(holdAnswer\(receivedAt\)\.then\(\(\) => deliverInvitation\(/);
+      expect(body).not.toMatch(/afterAnswer\(deliverInvitation\(/);
     }
   });
 });
@@ -82,11 +84,26 @@ describe('2. invitations are paced, so a burst cannot hammer the shared mail pro
     expect(readSendSlot({ data: 'nonsense', error: null })).toEqual({ kind: 'unpaced' });
   });
 
-  it('every invitation email goes through the pacer', () => {
+  it('every invitation email goes through the pacer, within its organisation\'s own share', () => {
     const delivery = repo('supabase', 'functions', '_shared', 'builderEmailDelivery.ts');
     expect(delivery).toMatch(/rpc\('builder_reserve_email_send_slot'/);
+    expect(delivery).toMatch(/_scope: scope\?\.key \?\? null/);
+    expect(delivery).toMatch(/_scope_max_queued: scope\?\.maxQueued \?\? null/);
     expect(invite).toMatch(/sendPacedBuilderEmail\(/);
+    expect(invite).toMatch(/\{ key: `org:\$\{activeOrganisationId\}`, maxQueued: EMAIL_SEND_MAX_QUEUED_PER_ORGANISATION \}/);
     expect(invite).not.toMatch(/[^d]sendBuilderEmail\(\{\s*to: target/);
+  });
+
+  it('one organisation\'s burst cannot fill the queue everyone waits in', () => {
+    // Found by the independent review: with three administrators an
+    // organisation could burst ~91 sends into a 90-slot queue and every other
+    // tenant's invitations were delayed, or dropped as paced out.
+    expect(EMAIL_SEND_MAX_QUEUED_PER_ORGANISATION).toBeGreaterThanOrEqual(5);
+    expect(EMAIL_SEND_MAX_QUEUED_PER_ORGANISATION * EMAIL_SEND_SPACING_MS).toBeLessThanOrEqual(EMAIL_SEND_MAX_WAIT_MS / 3);
+  });
+
+  it('records when each email actually left, for the proof and for an operator', () => {
+    expect(invite).toMatch(/logInviteActivity\('builder_invite_delivery'[\s\S]{0,200}sent_at: sentAt/);
   });
 
   it('the reservation is one statement under one lock, in the database', () => {
@@ -121,7 +138,13 @@ describe('3. a deployment-wide delivery signal that names no address and no mess
     expect(deliveryCheckState({ sent: true })).toBe('operational');
     expect(deliveryCheckState({ sent: false, reason: 'refused' })).toBe('degraded');
     expect(deliveryCheckState({ sent: false, reason: 'unreachable' })).toBe('degraded');
-    expect(deliveryCheckState({ sent: false, reason: 'paced_out' })).toBe('degraded');
+    // A check that never left the queue found nothing out about the provider:
+    // it records no reading, rather than calling delivery broken for 30
+    // minutes because somebody else's burst filled the queue.
+    expect(deliveryCheckState({ sent: false, reason: 'paced_out' })).toBeNull();
+    const delivery = stripComments(repo('supabase', 'functions', '_shared', 'builderEmailDelivery.ts'));
+    const run = delivery.slice(delivery.indexOf('async function runDeliveryCheck'));
+    expect(run).toMatch(/if \(state === null\)/);
   });
 
   it('is behind the same owner-or-administrator gate, and reads nothing about any invitee', () => {
@@ -208,6 +231,7 @@ describe('6. an account whose state changes mid-invitation is never deactivated 
     for (const stamp of stamps) {
       expect(stamp).toMatch(/\.is\('password_hash', null\)/);
       expect(stamp).toMatch(/\.is\('invite_accepted_at', null\)/);
+      expect(stamp).toMatch(/\.is\('revoked_at', null\)/);
     }
   });
 });

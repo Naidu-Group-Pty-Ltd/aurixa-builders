@@ -42,6 +42,14 @@ it, established accounts included.
   no mail provider the inviter is handed the link, but only one that sets a
   password (`inviterMayHoldInvitationLink`). A join link would let the inviter
   accept on the person's behalf.
+- **What a link is for is fixed when it is minted** (found by the independent
+  review). Each seat records it (`invite_requires_password`). A password-setting
+  link whose account has since started signing in elsewhere is refused, not
+  turned into a join. Its holder may be the inviter (no mail provider) or an
+  operator, and a join would let them accept for the person. The organisation
+  invites again, and the person is emailed a join. Every account-slot token was
+  minted for an account with no password, so the slot path still refuses an
+  account that has one (`already_active`), as it always did.
 - **Existing memberships are untouched.** Nothing is backfilled, and every
   `active` seat stays `active`.
 - **The page.** `BuilderAcceptInvite` shows no password form for a join, says
@@ -81,18 +89,19 @@ invitation now lives on its own waiting seat
   seat up, once.
 
 The account slot stays for the operator's doors and for anything issued
-before this. The acceptance door reads the seat first, then the slot. A slot
-invitation to an account that has since started signing in is a join too. It
-used to be refused `already_active`, which stranded that seat.
+before this. The acceptance door reads the seat first, then the slot.
 
 ## 3. The answer takes the same time for every kind of address
 
 A revoked account answered ~450 ms sooner than every other kind (doc 67 §5),
 because only the others sent an email before answering. Now:
 
-- every email leaves after the answer (`afterAnswer`, `EdgeRuntime.waitUntil`);
-- every `invite` and `resend` answer, a fault included, waits for a fixed floor,
-  `INVITE_ANSWER_FLOOR_MS` = 1,500 ms after the request arrived.
+- every email starts only once the answer's floor has passed, in the background
+  (`afterAnswer(holdAnswer(...).then(...))`, `EdgeRuntime.waitUntil`);
+- every `invite` and `resend` answer past the owner/administrator gate and the
+  ceiling, a fault included, waits for a fixed floor, `INVITE_ANSWER_FLOOR_MS` =
+  1,500 ms after the request arrived. The CSRF, 401, 403 and 429 answers before
+  that are decided without reading the address and are not held.
 
 The work before the answer is a few database round trips, well under the floor,
 so the time an answer takes is the floor for every kind. The act is logged when
@@ -110,10 +119,17 @@ team, shared by every send this deployment makes.
   one row lock (`builder_reserve_email_send_slot`). Invitations leave at most one
   a second (`EMAIL_SEND_SPACING_MS`), deployment-wide, however many isolates are
   sending — half the provider's ceiling.
+- **One organisation has its own share.** At most 20 of one organisation's
+  emails may wait at once (`EMAIL_SEND_MAX_QUEUED_PER_ORGANISATION`, counted in
+  `builder_email_send_reservations`). The independent review measured an
+  organisation with three administrators bursting ~91 sends into the whole
+  queue. Now its own sends past 20 are refused, and everyone else still gets a
+  slot at most ~20 s behind it.
 - **A full queue sends nothing.** A slot further away than 90 s
   (`EMAIL_SEND_MAX_WAIT_MS`, inside the edge worker's lifetime on the smallest
   plan) is refused rather than queued without end. The invitation stays waiting,
   the outcome is logged `paced_out`, and inviting the address again re-sends it.
+  The delivery record carries `sent_at`, when the email left the queue.
 - **A pacer that cannot be asked** is met with the isolate's own spacing, not
   with none: the shape every limiter here degrades to.
 
@@ -134,7 +150,9 @@ reading for the deployment:
 The check runs at most every 30 minutes, claimed by exactly one request and run
 after its answer (`builder_claim_email_delivery_check`, a 2-minute lease). It is
 refreshed on the clock and never because one send failed, since an early check
-would itself say "your send failed". Its inputs have no field through which an
+would itself say "your send failed". A check that never left the queue records
+nothing: it learned nothing about the provider, and recording `degraded` would
+let one tenant's burst tell every tenant delivery was broken. Its inputs have no field through which an
 address, an invitation or a message could arrive, and a spec holds it to that.
 The invite card shows `degraded`, `delayed` and `not_configured`, and nothing
 otherwise.
@@ -157,8 +175,10 @@ and the write was deactivated.
 - **The operator's two owner-invitation stamps** now apply only while the account
   is still unaccepted, and read the row count. A stamp that finds nothing refuses
   (`invite_failed` / `invite_not_issued`) rather than overwrite an account.
-- **Acceptance activates** only while the account is still unaccepted, has no
-  password and is not withdrawn.
+- **Acceptance activates** only while the account is still `invited`,
+  unaccepted, has no password and is not withdrawn. An account an operator
+  suspended before it accepted stays suspended. The operator stamps also skip a
+  withdrawn account.
 
 ## 8. What this does not close
 
@@ -167,9 +187,13 @@ and the write was deactivated.
   one creates nothing and the list shows nothing. Every other kind now shows a
   waiting invitation under the typed name. Closing it needs an invitation record
   that is not a membership. The answer and its timing are the same.
-- **With no mail provider**, only a password-setting link is handed to the
-  inviter, so the link's presence still separates a first invitation from a
-  join. Production has a provider.
+- **With no mail provider** (production has one):
+  - only a password-setting link is handed to the inviter, so the link's
+    presence still separates a first invitation from a join;
+  - a link the inviter holds stops working if the person starts signing in
+    elsewhere, which tells the inviter so over time;
+  - an established account can never be sent an invitation, because there is no
+    email and its link is never handed over. Its seat waits.
 - **A missing token pepper** answers 503 for every kind except a revoked account,
   which answers 200. That misconfiguration stops every invitation, so it cannot
   persist unnoticed.
@@ -181,6 +205,17 @@ and the write was deactivated.
   still waits for a mailbox.
 - **The floor hides the work before the answer only while that work stays under
   1.5 s.** A database stall longer than that shows through, for every kind alike.
+- **A join is one click on the emailed page.** A mail scanner that renders pages
+  and presses buttons could accept one. A first invitation is safe from this
+  because it needs a password. Requiring a signed-in session instead would
+  strand the accounts with no organisation open (3 of 6 in production), who
+  cannot sign in.
+- **Repeats reach the person again.** Inviting or re-sending to an established
+  account emails an "Accept invitation" each time, bounded by the 40/100-an-hour
+  ceilings.
+- **The `delayed` reading is deployment-wide.** An administrator who holds the
+  queue near 30 s can watch other tenants' invitation activity, coarsely, never
+  per address.
 - **Unchanged from doc 67:** `resend` answers 409 for an account an operator
   revoked after it was seated. This is about the organisation's own member.
 
@@ -196,12 +231,13 @@ and the write was deactivated.
   - `builderInviteScope`, `builderInviteOracle`, `builderOrganisationAdmin` and
     `builderSecurityHardening` were renegotiated where they pinned the old rule,
     each saying so.
-- **Database.** `db:invitation-acceptance:check` rebuilds from the migrations
-  and proves:
+- **Database.** `db:invitation-acceptance:check` rebuilds from the migrations,
+  with Supabase's own default privileges in force, and proves:
   - the migration changes no existing row;
-  - the token rules (CHECK, uniqueness, the trigger);
+  - the token rules (CHECK, uniqueness, hex shape, kind, the trigger);
   - the name bound;
-  - pacing under eight concurrent reservations, and the bounded wait;
+  - pacing under eight concurrent reservations, the bounded wait, and one
+    organisation's share;
   - the delivery reading;
   - that everything is service_role only.
 - **Production.** `portal-access-proof` section L asks the live deployment, over
@@ -210,11 +246,13 @@ and the write was deactivated.
   - the invite writes nothing to the account;
   - the one-click join sets no password and issues no session;
   - per-seat tokens: a re-send replaces only its own;
+  - a password-setting link stops working once the person signs in, and
+    inviting again mints a join;
   - the name ceiling;
   - a concurrent burst answers alike while its emails leave at least a second
     apart;
   - the deployment-wide delivery reading;
-  - a slot invitation to an account that signs in joins.
+  - a slot invitation to an account that signs in is refused.
 
   Section J now requires every kind to answer no sooner than the floor and in
   the same time. Sections B, I and K replay tokens onto the seat.

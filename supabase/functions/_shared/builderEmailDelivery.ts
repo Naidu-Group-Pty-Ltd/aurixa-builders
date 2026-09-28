@@ -60,6 +60,12 @@ export function afterAnswer(work: Promise<unknown>, label: string): void {
 
 export type PacedEmailOutcome = InviteEmailOutcome | { readonly sent: false; readonly reason: 'paced_out' };
 
+export interface PacedSend {
+  readonly outcome: PacedEmailOutcome;
+  /** When the email left the queue for the provider; null when it never did. */
+  readonly sentAt: string | null;
+}
+
 /** This isolate's own spacing, used only when the database pacer cannot be asked. */
 let localNextSlotMs = 0;
 
@@ -72,13 +78,16 @@ function takeLocalSlot(): { readonly kind: 'wait'; readonly ms: number } | { rea
 }
 
 /**
- * SEND ONE EMAIL IN ITS TURN (doc 68 §2).
+ * SEND ONE EMAIL IN ITS TURN (doc 68 §4).
  *
  * The slot is reserved in the database, under one lock, so the spacing holds
- * across every isolate this deployment runs. A pacer that cannot be asked is
- * met with this isolate's own spacing rather than with none — the shape every
- * limiter here degrades to. A full queue sends nothing and says so; the
- * invitation stays waiting, and inviting the address again re-sends it.
+ * across every isolate this deployment runs. A `scope` (an organisation) may
+ * hold at most `maxQueued` sends waiting at once, so one organisation's burst
+ * cannot fill the queue every other organisation waits in. A pacer that
+ * cannot be asked is met with this isolate's own spacing rather than with
+ * none — the shape every limiter here degrades to. A full queue sends nothing
+ * and says so; the invitation stays waiting, and inviting the address again
+ * re-sends it.
  */
 export async function sendPacedBuilderEmail(
   // deno-lint-ignore no-explicit-any
@@ -90,12 +99,15 @@ export async function sendPacedBuilderEmail(
     readonly brand: BuilderEmailBrand;
     readonly category: string;
   },
-): Promise<PacedEmailOutcome> {
+  scope?: { readonly key: string; readonly maxQueued: number },
+): Promise<PacedSend> {
   let reservation: { data: unknown; error: unknown };
   try {
     reservation = await supabase.rpc('builder_reserve_email_send_slot', {
       _spacing_ms: EMAIL_SEND_SPACING_MS,
       _max_wait_ms: EMAIL_SEND_MAX_WAIT_MS,
+      _scope: scope?.key ?? null,
+      _scope_max_queued: scope?.maxQueued ?? null,
     });
   } catch (error) {
     reservation = { data: null, error };
@@ -108,10 +120,11 @@ export async function sendPacedBuilderEmail(
   const slot = read.kind === 'unpaced' ? takeLocalSlot() : read;
   if (slot.kind !== 'wait') {
     console.warn('[builderEmailDelivery] the send queue is full; this email was not sent', { category: args.category });
-    return { sent: false, reason: 'paced_out' };
+    return { outcome: { sent: false, reason: 'paced_out' }, sentAt: null };
   }
   if (slot.ms > 0) await sleep(slot.ms);
-  return await sendBuilderEmail(args);
+  const sentAt = new Date().toISOString();
+  return { outcome: await sendBuilderEmail(args), sentAt };
 }
 
 /**
@@ -160,7 +173,7 @@ async function runDeliveryCheck(
   const brand = await loadBrand();
   // @ts-ignore Deno-only global.
   const recipient = Deno.env.get('BUILDER_EMAIL_DELIVERY_CHECK_RECIPIENT') || DELIVERY_CHECK_RECIPIENT_DEFAULT;
-  const outcome = await sendPacedBuilderEmail(supabase, {
+  const { outcome } = await sendPacedBuilderEmail(supabase, {
     to: recipient,
     subject: `${brand.companyName} Builder Portal delivery check`,
     brand,
@@ -170,6 +183,13 @@ async function runDeliveryCheck(
       paragraphs: ['This message checks that the Builder Portal can send email. No action is needed.'],
     },
   });
-  const { error } = await supabase.rpc('builder_record_email_delivery_check', { _state: deliveryCheckState(outcome) });
+  const state = deliveryCheckState(outcome);
+  if (state === null) {
+    // It never left the queue, so it learned nothing: no reading is recorded,
+    // and the claim lapses for the next reader to try again.
+    console.warn('[builderEmailDelivery] the delivery check was queued out; no reading recorded');
+    return;
+  }
+  const { error } = await supabase.rpc('builder_record_email_delivery_check', { _state: state });
   if (error) console.error('[builderEmailDelivery] the delivery check could not be recorded', error.message);
 }

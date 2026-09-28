@@ -177,6 +177,16 @@ describe('the invite door grants nothing an invitee has not accepted', () => {
     expect(grant).toMatch(/invited_name:/);
   });
 
+  it('records what each token was minted for — a password-setting link or a join — wherever it mints one', () => {
+    // Found by the independent review: decided only at acceptance, a
+    // password-setting link the inviter held (no mail provider) became a
+    // one-click join once the person started signing in elsewhere.
+    const grant = (code.match(/\.from\('builder_organisation_memberships'\)\s*\.insert\(\{[\s\S]*?\}\)/g) ?? [])[0] ?? '';
+    expect(grant).toMatch(/invite_requires_password: requiresPassword/);
+    const reissue = code.slice(code.indexOf('const reissueSeatInvitation'));
+    expect(reissue.slice(0, reissue.indexOf('};'))).toMatch(/invite_requires_password: requiresPassword/);
+  });
+
   it('files every invitation\'s typed name for the list, and the list reads it', () => {
     const invite = functions('builder-portal-invite', 'index.ts');
     const list = invite.slice(invite.indexOf("if (action === 'list_members')"));
@@ -221,17 +231,28 @@ describe('the acceptance door: one click for an account that already signs in', 
     // session.
     expect(joinOnly).toMatch(/\.promoted === 0/);
     expect(joinOnly).toMatch(/signed_in: false/);
-    // Both ways to reach it — a seat token and an account-slot token — bring
-    // the seat up through the one promoter immediately before, and the
-    // established branch is chosen by the account, never by the request.
+    // Reached only from a seat token minted as a join, bringing the seat up
+    // through the one promoter immediately before; the branch is chosen by the
+    // account and the token together, never by the request.
     const joins = [...code.matchAll(/return await joinOnly\(/g)].map((m) => m.index ?? 0);
-    expect(joins.length).toBe(2);
+    expect(joins.length).toBe(1);
     for (const at of joins) {
       const before = code.slice(Math.max(0, at - 700), at);
       expect(before).toMatch(/promoteWaitingMembership\(supabase, \{/);
       expect(before).toMatch(/if \(!requiresPassword\) \{/);
     }
-    expect(code.match(/const requiresPassword = invitationRequiresPassword\((account|portalUser)\)/g)?.length).toBe(2);
+  });
+
+  it('a password-setting link never becomes a join — on the seat or in the account slot', () => {
+    // The seat path compares what the token was minted for with the account
+    // as it is now, and refuses a mismatch before anything else is done.
+    const mismatch = code.indexOf('seat.invite_requires_password !== requiresPassword');
+    expect(mismatch).toBeGreaterThan(-1);
+    expect(code.slice(mismatch, mismatch + 200)).toMatch(/GENERIC_INVITE_ERROR/);
+    expect(mismatch).toBeLessThan(code.indexOf("if (action === 'validate')"));
+    // Every account-slot token was minted for an account with no password, so
+    // an account that has one is turned away there, as it always was.
+    expect(code).toMatch(/if \(portalUser\.invite_accepted_at \|\| portalUser\.password_hash\) \{\s*return json\(\{ error: GENERIC_INVITE_ERROR, valid: false, already_active: true \}, 400\);/);
   });
 
   it('promotes the seat the token is on, and uses the token up in the same statement', () => {
@@ -241,9 +262,6 @@ describe('the acceptance door: one click for an account that already signs in', 
     expect(fn).toMatch(/\.eq\('invite_token_hash', args\.inviteTokenHash\)/);
   });
 
-  it('no longer turns an account that signs in away from an invitation it was sent', () => {
-    expect(code).not.toMatch(/already_active: true/);
-  });
 
   it('activates a never-accepted account only while it is still unaccepted and not withdrawn', () => {
     const activations = code.match(/\.from\('builder_portal_users'\)\s*\.update\(\{[\s\S]*?password_hash: hashedPassword[\s\S]*?\.maybeSingle\(\)/g) ?? [];
@@ -251,6 +269,8 @@ describe('the acceptance door: one click for an account that already signs in', 
     for (const activation of activations) {
       expect(activation).toMatch(/\.is\('invite_accepted_at', null\)/);
       expect(activation).toMatch(/\.is\('revoked_at', null\)/);
+      // An account an operator suspended before it accepted stays suspended.
+      expect(activation).toMatch(/\.eq\('status', 'invited'\)/);
     }
   });
 });

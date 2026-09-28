@@ -57,6 +57,7 @@ import {
 } from '../_shared/builderInvite.ts';
 import { builderEmailConfigured, sendBuilderEmail } from '../_shared/builderInviteEmail.ts';
 import { afterAnswer, holdAnswer, readDeliveryHealth, sendPacedBuilderEmail } from '../_shared/builderEmailDelivery.ts';
+import { EMAIL_SEND_MAX_QUEUED_PER_ORGANISATION } from '../_shared/builderEmailDelivery.pure.ts';
 import { invitationEmail } from '../_shared/builderInvitationCopy.pure.ts';
 import { getPortalClientIp } from '../_shared/requestSecurity.ts';
 import { authRateLimitedResponse, enforceSessionRateLimit } from '../_shared/authRateLimit.ts';
@@ -234,14 +235,24 @@ Deno.serve(async (req) => {
      * organisation's link and can never reach another organisation's — which
      * the account's single token slot could not promise. Only while the seat
      * still waits: one the invitee has accepted, or an administrator has
-     * suspended or cancelled since, is not re-invited behind their back.
+     * suspended or cancelled since, is not re-invited behind their back. It
+     * records what the new link is for, read from the account now: a person
+     * who has started signing in since the first invitation is sent a join.
+     * A seat recorded before the typed name existed takes the one typed now.
      */
-    const reissueSeatInvitation = async (seatId: string, minted: MintedInvite) => {
+    const reissueSeatInvitation = async (
+      seatId: string,
+      minted: MintedInvite,
+      requiresPassword: boolean,
+      invitedNameIfMissing: string | null,
+    ) => {
       const { data, error } = await supabase
         .from('builder_organisation_memberships')
         .update({
           invite_token_hash: minted.tokenHash,
           invite_token_expires_at: minted.expiresAt.toISOString(),
+          invite_requires_password: requiresPassword,
+          ...(invitedNameIfMissing ? { invited_name: invitedNameIfMissing } : {}),
         })
         .eq('id', seatId)
         .eq('organisation_id', activeOrganisationId)
@@ -291,13 +302,15 @@ Deno.serve(async (req) => {
         requiresPassword: invitation.requiresPassword,
         expiryHours: INVITE_EXPIRY_HOURS,
       });
-      const outcome = await sendPacedBuilderEmail(supabase, {
+      // In this organisation's own share of the queue, so a burst here cannot
+      // hold up every other organisation's invitations.
+      const { outcome, sentAt } = await sendPacedBuilderEmail(supabase, {
         to: invitation.email,
         subject: mail.subject,
         brand,
         category: 'builder_portal_invite',
         content: mail.content,
-      });
+      }, { key: `org:${activeOrganisationId}`, maxQueued: EMAIL_SEND_MAX_QUEUED_PER_ORGANISATION });
       // Narrowed on `outcome` itself: `reason` exists only on the unsent arm of
       // the union, and a derived string cannot carry that discrimination back.
       let delivered = 'sent';
@@ -312,6 +325,8 @@ Deno.serve(async (req) => {
         email_sent: outcome.sent,
         outcome: delivered,
         resent: invitation.resent,
+        // When the email left the queue for the provider (null if it never did).
+        sent_at: sentAt,
       });
     };
 
@@ -401,6 +416,9 @@ Deno.serve(async (req) => {
           invited_name: invitee.name,
           invite_token_hash: minted.tokenHash,
           invite_token_expires_at: minted.expiresAt.toISOString(),
+          // What this link is for, fixed now: a password-setting link never
+          // becomes a one-click join later (see the acceptance door).
+          invite_requires_password: requiresPassword,
         });
       if (membershipError && String(membershipError.code) === '23505') {
         /*
@@ -436,7 +454,8 @@ Deno.serve(async (req) => {
         if (seat.status === 'active') {
           return await answer(json(tenantInviteResponse({ inviteUrl: null })));
         }
-        const reissued = await reissueSeatInvitation(seat.id, minted);
+        const reissued = await reissueSeatInvitation(seat.id, minted, requiresPassword,
+          seat.invited_name ? null : invitee.name);
         if (!reissued) {
           /*
            * NOTHING WAS WAITING BY THE TIME THE RE-MINT RAN: the invitee
@@ -472,9 +491,11 @@ Deno.serve(async (req) => {
 
       const providerConfigured = builderEmailConfigured();
       if (providerConfigured) {
-        afterAnswer(deliverInvitation({
+        // Started only once the answer's floor has passed, so nothing about the
+        // email can reach the time the answer takes.
+        afterAnswer(holdAnswer(receivedAt).then(() => deliverInvitation({
           targetId: target.id, email: target.email, inviteeName, requiresPassword, url: minted.url, resent: false,
-        }), 'invitation email');
+        })), 'invitation email');
       }
       const handedLink = inviterMayHoldInvitationLink({
         send: providerConfigured ? 'sent' : 'not_configured',
@@ -507,20 +528,20 @@ Deno.serve(async (req) => {
         console.error('[builder-portal-invite] hashing unavailable — refusing to store an unpeppered invite token');
         return await answer(json({ error: 'Invite service unavailable' }, 503));
       }
-      const reissued = await reissueSeatInvitation(seat.id, minted);
+      const reissued = await reissueSeatInvitation(seat.id, minted, requiresPassword, null);
       if (!reissued) return await answer(json(tenantInviteResponse({ inviteUrl: null })));
       await recordInvitation(target.id, true, minted, requiresPassword);
 
       const providerConfigured = builderEmailConfigured();
       if (providerConfigured) {
-        afterAnswer(deliverInvitation({
+        afterAnswer(holdAnswer(receivedAt).then(() => deliverInvitation({
           targetId: target.id,
           email: target.email,
           inviteeName: seat.invited_name ?? target.name,
           requiresPassword,
           url: minted.url,
           resent: true,
-        }), 'invitation email');
+        })), 'invitation email');
       }
       const handedLink = inviterMayHoldInvitationLink({
         send: providerConfigured ? 'sent' : 'not_configured',

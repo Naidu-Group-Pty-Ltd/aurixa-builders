@@ -52,6 +52,16 @@ export const EMAIL_SEND_SPACING_MS = 1000;
  */
 export const EMAIL_SEND_MAX_WAIT_MS = 90_000;
 
+/**
+ * How many of ONE organisation's invitation emails may wait for a slot at once.
+ * The independent review measured the queue without it: an organisation with
+ * three administrators could burst ~91 sends into a 90-slot queue and delay —
+ * or drop as paced out — every other tenant's invitations. Past this, only
+ * that organisation's own sends are refused; everyone else still gets a slot,
+ * at most this many seconds behind it.
+ */
+export const EMAIL_SEND_MAX_QUEUED_PER_ORGANISATION = 20;
+
 export type SendSlot =
   | { readonly kind: 'wait'; readonly ms: number }
   | { readonly kind: 'paced_out' }
@@ -91,9 +101,18 @@ export const DELIVERY_CHECK_RECIPIENT_DEFAULT = 'delivered@resend.dev';
 
 export type DeliveryCheckState = 'operational' | 'degraded';
 
-/** What one check found. Anything but a send that left is degraded. */
-export function deliveryCheckState(outcome: { readonly sent: boolean; readonly reason?: string }): DeliveryCheckState {
-  return outcome.sent ? 'operational' : 'degraded';
+/**
+ * What one check found: a send that left is operational, a send the provider
+ * refused or could not be reached for is degraded — and a check that never left
+ * the queue found out nothing about the provider, so it records no reading
+ * (null) rather than calling delivery broken for half an hour because
+ * somebody else's burst filled the queue.
+ */
+export function deliveryCheckState(
+  outcome: { readonly sent: boolean; readonly reason?: string },
+): DeliveryCheckState | null {
+  if (outcome.sent) return 'operational';
+  return outcome.reason === 'paced_out' ? null : 'degraded';
 }
 
 export type DeliveryHealthState = 'operational' | 'degraded' | 'delayed' | 'not_configured' | 'unknown';
