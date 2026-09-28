@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readOpenDocument } from '../../../supabase/functions/_shared/builderStock/otherFormats.pure.ts';
+import { readOpenDocument, readPresentation, readXml } from '../../../supabase/functions/_shared/builderStock/otherFormats.pure.ts';
 
 /**
  * AN OPENDOCUMENT CELL'S TEXT IS ITS TEXT, NOT ITS MARKUP.
@@ -77,5 +77,47 @@ describe('a crafted space element', () => {
       ['<text:p>T0-1</text:p>', '<text:p>12<text:s text:c="3"/>Proofline<text:s/>Way</text:p>'],
     ));
     expect(tables[0][1][1]).toBe('12 Proofline Way');
+  });
+});
+
+/*
+ * FOUND BY THE INDEPENDENT RE-REVIEW (28 September 2026): the tag strip
+ * `/<[^>]*>/g` is quadratic on a run of `<` that no `>` follows. Removing
+ * `</text:p>` first (above) left a cell's run with no `>` after it, and a 98 KB
+ * cell took 13.3 s; an XML list's text took 6.7 s the same way before this
+ * branch. A tag cannot contain `<`, so each attempt stops at the next one.
+ */
+describe('a run of "<" that no tag closes', () => {
+  const run = '<'.repeat(100_000);
+  const quickly = (read: () => unknown) => {
+    const started = performance.now();
+    read();
+    return performance.now() - started;
+  };
+
+  it('in an OpenDocument cell is read in linear time', () => {
+    expect(quickly(() => readOpenDocument(table(['<text:p>Stock Ref</text:p>'], [`<text:p>Lot ${run}</text:p>`]))))
+      .toBeLessThan(500);
+  });
+
+  it('in an XML stock list\'s field is read in linear time', () => {
+    expect(quickly(() => readXml(`<stock><lot><note>Lot ${run}</note></lot><lot><note>Lot 2</note></lot></stock>`)))
+      .toBeLessThan(500);
+  });
+
+  it('in a slide is read in linear time', () => {
+    expect(quickly(() => readPresentation([`<p:sld><a:p><a:t>Lot ${run}</a:t></a:p></p:sld>`]))).toBeLessThan(500);
+  });
+
+  it('leaves a well-formed document reading exactly as before', () => {
+    const { tables } = readOpenDocument(table(
+      ['<text:p>Stock Ref</text:p>', '<text:p>Street Address</text:p>'],
+      ['<text:p>T0-1</text:p>', '<text:p>12 <text:span text:style-name="T1">Proofline</text:span> Way</text:p>'],
+    ));
+    expect(tables[0][1]).toEqual(['T0-1', '12 Proofline Way']);
+    expect(readXml('<stock><lot><number>12</number><street>Proofline &amp; Way</street></lot><lot><number>14</number></lot></stock>').rows)
+      .toEqual([{ number: '12', street: 'Proofline & Way' }, { number: '14' }]);
+    expect(readPresentation(['<p:sld><a:p><a:r><a:t>Lot 12</a:t></a:r><a:r><a:t> Proofline</a:t></a:r></a:p></p:sld>']).text)
+      .toContain('Lot 12 Proofline');
   });
 });

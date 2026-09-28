@@ -37,8 +37,7 @@ export interface MalformedRecord {
 export interface DelimitedReport {
   /** Every record read, blank ones dropped. A malformed record is never here. */
   rows: string[][];
-  /** Every record whose quotation marks did not pair up, in the order read. */
-  /** The first `MALFORMED_ROWS_KEPT` broken records, in order. */
+  /** The first `MALFORMED_ROWS_KEPT` records whose quotation marks did not pair up, in the order read. */
   malformed: MalformedRecord[];
   /** How many records were broken in all. */
   malformedTotal: number;

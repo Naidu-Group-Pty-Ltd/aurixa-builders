@@ -34,7 +34,7 @@ function decodeXmlEntities(input: string): string {
 
 /** All text inside a fragment, tags removed, whitespace collapsed. */
 function textOf(fragment: string): string {
-  return decodeXmlEntities(fragment.replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
+  return decodeXmlEntities(fragment.replace(/<[^<>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -68,7 +68,7 @@ function odfTextOf(fragment: string): string {
     })
     .replace(/<text:(?:tab|line-break)\b[^<>]*\/>/g, ' ')
     .replace(/<\/text:(?:p|h)>/g, ' ')
-    .replace(/<[^>]*>/g, '');
+    .replace(/<[^<>]*>/g, '');
   return decodeXmlEntities(spaced).replace(/\s+/g, ' ').trim();
 }
 
@@ -167,7 +167,7 @@ export function readPresentation(slideXml: string[]): {
         for (const cellXml of rowXml.match(/<a:tc\b[\s\S]*?<\/a:tc>/g) ?? []) {
           cells.push(
             (cellXml.match(/<a:t>([\s\S]*?)<\/a:t>/g) ?? [])
-              .map((run) => decodeXmlEntities(run.replace(/<[^>]*>/g, '')))
+              .map((run) => decodeXmlEntities(run.replace(/<[^<>]*>/g, '')))
               .join('')
               .replace(/\s+/g, ' ')
               .trim(),
@@ -185,7 +185,7 @@ export function readPresentation(slideXml: string[]): {
     // a list rather than as one run-on sentence.
     for (const paragraph of xml.match(/<a:p\b[\s\S]*?<\/a:p>/g) ?? []) {
       const line = (paragraph.match(/<a:t>([\s\S]*?)<\/a:t>/g) ?? [])
-        .map((run) => decodeXmlEntities(run.replace(/<[^>]*>/g, '')))
+        .map((run) => decodeXmlEntities(run.replace(/<[^<>]*>/g, '')))
         .join('')
         .replace(/\s+/g, ' ')
         .trim();
