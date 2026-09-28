@@ -22,21 +22,39 @@
  * role defaults give tasks view and edit to owner, administrator, manager and
  * member, and view alone to read_only, so the only default that changes is
  * read_only's edit. Proved by `scripts/db/stock-task-permission-check.mjs`
- * (11 of 13 before, 13 of 13 after).
+ * (11 of 13 before, 14 of 14 after).
+ *
+ * The old resolver's own membership join stays in front of the matrix.
+ * `builder_resolve_permission` asks for an active membership anyway, so it
+ * decides nothing new. What it does is stop the matrix being consulted for
+ * another organisation's task: `builder_accessible_tasks` asks about every
+ * task in the network, and "My tasks" over 5,000 stock-item tasks in 20
+ * organisations took 864 ms with the matrix asked first and 153 ms with the
+ * membership asked first (found by the independent re-review).
  */
 CREATE OR REPLACE FUNCTION public.builder_resolve_stock_item_permission(
   _user_id uuid, _item_id uuid, _permission_key text DEFAULT 'tasks', _level text DEFAULT 'view')
 RETURNS boolean
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $fn$
-  SELECT _permission_key = 'tasks'
-     AND _level IN ('view', 'edit')
-     AND EXISTS (
-       SELECT 1
-       FROM public.builder_stock_items i
-       JOIN public.builder_portal_users u ON u.id = _user_id
-       WHERE i.id = _item_id
-         AND u.is_active = true
-         AND public.builder_resolve_permission(_user_id, i.organisation_id, 'tasks', _level));
+  -- CASE, because it is the one construct that fixes evaluation order: in a
+  -- WHERE clause the planner attaches the matrix call to the item scan and
+  -- asks it before the membership join can rule the row out.
+  SELECT CASE
+    WHEN _permission_key IS DISTINCT FROM 'tasks' OR _level NOT IN ('view', 'edit') THEN false
+    WHEN NOT EXISTS (
+      SELECT 1
+      FROM public.builder_stock_items i
+      JOIN public.builder_organisation_memberships m
+        ON m.organisation_id = i.organisation_id
+       AND m.builder_user_id = _user_id
+       AND m.status = 'active' AND m.revoked_at IS NULL
+      JOIN public.builder_portal_users u ON u.id = _user_id
+      WHERE i.id = _item_id
+        AND u.is_active = true) THEN false
+    ELSE coalesce(public.builder_resolve_permission(
+      _user_id, (SELECT i.organisation_id FROM public.builder_stock_items i WHERE i.id = _item_id),
+      'tasks', _level), false)
+  END;
 $fn$;
 
 REVOKE ALL ON FUNCTION public.builder_resolve_stock_item_permission(uuid, uuid, text, text)

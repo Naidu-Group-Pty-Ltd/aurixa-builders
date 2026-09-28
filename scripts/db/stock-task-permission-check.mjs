@@ -22,7 +22,8 @@
  *   * a membership override that denies tasks is obeyed;
  *   * a suspended membership, an inactive user and another organisation's
  *     member get nothing;
- *   * nothing but `tasks` view/edit is ever answered on a stock scope.
+ *   * nothing but `tasks` view/edit is ever answered on a stock scope;
+ *   * "My tasks" does not consult the matrix for another organisation's task.
  *
  * Environment: LOCAL_PG_HOST (default /tmp), LOCAL_PG_PORT (55432),
  * LOCAL_PG_USER (postgres), STOCK_TASK_PERMISSION_DB.
@@ -112,6 +113,31 @@ check('an inactive user gets nothing', !may('inactive', 'view') && !may('inactiv
 check('another organisation\'s owner gets nothing', !may('outsider', 'view') && !may('outsider', 'edit'));
 check('nothing but tasks is answered on a stock scope', !may('owner', 'view', 'documents') && !may('owner', 'view', 'messages'));
 check('no one may delete through a stock scope', !may('owner', 'delete'));
+// FOUND BY THE INDEPENDENT RE-REVIEW (28 Sep 2026): `builder_accessible_tasks`
+// asks the resolver about EVERY task in the network, so routing it through the
+// role matrix made "My tasks" pay a plpgsql call per task of every OTHER
+// organisation too — 5,000 stock-item tasks across 20 organisations took
+// ~1,050 ms against ~100 ms before. Another organisation's task is settled by
+// the membership it lacks, before the matrix is asked anything.
+q1(`
+  WITH orgs AS (
+    INSERT INTO public.builder_organisations(legal_name, org_type, status, is_active, activated_at)
+    SELECT 'Load Homes ' || g, 'builder', 'active', true, now() FROM generate_series(1, 19) g RETURNING id),
+  items AS (
+    INSERT INTO public.builder_stock_items(organisation_id, lot_number, address_line, lifecycle_status)
+    SELECT id, '1', '1 Load Street', 'active' FROM orgs RETURNING id, organisation_id)
+  INSERT INTO public.builder_tasks(scope_type, scope_id, organisation_id, title, status, priority)
+  SELECT 'stock_item', i.id, i.organisation_id, 'Load task ' || g, 'open', 'normal'
+    FROM items i CROSS JOIN generate_series(1, 250) g;
+  INSERT INTO public.builder_tasks(scope_type, scope_id, organisation_id, title, status, priority)
+  SELECT 'stock_item', ${lit(ITEM)}::uuid, ${lit(ORG)}::uuid, 'Own task ' || g, 'open', 'normal' FROM generate_series(1, 250) g;
+`);
+const plan = JSON.parse(q1(`EXPLAIN (ANALYZE, FORMAT JSON)
+  SELECT count(*) FROM public.builder_accessible_tasks(${lit(people.member)}::uuid, NULL, NULL)`));
+const ms = Math.round(plan[0]['Execution Time']);
+const seen = q1(`SELECT count(*) FROM public.builder_accessible_tasks(${lit(people.member)}::uuid, NULL, NULL)`);
+check('"My tasks" over 5,000 stock-item tasks in 20 organisations sees only its own organisation\'s, quickly',
+  seen === '250' && ms < 400, `${seen} tasks visible, ${ms} ms`);
 check('the resolver is not executable by anon or authenticated',
   q1(`SELECT has_function_privilege('anon', 'public.builder_resolve_stock_item_permission(uuid, uuid, text, text)', 'EXECUTE')
         OR has_function_privilege('authenticated', 'public.builder_resolve_stock_item_permission(uuid, uuid, text, text)', 'EXECUTE')`) === 'f');
