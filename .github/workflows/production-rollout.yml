@@ -337,6 +337,16 @@ name: Production rollout
 #            state wording it met and every function it called with the status.
 #            No page text, no screenshot (this repository is public). Deletes
 #            the staff member and session.
+#   portal-controls-proof
+#            the offered actions no other proof reached, on an organisation of
+#            the run's own (detached, proof-only transport) with a published
+#            list and one real Command Centre activation: signed-in devices
+#            (revoke one, sign out this one, revoke all others), join requests
+#            (approve, decline), a project's status change and its history, a
+#            record's tasks, "Add user" and "Send again" in an agency thread,
+#            and a list's "Source images" and "Refresh brochure links" — each
+#            for a role that may act and one that may not, with the effect
+#            read from the database. Deletes everything it creates.
 #   storage-residue-sweep
 #            the files proofs left in the Builder's stock buckets: in a stock
 #            bucket, under an organisation that no longer exists, named by no
@@ -382,11 +392,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | cc-frontend-build | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures | email-delivery-proof | stock-tier0-formats | stock-tier0-lifecycle | stock-tier0-edges | portal-ui-audit | cc-page-probe | storage-residue-sweep'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | cc-frontend-build | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures | email-delivery-proof | stock-tier0-formats | stock-tier0-lifecycle | stock-tier0-edges | portal-ui-audit | cc-page-probe | storage-residue-sweep | portal-controls-proof'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures, email-delivery-proof, stock-tier0-formats, stock-tier0-lifecycle, stock-tier0-edges, portal-ui-audit, cc-page-probe, storage-residue-sweep]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures, email-delivery-proof, stock-tier0-formats, stock-tier0-lifecycle, stock-tier0-edges, portal-ui-audit, cc-page-probe, storage-residue-sweep, portal-controls-proof]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1). storage-residue-sweep: with apply, the digest its dry run printed'
         required: false
@@ -562,6 +572,8 @@ jobs:
                                   node scripts/ops/cc-page-probe.mjs ;;
             storage-residue-sweep)
                                   node scripts/ops/storage-residue-sweep.mjs ;;
+            portal-controls-proof)
+                                  node scripts/ops/portal-controls-proof.mjs ;;
           esac
 
       - name: upload the browser proof's screenshots
