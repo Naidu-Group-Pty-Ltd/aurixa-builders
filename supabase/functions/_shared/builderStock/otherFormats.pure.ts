@@ -212,8 +212,10 @@ export function readRichText(rtf: string): string {
     'rsidtbl', 'xmlnstbl',
   ]);
 
+  // `\par` ends a paragraph; `\pard` only resets formatting, and every table
+  // cell opens with one — reading it as a break put each cell on its own line.
   out = out
-    .replace(/\\par[d]?\b/g, '\n')
+    .replace(/\\par\b/g, '\n')
     .replace(/\\line\b/g, '\n')
     .replace(/\\cell\b/g, '\t')
     .replace(/\\(?:row|trowd)\b/g, '\n')
