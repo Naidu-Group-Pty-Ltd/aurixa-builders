@@ -65,7 +65,9 @@ export const STOCK_ALLOWED_DECLARED_MIME: ReadonlySet<string> = new Set([
   'text/csv', 'text/tab-separated-values', 'text/plain', 'application/csv',
   'application/vnd.ms-excel',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.ms-excel.sheet.macroEnabled.12',
+  // Written lower-case: the door compares lower-cased (`declaredTypeIsAllowed`),
+  // and this entry, spelled `macroEnabled`, refused every .xlsm ever declared.
+  'application/vnd.ms-excel.sheet.macroenabled.12',
   'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'application/pdf',
@@ -81,6 +83,17 @@ export const STOCK_ALLOWED_DECLARED_MIME: ReadonlySet<string> = new Set([
   // decide, so refusing it here would reject valid spreadsheets.
   'application/octet-stream', '',
 ]);
+
+/**
+ * Whether the upload door accepts the content type a browser declared.
+ *
+ * Media types are case-insensitive and may carry parameters, so the declared
+ * value is compared lower-cased and without them — which is why every entry in
+ * `STOCK_ALLOWED_DECLARED_MIME` is written in lower case.
+ */
+export function declaredTypeIsAllowed(declared: string): boolean {
+  return STOCK_ALLOWED_DECLARED_MIME.has(declared.toLowerCase().split(';')[0].trim());
+}
 
 export function extensionOf(filename: string): string {
   const match = /\.([A-Za-z0-9]{1,8})$/.exec(filename.trim());

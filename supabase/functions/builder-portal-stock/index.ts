@@ -51,7 +51,7 @@ import { listMyAgencyConversations, newAgencyMessages, readAgencyConversation } 
 import { agencyMessageRefusal, projectAgencyMessages } from '../_shared/builderStock/agencyMessages.pure.ts';
 import {
   MAX_STOCK_FILE_BYTES, STOCK_LIST_BUCKET, STOCK_IMAGE_BUCKET,
-  STOCK_LIST_STORAGE_PREFIX, STOCK_ALLOWED_DECLARED_MIME,
+  STOCK_LIST_STORAGE_PREFIX, declaredTypeIsAllowed,
   classifyStockFile, isAcceptableStockStoragePath, safeObjectName,
 } from '../_shared/builderStock/fileTypes.pure.ts';
 import {
@@ -664,7 +664,7 @@ Deno.serve(async (req) => {
       if (!filename) return json({ error: 'A file name is required' }, 400);
 
       const declared = cleanText(body.content_type, 200).toLowerCase().split(';')[0].trim();
-      if (!STOCK_ALLOWED_DECLARED_MIME.has(declared)) {
+      if (!declaredTypeIsAllowed(declared)) {
         return json({ error: 'That file type cannot be uploaded.', code: 'unsupported_file_type' }, 400);
       }
 
