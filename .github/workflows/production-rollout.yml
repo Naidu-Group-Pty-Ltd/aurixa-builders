@@ -342,8 +342,9 @@ name: Production rollout
 #            bucket, under an organisation that no longer exists, named by no
 #            row, AND at a path a proof writes (proofResidue.pure.mjs). A real
 #            builder's disowned files are kept and counted. Dry run by default,
-#            by kind and count only (no file name: this log is public);
-#            removes only with apply=true AND items = the count the dry run
+#            by kind, count and a digest of the set (no file name: this log is
+#            public);
+#            removes only with apply=true AND items = the digest the dry run
 #            printed.
 #   portal-ui-audit
 #            the portal as each role sees it: an organisation of the run's own
@@ -387,7 +388,7 @@ on:
         type: choice
         options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures, email-delivery-proof, stock-tier0-formats, stock-tier0-lifecycle, stock-tier0-edges, portal-ui-audit, cc-page-probe, storage-residue-sweep]
       items:
-        description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1). storage-residue-sweep: with apply, the count its dry run printed'
+        description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1). storage-residue-sweep: with apply, the digest its dry run printed'
         required: false
         default: ''
         type: string

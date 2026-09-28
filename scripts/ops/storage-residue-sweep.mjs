@@ -21,14 +21,15 @@
  *      and counted.
  *
  * DRY RUN BY DEFAULT. It prints what it would remove, by kind and by count,
- * and nothing else: no file name, because this repository's Actions logs are
- * public. To remove, dispatch again with `apply` true and `items` set to the
- * count the dry run printed. If the count has moved in between, it refuses.
+ * and a digest of exactly that set — no file name, because this repository's
+ * Actions logs are public. To remove, dispatch again with `apply` true and
+ * `items` set to the digest the dry run printed. If the set has changed in
+ * between, even to one of the same size, it refuses.
  *
  * Runs from the production-rollout workflow (phase `storage-residue-sweep`).
  */
 import { objectOrganisationSql, removeObjects, storageClient, STOCK_BUCKETS } from './proofStorage.mjs';
-import { planResidueSweep } from './proofResidue.pure.mjs';
+import { planResidueSweep, removalDigest } from './proofResidue.pure.mjs';
 
 const REF = process.env.PROJECT_REF || 'htfluofznhxeumblwbww';
 const ACCESS_TOKEN = process.env.SUPABASE_ACCESS_TOKEN || '';
@@ -53,7 +54,7 @@ async function sql(statement) {
 async function disowned() {
   const owner = objectOrganisationSql('f.name');
   return sql(`
-    SELECT f.bucket_id AS bucket, f.name
+    SELECT f.bucket_id AS bucket, f.name, (f.metadata->>'size')::bigint AS size, f.metadata->>'eTag' AS etag
       FROM storage.objects f
      WHERE f.bucket_id IN (${STOCK_BUCKETS.map((b) => `'${b}'`).join(', ')})
        AND ${owner} ~ '^[0-9a-f-]{36}$'
@@ -72,12 +73,13 @@ let verdict = 'FAIL';
 try {
   const before = planResidueSweep(await disowned());
   summarise('disowned files in the stock buckets', before);
+  const digest = removalDigest(before.remove);
 
   if (!APPLY) {
-    console.log(`\nDRY RUN — nothing removed. To remove these ${before.remove.length}, dispatch again with apply=true and items=${before.remove.length}.`);
+    console.log(`\nDRY RUN — nothing removed. To remove these ${before.remove.length}, dispatch again with apply=true and items=${digest}.`);
     verdict = 'PASS';
-  } else if (EXPECT !== String(before.remove.length)) {
-    console.log(`\nREFUSED — items=${EXPECT || '(blank)'} but ${before.remove.length} would be removed now. Dry-run first and pass that count.`);
+  } else if (EXPECT !== digest) {
+    console.log(`\nREFUSED — items=${EXPECT || '(blank)'} but the set to remove now is ${digest}. Dry-run first and pass the digest it prints.`);
   } else {
     const storage = await storageClient(REF, ACCESS_TOKEN);
     let removed = 0;

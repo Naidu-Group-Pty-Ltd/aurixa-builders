@@ -38,7 +38,7 @@ import {
   RUN, record, results, net, cc, sleep, id, sha256, secs, waitFor, stock, commandCentre,
   fixture, manifest, storageFor, withLinks, seedOrganisation, connectTransport, seedStaff,
   uploadDocument, uploadRow, waitImported, itemsOf, differences, mirrorOf, cleanup, leftovers,
-  finish, ITEM_FIELDS, CC_FIELDS, NETWORK_REF, sqlLit,
+  finish, ITEM_FIELDS, CC_FIELDS, NETWORK_REF, sqlLit, printPropertyEvidence,
 } from './tier0/common.mjs';
 
 const TAG = 'tier0-formats';
@@ -228,7 +228,11 @@ async function runCase(c, storage, staff) {
   record(`${c.key}: the product published every property`, ready.done && active.length === (ready.now ?? []).length,
     `${active.length}/${(ready.now ?? []).length} active in ${secs({ ms: row.publishMs })}; `
     + `upload published_at ${ready.upload?.published_at ? 'set' : 'null'}; blocked: ${ready.upload?.publication_blocked_reason ?? '—'}`);
-  if (!active.length) { row.verdict = 'not published'; return; }
+  if (!active.length) {
+    row.verdict = 'not published';
+    printPropertyEvidence(c.key, { expected, stored: ready.now ?? items, served, mirror: [], ccByItem: new Map(), fields: c.fields });
+    return;
+  }
 
   // 5–6. Transferred and received: the mirror holds the same values.
   const mirrorStarted = Date.now();
@@ -247,6 +251,7 @@ async function runCase(c, storage, staff) {
 
   // 7. Read through the Command Centre's own endpoint, photograph included.
   let readOk = 0; let photoOk = 0;
+  const ccByItem = new Map();
   for (const item of builderActive) {
     const got = await commandCentre('get_stock_item', { stock_item_id: item.id }, staff.token);
     const r = got.json?.record ?? null;
@@ -257,10 +262,13 @@ async function runCase(c, storage, staff) {
     const imageId = r?.primary_image_id ?? null;
     const image = imageId ? await commandCentre('image_url', { image_id: imageId }, staff.token) : null;
     const url = image?.json?.url ?? null;
+    let photoBytes = 0;
     if (url) {
       const bytesServed = await fetch(url).then(async (res) => (res.ok ? new Uint8Array(await res.arrayBuffer()) : null)).catch(() => null);
       if (bytesServed && bytesServed.length > 512) photoOk += 1;
+      photoBytes = bytesServed?.length ?? 0;
     }
+    ccByItem.set(item.id, { read: !!fieldsOk, photoBytes });
   }
   row.ccRead = `${readOk}/${builderActive.length}`;
   row.ccPhoto = `${photoOk}/${builderActive.length}`;
@@ -270,6 +278,10 @@ async function runCase(c, storage, staff) {
     `${photoOk}/${builderActive.length}`);
   row.verdict = row.parsed === 'exact' && readOk === builderActive.length && photoOk === builderActive.length
     && mirrored.done ? 'PASS' : 'PARTIAL';
+  printPropertyEvidence(c.key, {
+    expected, stored: ready.now ?? items, served, mirror: mirrored.rows ?? [], ccByItem, fields: c.fields,
+    photoSource: (item) => (photoless.some((p) => p.id === item.id) ? 'added through "Add picture"' : 'from the document'),
+  });
 }
 
 // --- The run -------------------------------------------------------------------

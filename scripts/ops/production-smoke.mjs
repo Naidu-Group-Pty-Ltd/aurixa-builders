@@ -128,15 +128,6 @@ async function cleanup(stage) {
   // by design.
   const orgIds = (await q(`cleanup (${stage}): smoke organisations`, SMOKE_ORGS)).map((r) => r.id);
   cleanedOrganisations.push(...orgIds);
-  // The files first, while the organisations that name them still exist: a
-  // row cascades with its organisation and a stored object does not. Until
-  // 28 Sep 2026 this cleanup removed the rows alone, and 94 of this suite's
-  // files (every run's stock list, brochure list, "Add picture" facade and
-  // the pictures read out of the brochure) were still stored afterwards.
-  if (orgIds.length) {
-    await removeOrganisationObjects(await storageClient(PROJECT_REF, ACCESS_TOKEN),
-      (text) => q(`cleanup (${stage}): smoke files`, text), orgIds);
-  }
   const sql = `
     DO $$
     DECLARE v_conn uuid;
@@ -205,6 +196,21 @@ async function cleanup(stage) {
     DELETE FROM public.builder_network_inbound_events
      WHERE event_type = 'connection.authorised'
        AND payload::text ~ 'Smoke Rollout ';`);
+
+  // And the files: a row cascades with its organisation, a stored object does
+  // not. Until 28 Sep 2026 this cleanup removed the rows alone, and 94 of this
+  // suite's files (every run's stock list, brochure list, "Add picture" facade
+  // and the pictures read out of the brochure) were still stored afterwards.
+  // Read by the ids captured above, LAST, and never allowed to stop the
+  // cleanup; a file left behind fails the leftover check at the end.
+  if (orgIds.length) {
+    try {
+      await removeOrganisationObjects(await storageClient(PROJECT_REF, ACCESS_TOKEN),
+        (text) => q(`cleanup (${stage}): smoke files`, text), orgIds);
+    } catch (error) {
+      console.log(`  cleanup (${stage}): smoke files could not all be removed: ${String(error?.message ?? error).slice(0, 200)}`);
+    }
+  }
 }
 
 async function seedGovernedUser(tag) {

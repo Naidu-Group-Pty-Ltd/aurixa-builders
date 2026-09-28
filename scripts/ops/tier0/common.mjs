@@ -542,6 +542,43 @@ export function differences(wantRows, haveRows, fields = ITEM_FIELDS, key = 'lot
   return out;
 }
 
+/**
+ * One machine-readable line per property, for the audit's property-by-property
+ * matrix: what the source stated, and whether each stage after it holds exactly
+ * that — the Builder's stored row, the Builder Portal's Stock List read, the
+ * Command Centre's mirror row and its own read, and the photograph it serves.
+ * Every value is a proof fixture's: each organisation here is the run's own.
+ */
+export function printPropertyEvidence(source, {
+  expected, stored = [], served = [], mirror = [], ccByItem = new Map(), fields = ITEM_FIELDS, photoSource = null, extra = {},
+}) {
+  const verdict = (diffs) => (diffs.length ? diffs.join('; ') : 'exact');
+  for (const want of expected) {
+    const lot = String(want.lot_number);
+    const row = stored.find((i) => String(i.lot_number) === lot) ?? null;
+    const shown = row ? served.find((s) => s.id === row.id || String(s.lot_number) === lot) ?? null : null;
+    const copy = row ? mirror.find((m) => m.id === row.id) ?? null : null;
+    const cc = row ? ccByItem.get(row.id) ?? null : null;
+    const statedFields = fields.filter((f) => f !== 'lot_number' && f in want);
+    console.log(`PROPERTY ${JSON.stringify({
+      source, lot,
+      stated: Object.fromEntries(statedFields.map((f) => [f, want[f]])),
+      builder_db: row ? verdict(differences([want], [row], statedFields)) : 'MISSING',
+      builder_portal: !row ? '—' : shown ? verdict(differences([row], [shown], statedFields.filter((f) => f in shown), 'id')) : 'not listed',
+      lifecycle: row?.lifecycle_status ?? null,
+      availability: row?.availability_status ?? null,
+      photo: row ? (photoSource ? photoSource(row) : (row.primary_image_id ? 'present' : 'none')) : null,
+      command_centre_record: !row ? '—' : copy
+        ? verdict(differences([row], [copy], CC_FIELDS.filter((f) => f in row && f !== 'lifecycle_status'), 'id')) : 'not mirrored',
+      command_centre_photos: copy?.__photos ?? 0,
+      command_centre_documents: copy?.__documents ?? 0,
+      command_centre_read: cc ? cc.read : null,
+      command_centre_photo_bytes: cc ? cc.photoBytes : null,
+      ...(typeof extra === 'function' ? extra(row, want) : extra),
+    })}`);
+  }
+}
+
 // --- The Command Centre's copy ---------------------------------------------------------
 export const CC_FIELDS = [
   'external_reference', 'development_name', 'project_name', 'lot_number', 'unit_number', 'address_line',
@@ -583,14 +620,6 @@ export async function cleanup(tag, stage, storage) {
     if (Number(foreign[0]?.n) > 0) {
       throw new Error(`${foreign[0].n} selection(s) on proof stock were made by someone outside this run; refusing to delete them`);
     }
-  }
-
-  // Every file the organisations hold, in both stock buckets and every path
-  // family, read from `storage.objects` (`proofStorage.mjs`). The two folder
-  // prefixes this used to name left `builder-supplied/<org>/` behind: 18 of
-  // this suite's pictures were still stored after their organisations had gone.
-  if (storage && orgIds.length) {
-    await removeOrganisationObjects(storage, (text) => net(`${stage}: proof files`, text), orgIds);
   }
 
   if (orgIds.length) {
@@ -657,6 +686,22 @@ export async function cleanup(tag, stage, storage) {
     DELETE FROM public.portal_operational_events WHERE metadata->>'connection_id' IN
       (SELECT c.id::text FROM public.builder_network_connections c WHERE c.id IN (${connList}));
     DELETE FROM public.builder_network_connections WHERE id IN (${connList});`);
+
+  // Every file the organisations held, in both stock buckets and every path
+  // family, read from `storage.objects` by the ids captured above
+  // (`proofStorage.mjs`). The two folder prefixes this used to name left
+  // `builder-supplied/<org>/` behind: 18 of this suite's pictures were still
+  // stored after their organisations had gone. LAST, and never allowed to stop
+  // the cleanup: a storage fault must not leave a proof's Command Centre
+  // session or its stock on the live marketplace (found by the independent
+  // re-review). A file left behind is counted by `leftovers` and fails the run.
+  if (storage && orgIds.length) {
+    try {
+      await removeOrganisationObjects(storage, (text) => net(`${stage}: proof files`, text), orgIds);
+    } catch (error) {
+      console.log(`  [${stage}] proof files could not all be removed: ${String(error?.message ?? error).slice(0, 200)}`);
+    }
+  }
 }
 
 /** What the cleanup left, counted on both sides. Every count must be zero. */

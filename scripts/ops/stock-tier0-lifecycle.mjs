@@ -42,7 +42,7 @@ import {
   RUN, record, net, cc, sleep, id, sha256, secs, waitFor, stock, portal, commandCentre, fixture, manifest,
   storageFor, withLinks, seedOrganisation, connectTransport, seedStaff, seedClient, uploadDocument,
   uploadRow, waitImported, itemsOf, differences, mirrorOf, cleanup, leftovers, finish, ITEM_FIELDS,
-  CC_FIELDS, NETWORK_REF, CC_REF, ORIGIN, CC_ORIGIN, sqlLit, inspectCommandCentrePage,
+  CC_FIELDS, NETWORK_REF, CC_REF, ORIGIN, CC_ORIGIN, sqlLit, inspectCommandCentrePage, printPropertyEvidence,
 } from './tier0/common.mjs';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
@@ -124,6 +124,13 @@ try {
   timings.mirror_v1_ms = m1.ms;
   record('L1: the Command Centre holds all five, field by field', m1.done,
     `${m1.rows?.length}/${m1.builder?.length} in ${secs(m1)}${m1.d?.length ? `; ${m1.d.slice(0, 6).join('; ')}` : ''}`);
+  {
+    const listed = await stock({ operation: 'list_stock', page_size: 50 }, alpha.cookie);
+    printPropertyEvidence('lifecycle list v1 (csv)', {
+      expected: want1, stored: pub1.now ?? items, served: listed.json?.items ?? listed.json?.records ?? [],
+      mirror: m1.rows ?? [], fields: ITEM_FIELDS,
+    });
+  }
   const docs = await cc('documents', `
     SELECT i.lot_number, d.kind, d.label FROM public.builder_network_stock_item_documents d
       JOIN public.builder_network_stock_items i ON i.id = d.stock_item_id
@@ -298,6 +305,16 @@ try {
   timings.mirror_v2_ms = m2.ms;
   record('L4: the Command Centre converges on the revision, field by field', m2.done,
     `${m2.rows?.length}/${m2.builder?.length} in ${secs(m2)}${m2.d?.length ? `; ${m2.d.slice(0, 6).join('; ')}` : ''}`);
+  {
+    const listed = await stock({ operation: 'list_stock', page_size: 50 }, alpha.cookie);
+    const activation = selectionId ? (await cc('activation state', `
+      SELECT status FROM public.builder_stock_selections WHERE id = ${id(selectionId)}`))[0]?.status ?? 'none' : 'none';
+    printPropertyEvidence('lifecycle list v2 revision (csv)', {
+      expected: want2, stored: items, served: listed.json?.items ?? listed.json?.records ?? [],
+      mirror: m2.rows ?? [], fields: ITEM_FIELDS,
+      extra: (row) => ({ activation: row?.id === ids1['101'] ? activation : 'none' }),
+    });
+  }
   // "Last synced" is the latest revision the mirror APPLIED (`updated_at`);
   // `last_seen_at` is when the network first saw the property and a revision
   // does not move it, which is why the page used to show the first sync for
