@@ -1,0 +1,121 @@
+-- ============================================================================
+-- RECORD ONLY. Applied to production out of band; deliberately NOT re-executed.
+--
+-- Qualified the columns in ai_budget_settle, release and reclaim_expired: settle
+-- declares OUT parameters named committed_micros and remaining_micros, so an
+-- unqualified column on the right of its UPDATE was ambiguous (42702) — at
+-- runtime, on the first call. The consolidated repository file carries the
+-- qualified bodies.
+--
+-- ledger version   20260920091331
+-- ledger name      ai_budget_settle_qualifies_its_columns
+-- applied          20 Sep 2026 09:13:31 UTC, straight to production through
+--                  the Supabase apply_migration tool, which records the SQL on
+--                  the ledger row (this file's body is read back from that row)
+-- body md5         c1c07fa701ba699cf26888aeb54321df   (of the recorded body with each leading --| removed)
+-- effect carried   20260920090000_a_ceiling_that_concurrency_cannot_walk_through.sql
+--
+-- WHY IT DOES NOT EXECUTE. Production ran this version BEFORE the repository
+-- file above, which then ran on top of it through the deploy lane; production's
+-- end state is therefore that file's. A rebuild runs files in VERSION order, so
+-- this body — if it executed — would run AFTER that file instead, and replace
+-- what production has with what production replaced. Measured on 28 Sep 2026:
+-- restored as executable SQL, the six out-of-band records leave four ai_budget_*
+-- function bodies different from production's. Restored as records, a rebuild
+-- reproduces production on every object they touched, including that only
+-- service_role may execute the five ai_budget_* functions.
+--
+-- WHY IT EXISTS. `production-rollout verify` halts on any ledger version the
+-- repository does not carry, and it halted on this one from 20 Sep 2026. Deleting
+-- this file brings that halt back; it does not change the database.
+--
+-- Pinned by src/lib/__tests__/migrationLedgerRecords.spec.ts (the body recovers
+-- to the md5 above, and nothing here executes) and by
+-- scripts/db/ai-budget-rebuild-check.mjs (a rebuild equals production).
+-- ============================================================================
+-- >>> BEGIN RECORDED BODY
+--|-- 42702 AT RUNTIME, NOT AT CREATE.
+--|-- `ai_budget_settle` declares OUT parameters named `committed_micros` and
+--|-- `remaining_micros`, so an unqualified `committed_micros + v_actual` on the
+--|-- right-hand side of its UPDATE is ambiguous between the column and the
+--|-- variable. plpgsql compiles the body lazily, so the function was created
+--|-- cleanly and raised on its FIRST CALL — found by calling it, not by reading
+--|-- it. The columns are qualified now, and release/reclaim are qualified too so
+--|-- a later OUT parameter cannot reintroduce the same fault.
+--|
+--|CREATE OR REPLACE FUNCTION public.ai_budget_settle(
+--|  p_reservation_id uuid, p_actual_micros bigint
+--|) RETURNS TABLE (settled boolean, committed_micros bigint, remaining_micros bigint)
+--|LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+--|DECLARE
+--|  v_res public.ai_spend_reservations%ROWTYPE;
+--|  v_actual bigint;
+--|  v_row public.ai_spend_budgets%ROWTYPE;
+--|BEGIN
+--|  UPDATE public.ai_spend_reservations
+--|     SET state = 'settled',
+--|         actual_micros = LEAST(GREATEST(p_actual_micros, 0), amount_micros),
+--|         settled_at = now()
+--|   WHERE id = p_reservation_id AND state = 'open'
+--|  RETURNING * INTO v_res;
+--|
+--|  IF NOT FOUND THEN
+--|    RETURN QUERY SELECT false, 0::bigint, 0::bigint;
+--|    RETURN;
+--|  END IF;
+--|
+--|  v_actual := v_res.actual_micros;
+--|
+--|  UPDATE public.ai_spend_budgets b
+--|     SET committed_micros = b.committed_micros + v_actual,
+--|         reserved_micros  = GREATEST(b.reserved_micros - v_res.amount_micros, 0),
+--|         updated_at = now()
+--|   WHERE b.agent_key = v_res.agent_key AND b.period_month = v_res.period_month
+--|  RETURNING b.* INTO v_row;
+--|
+--|  RETURN QUERY SELECT true, v_row.committed_micros,
+--|    GREATEST(v_row.cap_micros - v_row.committed_micros - v_row.reserved_micros, 0);
+--|END;
+--|$$;
+--|
+--|CREATE OR REPLACE FUNCTION public.ai_budget_release(p_reservation_id uuid)
+--|RETURNS boolean
+--|LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+--|DECLARE v_res public.ai_spend_reservations%ROWTYPE;
+--|BEGIN
+--|  UPDATE public.ai_spend_reservations
+--|     SET state = 'released', actual_micros = 0, settled_at = now()
+--|   WHERE id = p_reservation_id AND state = 'open'
+--|  RETURNING * INTO v_res;
+--|  IF NOT FOUND THEN RETURN false; END IF;
+--|  UPDATE public.ai_spend_budgets b
+--|     SET reserved_micros = GREATEST(b.reserved_micros - v_res.amount_micros, 0),
+--|         updated_at = now()
+--|   WHERE b.agent_key = v_res.agent_key AND b.period_month = v_res.period_month;
+--|  RETURN true;
+--|END;
+--|$$;
+--|
+--|CREATE OR REPLACE FUNCTION public.ai_budget_reclaim_expired(
+--|  p_agent_key text, p_period date, p_older_than interval DEFAULT interval '10 minutes'
+--|) RETURNS bigint
+--|LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+--|DECLARE v_freed bigint := 0;
+--|BEGIN
+--|  WITH expired AS (
+--|    UPDATE public.ai_spend_reservations
+--|       SET state = 'expired', settled_at = now()
+--|     WHERE agent_key = p_agent_key AND period_month = p_period
+--|       AND state = 'open' AND created_at < now() - p_older_than
+--|    RETURNING amount_micros
+--|  )
+--|  SELECT COALESCE(sum(amount_micros), 0) INTO v_freed FROM expired;
+--|  IF v_freed > 0 THEN
+--|    UPDATE public.ai_spend_budgets b
+--|       SET reserved_micros = GREATEST(b.reserved_micros - v_freed, 0), updated_at = now()
+--|     WHERE b.agent_key = p_agent_key AND b.period_month = p_period;
+--|  END IF;
+--|  RETURN v_freed;
+--|END;
+--|$$;
+-- >>> END RECORDED BODY

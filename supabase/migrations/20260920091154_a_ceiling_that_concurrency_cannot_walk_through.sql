@@ -1,0 +1,229 @@
+-- ============================================================================
+-- RECORD ONLY. Applied to production out of band; deliberately NOT re-executed.
+--
+-- The first cut of the US$10/month ceiling: two tables and five SECURITY DEFINER
+-- functions. Its REVOKEs named anon and authenticated but not PUBLIC, and its
+-- settle function raised 42702 on its first call — the two faults the next two
+-- records fixed. The repository file of the same name is the consolidated
+-- version, carrying both fixes, and ran after all three in production.
+--
+-- ledger version   20260920091154
+-- ledger name      a_ceiling_that_concurrency_cannot_walk_through
+-- applied          20 Sep 2026 09:11:54 UTC, straight to production through
+--                  the Supabase apply_migration tool, which records the SQL on
+--                  the ledger row (this file's body is read back from that row)
+-- body md5         19de3c5719b617e8dc7e43d4ceb9dff7   (of the recorded body with each leading --| removed)
+-- effect carried   20260920090000_a_ceiling_that_concurrency_cannot_walk_through.sql
+--
+-- WHY IT DOES NOT EXECUTE. Production ran this version BEFORE the repository
+-- file above, which then ran on top of it through the deploy lane; production's
+-- end state is therefore that file's. A rebuild runs files in VERSION order, so
+-- this body — if it executed — would run AFTER that file instead, and replace
+-- what production has with what production replaced. Measured on 28 Sep 2026:
+-- restored as executable SQL, the six out-of-band records leave four ai_budget_*
+-- function bodies different from production's. Restored as records, a rebuild
+-- reproduces production on every object they touched, including that only
+-- service_role may execute the five ai_budget_* functions.
+--
+-- WHY IT EXISTS. `production-rollout verify` halts on any ledger version the
+-- repository does not carry, and it halted on this one from 20 Sep 2026. Deleting
+-- this file brings that halt back; it does not change the database.
+--
+-- Pinned by src/lib/__tests__/migrationLedgerRecords.spec.ts (the body recovers
+-- to the md5 above, and nothing here executes) and by
+-- scripts/db/ai-budget-rebuild-check.mjs (a rebuild equals production).
+-- ============================================================================
+-- >>> BEGIN RECORDED BODY
+--|-- A HARD MONTHLY CEILING ON BUILDER STOCK'S ASSISTED READER (US$10/calendar month).
+--|-- The decision and the commitment are ONE statement, so concurrent Stock List
+--|-- uploads serialise on the budget row instead of each reading the same balance.
+--|-- The month resets itself: (agent_key, period_month) keys the row and the period
+--|-- is derived from now() at UTC, so nothing has to run on a schedule.
+--|
+--|CREATE TABLE IF NOT EXISTS public.ai_spend_budgets (
+--|  agent_key        text        NOT NULL,
+--|  period_month     date        NOT NULL,
+--|  cap_micros       bigint      NOT NULL,
+--|  committed_micros bigint      NOT NULL DEFAULT 0,
+--|  reserved_micros  bigint      NOT NULL DEFAULT 0,
+--|  created_at       timestamptz NOT NULL DEFAULT now(),
+--|  updated_at       timestamptz NOT NULL DEFAULT now(),
+--|  PRIMARY KEY (agent_key, period_month),
+--|  CONSTRAINT ai_spend_budgets_non_negative
+--|    CHECK (cap_micros >= 0 AND committed_micros >= 0 AND reserved_micros >= 0)
+--|);
+--|ALTER TABLE public.ai_spend_budgets ENABLE ROW LEVEL SECURITY;
+--|REVOKE ALL ON public.ai_spend_budgets FROM anon, authenticated;
+--|GRANT ALL ON public.ai_spend_budgets TO service_role;
+--|
+--|CREATE TABLE IF NOT EXISTS public.ai_spend_reservations (
+--|  id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+--|  agent_key     text        NOT NULL,
+--|  period_month  date        NOT NULL,
+--|  amount_micros bigint      NOT NULL CHECK (amount_micros >= 0),
+--|  state         text        NOT NULL DEFAULT 'open'
+--|                            CHECK (state IN ('open', 'settled', 'released', 'expired')),
+--|  actual_micros bigint      CHECK (actual_micros IS NULL OR actual_micros >= 0),
+--|  model_id      text,
+--|  route         text,
+--|  created_at    timestamptz NOT NULL DEFAULT now(),
+--|  settled_at    timestamptz
+--|);
+--|ALTER TABLE public.ai_spend_reservations ENABLE ROW LEVEL SECURITY;
+--|REVOKE ALL ON public.ai_spend_reservations FROM anon, authenticated;
+--|GRANT ALL ON public.ai_spend_reservations TO service_role;
+--|
+--|CREATE INDEX IF NOT EXISTS ai_spend_reservations_open_idx
+--|  ON public.ai_spend_reservations (agent_key, period_month, created_at)
+--|  WHERE state = 'open';
+--|
+--|-- Reclaim holds whose caller never came back (an Edge Function killed on its
+--|-- resource limit). Ten minutes is past the 90 s the whole chain is allowed.
+--|CREATE OR REPLACE FUNCTION public.ai_budget_reclaim_expired(
+--|  p_agent_key text, p_period date, p_older_than interval DEFAULT interval '10 minutes'
+--|) RETURNS bigint
+--|LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+--|DECLARE v_freed bigint := 0;
+--|BEGIN
+--|  WITH expired AS (
+--|    UPDATE public.ai_spend_reservations
+--|       SET state = 'expired', settled_at = now()
+--|     WHERE agent_key = p_agent_key AND period_month = p_period
+--|       AND state = 'open' AND created_at < now() - p_older_than
+--|    RETURNING amount_micros
+--|  )
+--|  SELECT COALESCE(sum(amount_micros), 0) INTO v_freed FROM expired;
+--|  IF v_freed > 0 THEN
+--|    UPDATE public.ai_spend_budgets
+--|       SET reserved_micros = GREATEST(reserved_micros - v_freed, 0), updated_at = now()
+--|     WHERE agent_key = p_agent_key AND period_month = p_period;
+--|  END IF;
+--|  RETURN v_freed;
+--|END;
+--|$$;
+--|
+--|CREATE OR REPLACE FUNCTION public.ai_budget_reserve(
+--|  p_agent_key text, p_amount_micros bigint, p_cap_micros bigint,
+--|  p_model_id text DEFAULT NULL, p_route text DEFAULT NULL
+--|) RETURNS TABLE (
+--|  granted boolean, reservation_id uuid, remaining_micros bigint,
+--|  cap_micros bigint, committed_micros bigint, reserved_micros bigint
+--|)
+--|LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+--|DECLARE
+--|  v_period date := (date_trunc('month', now() AT TIME ZONE 'utc'))::date;
+--|  v_row    public.ai_spend_budgets%ROWTYPE;
+--|  v_id     uuid;
+--|BEGIN
+--|  INSERT INTO public.ai_spend_budgets (agent_key, period_month, cap_micros)
+--|  VALUES (p_agent_key, v_period, p_cap_micros)
+--|  ON CONFLICT (agent_key, period_month) DO NOTHING;
+--|
+--|  PERFORM public.ai_budget_reclaim_expired(p_agent_key, v_period);
+--|
+--|  UPDATE public.ai_spend_budgets b
+--|     SET reserved_micros = b.reserved_micros + p_amount_micros, updated_at = now()
+--|   WHERE b.agent_key = p_agent_key AND b.period_month = v_period
+--|     AND b.committed_micros + b.reserved_micros + p_amount_micros <= b.cap_micros
+--|  RETURNING b.* INTO v_row;
+--|
+--|  IF NOT FOUND THEN
+--|    SELECT * INTO v_row FROM public.ai_spend_budgets
+--|     WHERE agent_key = p_agent_key AND period_month = v_period;
+--|    RETURN QUERY SELECT false, NULL::uuid,
+--|      GREATEST(COALESCE(v_row.cap_micros, p_cap_micros) - COALESCE(v_row.committed_micros, 0)
+--|               - COALESCE(v_row.reserved_micros, 0), 0),
+--|      COALESCE(v_row.cap_micros, p_cap_micros), COALESCE(v_row.committed_micros, 0),
+--|      COALESCE(v_row.reserved_micros, 0);
+--|    RETURN;
+--|  END IF;
+--|
+--|  INSERT INTO public.ai_spend_reservations (agent_key, period_month, amount_micros, model_id, route)
+--|  VALUES (p_agent_key, v_period, p_amount_micros, p_model_id, p_route)
+--|  RETURNING id INTO v_id;
+--|
+--|  RETURN QUERY SELECT true, v_id,
+--|    GREATEST(v_row.cap_micros - v_row.committed_micros - v_row.reserved_micros, 0),
+--|    v_row.cap_micros, v_row.committed_micros, v_row.reserved_micros;
+--|END;
+--|$$;
+--|
+--|CREATE OR REPLACE FUNCTION public.ai_budget_settle(
+--|  p_reservation_id uuid, p_actual_micros bigint
+--|) RETURNS TABLE (settled boolean, committed_micros bigint, remaining_micros bigint)
+--|LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+--|DECLARE
+--|  v_res public.ai_spend_reservations%ROWTYPE;
+--|  v_actual bigint;
+--|  v_row public.ai_spend_budgets%ROWTYPE;
+--|BEGIN
+--|  UPDATE public.ai_spend_reservations
+--|     SET state = 'settled',
+--|         actual_micros = LEAST(GREATEST(p_actual_micros, 0), amount_micros),
+--|         settled_at = now()
+--|   WHERE id = p_reservation_id AND state = 'open'
+--|  RETURNING * INTO v_res;
+--|
+--|  IF NOT FOUND THEN
+--|    RETURN QUERY SELECT false, 0::bigint, 0::bigint;
+--|    RETURN;
+--|  END IF;
+--|
+--|  v_actual := v_res.actual_micros;
+--|
+--|  UPDATE public.ai_spend_budgets
+--|     SET committed_micros = committed_micros + v_actual,
+--|         reserved_micros  = GREATEST(reserved_micros - v_res.amount_micros, 0),
+--|         updated_at = now()
+--|   WHERE agent_key = v_res.agent_key AND period_month = v_res.period_month
+--|  RETURNING * INTO v_row;
+--|
+--|  RETURN QUERY SELECT true, v_row.committed_micros,
+--|    GREATEST(v_row.cap_micros - v_row.committed_micros - v_row.reserved_micros, 0);
+--|END;
+--|$$;
+--|
+--|CREATE OR REPLACE FUNCTION public.ai_budget_release(p_reservation_id uuid)
+--|RETURNS boolean
+--|LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+--|DECLARE v_res public.ai_spend_reservations%ROWTYPE;
+--|BEGIN
+--|  UPDATE public.ai_spend_reservations
+--|     SET state = 'released', actual_micros = 0, settled_at = now()
+--|   WHERE id = p_reservation_id AND state = 'open'
+--|  RETURNING * INTO v_res;
+--|  IF NOT FOUND THEN RETURN false; END IF;
+--|  UPDATE public.ai_spend_budgets
+--|     SET reserved_micros = GREATEST(reserved_micros - v_res.amount_micros, 0), updated_at = now()
+--|   WHERE agent_key = v_res.agent_key AND period_month = v_res.period_month;
+--|  RETURN true;
+--|END;
+--|$$;
+--|
+--|CREATE OR REPLACE FUNCTION public.ai_budget_status(p_agent_key text)
+--|RETURNS TABLE (
+--|  period_month date, cap_micros bigint, committed_micros bigint,
+--|  reserved_micros bigint, remaining_micros bigint, open_holds bigint
+--|)
+--|LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+--|  SELECT b.period_month, b.cap_micros, b.committed_micros, b.reserved_micros,
+--|         GREATEST(b.cap_micros - b.committed_micros - b.reserved_micros, 0),
+--|         (SELECT count(*) FROM public.ai_spend_reservations r
+--|           WHERE r.agent_key = b.agent_key AND r.period_month = b.period_month
+--|             AND r.state = 'open')
+--|    FROM public.ai_spend_budgets b
+--|   WHERE b.agent_key = p_agent_key
+--|     AND b.period_month = (date_trunc('month', now() AT TIME ZONE 'utc'))::date;
+--|$$;
+--|
+--|REVOKE ALL ON FUNCTION public.ai_budget_reserve(text, bigint, bigint, text, text) FROM anon, authenticated;
+--|REVOKE ALL ON FUNCTION public.ai_budget_settle(uuid, bigint) FROM anon, authenticated;
+--|REVOKE ALL ON FUNCTION public.ai_budget_release(uuid) FROM anon, authenticated;
+--|REVOKE ALL ON FUNCTION public.ai_budget_reclaim_expired(text, date, interval) FROM anon, authenticated;
+--|REVOKE ALL ON FUNCTION public.ai_budget_status(text) FROM anon, authenticated;
+--|GRANT EXECUTE ON FUNCTION public.ai_budget_reserve(text, bigint, bigint, text, text) TO service_role;
+--|GRANT EXECUTE ON FUNCTION public.ai_budget_settle(uuid, bigint) TO service_role;
+--|GRANT EXECUTE ON FUNCTION public.ai_budget_release(uuid) TO service_role;
+--|GRANT EXECUTE ON FUNCTION public.ai_budget_reclaim_expired(text, date, interval) TO service_role;
+--|GRANT EXECUTE ON FUNCTION public.ai_budget_status(text) TO service_role;
+-- >>> END RECORDED BODY

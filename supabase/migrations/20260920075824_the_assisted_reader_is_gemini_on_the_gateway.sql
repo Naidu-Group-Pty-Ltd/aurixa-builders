@@ -1,0 +1,66 @@
+-- ============================================================================
+-- RECORD ONLY. Applied to production out of band; deliberately NOT re-executed.
+--
+-- Narrows that assignment's fallback chain to the gateway. The repository file of
+-- the same name carries the same scoped UPDATE.
+--
+-- ledger version   20260920075824
+-- ledger name      the_assisted_reader_is_gemini_on_the_gateway
+-- applied          20 Sep 2026 07:58:24 UTC, straight to production through
+--                  the Supabase apply_migration tool, which records the SQL on
+--                  the ledger row (this file's body is read back from that row)
+-- body md5         1fb597ebe7533237989f477d927ea1a0   (of the recorded body with each leading --| removed)
+-- effect carried   20260920080000_the_assisted_reader_is_gemini_on_the_gateway.sql
+--
+-- WHY IT DOES NOT EXECUTE. Production ran this version BEFORE the repository
+-- file above, which then ran on top of it through the deploy lane; production's
+-- end state is therefore that file's. A rebuild runs files in VERSION order, so
+-- this body — if it executed — would run AFTER that file instead, and replace
+-- what production has with what production replaced. Measured on 28 Sep 2026:
+-- restored as executable SQL, the six out-of-band records leave four ai_budget_*
+-- function bodies different from production's. Restored as records, a rebuild
+-- reproduces production on every object they touched, including that only
+-- service_role may execute the five ai_budget_* functions.
+--
+-- WHY IT EXISTS. `production-rollout verify` halts on any ledger version the
+-- repository does not carry, and it halted on this one from 20 Sep 2026. Deleting
+-- this file brings that halt back; it does not change the database.
+--
+-- Pinned by src/lib/__tests__/migrationLedgerRecords.spec.ts (the body recovers
+-- to the md5 above, and nothing here executes) and by
+-- scripts/db/ai-budget-rebuild-check.mjs (a rebuild equals production).
+-- ============================================================================
+-- >>> BEGIN RECORDED BODY
+--|-- The assisted stock reader is Gemini on the gateway, and nothing else.
+--|--
+--|-- `20260920070000` seeded a chain that crossed CREDENTIALS, ending in
+--|-- native/gpt-4o-mini. The retry that followed proved that bought nothing: all
+--|-- THREE steps answered `provider_not_configured`, so this deployment holds
+--|-- neither vendor key. Route diversity cannot rescue a deployment with no
+--|-- credentials; only configuring one can, and that is not code.
+--|--
+--|-- Builder Stock has always read brochures with Gemini through the gateway —
+--|-- `modelExtract.ts` has named `builder_stock_extraction` since it was written
+--|-- and the router's compiled-in default for it is these two Gemini models. The
+--|-- second vendor was a diagnostic step, not a product decision, and is
+--|-- withdrawn. What is left is the original intent, stated explicitly:
+--|--
+--|--   primary   gateway  google/gemini-2.5-flash        LOVABLE_API_KEY
+--|--   fallback  gateway  google/gemini-3-flash-preview  LOVABLE_API_KEY
+--|--
+--|-- The ROW is kept rather than deleted: it is visible in the Model Hub, it
+--|-- survives a change to the router's defaults, and `recordAssignmentFailure`
+--|-- writes `last_error` by agent_key — without a row that write matches nothing,
+--|-- which is why the original failure went undiagnosed. That field is what
+--|-- proved the credential finding above.
+--|--
+--|-- Scoped to undo OUR OWN seed and never an operator's choice: the WHERE clause
+--|-- matches only a chain still carrying the exact entry 20260920070000 wrote.
+--|-- No credential is named or carried here.
+--|
+--|UPDATE public.agent_model_assignments
+--|   SET fallback_chain = '[{"route": "gateway", "model_id": "google/gemini-3-flash-preview"}]'::jsonb,
+--|       updated_at     = now()
+--| WHERE agent_key = 'builder_stock_extraction'
+--|   AND fallback_chain @> '[{"route": "native", "model_id": "gpt-4o-mini"}]'::jsonb;
+-- >>> END RECORDED BODY

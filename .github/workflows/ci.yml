@@ -60,6 +60,14 @@ jobs:
       # last organisation, history untouched.
       - name: organisation members are managed within the organisation's own authority
         run: npm run db:member-management:check
+      # The AI spend ceiling, rebuilt from this directory, has production's exact
+      # posture: its end state equals the fingerprint read from production, only
+      # service_role may execute the five ai_budget_* functions — asked of the
+      # server by calling them as anon and authenticated — and settle runs.
+      # baseline-check proves "service_role and nobody else" against the baseline
+      # ALONE, and these functions were created after it, so nothing else looks.
+      - name: a rebuilt AI spend ceiling answers to service_role and nobody else
+        run: npm run db:ai-budget:check
 
   edge:
     name: edge functions typecheck + gates

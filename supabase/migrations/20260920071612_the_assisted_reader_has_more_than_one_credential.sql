@@ -1,0 +1,84 @@
+-- ============================================================================
+-- RECORD ONLY. Applied to production out of band; deliberately NOT re-executed.
+--
+-- Seeds the builder_stock_extraction model assignment. The repository file of the
+-- same name carries the same INSERT ... ON CONFLICT DO NOTHING.
+--
+-- ledger version   20260920071612
+-- ledger name      the_assisted_reader_has_more_than_one_credential
+-- applied          20 Sep 2026 07:16:12 UTC, straight to production through
+--                  the Supabase apply_migration tool, which records the SQL on
+--                  the ledger row (this file's body is read back from that row)
+-- body md5         2de55d7b1ba528adf5253ce03034ed82   (of the recorded body with each leading --| removed)
+-- effect carried   20260920070000_the_assisted_reader_has_more_than_one_credential.sql
+--
+-- WHY IT DOES NOT EXECUTE. Production ran this version BEFORE the repository
+-- file above, which then ran on top of it through the deploy lane; production's
+-- end state is therefore that file's. A rebuild runs files in VERSION order, so
+-- this body — if it executed — would run AFTER that file instead, and replace
+-- what production has with what production replaced. Measured on 28 Sep 2026:
+-- restored as executable SQL, the six out-of-band records leave four ai_budget_*
+-- function bodies different from production's. Restored as records, a rebuild
+-- reproduces production on every object they touched, including that only
+-- service_role may execute the five ai_budget_* functions.
+--
+-- WHY IT EXISTS. `production-rollout verify` halts on any ledger version the
+-- repository does not carry, and it halted on this one from 20 Sep 2026. Deleting
+-- this file brings that halt back; it does not change the database.
+--
+-- Pinned by src/lib/__tests__/migrationLedgerRecords.spec.ts (the body recovers
+-- to the md5 above, and nothing here executes) and by
+-- scripts/db/ai-budget-rebuild-check.mjs (a rebuild equals production).
+-- ============================================================================
+-- >>> BEGIN RECORDED BODY
+--|-- The assisted stock reader is CONFIGURED, and its chain crosses credentials.
+--|--
+--|-- `builder_stock_extraction` is the agent key every model-assisted stock
+--|-- import goes through, and the ONLY consumer of `llmRouter` in this
+--|-- deployment. It had never been configured: `agent_model_assignments` held
+--|-- ZERO rows (measured 20 September 2026), leaving the router's compiled-in
+--|-- legacy pair — two models on ONE route, so both spend one credential
+--|-- (`LOVABLE_API_KEY`). A chain whose every step fails for the same reason is
+--|-- not a fallback chain. Three brochure uploads failed in ~5s each with
+--|-- "All 2 models failed", and the builder was told their PDF needed columns.
+--|--
+--|-- The chain now crosses CREDENTIALS: the proven gateway pair leads, and
+--|-- native/gpt-4o-mini is reached by a different key, so a missing or rotated
+--|-- gateway credential costs a fallback step instead of the whole feature. All
+--|-- three support the required `record_stock_items` tool call.
+--|--
+--|-- ON CONFLICT DO NOTHING: this fills an ABSENT key and never overrules an
+--|-- operator's own choice. It names routes and models — configuration, not
+--|-- secrets; which key a route spends is resolved at call time from the
+--|-- environment. Re-runnable, because a row a migration INSERTs does not travel
+--|-- with a provisioned copy of this schema.
+--|
+--|INSERT INTO public.agent_model_assignments (
+--|  agent_key,
+--|  agent_label,
+--|  agent_category,
+--|  agent_description,
+--|  route,
+--|  model_id,
+--|  fallback_chain,
+--|  temperature,
+--|  max_tokens,
+--|  is_active
+--|)
+--|VALUES (
+--|  'builder_stock_extraction',
+--|  'Builder stock extraction',
+--|  'builder_portal',
+--|  'Reads properties out of stock lists the deterministic parsers cannot: PDF '
+--|    || 'brochures, Word documents, photographed schedules. Must support tool '
+--|    || 'calling — the answer is returned through record_stock_items.',
+--|  'gateway',
+--|  'google/gemini-2.5-flash',
+--|  '[{"route": "gateway", "model_id": "google/gemini-3-flash-preview"},
+--|     {"route": "native",  "model_id": "gpt-4o-mini"}]'::jsonb,
+--|  0,
+--|  8000,
+--|  true
+--|)
+--|ON CONFLICT (agent_key) DO NOTHING;
+-- >>> END RECORDED BODY

@@ -220,8 +220,15 @@ describe('the existing usage ledger was extended, not replaced', () => {
   });
 
   it('no second billing table was created for this', () => {
+    // Asked of the EXECUTABLE SQL, not the text. Six record-only migrations
+    // (doc 66) preserve the out-of-band SQL production ran on 20 Sep 2026 as
+    // comments, and two of them quote the first cut of this very table; they
+    // create nothing. Counting text mentions would have read a quotation as a
+    // second table, which is the property this assertion exists to deny.
+    const executable = (f: string) => read(`${MIGRATIONS}/${f}`)
+      .split('\n').filter((line) => !/^\s*--/.test(line)).join('\n');
     const budgetFiles = readdirSync(MIGRATIONS)
-      .filter((f) => read(`${MIGRATIONS}/${f}`).includes('ai_spend_budgets'));
+      .filter((f) => executable(f).includes('ai_spend_budgets'));
     expect(budgetFiles).toHaveLength(1);
     const sql = read(`${MIGRATIONS}/${budgetFiles[0]}`);
     // The ceiling table answers "may this call happen"; api_usage_log remains

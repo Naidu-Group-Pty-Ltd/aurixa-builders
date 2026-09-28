@@ -1,0 +1,55 @@
+-- ============================================================================
+-- RECORD ONLY. Applied to production out of band; deliberately NOT re-executed.
+--
+-- A SECURITY FIX. Postgres grants EXECUTE on a new function to PUBLIC, and anon and
+-- authenticated reach it by inheriting PUBLIC — so revoking from those two roles
+-- removed nothing, and the five money-moving functions were callable by an
+-- anonymous caller. The consolidated repository file revokes FROM PUBLIC.
+--
+-- ledger version   20260920091706
+-- ledger name      ai_budget_functions_are_revoked_from_public
+-- applied          20 Sep 2026 09:17:06 UTC, straight to production through
+--                  the Supabase apply_migration tool, which records the SQL on
+--                  the ledger row (this file's body is read back from that row)
+-- body md5         abcb3ccaa87930be32f35c9eb560be11   (of the recorded body with each leading --| removed)
+-- effect carried   20260920090000_a_ceiling_that_concurrency_cannot_walk_through.sql
+--
+-- WHY IT DOES NOT EXECUTE. Production ran this version BEFORE the repository
+-- file above, which then ran on top of it through the deploy lane; production's
+-- end state is therefore that file's. A rebuild runs files in VERSION order, so
+-- this body — if it executed — would run AFTER that file instead, and replace
+-- what production has with what production replaced. Measured on 28 Sep 2026:
+-- restored as executable SQL, the six out-of-band records leave four ai_budget_*
+-- function bodies different from production's. Restored as records, a rebuild
+-- reproduces production on every object they touched, including that only
+-- service_role may execute the five ai_budget_* functions.
+--
+-- WHY IT EXISTS. `production-rollout verify` halts on any ledger version the
+-- repository does not carry, and it halted on this one from 20 Sep 2026. Deleting
+-- this file brings that halt back; it does not change the database.
+--
+-- Pinned by src/lib/__tests__/migrationLedgerRecords.spec.ts (the body recovers
+-- to the md5 above, and nothing here executes) and by
+-- scripts/db/ai-budget-rebuild-check.mjs (a rebuild equals production).
+-- ============================================================================
+-- >>> BEGIN RECORDED BODY
+--|-- REVOKING FROM anon AND authenticated REMOVED NOTHING.
+--|--
+--|-- Postgres grants EXECUTE on a new function to PUBLIC by default, and both
+--|-- roles reach it by inheriting PUBLIC — so the five `ai_budget_*` functions,
+--|-- which are SECURITY DEFINER and move money, were callable by an anonymous
+--|-- caller. `baseline-check.mjs` caught it and named all five; the repository's
+--|-- own convention is FROM PUBLIC and 132 existing revokes follow it.
+--|
+--|REVOKE ALL ON FUNCTION public.ai_budget_reserve(text, bigint, bigint, text, text) FROM PUBLIC, anon, authenticated;
+--|REVOKE ALL ON FUNCTION public.ai_budget_settle(uuid, bigint) FROM PUBLIC, anon, authenticated;
+--|REVOKE ALL ON FUNCTION public.ai_budget_release(uuid) FROM PUBLIC, anon, authenticated;
+--|REVOKE ALL ON FUNCTION public.ai_budget_reclaim_expired(text, date, interval) FROM PUBLIC, anon, authenticated;
+--|REVOKE ALL ON FUNCTION public.ai_budget_status(text) FROM PUBLIC, anon, authenticated;
+--|
+--|GRANT EXECUTE ON FUNCTION public.ai_budget_reserve(text, bigint, bigint, text, text) TO service_role;
+--|GRANT EXECUTE ON FUNCTION public.ai_budget_settle(uuid, bigint) TO service_role;
+--|GRANT EXECUTE ON FUNCTION public.ai_budget_release(uuid) TO service_role;
+--|GRANT EXECUTE ON FUNCTION public.ai_budget_reclaim_expired(text, date, interval) TO service_role;
+--|GRANT EXECUTE ON FUNCTION public.ai_budget_status(text) TO service_role;
+-- >>> END RECORDED BODY

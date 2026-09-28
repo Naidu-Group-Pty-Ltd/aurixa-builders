@@ -1,0 +1,45 @@
+# The end state of every object the six out-of-band migrations of 20 Sep 2026 touched,
+# read from production (htfluofznhxeumblwbww, Postgres 17) on 28 Sep 2026 with
+# ai-budget-fingerprint.sql. A clean rebuild must reproduce it line for line;
+# see ai-budget-rebuild-check.mjs for the one Postgres-version difference it allows.
+col ai_spend_budgets.1 agent_key text notnull=true default=
+col ai_spend_budgets.2 period_month date notnull=true default=
+col ai_spend_budgets.3 cap_micros bigint notnull=true default=
+col ai_spend_budgets.4 committed_micros bigint notnull=true default=0
+col ai_spend_budgets.5 reserved_micros bigint notnull=true default=0
+col ai_spend_budgets.6 created_at timestamp with time zone notnull=true default=now()
+col ai_spend_budgets.7 updated_at timestamp with time zone notnull=true default=now()
+col ai_spend_reservations.1 id uuid notnull=true default=gen_random_uuid()
+col ai_spend_reservations.10 settled_at timestamp with time zone notnull=false default=
+col ai_spend_reservations.2 agent_key text notnull=true default=
+col ai_spend_reservations.3 period_month date notnull=true default=
+col ai_spend_reservations.4 amount_micros bigint notnull=true default=
+col ai_spend_reservations.5 state text notnull=true default='open'::text
+col ai_spend_reservations.6 actual_micros bigint notnull=false default=
+col ai_spend_reservations.7 model_id text notnull=false default=
+col ai_spend_reservations.8 route text notnull=false default=
+col ai_spend_reservations.9 created_at timestamp with time zone notnull=true default=now()
+con ai_spend_budgets ai_spend_budgets_non_negative CHECK (((cap_micros >= 0) AND (committed_micros >= 0) AND (reserved_micros >= 0)))
+con ai_spend_budgets ai_spend_budgets_pkey PRIMARY KEY (agent_key, period_month)
+con ai_spend_reservations ai_spend_reservations_actual_micros_check CHECK (((actual_micros IS NULL) OR (actual_micros >= 0)))
+con ai_spend_reservations ai_spend_reservations_amount_micros_check CHECK ((amount_micros >= 0))
+con ai_spend_reservations ai_spend_reservations_pkey PRIMARY KEY (id)
+con ai_spend_reservations ai_spend_reservations_state_check CHECK ((state = ANY (ARRAY['open'::text, 'settled'::text, 'released'::text, 'expired'::text])))
+fn ai_budget_reclaim_expired(p_agent_key text, p_period date, p_older_than interval) md5=96202f2f1d40a833c378a8f7d59da19b secdef=true config=search_path=public volatile=v
+fn ai_budget_release(p_reservation_id uuid) md5=bb4efb1863eeba0f5ff8f554b999d202 secdef=true config=search_path=public volatile=v
+fn ai_budget_reserve(p_agent_key text, p_amount_micros bigint, p_cap_micros bigint, p_model_id text, p_route text) md5=fb13ad41258cccb6857f36221fb40c1a secdef=true config=search_path=public volatile=v
+fn ai_budget_settle(p_reservation_id uuid, p_actual_micros bigint) md5=645a52beeae10fdec9f180698e7842bd secdef=true config=search_path=public volatile=v
+fn ai_budget_status(p_agent_key text) md5=6160fbb84f4169e019c7b88cb91c5e64 secdef=true config=search_path=public volatile=s
+fn-acl ai_budget_reclaim_expired(p_agent_key text, p_period date, p_older_than interval) service_role:EXECUTE
+fn-acl ai_budget_release(p_reservation_id uuid) service_role:EXECUTE
+fn-acl ai_budget_reserve(p_agent_key text, p_amount_micros bigint, p_cap_micros bigint, p_model_id text, p_route text) service_role:EXECUTE
+fn-acl ai_budget_settle(p_reservation_id uuid, p_actual_micros bigint) service_role:EXECUTE
+fn-acl ai_budget_status(p_agent_key text) service_role:EXECUTE
+idx ai_spend_budgets CREATE UNIQUE INDEX ai_spend_budgets_pkey ON public.ai_spend_budgets USING btree (agent_key, period_month)
+idx ai_spend_reservations CREATE INDEX ai_spend_reservations_open_idx ON public.ai_spend_reservations USING btree (agent_key, period_month, created_at) WHERE (state = 'open'::text)
+idx ai_spend_reservations CREATE UNIQUE INDEX ai_spend_reservations_pkey ON public.ai_spend_reservations USING btree (id)
+rls ai_spend_budgets enabled=true forced=false
+rls ai_spend_reservations enabled=true forced=false
+row agent_model_assignments builder_stock_extraction route=openrouter model=openai/gpt-5.6-luna fallback=[{"route": "openrouter", "model_id": "google/gemini-3.8-flash"}] temperature=0 max_tokens=8000 active=true category=builder_portal label=Builder stock extraction description_md5=5f4c82d22a6bae1a9fcac306648256bf
+tbl-acl ai_spend_budgets service_role:DELETE,service_role:INSERT,service_role:MAINTAIN,service_role:REFERENCES,service_role:SELECT,service_role:TRIGGER,service_role:TRUNCATE,service_role:UPDATE
+tbl-acl ai_spend_reservations service_role:DELETE,service_role:INSERT,service_role:MAINTAIN,service_role:REFERENCES,service_role:SELECT,service_role:TRIGGER,service_role:TRUNCATE,service_role:UPDATE
