@@ -758,13 +758,30 @@ try {
   record('I: a membership granted to an account that cannot sign in yet WAITS for its own invitation',
     bInvite.status === 200 && bPending?.status === 'invited',
     `invite=${bInvite.status} B.status=${bPending?.status} role=${bPending?.membership_role}`);
-  // The legitimate case, asserted rather than assumed: a brand-new address
-  // belongs nowhere else, so the inviter still gets the link to pass on by hand
-  // where mail is not configured. Withholding it HERE would have broken every
-  // ordinary invitation, which is the regression this fix had to avoid.
-  record('I: and a first invitation to an address that belongs nowhere else still hands its inviter the link',
-    bInvite.status === 200 && bInvite.json?.email_sent === false && !!bInvite.json?.invite_url,
-    `email_sent=${bInvite.json?.email_sent} invite_url=${bInvite.json?.invite_url ? 'returned' : 'ABSENT'}`);
+  /*
+   * NO LINK COMES BACK, FOR ANYBODY, ON A DEPLOYMENT THAT HAS A POSTMAN.
+   *
+   * The first fix withheld the link only where the address belonged to another
+   * organisation, and asserted here that a brand-new address still got one. The
+   * independent review showed both halves of that were wrong:
+   *
+   *  * holding the link for an unclaimed address lets the CALLER accept it —
+   *    setting a password and stamping the mailbox verified on an account
+   *    bearing somebody else's address — and an established account is granted
+   *    a LIVE membership whenever any organisation adds it later, so the claim
+   *    pays off the first time the real person is invited somewhere;
+   *  * the link's PRESENCE was itself a per-address answer to "does this address
+   *    belong somewhere that is not mine?", which is the oracle the invite
+   *    function's own header forbids.
+   *
+   * Both sends here fail — the recipient is a reserved `@example.com` name the
+   * provider refuses — and a failed send now returns nothing. The affordance
+   * survives only where there is no mail provider at all, which this deployment
+   * is not.
+   */
+  record('I: a failed send hands the inviter NO link, so nobody can claim the account behind an address',
+    bInvite.status === 200 && bInvite.json?.email_sent === false && !bInvite.json?.invite_url,
+    `email_sent=${bInvite.json?.email_sent} invite_url=${bInvite.json?.invite_url ? 'RETURNED' : 'absent'}`);
 
   // A now invites the same address. This is the attacker's move.
   const aInvite = await call('builder-portal-invite',
@@ -780,9 +797,16 @@ try {
   // §4), and before the fix this response carried a working credential for B's
   // pending seat. The withholding is what makes that unreachable; note the
   // assertion above proves it is withheld from A while still returned to B.
-  record('I: the one-time link is WITHHELD from an organisation the address does not belong to',
+  record('I: and the same for an address that DOES belong elsewhere — no link either',
     aInvite.status === 200 && !aInvite.json?.invite_url,
     `email_sent=${aInvite.json?.email_sent} invite_url=${aInvite.json?.invite_url ? 'RETURNED' : 'absent'}`);
+  // THE ORACLE IS GONE BECAUSE THE TWO ANSWERS ARE THE SAME ANSWER. Withholding
+  // the link from one address and returning it for another makes its absence the
+  // disclosure; asserted as an equality so narrowing the rule cannot pass.
+  record('I: the two responses are the same shape, so a caller learns nothing about where an address belongs',
+    Object.keys(bInvite.json ?? {}).sort().join(',') === Object.keys(aInvite.json ?? {}).sort().join(','),
+    `belongs-nowhere=[${Object.keys(bInvite.json ?? {}).sort().join(',')}]`
+    + ` belongs-elsewhere=[${Object.keys(aInvite.json ?? {}).sort().join(',')}]`);
 
   // Accept A's invitation, with A's own token, exactly as the portal would.
   const crossToken = `${randomUUID()}-${randomUUID()}`;
@@ -839,6 +863,35 @@ try {
   record('I: the other organisation can still add them itself, and the waiting seat is promoted',
     bRegrant.status === 200 && bFinal?.status === 'active',
     `regrant=${bRegrant.status} B.status=${bFinal?.status} role=${bFinal?.membership_role}`);
+  /*
+   * AND A REFUSAL TO PROMOTE IS NOT REPORTED AS A GRANT.
+   *
+   * Suspend the seat that was just promoted, then add them again. Promoting
+   * nothing is the right answer — a suspended membership is an administrator's
+   * decision an invitation may not undo — but the door used to answer 200 and
+   * email "You now have access … your existing sign-in still works" over a
+   * membership the portal still refuses, because a zero-row update carries no
+   * error. That is the exact failure the promotion exists to prevent.
+   */
+  const bMembershipId = (await q('cross-org membership id', `
+    SELECT m.id FROM public.builder_organisation_memberships m
+      JOIN public.builder_portal_users u ON u.id = m.builder_user_id
+     WHERE u.email = ${sqlLit(victimEmail)} AND m.organisation_id = ${id(B.orgId)}
+       AND m.revoked_at IS NULL`))[0]?.id;
+  const bSuspend = await call('builder-portal-invite',
+    { action: 'manage_member', membership_id: bMembershipId, member_action: 'suspend' }, B.cookie);
+  const readd = await call('builder-portal-invite',
+    { action: 'invite', email: victimEmail, name: 'Access crossorg', membership_role: 'member' },
+    B.cookie);
+  const afterReadd = await membershipStatus(B.orgId);
+  record('I: re-adding a SUSPENDED member is refused rather than reported as a grant',
+    bSuspend.status === 200 && readd.status === 409
+      && readd.json?.code === 'membership_not_promotable' && afterReadd?.status === 'suspended',
+    `suspend=${bSuspend.status} readd=${readd.status} code=${readd.json?.code} B.status=${afterReadd?.status}`);
+  // Put it back, so the assertions below read the state they were written for.
+  await call('builder-portal-invite',
+    { action: 'manage_member', membership_id: bMembershipId, member_action: 'reactivate' }, B.cookie);
+
   const reachesBoth = crossCookie
     ? await call('builder-portal-verify', {}, crossCookie)
     : { status: 0, json: null };

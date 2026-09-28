@@ -17,6 +17,7 @@ import { hashSessionToken } from '../_shared/sessionHash.ts';
 import { validateBuilderPortalRequest } from '../_shared/builderSessionToken.ts';
 import { auditBuilderIdentity } from '../_shared/builderSessions.ts';
 import { meteredFetch } from "../_shared/meteredFetch.ts";
+import { redactAddresses } from '../_shared/builderInviteEmail.ts';
 import { authRateLimitedResponse, beginAuthRateLimit } from '../_shared/authRateLimit.ts';
 import { parseJsonBody } from '../_shared/validate.ts';
 import { ForgotPasswordRequest, AUTH_MAX_BODY_BYTES } from '../_shared/authBodySchemas.ts';
@@ -152,7 +153,7 @@ Deno.serve(async (req) => {
         if (!response.ok) {
           const detail = await response.text().catch(() => '');
           console.error('[builder-portal-forgot-password] the provider refused the reset email', response.status, {
-            provider_message: detail.slice(0, 300),
+            provider_message: redactAddresses(detail).slice(0, 300),
             from: brand.fromHeaderAdmin,
             category: 'builder_portal_reset',
           });

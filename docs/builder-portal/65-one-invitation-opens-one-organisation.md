@@ -134,6 +134,105 @@ Production held no such token when this shipped.
   moving the statement into the shared helper broke it while the behaviour was
   unchanged, and a leftover copy would have kept it green.
 
+## 3a. What the independent security review found in the first fix
+
+The fix above was reviewed adversarially before being called complete, and the
+review is the most useful thing in this document. It confirmed the premise the
+whole design rests on — **no path anywhere treats a non-`active` membership as
+live**, across 92 SQL sites in 9 migrations and 14 edge-function sites, all
+funnelling through `builder_accessible_organisations`, `builder_active_membership`
+or `builder_resolve_permission` — and then found that the premise did not hold
+on the **write** side, and that the takeover was reachable again by a different
+route.
+
+**The one-time link was the hole, twice over, and narrowing it was not enough.**
+The first fix withheld it where the address belonged to another organisation.
+Two things survived that:
+
+- **A failed send is attacker-triggerable.** The provider limits sends per
+  second and `builder-portal-invite` has no limiter of its own, so a caller can
+  force a failure at will. Holding the link for an address nobody has claimed
+  lets the **caller** accept it — choosing a password and stamping the mailbox
+  verified on an account bearing somebody else's address. Scoped acceptance
+  means that account reaches nowhere *today*; but an account that already signs
+  in is granted a **live** membership whenever any organisation adds it later,
+  correctly and by design, so the claim pays off the first time the real person
+  is invited somewhere.
+- **The link's PRESENCE was the oracle.** Withholding it from a caller whose
+  invitee belongs elsewhere makes its absence a per-address answer to *"does
+  this address hold a membership in an organisation that is not mine?"* — the
+  exact disclosure `builder-portal-invite`'s own header forbids. Protecting
+  *which* organisation while disclosing *that* one exists is not protection.
+  The proof suite asserted both halves of it: the test was the exploit.
+
+So there are now **two rules for two callers**, and the difference is the point.
+A tenant administrator gets `mayHandLinkToInviter`, which reads the **provider
+state and nothing about the invitee** — the link survives only where there is no
+mail provider at all, which is the case the affordance was written for and where
+the residual is unavoidable because the inviter is the only postman there is. A
+platform operator gets `operatorMayHandLink`, the membership rule: they can
+already see the whole network, so nothing is disclosed to them they could not
+read directly, and what is withheld is the **credential**, not the fact.
+`inviteLinkDisclosure` is **deleted** rather than left dormant.
+
+**The operator door had no scope check at all** — the stronger of the two doors,
+and the first fix guarded only the portal's. `established` is `password_hash ||
+invite_accepted_at`, and a real tenant's *pending invitee* has neither, so an
+operator could create an empty organisation, name that address its owner, take
+the link, accept it and own the account. Its sibling one door along,
+`submit_access_request`, had always got this right and says so: *"the link is
+the credential"*.
+
+**A refusal to promote was reported as a grant.** `promoteWaitingMembership`
+returned only its error, and a zero-row update carries none — so a `suspended`
+membership matched nothing, answered success, and the door emailed *"You now
+have access … your existing sign-in still works"* over a membership the portal
+still refuses. That is verbatim the failure the promotion exists to prevent.
+Refusing to promote a suspended membership is right; reporting the refusal as a
+grant is not. It reports its row count now, and all four callers read it — on
+the operator doors a no-op would otherwise settle a request `attached` over an
+organisation with **no owner at all**, because the owner insert carries
+`is_primary: true` and its `23505` may be the one-primary key rather than the
+live key.
+
+**The rule reached three edge functions and not the one that grants in SQL.**
+`builder_decide_org_join_request` wrote `status = 'active'` unconditionally, so
+approving a join request re-created the pre-condition the rule exists to remove.
+Migration `20260928120000` decides the status the same way every other door
+does, and promotes a waiting row — without which the existence guard skipped the
+insert, stamped the request `approved`, answered `membership_created = false`,
+and left the member with no access and **no repair path anywhere**.
+
+**One organisation could destroy another's outstanding invitation in one call.**
+The token slot is one per account, and `revoke_invite` nulled it by user id
+alone: A invites an address B is also inviting, calls revoke, and B's live link
+stops working with nothing to say why. `invite_token_organisation_id` exists for
+exactly this and the first fix added it without using it there.
+
+**A waiting membership rendered as an ordinary active member.** `shapeMembers`
+partitioned on the **account's** status, which was the same question until a
+membership could wait on its own. After the intended flow — A invites Bob, B
+invites Bob, Bob accepts B's link — Bob's account is `active` while A's
+membership waits, so A's list filed him under *members* and drew him as a full
+one: no badge, a Suspend the database refuses on a row the page had just called
+active, a Reactivate that refuses too, and *"Cancel invitation"* unreachable.
+
+**Three smaller ones.** The acceptance lookup discarded its error, and the fix
+had just added a column to that select — so functions deployed ahead of the
+migration would answer `PGRST204` and **every** invitation would read "invalid
+or expired" with nothing logged; it answers 503 now and says so. Both refusal
+logs recorded the provider's own body under a comment promising the recipient
+never reaches a log — a promise that is not the provider's to keep, since its
+refusals quote the offending address, and on the reset door that address is
+caller-supplied; `redactAddresses` makes it a statement about the log rather
+than about the file. And `invitation_pending` named the inviting organisation,
+which its own sibling one block down deliberately does not — the assertion that
+pinned that disclosure as a feature was itself the defect.
+
+Two assertions had to be renegotiated, and both were pinning the wrong thing:
+one required the organisation to be named, the other required the link to come
+back. A third, in the proof suite, asserted the oracle as required behaviour.
+
 ## 4. The other blocker, and why it made this one live
 
 A failed send is what put the one-time link in the inviting administrator's

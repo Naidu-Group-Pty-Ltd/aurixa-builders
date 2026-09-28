@@ -59,7 +59,8 @@ import {
 } from '../_shared/builderPortalAuth.ts';
 import { MEMBER_ACTIONS, memberRefusal, shapeMembers } from '../_shared/builderMemberManagement.pure.ts';
 import {
-  inviteLinkDisclosure,
+  type InviteSendState,
+  mayHandLinkToInviter,
   membershipStatusForGrant,
 } from '../_shared/builderInviteScope.pure.ts';
 
@@ -212,37 +213,40 @@ Deno.serve(async (req) => {
       );
 
       /*
-       * THE LINK IS NEVER HANDED TO SOMEBODY ELSE'S ORGANISATION.
+       * THE ONE-TIME LINK IS RETURNED ONLY WHERE THERE IS NO POSTMAN.
        *
-       * It is returned so an inviter can pass it on by hand where mail is not
-       * configured — and that convenience was the takeover's delivery
-       * mechanism: an address still pending in another organisation had its one
-       * token replaced, and the new link came back to THIS caller. Acceptance
-       * is scoped now, so holding it confers nothing elsewhere, but a
-       * credential for a mailbox this caller does not own is still not theirs
-       * to hold. Withheld unless every membership the account has is this
-       * organisation's.
+       * It used to come back whenever a send merely failed, so an inviter could
+       * hold a credential for a mailbox they do not own. The first fix withheld
+       * it where the address belonged to another organisation — which closed the
+       * cross-organisation case and left two things the independent review
+       * found:
        *
-       * The response says the same generic thing either way, and the refusal
-       * names no other organisation: a caller who may not hold the link may
-       * not learn where else the address belongs.
+       *  * a FAILED send is attacker-triggerable (the provider limits sends per
+       *    second and this endpoint has no limiter of its own), and holding the
+       *    link for an unclaimed address lets the caller accept it themselves —
+       *    setting a password and stamping the mailbox verified on an account
+       *    bearing somebody else's address. Acceptance is scoped, so that
+       *    account reaches nowhere today; but an account that already signs in
+       *    is granted a LIVE membership whenever any organisation adds it
+       *    later, correctly and by design, so the claim pays off the first time
+       *    the real person is invited somewhere.
+       *  * the link's PRESENCE was itself the answer to "does this address hold
+       *    a membership somewhere that is not mine?" — the very oracle this
+       *    file's header forbids. Protecting WHICH organisation while disclosing
+       *    THAT one exists is not protection.
+       *
+       * So `mayHandLinkToInviter` keeps the affordance for the case it was
+       * written for — a deployment with no mail provider at all, where the
+       * inviter is the only delivery channel there is — and never for a send
+       * that went wrong. The response is now the SAME SHAPE for every address,
+       * which is what removes the oracle rather than narrowing it.
        */
-      const { data: liveMemberships, error: scopeError } = await supabase
-        .from('builder_organisation_memberships')
-        .select('organisation_id, membership_role, status')
-        .eq('builder_user_id', target.id)
-        .is('revoked_at', null);
-      // A read that FAILED is not an account that belongs nowhere else. Fail
-      // closed: no link, rather than a link decided on missing evidence.
-      const disclosure = scopeError
-        ? { mayReturnLink: false, reason: 'membership_scope_unreadable' as const }
-        : inviteLinkDisclosure({
-          liveMemberships: (liveMemberships ?? []) as { organisation_id: string }[],
-          invitingOrganisationId: activeOrganisationId,
-        });
-      if (!disclosure.mayReturnLink && !emailSent) {
-        console.warn('[builder-portal-invite] link withheld from the caller', {
-          reason: disclosure.reason,
+      const sendState: InviteSendState = outcome.sent
+        ? 'sent'
+        : outcome.reason === 'not_configured' ? 'not_configured' : 'failed';
+      if (sendState === 'failed') {
+        console.warn('[builder-portal-invite] the invitation email did not leave; no link is returned', {
+          reason: outcome.reason,
           builder_user_id: target.id,
         });
       }
@@ -251,7 +255,7 @@ Deno.serve(async (req) => {
         ...GENERIC_OK,
         email_sent: emailSent,
         expires_at: expiresAt.toISOString(),
-        invite_url: emailSent || !disclosure.mayReturnLink ? undefined : inviteUrl,
+        invite_url: mayHandLinkToInviter({ send: sendState }) ? inviteUrl : undefined,
       });
     };
 
@@ -329,13 +333,35 @@ Deno.serve(async (req) => {
          * Only ever from `invited`. A `suspended` membership is an
          * administrator's decision and an invitation may not undo it.
          */
-        const { error: promoteError } = await promoteWaitingMembership(supabase, {
+        const promotion = await promoteWaitingMembership(supabase, {
           builderUserId: target.id,
           organisationId: activeOrganisationId,
           membershipRole: role,
           grantedBy: caller.id,
         });
-        if (promoteError) throw promoteError;
+        if (promotion.error) throw promotion.error;
+        /*
+         * A REFUSAL TO PROMOTE MAY NOT BE REPORTED AS A GRANT.
+         *
+         * Promoting nothing is the right answer for a `suspended` membership —
+         * that is an administrator's decision and an invitation may not undo
+         * it — but the branch below then emailed "You now have access … your
+         * existing sign-in still works" over a membership the portal still
+         * refuses, which is the exact failure this promotion exists to
+         * prevent. The row count is what tells the two apart; without it a
+         * zero-row update carries no error and reads as success.
+         *
+         * 409 rather than 403: the act is refused because of the state this
+         * membership is in, and the remedy is to reactivate it on the members
+         * screen, which is where that decision belongs.
+         */
+        if (promotion.promoted === 0) {
+          return json({
+            error: 'That person already has a membership here that is not waiting on an invitation. '
+              + 'Reactivate them on the members list instead.',
+            code: 'membership_not_promotable',
+          }, 409);
+        }
       } else if (membershipError && String(membershipError.code) !== '23505') {
         throw membershipError;
       }
@@ -389,9 +415,27 @@ Deno.serve(async (req) => {
     if (action === 'revoke_invite') {
       const target = await loadScopedUser(String(body.builder_user_id || ''));
       if (!target) return json({ error: 'No such member of this organisation' }, 404);
+      /*
+       * ONLY THIS ORGANISATION'S OWN TOKEN IS DESTROYED.
+       *
+       * The token slot is one per account, so nulling it by user id alone let
+       * any organisation cancel an invitation somebody else had issued: A
+       * invites an address B is also inviting, calls `revoke_invite`, and B's
+       * live link stops working with nothing to say why. `loadScopedUser`
+       * admits any non-revoked membership, including the `invited` one A just
+       * created itself, so no other check stood in the way.
+       *
+       * `invite_token_organisation_id` exists for exactly this, and the first
+       * fix added it without using it here. Scoped, the statement clears a
+       * token this organisation minted and no other; a token belonging
+       * elsewhere is left standing, and A's own membership is still revoked
+       * below either way.
+       */
       const { error } = await supabase.from('builder_portal_users').update({
-        invite_token_hash: null, invite_token_expires_at: null,
-      }).eq('id', target.id);
+        invite_token_hash: null,
+        invite_token_expires_at: null,
+        invite_token_organisation_id: null,
+      }).eq('id', target.id).eq('invite_token_organisation_id', activeOrganisationId);
       if (error) throw error;
 
       /*

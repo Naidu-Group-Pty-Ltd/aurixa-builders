@@ -212,6 +212,26 @@ export function renderInviteEmailText(content: InviteEmailContent, brand: Builde
   return lines.join('\n');
 }
 
+/**
+ * THE PROVIDER'S MESSAGE IS NOT OURS, SO IT IS NOT TRUSTED TO BE ADDRESS-FREE.
+ *
+ * Both refusal logs record the provider's own body, under a comment promising
+ * the recipient never reaches a log line. Nothing enforced that, and the
+ * promise is not the provider's to keep: a validation or policy refusal quotes
+ * the offending value ("You can only send testing emails to your own email
+ * address (someone@example.com)"), and on a B2B network a recipient's domain
+ * names the customer's company. On the reset door the address is even
+ * caller-supplied, so an unauthenticated caller partly controls what gets
+ * logged about a real customer.
+ *
+ * The test that vouched for the promise sliced the SOURCE and asserted it did
+ * not mention `to` — a statement about the file, not about the log. This is the
+ * statement about the log.
+ */
+export function redactAddresses(text: string): string {
+  return text.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[address withheld]');
+}
+
 export type InviteEmailOutcome =
   | { readonly sent: true }
   | { readonly sent: false; readonly reason: 'not_configured' | 'refused' | 'unreachable' };
@@ -272,7 +292,7 @@ export async function sendBuilderEmail(args: {
        */
       const detail = await response.text().catch(() => '');
       console.error('[builderInviteEmail] Resend refused the send', response.status, {
-        provider_message: detail.slice(0, 300),
+        provider_message: redactAddresses(detail).slice(0, 300),
         from: args.brand.fromHeaderAdmin,
         category: args.category,
       });

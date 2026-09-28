@@ -68,38 +68,82 @@ export function membershipStatusForGrant(
   return args.accountIsActive ? "active" : PENDING_MEMBERSHIP_STATUS;
 }
 
-export type InviteLinkRefusal = "belongs_to_another_organisation" | "no_inviting_organisation";
-
-export interface InviteLinkDisclosure {
-  readonly mayReturnLink: boolean;
-  readonly reason?: InviteLinkRefusal;
-}
-
 /**
- * May the calling administrator be shown the one-time link?
+ * MAY THE PLATFORM OPERATOR BE HANDED THIS LINK?
  *
- * Only where every membership the account holds is the caller's own
- * organisation. Anything else means the link would let its holder into
- * somebody else's organisation, which is the takeover above.
+ * A different caller, so a different rule, and the difference is the whole
+ * reason there are two.
  *
- * The reason NAMES NO ORGANISATION: a caller who may not hold the link may not
- * learn which other organisation the address belongs to either.
+ * The operator door mints a brand-new organisation's first owner and takes
+ * `send_email` as a choice: an operator who declines the email IS the intended
+ * delivery channel, so "only where there is no mail provider" would break the
+ * door's purpose. What must never happen is the operator receiving a working
+ * credential for somebody else's person — and that was reachable, because
+ * `established` is `password_hash || invite_accepted_at` and a real tenant's
+ * PENDING INVITEE has neither. An operator could create an empty organisation,
+ * name that address its owner, take the link, accept it, choose a password and
+ * stamp the mailbox verified; the account is then theirs and every live
+ * membership it holds comes with it.
+ *
+ * So the operator's rule is the membership one: the link is handed over only
+ * where the account belongs nowhere but the organisation being created.
+ *
+ * This is deliberately NOT the tenant's rule. For a tenant administrator, a
+ * response that varies by address is an oracle over other tenants' staff — the
+ * thing `builder-portal-invite`'s own header forbids — so there the decision
+ * reads the provider state and nothing about the invitee. A platform operator
+ * can already see the whole network, so nothing is disclosed to them that they
+ * could not read directly; what is withheld is the CREDENTIAL, not the fact.
  */
-export function inviteLinkDisclosure(
+export function operatorMayHandLink(
   args: {
     readonly liveMemberships: readonly ScopeMembership[];
-    readonly invitingOrganisationId: string | null;
+    readonly newOrganisationId: string | null;
   },
-): InviteLinkDisclosure {
-  if (!args.invitingOrganisationId) {
-    return { mayReturnLink: false, reason: "no_inviting_organisation" };
-  }
-  const elsewhere = args.liveMemberships.some(
-    (membership) => membership.organisation_id !== args.invitingOrganisationId,
+): boolean {
+  if (!args.newOrganisationId) return false;
+  return !args.liveMemberships.some(
+    (membership) => membership.organisation_id !== args.newOrganisationId,
   );
-  return elsewhere
-    ? { mayReturnLink: false, reason: "belongs_to_another_organisation" }
-    : { mayReturnLink: true };
+}
+
+/** What the mail provider did with this invitation, as the senders report it. */
+export type InviteSendState = "sent" | "not_configured" | "failed";
+
+/**
+ * MAY THIS RESPONSE CARRY THE ONE-TIME LINK AT ALL?
+ *
+ * This is the question `inviteLinkDisclosure` should have been, and the
+ * independent review of the first fix is what showed it. Two things were wrong
+ * with returning the link whenever a send merely FAILED.
+ *
+ *  * **A failed send is attacker-triggerable.** The provider limits sends per
+ *    second and `builder-portal-invite` has no rate limit of its own, so a
+ *    caller can force `failed` at will. Holding the link for an address nobody
+ *    has claimed yet lets the CALLER accept it: acceptance sets a password of
+ *    their choosing and stamps the mailbox verified, so they own an account
+ *    bearing somebody else's address. Scoping acceptance stops that account
+ *    reaching another organisation TODAY — but an account that already signs in
+ *    is granted a LIVE membership whenever any organisation adds it later, by
+ *    design and correctly, so the claim pays off the first time the real person
+ *    is invited somewhere. Closing the link is what closes that.
+ *  * **The link's PRESENCE was an oracle.** Withholding it from a caller whose
+ *    invitee belongs elsewhere makes its absence a per-address answer to "does
+ *    this address hold a membership in an organisation that is not mine?" —
+ *    exactly what `builder-portal-invite`'s own header forbids. A caller who may
+ *    not know WHICH organisation may not be told THAT one exists either.
+ *
+ * So the affordance is kept only for the case it was written for — a deployment
+ * with **no mail provider at all**, where the inviter is the only delivery
+ * channel there is and no invitation could otherwise be sent — and never
+ * because one send went wrong. There the residual is accepted and unavoidable:
+ * whoever can invite is the postman.
+ *
+ * `sent` returns nothing because the email carries it. `failed` returns nothing
+ * and says so in the log, with the provider's own message.
+ */
+export function mayHandLinkToInviter(args: { readonly send: InviteSendState }): boolean {
+  return args.send === "not_configured";
 }
 
 export type AcceptanceRefusal =
@@ -131,8 +175,23 @@ export function acceptanceActivation(
   if (!organisations.length) return { ok: false, reason: "no_membership" };
 
   if (!args.tokenOrganisationId) {
-    return organisations.length === 1
-      ? { ok: true, activate: organisations[0] }
+    /*
+     * A legacy token names no organisation, so the only safe reading is an
+     * account that holds exactly one — and the one it holds has to be a
+     * membership actually WAITING on an invitation. The candidate list is every
+     * non-revoked membership, `suspended` included; promotion no-ops on those,
+     * so nothing is over-activated either way, but naming one as the
+     * organisation being joined tells whoever holds the link about a membership
+     * nobody is inviting them into.
+     */
+    const waiting = [...new Set(
+      args.liveMemberships
+        .filter((m) => !m.status || m.status === PENDING_MEMBERSHIP_STATUS)
+        .map((m) => m.organisation_id),
+    )];
+    if (!waiting.length) return { ok: false, reason: "no_membership" };
+    return waiting.length === 1
+      ? { ok: true, activate: waiting[0] }
       : { ok: false, reason: "unscoped_token_spans_organisations" };
   }
 
