@@ -113,6 +113,57 @@ describe('how the dimensions are consumed', () => {
   });
 });
 
+describe('a burst, against the real budgets', () => {
+  /**
+   * The shared limiter's semantics, as `security_consume_rate_limit` has them
+   * (verified against a rebuilt database: 40 allowed, the 41st refused): every
+   * call bumps the bucket, refused or not, and it answers `count <= max`.
+   */
+  const limiter = () => {
+    const counts = new Map<string, number>();
+    const consume = async (key: string, budget: { max: number }) => {
+      const count = (counts.get(key) ?? 0) + 1;
+      counts.set(key, count);
+      return { allowed: count <= budget.max, retryAfterSeconds: count <= budget.max ? 0 : 3600, degraded: false };
+    };
+    return { counts, consume };
+  };
+  const send = (l: ReturnType<typeof limiter>, userId: string, organisationId: string) =>
+    enforceSessionLimits(sessionRateLimitDimensions({
+      scope: INVITE_SEND_SCOPE, userId, organisationId, budgets: INVITE_SEND_BUDGETS,
+    }), l.consume);
+
+  it('one administrator: 40 go through, the rest are refused, and the refusals cost the organisation nothing', async () => {
+    const l = limiter();
+    const outcomes = [];
+    for (let i = 0; i < 45; i += 1) outcomes.push(await send(l, 'admin-1', 'org-1'));
+    expect(outcomes.filter((o) => o.allowed)).toHaveLength(40);
+    expect(outcomes.slice(40).every((o) => !o.allowed && o.refusedBy === 'user' && o.retryAfterSeconds > 0)).toBe(true);
+    expect(l.counts.get('binv_org:org-1')).toBe(40);
+  });
+
+  it('several administrators: the organisation stops at 100, however many it appoints', async () => {
+    const l = limiter();
+    let allowed = 0;
+    let refusedByOrganisation = 0;
+    for (const admin of ['a', 'b', 'c', 'd']) {
+      for (let i = 0; i < 40; i += 1) {
+        const o = await send(l, admin, 'org-1');
+        if (o.allowed) allowed += 1;
+        else if (o.refusedBy === 'organisation') refusedByOrganisation += 1;
+      }
+    }
+    expect(allowed).toBe(100);
+    expect(refusedByOrganisation).toBe(60);
+  });
+
+  it('another organisation, and its administrators, are untouched by the first one\'s burst', async () => {
+    const l = limiter();
+    for (let i = 0; i < 150; i += 1) await send(l, `admin-${i % 4}`, 'org-1');
+    expect(await send(l, 'admin-x', 'org-2')).toMatchObject({ allowed: true, refusedBy: null });
+  });
+});
+
 describe('where builder-portal-invite checks it', () => {
   const read = (...parts: string[]) =>
     readFileSync(join(__dirname, '..', '..', '..', 'supabase', 'functions', ...parts), 'utf8');
