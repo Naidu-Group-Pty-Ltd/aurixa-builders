@@ -92,6 +92,16 @@ export const DELIVERY_CHECK_LEASE_SECONDS = 120;
 export const DELIVERY_BACKLOG_DELAYED_MS = 30_000;
 
 /**
+ * How long an organisation's administrators are told their own invitation
+ * emails were held back, after the last one was. The second review found an
+ * organisation's own overflow invisible: its share is 20 waiting sends, and
+ * "delayed" needs a 30-second queue, so one organisation alone never showed
+ * anything while its extra emails were dropped. Long enough to be seen on the
+ * next visit, short enough to clear once the burst is over.
+ */
+export const DELIVERY_HELD_BACK_WINDOW_SECONDS = 900;
+
+/**
  * Where the check is sent: the provider's own delivery sink, which accepts and
  * discards. It belongs to nobody, so its outcome is a fact about the deployment
  * and never about a person. An operator may point it elsewhere with
@@ -106,16 +116,24 @@ export type DeliveryCheckState = 'operational' | 'degraded';
  * refused or could not be reached for is degraded — and a check that never left
  * the queue found out nothing about the provider, so it records no reading
  * (null) rather than calling delivery broken for half an hour because
- * somebody else's burst filled the queue.
+ * somebody else's burst filled the queue. Nor did a check the provider
+ * THROTTLED (429): every other send this deployment makes shares the
+ * provider's per-second ceiling unpaced, so a throttle says the provider was
+ * busy, not that it will not deliver — and anyone able to time two sends
+ * against a stale check could otherwise have every tenant's card read "not
+ * working" for half an hour (the second review).
  */
 export function deliveryCheckState(
-  outcome: { readonly sent: boolean; readonly reason?: string },
+  outcome: { readonly sent: boolean; readonly reason?: string; readonly status?: number },
 ): DeliveryCheckState | null {
   if (outcome.sent) return 'operational';
-  return outcome.reason === 'paced_out' ? null : 'degraded';
+  if (outcome.reason === 'paced_out') return null;
+  if (outcome.reason === 'refused' && outcome.status === 429) return null;
+  return 'degraded';
 }
 
-export type DeliveryHealthState = 'operational' | 'degraded' | 'delayed' | 'not_configured' | 'unknown';
+export type DeliveryHealthState =
+  | 'operational' | 'degraded' | 'held_back' | 'delayed' | 'not_configured' | 'unknown';
 
 export interface DeliveryHealthView {
   readonly state: DeliveryHealthState;
@@ -126,12 +144,16 @@ export interface DeliveryHealthView {
  * THE ONLY THING AN ADMINISTRATOR IS TOLD ABOUT DELIVERY.
  *
  * Its inputs are whether this deployment has a mail provider at all, and the
- * deployment's one reading — the last check and how long the send queue is.
- * There is no parameter through which an address, an invitation or a message
- * could arrive, and a spec holds it to that.
+ * deployment's one reading — the last check and how long the send queue is —
+ * with, read under the caller's own organisation, whether that organisation's
+ * invitation emails were held back lately. There is no parameter through
+ * which an address, an invitation or a message could arrive, and a spec holds
+ * it to that.
  *
- * A failing check outranks a long queue: "not sending" is the more useful
- * thing to know, and the remedy (send again later) is the same.
+ * A failing check outranks everything: "not sending" is the most useful thing
+ * to know. Held back outranks a long queue, because some of this
+ * organisation's emails will not arrive at all and the remedy — invite the
+ * same address again — is theirs to take.
  */
 export function deliveryHealthView(input: {
   readonly configured: boolean;
@@ -139,12 +161,14 @@ export function deliveryHealthView(input: {
     readonly state: string | null;
     readonly checked_at: string | null;
     readonly backlog_ms: number | null;
+    readonly scope_held_back?: boolean | null;
   } | null;
 }): DeliveryHealthView {
   if (!input.configured) return { state: 'not_configured', checked_at: null };
   const reading = input.reading;
   const checkedAt = reading?.checked_at ?? null;
   if (reading?.state === 'degraded') return { state: 'degraded', checked_at: checkedAt };
+  if (reading?.scope_held_back === true) return { state: 'held_back', checked_at: checkedAt };
   if ((reading?.backlog_ms ?? 0) >= DELIVERY_BACKLOG_DELAYED_MS) return { state: 'delayed', checked_at: checkedAt };
   if (reading?.state === 'operational') return { state: 'operational', checked_at: checkedAt };
   return { state: 'unknown', checked_at: checkedAt };

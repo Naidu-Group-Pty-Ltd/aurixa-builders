@@ -30,15 +30,19 @@
  *    session is issued. The invitation it answers used to be granted without
  *    anyone accepting it.
  *
- * WHICH OF THE TWO A LINK IS WAS FIXED WHEN IT WAS MINTED, never read from the
- * account at acceptance (independent review of doc 68). A password-setting
- * link may be held by the inviter (a deployment with no mail provider) or an
- * operator; had it become a one-click join once the person started signing in
- * elsewhere, its holder could accept on their behalf. A seat records what its
- * token was minted for and a mismatch is refused; every account-slot token was
- * minted for an account with no password, so an account that has one is
- * turned away there, as it always was. The inviting organisation invites again,
- * and the person is emailed a join.
+ * A LINK SOMEBODY ELSE HOLDS KEEPS THE KIND IT WAS MINTED FOR (independent
+ * review of doc 68). A password-setting link may be held by the inviter (a
+ * deployment with no mail provider) or an operator; had it become a one-click
+ * join once the person started signing in elsewhere, its holder could accept
+ * on their behalf. So a seat records what its token was minted for and whether
+ * it was handed to the inviter, and a HANDED link whose account no longer
+ * matches is refused; the organisation invites again, and the person is
+ * emailed a join. A link only the mailbox holds follows the account, because
+ * its holder is the person — who could reset the password with that mailbox
+ * anyway — so somebody invited by two organisations before they had an
+ * account can accept both (the second review). Every account-slot token was
+ * minted for an account with no password and may be an operator's, so an
+ * account that has one is turned away there, as it always was.
  *
  * Actions: `validate` (render the form, and say whether a password is asked
  * for) and accept (default).
@@ -344,7 +348,7 @@ Deno.serve(async (req) => {
     const { data: seat, error: seatError } = await supabase
       .from('builder_organisation_memberships')
       .select(`id, builder_user_id, organisation_id, membership_role, status, revoked_at,
-               invite_token_expires_at, invite_requires_password`)
+               invite_token_expires_at, invite_requires_password, invite_link_handed`)
       .eq('invite_token_hash', tokenHash)
       .maybeSingle();
     if (seatError) {
@@ -387,11 +391,16 @@ Deno.serve(async (req) => {
         membership_role: seat.membership_role,
       };
       const requiresPassword = invitationRequiresPassword(account);
-      // What the link was minted for must still be what the account needs: a
-      // password-setting link never becomes a join (header). Same answer as
-      // every other refusal, so the holder learns nothing more than that the
-      // link no longer works.
-      if (seat.invite_requires_password !== requiresPassword) {
+      // A link handed to the inviter must still be what the account needs: it
+      // never becomes a join (header). Same answer as every other refusal, so
+      // the holder learns nothing more than that the link no longer works.
+      if (seat.invite_link_handed && seat.invite_requires_password !== requiresPassword) {
+        return json({ error: GENERIC_INVITE_ERROR, valid: false }, 400);
+      }
+      // A password is set only on an account that is still an invitation —
+      // what activation itself requires — so the form is never offered to an
+      // account an operator suspended before it accepted.
+      if (requiresPassword && account.status !== 'invited') {
         return json({ error: GENERIC_INVITE_ERROR, valid: false }, 400);
       }
 
@@ -474,6 +483,11 @@ Deno.serve(async (req) => {
     // password-setting link never becomes a join.
     if (portalUser.invite_accepted_at || portalUser.password_hash) {
       return json({ error: GENERIC_INVITE_ERROR, valid: false, already_active: true }, 400);
+    }
+    // And only while it is still an invitation, as activation requires: an
+    // account an operator suspended before it accepted is not offered the form.
+    if (portalUser.status !== 'invited') {
+      return json({ error: GENERIC_INVITE_ERROR, valid: false }, 400);
     }
 
     // An invite is only usable if the account still has somewhere to go.

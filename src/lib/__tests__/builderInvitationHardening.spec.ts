@@ -8,6 +8,7 @@ import {
 import {
   DELIVERY_BACKLOG_DELAYED_MS,
   DELIVERY_CHECK_RECIPIENT_DEFAULT,
+  DELIVERY_HELD_BACK_WINDOW_SECONDS,
   EMAIL_SEND_MAX_QUEUED_PER_ORGANISATION,
   EMAIL_SEND_MAX_WAIT_MS,
   EMAIL_SEND_SPACING_MS,
@@ -110,6 +111,13 @@ describe('2. invitations are paced, so a burst cannot hammer the shared mail pro
     expect(migrationSql).toMatch(/CREATE OR REPLACE FUNCTION public\.builder_reserve_email_send_slot/);
     expect(migrationSql).toMatch(/FOR UPDATE/);
   });
+
+  it('nothing it creates is left with Supabase\'s default grants — its sequence included', () => {
+    // The second review: an identity column's sequence is granted to anon and
+    // authenticated by default like any other new object.
+    expect(migrationSql).toMatch(
+      /REVOKE ALL ON SEQUENCE public\.builder_email_send_reservations_id_seq FROM PUBLIC, anon, authenticated;/);
+  });
 });
 
 describe('3. a deployment-wide delivery signal that names no address and no message', () => {
@@ -137,6 +145,7 @@ describe('3. a deployment-wide delivery signal that names no address and no mess
     expect(DELIVERY_CHECK_RECIPIENT_DEFAULT).toBe('delivered@resend.dev');
     expect(deliveryCheckState({ sent: true })).toBe('operational');
     expect(deliveryCheckState({ sent: false, reason: 'refused' })).toBe('degraded');
+    expect(deliveryCheckState({ sent: false, reason: 'refused', status: 422 })).toBe('degraded');
     expect(deliveryCheckState({ sent: false, reason: 'unreachable' })).toBe('degraded');
     // A check that never left the queue found nothing out about the provider:
     // it records no reading, rather than calling delivery broken for 30
@@ -145,6 +154,41 @@ describe('3. a deployment-wide delivery signal that names no address and no mess
     const delivery = stripComments(repo('supabase', 'functions', '_shared', 'builderEmailDelivery.ts'));
     const run = delivery.slice(delivery.indexOf('async function runDeliveryCheck'));
     expect(run).toMatch(/if \(state === null\)/);
+  });
+
+  it('a provider that throttled the check found nothing out either — it records no reading', () => {
+    // The second review: every other send this deployment makes shares the
+    // provider's per-second ceiling unpaced, so anyone able to time two sends
+    // against a stale check could have every tenant's card read "not working"
+    // for half an hour. A throttle is not a failure to deliver.
+    expect(deliveryCheckState({ sent: false, reason: 'refused', status: 429 })).toBeNull();
+    const sender = stripComments(repo('supabase', 'functions', '_shared', 'builderInviteEmail.ts'));
+    expect(sender).toMatch(/return \{ sent: false, reason: 'refused', status: response\.status \};/);
+  });
+
+  it('tells an organisation\'s administrators when their own invitation emails were held back — and only theirs', () => {
+    // The second review: one organisation's share is 20 waiting sends, while
+    // "delayed" needs a 30-second queue, so an organisation's own overflow was
+    // dropped with nothing on any screen. A refusal is stamped against the
+    // organisation's own scope, and read back only under that scope.
+    expect(deliveryHealthView({
+      configured: true, reading: { state: 'operational', checked_at: 't', backlog_ms: 0, scope_held_back: true },
+    }).state).toBe('held_back');
+    // Not working outranks held back; held back outranks a long queue.
+    expect(deliveryHealthView({
+      configured: true, reading: { state: 'degraded', checked_at: 't', backlog_ms: 0, scope_held_back: true },
+    }).state).toBe('degraded');
+    expect(deliveryHealthView({
+      configured: true,
+      reading: { state: 'operational', checked_at: 't', backlog_ms: DELIVERY_BACKLOG_DELAYED_MS, scope_held_back: true },
+    }).state).toBe('held_back');
+    expect(DELIVERY_HELD_BACK_WINDOW_SECONDS).toBeGreaterThanOrEqual(300);
+    expect(migrationSql).toMatch(/INSERT INTO public\.builder_email_send_scope_refusals/);
+    expect(migrationSql).toMatch(/CREATE OR REPLACE FUNCTION public\.builder_email_delivery_reading\(\s*_scope text/);
+    const delivery = stripComments(repo('supabase', 'functions', '_shared', 'builderEmailDelivery.ts'));
+    expect(delivery).toMatch(/rpc\('builder_email_delivery_reading', \{\s*_scope: scope \?\? null,\s*_held_back_window_seconds: DELIVERY_HELD_BACK_WINDOW_SECONDS/);
+    const health = block("if (action === 'delivery_health')", "if (action === 'invite')");
+    expect(health).toMatch(/readDeliveryHealth\(supabase, getBrandConfig, `org:\$\{activeOrganisationId\}`\)/);
   });
 
   it('is behind the same owner-or-administrator gate, and reads nothing about any invitee', () => {
@@ -232,6 +276,9 @@ describe('6. an account whose state changes mid-invitation is never deactivated 
       expect(stamp).toMatch(/\.is\('password_hash', null\)/);
       expect(stamp).toMatch(/\.is\('invite_accepted_at', null\)/);
       expect(stamp).toMatch(/\.is\('revoked_at', null\)/);
+      // The second review: an operator's suspension of an account that never
+      // accepted was lifted by the next owner invitation or application.
+      expect(stamp).toMatch(/\.eq\('status', 'invited'\)/);
     }
   });
 });

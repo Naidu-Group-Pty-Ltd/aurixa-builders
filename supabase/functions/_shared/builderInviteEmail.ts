@@ -234,7 +234,12 @@ export function redactAddresses(text: string): string {
 
 export type InviteEmailOutcome =
   | { readonly sent: true }
-  | { readonly sent: false; readonly reason: 'not_configured' | 'refused' | 'unreachable' };
+  | {
+    readonly sent: false;
+    readonly reason: 'not_configured' | 'refused' | 'unreachable';
+    /** The provider's HTTP status, where it refused: 429 is a throttle, not a verdict on delivery. */
+    readonly status?: number;
+  };
 
 /**
  * Whether this deployment has a mail provider at all — a fact about the
@@ -307,7 +312,7 @@ export async function sendBuilderEmail(args: {
         from: args.brand.fromHeaderAdmin,
         category: args.category,
       });
-      return { sent: false, reason: 'refused' };
+      return { sent: false, reason: 'refused', status: response.status };
     }
     return { sent: true };
   } catch (error) {

@@ -42,14 +42,23 @@ it, established accounts included.
   no mail provider the inviter is handed the link, but only one that sets a
   password (`inviterMayHoldInvitationLink`). A join link would let the inviter
   accept on the person's behalf.
-- **What a link is for is fixed when it is minted** (found by the independent
-  review). Each seat records it (`invite_requires_password`). A password-setting
-  link whose account has since started signing in elsewhere is refused, not
-  turned into a join. Its holder may be the inviter (no mail provider) or an
-  operator, and a join would let them accept for the person. The organisation
-  invites again, and the person is emailed a join. Every account-slot token was
-  minted for an account with no password, so the slot path still refuses an
-  account that has one (`already_active`), as it always did.
+- **A link somebody else holds keeps what it was minted for** (found by the
+  independent review). Each seat records what its link is for
+  (`invite_requires_password`) and whether it was handed to the inviter
+  (`invite_link_handed`), decided before the link exists by the same rule that
+  hands it over.
+  - A **handed** password-setting link whose account has since started
+    signing in elsewhere is refused, not turned into a join, since a join would
+    let the inviter accept for the person. The organisation invites again, and
+    the person is emailed a join.
+  - A link **only the mailbox holds** follows the account. Its holder is the
+    person, who could reset the password with that mailbox anyway. So someone
+    invited by two organisations before they had an account can accept both:
+    the second link joins (the second review; it used to stop working until the
+    organisation sent it again).
+  - Every account-slot token was minted for an account with no password, and
+    may be an operator's, so the slot path still refuses an account that has
+    one (`already_active`), as it always did.
 - **Existing memberships are untouched.** Nothing is backfilled, and every
   `active` seat stays `active`.
 - **The page.** `BuilderAcceptInvite` shows no password form for a join, says
@@ -60,6 +69,10 @@ it, established accounts included.
   a member and are shown as they call themselves. `revoke_invite` cancels a
   waiting seat whoever it is for (it used to cancel only for an account that had
   never signed in).
+- **Inviting a waiting person again carries the role chosen now** (the second
+  review: the first invitation's role used to stand, so lowering it by inviting
+  again did not take). An owner's seat, which only the operator's doors create,
+  is never re-roled here. A re-send chooses no role and changes none.
 
 **Not changed, deliberately:** the operator's doors (`builder-network-admin`:
 `invite_organisation_owner`, which seeds an EMPTY organisation's first owner, and
@@ -123,8 +136,13 @@ team, shared by every send this deployment makes.
   emails may wait at once (`EMAIL_SEND_MAX_QUEUED_PER_ORGANISATION`, counted in
   `builder_email_send_reservations`). The independent review measured an
   organisation with three administrators bursting ~91 sends into the whole
-  queue. Now its own sends past 20 are refused, and everyone else still gets a
-  slot at most ~20 s behind it.
+  queue. Now its own sends past 20 are refused, and a burst from one
+  organisation holds everyone else back by at most ~20 s. Several organisations
+  bursting at once can still fill the queue between them (§8).
+- **A refused send is stamped against its organisation**
+  (`builder_email_send_scope_refusals`), whether it was refused for the
+  organisation's own share or because the whole queue was full, so that
+  organisation's administrators are told (§5).
 - **A full queue sends nothing.** A slot further away than 90 s
   (`EMAIL_SEND_MAX_WAIT_MS`, inside the edge worker's lifetime on the smallest
   plan) is refused rather than queued without end. The invitation stays waiting,
@@ -143,6 +161,11 @@ reading for the deployment:
 - **`operational` / `degraded`** — from a check sent to the provider's own sink
   (`delivered@resend.dev`, overridable by `BUILDER_EMAIL_DELIVERY_CHECK_RECIPIENT`),
   never from a real invitation;
+- **`held_back`** — when the caller's OWN organisation had an invitation email
+  held back in the last 15 minutes (`DELIVERY_HELD_BACK_WINDOW_SECONDS`), read
+  only under that organisation's scope and never another's (the second review:
+  an organisation's own overflow was invisible, since its share of 20 never
+  makes a 30-second queue);
 - **`delayed`** — when the send queue is 30 s or longer;
 - **`not_configured`** — when there is no mail provider;
 - **`unknown`** — before the first check.
@@ -152,10 +175,15 @@ after its answer (`builder_claim_email_delivery_check`, a 2-minute lease). It is
 refreshed on the clock and never because one send failed, since an early check
 would itself say "your send failed". A check that never left the queue records
 nothing: it learned nothing about the provider, and recording `degraded` would
-let one tenant's burst tell every tenant delivery was broken. Its inputs have no field through which an
-address, an invitation or a message could arrive, and a spec holds it to that.
-The invite card shows `degraded`, `delayed` and `not_configured`, and nothing
-otherwise.
+let one tenant's burst tell every tenant delivery was broken. Nor does a check
+the provider throttled (HTTP 429): every other send this deployment makes shares
+that ceiling unpaced, so a throttle says the provider was busy, and anyone able
+to time two sends against a stale check could otherwise make every tenant's
+card read "not working" for half an hour (the second review). Its inputs have
+no field through which an address, an invitation or a message could arrive, and
+a spec holds it to that. The invite card shows `degraded`, `held_back`,
+`delayed` and `not_configured`, and nothing otherwise, and reads again after
+each invitation is recorded, so a burst shows what it caused.
 
 ## 6. The name has a ceiling
 
@@ -173,12 +201,16 @@ and the write was deactivated.
 - **The invite door now writes nothing to an account that exists.** It creates an
   account only for a new address, and everything else it writes is the seat.
 - **The operator's two owner-invitation stamps** now apply only while the account
-  is still unaccepted, and read the row count. A stamp that finds nothing refuses
-  (`invite_failed` / `invite_not_issued`) rather than overwrite an account.
+  is still an unaccepted invitation (`invited`, no password, not accepted, not
+  withdrawn), and read the row count. A stamp that finds nothing refuses
+  (`invite_failed` / `invite_not_issued`) rather than overwrite an account, so
+  an operator's suspension of an account that never accepted is not lifted by
+  the next owner invitation or by somebody applying in its name (the second
+  review).
 - **Acceptance activates** only while the account is still `invited`,
   unaccepted, has no password and is not withdrawn. An account an operator
-  suspended before it accepted stays suspended. The operator stamps also skip a
-  withdrawn account.
+  suspended before it accepted stays suspended, and the page is not offered a
+  password form for it: `validate` refuses what `accept` would.
 
 ## 8. What this does not close
 
@@ -207,15 +239,29 @@ and the write was deactivated.
   1.5 s.** A database stall longer than that shows through, for every kind alike.
 - **A join is one click on the emailed page.** A mail scanner that renders pages
   and presses buttons could accept one. A first invitation is safe from this
-  because it needs a password. Requiring a signed-in session instead would
+  while the person has no password, because it needs one. Requiring a signed-in session instead would
   strand the accounts with no organisation open (3 of 6 in production), who
   cannot sign in.
 - **Repeats reach the person again.** Inviting or re-sending to an established
   account emails an "Accept invitation" each time, bounded by the 40/100-an-hour
   ceilings.
-- **The `delayed` reading is deployment-wide.** An administrator who holds the
-  queue near 30 s can watch other tenants' invitation activity, coarsely, never
-  per address.
+- **The delivery readings are coarse side channels.** `delayed` is
+  deployment-wide, so an administrator who holds the queue near 30 s can watch
+  other tenants' invitation activity, coarsely, never per address. `held_back`
+  is the organisation's own: an administrator who fills their own share can tell
+  whether one more invitation tried to send an email. That separates a revoked
+  account and a person already a member here from everyone else, and the
+  members list already shows both.
+- **Several organisations bursting together can still fill the queue.** Each is
+  held to 20 waiting sends, so it takes five at once to fill 90 s (measured:
+  21, 20, 20, 20 and 10 slots, and a sixth refused). The hourly ceilings bound
+  it, the refused organisations are told (`held_back`), and inviting again
+  re-sends.
+- **An operator-seeded owner who accepts another organisation's invitation
+  first** is left with an owner link that is refused (`already_active`), and
+  `invite_organisation_owner` answers 409 because the organisation already has a
+  seat. This is as it was before this change (the slot token was replaced
+  then), and repairing it is an operator-plane change this work leaves alone.
 - **Unchanged from doc 67:** `resend` answers 409 for an account an operator
   revoked after it was seated. This is about the organisation's own member.
 
@@ -236,18 +282,21 @@ and the write was deactivated.
   - the migration changes no existing row;
   - the token rules (CHECK, uniqueness, hex shape, kind, the trigger);
   - the name bound;
-  - pacing under eight concurrent reservations, the bounded wait, and one
-    organisation's share;
-  - the delivery reading;
-  - that everything is service_role only.
+  - pacing under eight concurrent reservations, the bounded wait, one
+    organisation's share, and the refusal stamp on either kind of refusal;
+  - the delivery reading, and that a scope reads only its own refusals, and
+    only within the window;
+  - that everything is service_role only, sequences included.
 - **Production.** `portal-access-proof` section L asks the live deployment, over
   disposable organisations:
   - an account that already signs in is invited, not added;
   - the invite writes nothing to the account;
   - the one-click join sets no password and issues no session;
   - per-seat tokens: a re-send replaces only its own;
-  - a password-setting link stops working once the person signs in, and
-    inviting again mints a join;
+  - invited by two organisations before they had an account, the person can
+    accept both, and the second link joins;
+  - a link handed to the inviter stops working once the person signs in, and
+    inviting again mints a join the mailbox alone holds;
   - the name ceiling;
   - a concurrent burst answers alike while its emails leave at least a second
     apart;
@@ -255,4 +304,5 @@ and the write was deactivated.
   - a slot invitation to an account that signs in is refused.
 
   Section J now requires every kind to answer no sooner than the floor and in
-  the same time. Sections B, I and K replay tokens onto the seat.
+  the same time. Sections B, I and K replay tokens onto the seat, and section I
+  shows an invitation sent again carries the role chosen now.

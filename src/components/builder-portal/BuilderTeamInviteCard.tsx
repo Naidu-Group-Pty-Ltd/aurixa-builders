@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, UserPlus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -31,7 +31,10 @@ import {
  *
  * What it CAN say is whether email is leaving at all (doc 68): one reading
  * for the whole deployment, from a check sent to a sink that belongs to
- * nobody. It never names an invitation, an address or a message.
+ * nobody — and whether THIS organisation's own invitation emails were held
+ * back because too many were sent at once. It never names an invitation, an
+ * address or a message. It is read again after each invitation is recorded,
+ * so a burst shows what it caused.
  */
 
 /** What an administrator is told, for the readings that need telling. */
@@ -40,6 +43,11 @@ const DELIVERY_NOTICE: Partial<Record<BuilderDeliveryState, { tone: 'default' | 
     tone: 'destructive',
     text: 'Email delivery is not working across the portal right now. Invitations are still recorded — '
       + 'once it recovers, invite the same address again and the invitation is sent again.',
+  },
+  held_back: {
+    tone: 'default',
+    text: 'Some of your organisation\'s recent invitation emails were held back because too many were sent at once. '
+      + 'If an invitation has not arrived, invite the same address again in a few minutes.',
   },
   delayed: {
     tone: 'default',
@@ -77,14 +85,29 @@ export function BuilderTeamInviteCard() {
 
   const mayInvite = membershipRole === 'owner' || membershipRole === 'administrator';
 
+  // Set on every mount, so a remount (StrictMode's included) reads again.
+  const mounted = useRef(false);
   useEffect(() => {
-    if (!mayInvite) return undefined;
-    let cancelled = false;
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  // Only the latest read is shown: the held-back half is about the ACTIVE
+  // organisation, so an answer overtaken by a switch must not land.
+  const latestRead = useRef(0);
+  const readDelivery = useCallback(() => {
+    const ticket = ++latestRead.current;
     void builderInviteDeliveryHealth().then(({ data }) => {
-      if (!cancelled && data?.success && data.delivery) setDelivery(data.delivery.state);
+      if (mounted.current && ticket === latestRead.current && data?.success && data.delivery) {
+        setDelivery(data.delivery.state);
+      }
     });
-    return () => { cancelled = true; };
-  }, [mayInvite]);
+  }, []);
+
+  const activeOrganisationId = activeOrganisation?.organisation_id;
+  useEffect(() => {
+    setDelivery(null);
+    if (mayInvite && activeOrganisationId) readDelivery();
+  }, [mayInvite, activeOrganisationId, readDelivery]);
 
   if (!mayInvite) return null;
   const deliveryNotice = delivery ? DELIVERY_NOTICE[delivery] : undefined;
@@ -109,6 +132,8 @@ export function BuilderTeamInviteCard() {
       return;
     }
     if (data.invite_url) setFallbackUrl(data.invite_url);
+    // Read again, so an invitation that joined a burst says so here.
+    readDelivery();
     // One sentence for every address that can reach this line: whether the
     // link came back depends on the deployment, never on the person.
     toast({

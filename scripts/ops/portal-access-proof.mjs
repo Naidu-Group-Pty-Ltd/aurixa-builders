@@ -984,15 +984,8 @@ try {
   // No lockout, and no seat stuck waiting for ever — but no seat brought up
   // behind anybody's back either. The victim now signs in, and B adding them
   // again used to promote B's waiting seat on the spot. Since doc 68 it is an
-  // invitation like any other: sent again, and still waiting for them.
-  // B's first link set a password. The victim now has one, so it no longer
-  // works — a password-setting link never becomes a one-click join, since on a
-  // deployment with no mail provider its holder may be the inviter.
-  const bOldLink = await replayOntoSeat(victimEmail, B.orgId);
-  const bOldAccept = await call('builder-portal-accept-invite', { action: 'accept', token: bOldLink, password: victimPassword });
-  record('I: the other organisation\'s first link, which set a password, stops working once they sign in',
-    bOldAccept.status === 400 && !cookieFrom(bOldAccept.setCookies) && (await membershipStatus(B.orgId))?.status === 'invited',
-    `accept=${bOldAccept.status} B.status=${(await membershipStatus(B.orgId))?.status}`);
+  // invitation like any other: sent again, and still waiting for them — with
+  // the role B chose this time, not the one it chose first (the second review).
   const bRegrant = await call('builder-portal-invite',
     { action: 'invite', email: victimEmail, name: 'Access crossorg', membership_role: 'manager' },
     B.cookie);
@@ -1001,6 +994,8 @@ try {
   record('I: the other organisation adding them again brings nothing up — its seat still waits for them',
     bRegrant.status === 200 && bRegrant.text === '{"success":true}' && bStill?.status === 'invited' && !!bResent,
     `regrant=${bRegrant.status} B.status=${bStill?.status} re-sent=${bResent ? 'recorded' : 'NOT RECORDED'}`);
+  record('I: and the invitation sent again carries the role chosen now, not the first one\'s',
+    bStill?.membership_role === 'manager', `role=${bStill?.membership_role} (first invited as administrator)`);
   const bJoinToken = await replayOntoSeat(victimEmail, B.orgId);
   const bJoined = await call('builder-portal-accept-invite', { action: 'accept', token: bJoinToken });
   const bFinal = await membershipStatus(B.orgId);
@@ -1435,28 +1430,60 @@ try {
     `F's ${fTokenAfter !== fToken ? 're-minted' : 'UNCHANGED'}, E's ${eTokenAfter === eToken ? 'untouched' : 'REPLACED'}, `
     + `account slot ${sharedUser?.invite_token_hash === null ? 'empty' : 'WRITTEN'}`);
 
-  // What a link is for is fixed when it is minted. The person accepts E's
-  // invitation and sets a password; F's link, minted to set one, then stops
-  // working, and F inviting again sends a join instead.
+  // Invited by two organisations before they had an account, the person
+  // accepts E's invitation and sets a password. F's link was emailed to them
+  // and nobody else holds it, so it still works: it joins, and sets nothing
+  // (the second review — it used to stop working until F sent it again).
   const eLink = await replayOntoSeat(sharedEmail, E.orgId);
   const eAccepted = await call('builder-portal-accept-invite',
     { action: 'accept', token: eLink, password: `Sh4red!${RUN}!pw` });
-  const fOldLink = await replayOntoSeat(sharedEmail, F.orgId);
-  const fOldAccept = await call('builder-portal-accept-invite', { action: 'accept', token: fOldLink });
-  const fSeatAfterOld = await seatIn(sharedUser?.id, F.orgId);
-  record('L: a link minted to set a password never becomes a join once the person has one',
-    eAccepted.status === 200 && fOldAccept.status === 400 && fSeatAfterOld?.status === 'invited'
-      && !cookieFrom(fOldAccept.setCookies),
-    `E accept=${eAccepted.status} F's old link=${fOldAccept.status} F.seat=${fSeatAfterOld?.status}`);
-  // Inviting again re-mints the seat as a join (section I accepts one end to end).
+  const sharedBefore = await accountRow(sharedUser?.id);
+  const fFirstLink = await replayOntoSeat(sharedEmail, F.orgId);
+  const fFirstAccept = await call('builder-portal-accept-invite', { action: 'accept', token: fFirstLink });
+  const fSeatAfterFirst = await seatIn(sharedUser?.id, F.orgId);
+  record('L: invited by two organisations before they had an account, they can accept both — the emailed link joins, and sets nothing',
+    eAccepted.status === 200 && fFirstAccept.status === 200 && fFirstAccept.json?.accepted === true
+      && fFirstAccept.json?.signed_in === false && !cookieFrom(fFirstAccept.setCookies)
+      && fSeatAfterFirst?.status === 'active' && same(await accountRow(sharedUser?.id), sharedBefore),
+    `E accept=${eAccepted.status} F's first link=${fFirstAccept.status} F.seat=${fSeatAfterFirst?.status}`);
+
+  // A link HANDED to the inviter (a deployment with no mail provider) keeps
+  // the kind it was minted for. Production has a provider, so the seat is
+  // written the way such a deployment writes it, on a disposable account whose
+  // password is then set as though it had accepted another invitation.
+  const handedEmail = `${EMAIL_PREFIX}doc68-handed@example.com`;
+  const handedInvite = await call('builder-portal-invite',
+    { action: 'invite', email: handedEmail, name: 'Handed F', membership_role: 'member' }, F.cookie);
+  const handedUser = (await q('the handed invitee', `
+    SELECT id FROM public.builder_portal_users WHERE email = ${sqlLit(handedEmail)}`))[0];
+  const handedLink = `${randomUUID()}-${randomUUID()}`;
+  await q('a link as a deployment with no mail provider hands it over', `
+    UPDATE public.builder_organisation_memberships
+       SET invite_token_hash = ${sqlLit(hmacHex(PEPPER, handedLink))},
+           invite_token_expires_at = now() + interval '1 hour', invite_link_handed = true
+     WHERE builder_user_id = ${id(handedUser?.id)} AND organisation_id = ${id(F.orgId)}
+       AND status = 'invited' AND revoked_at IS NULL AND invite_requires_password;
+    UPDATE public.builder_portal_users
+       SET password_hash = extensions.crypt(${sqlLit(`H4nded!${RUN}`)}, extensions.gen_salt('bf', 4)),
+           invite_accepted_at = now(), email_verified_at = now(), status = 'active', is_active = true
+     WHERE id = ${id(handedUser?.id)}`);
+  const handedAccept = await call('builder-portal-accept-invite', { action: 'accept', token: handedLink });
+  const handedSeat = await seatIn(handedUser?.id, F.orgId);
+  record('L: a link handed to the inviter never becomes a join once the person has a password',
+    handedInvite.status === 200 && handedAccept.status === 400 && !cookieFrom(handedAccept.setCookies)
+      && handedSeat?.status === 'invited',
+    `invite=${handedInvite.status} handed link=${handedAccept.status} F.seat=${handedSeat?.status}`);
+  // Inviting again re-mints the seat as a join, held by the mailbox alone
+  // (section I accepts one end to end).
   const fAgain = await call('builder-portal-invite',
-    { action: 'invite', email: sharedEmail, name: 'Shared F', membership_role: 'member' }, F.cookie);
+    { action: 'invite', email: handedEmail, name: 'Handed F', membership_role: 'member' }, F.cookie);
   const fKind = (await q('what F\'s new link is for', `
-    SELECT m.invite_requires_password AS requires_password FROM public.builder_organisation_memberships m
-     WHERE m.builder_user_id = ${id(sharedUser?.id)} AND m.organisation_id = ${id(F.orgId)} AND m.revoked_at IS NULL`))[0];
-  record('L: inviting again, once they sign in, mints a join rather than another password link',
-    fAgain.status === 200 && fKind?.requires_password === false,
-    `invite=${fAgain.status} requires_password=${fKind?.requires_password}`);
+    SELECT m.invite_requires_password AS requires_password, m.invite_link_handed AS handed
+      FROM public.builder_organisation_memberships m
+     WHERE m.builder_user_id = ${id(handedUser?.id)} AND m.organisation_id = ${id(F.orgId)} AND m.revoked_at IS NULL`))[0];
+  record('L: inviting again, once they sign in, mints a join the mailbox alone holds',
+    fAgain.status === 200 && fKind?.requires_password === false && fKind?.handed === false,
+    `invite=${fAgain.status} requires_password=${fKind?.requires_password} handed=${fKind?.handed}`);
 
   // 3. The name has a ceiling, and a refusal writes nothing.
   const longEmail = `${EMAIL_PREFIX}doc68-long@example.com`;

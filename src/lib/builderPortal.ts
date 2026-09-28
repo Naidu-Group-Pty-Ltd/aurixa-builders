@@ -308,7 +308,8 @@ export function builderInviteTeamMember(input: {
  * is leaving at all, and whether the queue is long; it never says anything
  * about a particular invitation, address or message.
  */
-export type BuilderDeliveryState = 'operational' | 'degraded' | 'delayed' | 'not_configured' | 'unknown';
+export type BuilderDeliveryState =
+  | 'operational' | 'degraded' | 'held_back' | 'delayed' | 'not_configured' | 'unknown';
 
 export function builderInviteDeliveryHealth() {
   return invokeBuilderFunction<{

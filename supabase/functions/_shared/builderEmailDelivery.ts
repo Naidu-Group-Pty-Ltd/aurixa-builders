@@ -15,6 +15,7 @@ import {
   DELIVERY_CHECK_LEASE_SECONDS,
   DELIVERY_CHECK_RECIPIENT_DEFAULT,
   DELIVERY_CHECK_STALE_AFTER_SECONDS,
+  DELIVERY_HELD_BACK_WINDOW_SECONDS,
   EMAIL_SEND_MAX_WAIT_MS,
   EMAIL_SEND_SPACING_MS,
   type DeliveryHealthView,
@@ -128,21 +129,28 @@ export async function sendPacedBuilderEmail(
 }
 
 /**
- * THE DEPLOYMENT'S ONE DELIVERY READING (doc 68 §3).
+ * THE DEPLOYMENT'S ONE DELIVERY READING (doc 68 §5).
  *
  * Read from the database, and — once it is stale — refreshed by exactly one
  * request, after its answer, by sending a check to a sink that belongs to
- * nobody. Nothing here reads an invitation, an address or the activity log.
+ * nobody. Read under the caller's own organisation (`scope`), it also says
+ * whether that organisation's invitation emails were held back lately — and
+ * never another's. Nothing here reads an invitation, an address or the
+ * activity log.
  */
 export async function readDeliveryHealth(
   // deno-lint-ignore no-explicit-any
   supabase: any,
   loadBrand: () => Promise<BuilderEmailBrand>,
+  scope?: string,
 ): Promise<DeliveryHealthView> {
   const configured = builderEmailConfigured();
   if (!configured) return deliveryHealthView({ configured, reading: null });
 
-  const { data, error } = await supabase.rpc('builder_email_delivery_reading');
+  const { data, error } = await supabase.rpc('builder_email_delivery_reading', {
+    _scope: scope ?? null,
+    _held_back_window_seconds: DELIVERY_HELD_BACK_WINDOW_SECONDS,
+  });
   if (error) console.error('[builderEmailDelivery] the delivery reading could not be read', error.message);
   const row = !error && Array.isArray(data) ? data[0] ?? null : null;
 
@@ -160,6 +168,7 @@ export async function readDeliveryHealth(
         state: typeof row.state === 'string' ? row.state : null,
         checked_at: typeof row.checked_at === 'string' ? row.checked_at : null,
         backlog_ms: typeof row.backlog_ms === 'number' ? row.backlog_ms : null,
+        scope_held_back: row.scope_held_back === true,
       }
       : null,
   });

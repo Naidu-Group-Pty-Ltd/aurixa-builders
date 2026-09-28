@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -16,8 +16,9 @@ vi.mock('@/hooks/useBuilderPortalAuth', () => ({
 }));
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: vi.fn() }) }));
 const health = vi.fn();
+const invite = vi.fn();
 vi.mock('@/lib/builderPortal', () => ({
-  builderInviteTeamMember: vi.fn(),
+  builderInviteTeamMember: (...args: unknown[]) => invite(...args),
   builderInviteDeliveryHealth: () => health(),
 }));
 
@@ -28,6 +29,7 @@ const reading = (state: string) => ({ data: { success: true, delivery: { state, 
 beforeEach(() => {
   role = 'administrator';
   health.mockReset();
+  invite.mockReset();
 });
 
 describe('the delivery reading on the invite card', () => {
@@ -42,6 +44,25 @@ describe('the delivery reading on the invite card', () => {
     health.mockResolvedValue(reading('delayed'));
     render(<BuilderTeamInviteCard />);
     await screen.findByText(/may take a few minutes/i);
+  });
+
+  it('says so when this organisation\'s own invitation emails were held back, and how to recover', async () => {
+    health.mockResolvedValue(reading('held_back'));
+    render(<BuilderTeamInviteCard />);
+    const alert = await screen.findByText(/held back/i);
+    expect(alert.textContent).toMatch(/invite the same address again/i);
+  });
+
+  it('reads the delivery reading again once an invitation is recorded, so a burst shows what it caused', async () => {
+    health.mockResolvedValue(reading('operational'));
+    invite.mockResolvedValue({ data: { success: true }, error: null });
+    render(<BuilderTeamInviteCard />);
+    await waitFor(() => expect(health).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: 'Sam' } });
+    fireEvent.change(screen.getByLabelText(/email/i), { target: { value: 'sam@x.test' } });
+    fireEvent.submit(screen.getByLabelText(/^name$/i).closest('form')!);
+    await waitFor(() => expect(invite).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(health).toHaveBeenCalledTimes(2));
   });
 
   it('says nothing when mail is working, or before the first reading', async () => {

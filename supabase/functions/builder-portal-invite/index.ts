@@ -236,15 +236,20 @@ Deno.serve(async (req) => {
      * the account's single token slot could not promise. Only while the seat
      * still waits: one the invitee has accepted, or an administrator has
      * suspended or cancelled since, is not re-invited behind their back. It
-     * records what the new link is for, read from the account now: a person
-     * who has started signing in since the first invitation is sent a join.
-     * A seat recorded before the typed name existed takes the one typed now.
+     * records what the new link is for, read from the account now — a person
+     * who has started signing in since the first invitation is sent a join —
+     * and whether it was handed to the inviter. A seat recorded before the
+     * typed name existed takes the one typed now, and an invitation sent again
+     * with a different role carries that role (the second review: the first
+     * one's role used to stand, so lowering it by inviting again did not take).
      */
     const reissueSeatInvitation = async (
       seatId: string,
       minted: MintedInvite,
       requiresPassword: boolean,
+      handed: boolean,
       invitedNameIfMissing: string | null,
+      roleIfChanged: string | null,
     ) => {
       const { data, error } = await supabase
         .from('builder_organisation_memberships')
@@ -252,7 +257,9 @@ Deno.serve(async (req) => {
           invite_token_hash: minted.tokenHash,
           invite_token_expires_at: minted.expiresAt.toISOString(),
           invite_requires_password: requiresPassword,
+          invite_link_handed: handed,
           ...(invitedNameIfMissing ? { invited_name: invitedNameIfMissing } : {}),
+          ...(roleIfChanged ? { membership_role: roleIfChanged } : {}),
         })
         .eq('id', seatId)
         .eq('organisation_id', activeOrganisationId)
@@ -341,7 +348,9 @@ Deno.serve(async (req) => {
      * of the send queue, and reads no invitation, address or message to do it.
      */
     if (action === 'delivery_health') {
-      const delivery = await readDeliveryHealth(supabase, getBrandConfig);
+      // Under this organisation's own scope, so it can be told when ITS
+      // invitation emails were held back — and never another's.
+      const delivery = await readDeliveryHealth(supabase, getBrandConfig, `org:${activeOrganisationId}`);
       return json({ success: true, delivery });
     }
 
@@ -386,6 +395,13 @@ Deno.serve(async (req) => {
       }
 
       const requiresPassword = invitationRequiresPassword(target);
+      // Whether the inviter is handed this link is decided before it exists,
+      // so what the seat records is exactly what the answer hands over.
+      const providerConfigured = builderEmailConfigured();
+      const handed = inviterMayHoldInvitationLink({
+        send: providerConfigured ? 'sent' : 'not_configured',
+        requiresPassword,
+      });
       const minted = await mintBuilderInvite();
       if (!minted) {
         console.error('[builder-portal-invite] hashing unavailable — refusing to store an unpeppered invite token');
@@ -416,9 +432,11 @@ Deno.serve(async (req) => {
           invited_name: invitee.name,
           invite_token_hash: minted.tokenHash,
           invite_token_expires_at: minted.expiresAt.toISOString(),
-          // What this link is for, fixed now: a password-setting link never
-          // becomes a one-click join later (see the acceptance door).
+          // What this link is for, and whether the inviter holds it: a handed
+          // password-setting link never becomes a one-click join later (see
+          // the acceptance door).
           invite_requires_password: requiresPassword,
+          invite_link_handed: handed,
         });
       if (membershipError && String(membershipError.code) === '23505') {
         /*
@@ -433,11 +451,13 @@ Deno.serve(async (req) => {
          *  * `active` — a working member here already: nothing to grant and
          *    nothing to send, answered as every invitation is.
          *  * `invited` — the invitation still owed: this organisation's own
-         *    token is re-minted and sent again.
+         *    token is re-minted and sent again, carrying the role chosen now —
+         *    except on an owner's seat, which only the operator's doors create
+         *    and this door never re-roles.
          */
         const { data: seat, error: seatError } = await supabase
           .from('builder_organisation_memberships')
-          .select('id, status, invited_name')
+          .select('id, status, invited_name, membership_role')
           .eq('builder_user_id', target.id)
           .eq('organisation_id', activeOrganisationId)
           .is('revoked_at', null)
@@ -454,8 +474,8 @@ Deno.serve(async (req) => {
         if (seat.status === 'active') {
           return await answer(json(tenantInviteResponse({ inviteUrl: null })));
         }
-        const reissued = await reissueSeatInvitation(seat.id, minted, requiresPassword,
-          seat.invited_name ? null : invitee.name);
+        const reissued = await reissueSeatInvitation(seat.id, minted, requiresPassword, handed,
+          seat.invited_name ? null : invitee.name, seat.membership_role === 'owner' ? null : role);
         if (!reissued) {
           /*
            * NOTHING WAS WAITING BY THE TIME THE RE-MINT RAN: the invitee
@@ -489,7 +509,6 @@ Deno.serve(async (req) => {
       if (requiresPassword) await supabase.rpc('builder_ensure_onboarding_steps', { _builder_user_id: target.id });
       await recordInvitation(target.id, false, minted, requiresPassword);
 
-      const providerConfigured = builderEmailConfigured();
       if (providerConfigured) {
         // Started only once the answer's floor has passed, so nothing about the
         // email can reach the time the answer takes.
@@ -497,11 +516,7 @@ Deno.serve(async (req) => {
           targetId: target.id, email: target.email, inviteeName, requiresPassword, url: minted.url, resent: false,
         })), 'invitation email');
       }
-      const handedLink = inviterMayHoldInvitationLink({
-        send: providerConfigured ? 'sent' : 'not_configured',
-        requiresPassword,
-      }) ? minted.url : null;
-      return await answer(json(tenantInviteResponse({ inviteUrl: handedLink })));
+      return await answer(json(tenantInviteResponse({ inviteUrl: handed ? minted.url : null })));
     }
 
     // ---------------------------------------------------------------- resend
@@ -523,16 +538,21 @@ Deno.serve(async (req) => {
         return await answer(json(tenantInviteResponse({ inviteUrl: null })));
       }
       const requiresPassword = invitationRequiresPassword(target);
+      const providerConfigured = builderEmailConfigured();
+      const handed = inviterMayHoldInvitationLink({
+        send: providerConfigured ? 'sent' : 'not_configured',
+        requiresPassword,
+      });
       const minted = await mintBuilderInvite();
       if (!minted) {
         console.error('[builder-portal-invite] hashing unavailable — refusing to store an unpeppered invite token');
         return await answer(json({ error: 'Invite service unavailable' }, 503));
       }
-      const reissued = await reissueSeatInvitation(seat.id, minted, requiresPassword, null);
+      // A re-send chooses no role, so it changes none.
+      const reissued = await reissueSeatInvitation(seat.id, minted, requiresPassword, handed, null, null);
       if (!reissued) return await answer(json(tenantInviteResponse({ inviteUrl: null })));
       await recordInvitation(target.id, true, minted, requiresPassword);
 
-      const providerConfigured = builderEmailConfigured();
       if (providerConfigured) {
         afterAnswer(holdAnswer(receivedAt).then(() => deliverInvitation({
           targetId: target.id,
@@ -543,11 +563,7 @@ Deno.serve(async (req) => {
           resent: true,
         })), 'invitation email');
       }
-      const handedLink = inviterMayHoldInvitationLink({
-        send: providerConfigured ? 'sent' : 'not_configured',
-        requiresPassword,
-      }) ? minted.url : null;
-      return await answer(json(tenantInviteResponse({ inviteUrl: handedLink })));
+      return await answer(json(tenantInviteResponse({ inviteUrl: handed ? minted.url : null })));
     }
 
     // ---------------------------------------------------------- revoke_invite

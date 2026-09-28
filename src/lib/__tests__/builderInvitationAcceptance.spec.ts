@@ -187,6 +187,39 @@ describe('the invite door grants nothing an invitee has not accepted', () => {
     expect(reissue.slice(0, reissue.indexOf('};'))).toMatch(/invite_requires_password: requiresPassword/);
   });
 
+  it('records whether each link was handed to the inviter, and hands over exactly the link it recorded', () => {
+    // The second review: only a link somebody other than the mailbox holds
+    // needs to keep the kind it was minted for. Recorded at mint, from the one
+    // rule that decides whether the inviter is handed the link at all.
+    const grant = (code.match(/\.from\('builder_organisation_memberships'\)\s*\.insert\(\{[\s\S]*?\}\)/g) ?? [])[0] ?? '';
+    expect(grant).toMatch(/invite_link_handed: handed/);
+    const reissue = code.slice(code.indexOf('const reissueSeatInvitation'));
+    expect(reissue.slice(0, reissue.indexOf('};'))).toMatch(/invite_link_handed: handed/);
+    for (const action of ["if (action === 'invite')", "if (action === 'resend')"]) {
+      const start = code.indexOf(action);
+      const body = code.slice(start, code.indexOf("if (action === '", start + 20));
+      expect(body, action).toMatch(/const handed = inviterMayHoldInvitationLink\(\{/);
+      expect(body, action).toMatch(/inviteUrl: handed \? minted\.url : null/);
+      // Decided before anything is minted, so what is recorded is what is handed.
+      expect(body.indexOf('const handed ='), action).toBeLessThan(body.indexOf('mintBuilderInvite()'));
+    }
+  });
+
+  it('re-inviting a waiting seat applies the role chosen now — and never re-roles an owner\'s seat', () => {
+    // The second review: the re-invite kept the role of the first invitation,
+    // so lowering a waiting colleague's role by inviting them again did not
+    // take, and they accepted the higher one.
+    const reissue = code.slice(code.indexOf('const reissueSeatInvitation'));
+    expect(reissue.slice(0, reissue.indexOf('};'))).toMatch(/membership_role: roleIfChanged/);
+    const repeat = code.slice(code.indexOf("if (membershipError && String(membershipError.code) === '23505')"));
+    expect(repeat).toMatch(/\.select\('id, status, invited_name, membership_role'\)/);
+    expect(repeat).toMatch(/seat\.membership_role === 'owner' \? null : role/);
+    // The resend act chooses no role, so it changes none.
+    const resend = code.slice(code.indexOf("if (action === 'resend')"));
+    expect(resend.slice(0, resend.indexOf("if (action === 'revoke_invite')")))
+      .toMatch(/reissueSeatInvitation\(seat\.id, minted, requiresPassword, handed, null, null\)/);
+  });
+
   it('files every invitation\'s typed name for the list, and the list reads it', () => {
     const invite = functions('builder-portal-invite', 'index.ts');
     const list = invite.slice(invite.indexOf("if (action === 'list_members')"));
@@ -243,16 +276,34 @@ describe('the acceptance door: one click for an account that already signs in', 
     }
   });
 
-  it('a password-setting link never becomes a join — on the seat or in the account slot', () => {
-    // The seat path compares what the token was minted for with the account
-    // as it is now, and refuses a mismatch before anything else is done.
-    const mismatch = code.indexOf('seat.invite_requires_password !== requiresPassword');
+  it('a link handed to the inviter never becomes a join — on the seat or in the account slot', () => {
+    // The seat path compares what a HANDED token was minted for with the
+    // account as it is now, and refuses a mismatch before anything else is
+    // done. A link only the mailbox holds follows the account: its holder is
+    // the person, who could reset the password with the same mailbox.
+    const mismatch = code.indexOf('seat.invite_link_handed && seat.invite_requires_password !== requiresPassword');
     expect(mismatch).toBeGreaterThan(-1);
     expect(code.slice(mismatch, mismatch + 200)).toMatch(/GENERIC_INVITE_ERROR/);
     expect(mismatch).toBeLessThan(code.indexOf("if (action === 'validate')"));
-    // Every account-slot token was minted for an account with no password, so
-    // an account that has one is turned away there, as it always was.
+    expect(code).not.toMatch(/if \(seat\.invite_requires_password !== requiresPassword\)/);
+    // Every account-slot token was minted for an account with no password, and
+    // may be held by an operator, so an account that has one is turned away
+    // there, as it always was.
     expect(code).toMatch(/if \(portalUser\.invite_accepted_at \|\| portalUser\.password_hash\) \{\s*return json\(\{ error: GENERIC_INVITE_ERROR, valid: false, already_active: true \}, 400\);/);
+  });
+
+  it('offers a password form only while the account is still an invitation — validate agrees with accept', () => {
+    // The second review: activation requires `invited`, so an account an
+    // operator suspended before it accepted was shown a form that then failed.
+    const validate = code.indexOf("if (action === 'validate')");
+    const seatGate = code.indexOf("if (requiresPassword && account.status !== 'invited')");
+    expect(seatGate).toBeGreaterThan(-1);
+    expect(seatGate).toBeLessThan(validate);
+    expect(code.slice(seatGate, seatGate + 160)).toMatch(/GENERIC_INVITE_ERROR/);
+    const slotGate = code.indexOf("if (portalUser.status !== 'invited')");
+    expect(slotGate).toBeGreaterThan(-1);
+    expect(slotGate).toBeLessThan(code.indexOf("if (action === 'validate')", validate + 20));
+    expect(code.slice(slotGate, slotGate + 160)).toMatch(/GENERIC_INVITE_ERROR/);
   });
 
   it('promotes the seat the token is on, and uses the token up in the same statement', () => {

@@ -154,9 +154,12 @@ describe('every way builder-portal-invite can answer an invitation', () => {
     expect(conflict.slice(suspended, suspended + 400)).toMatch(/409\)/);
     // ... and an active member of this organisation is answered as everyone is.
     expect(conflict.slice(alreadyHere, alreadyHere + 200)).toMatch(/return await answer\(json\(tenantInviteResponse\(\{ inviteUrl: null \}\)\)\)/);
-    // The seat is read before any 409 in the branch can be reached.
-    expect(conflict.indexOf(".select('id, status, invited_name')")).toBeGreaterThan(-1);
-    expect(conflict.indexOf(".select('id, status, invited_name')")).toBeLessThan(conflict.search(/409\)/));
+    // The seat is read before any 409 in the branch can be reached. (Its role
+    // is read with it since the second review of doc 68, so an invitation
+    // sent again can carry the role chosen now — never onto an owner's seat.)
+    const seatRead = ".select('id, status, invited_name, membership_role')";
+    expect(conflict.indexOf(seatRead)).toBeGreaterThan(-1);
+    expect(conflict.indexOf(seatRead)).toBeLessThan(conflict.search(/409\)/));
   });
 
   it('a re-sent invitation that finds nothing waiting re-reads the seat rather than refusing', () => {

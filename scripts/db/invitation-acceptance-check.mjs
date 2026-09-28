@@ -7,20 +7,24 @@
  *   * change no existing row: every membership and account reads the same
  *     after it as before it;
  *   * let a seat carry its own invitation — a token that is unique, only ever
- *     on a waiting, live seat, records what it was minted for, and is destroyed
- *     by whatever moves the seat out of waiting (acceptance, suspension,
- *     removal), while a role change leaves it;
+ *     on a waiting, live seat, records what it was minted for and whether its
+ *     link was handed to the inviter, and is destroyed by whatever moves the
+ *     seat out of waiting (acceptance, suspension, removal), while a role
+ *     change leaves it;
  *   * bound the name an inviter types to the registration door's 200
  *     characters, and refuse an empty one;
  *   * reserve send slots one at a time under a lock, spaced as asked — also
  *     when many isolates ask at once — and refuse a reservation past the
  *     longest wait rather than queueing without end, or past one scope's own
- *     ceiling on waiting sends, while another scope still gets its slot;
+ *     ceiling on waiting sends, while another scope still gets its slot — and
+ *     stamp that scope, so its own administrators can be told;
  *   * hold one deployment-wide delivery reading, claimed by one checker at a
- *     time and only once it is stale;
- *   * all of it callable and readable by service_role only — asked with
- *     Supabase's own default privileges in force, which grant anon and
- *     authenticated everything new in `public` unless a migration revokes it.
+ *     time and only once it is stale, which says a scope's sends were held
+ *     back only to that scope, and only for a while;
+ *   * all of it callable and readable by service_role only, sequences
+ *     included — asked with Supabase's own default privileges in force, which
+ *     grant anon and authenticated everything new in `public` unless a
+ *     migration revokes it.
  *
  * Environment: LOCAL_PG_HOST (default /tmp), LOCAL_PG_PORT (55432),
  * LOCAL_PG_USER (postgres), INVITATION_ACCEPTANCE_DB.
@@ -124,10 +128,11 @@ const beforeMigration = snapshot();
 psql(['-d', DB, '-q', '-f', join(repoRoot, 'supabase/migrations', MIGRATION)]);
 check('the migration applies over the migrations before it', true);
 check('it changes no existing membership or account', snapshot() === beforeMigration);
-check('it leaves every existing seat without a token, a kind or a typed name',
+check('it leaves every existing seat without a token, a kind, a holder or a typed name',
   sql(`SELECT count(*) FROM public.builder_organisation_memberships
        WHERE invite_token_hash IS NOT NULL OR invite_token_expires_at IS NOT NULL
-          OR invite_requires_password IS NOT NULL OR invited_name IS NOT NULL`) === '0');
+          OR invite_requires_password IS NOT NULL OR invite_link_handed IS NOT NULL
+          OR invited_name IS NOT NULL`) === '0');
 check('it is re-runnable', (() => {
   psql(['-d', DB, '-q', '-f', join(repoRoot, 'supabase/migrations', MIGRATION)]);
   return snapshot() === beforeMigration;
@@ -141,13 +146,13 @@ const hash = () => randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '
 const seat = (user, org) => sql(`SELECT id FROM public.builder_organisation_memberships
   WHERE builder_user_id = ${lit(user)} AND organisation_id = ${lit(org)} AND revoked_at IS NULL`);
 const tokenOf = (id) => sql(`SELECT coalesce(invite_token_hash, '') || '|' || coalesce(invite_token_expires_at::text, '')
-  || coalesce(invite_requires_password::text, '')
+  || coalesce(invite_requires_password::text, '') || coalesce(invite_link_handed::text, '')
   FROM public.builder_organisation_memberships WHERE id = ${lit(id)}`);
-const invite = (user, org, token, name = 'Typed Name', requiresPassword = false) => `
+const invite = (user, org, token, name = 'Typed Name', requiresPassword = false, handed = false) => `
   INSERT INTO public.builder_organisation_memberships(builder_user_id, organisation_id, membership_role, is_primary, status,
-    invited_name, invite_token_hash, invite_token_expires_at, invite_requires_password, granted_by)
+    invited_name, invite_token_hash, invite_token_expires_at, invite_requires_password, invite_link_handed, granted_by)
   VALUES (${lit(user)}, ${lit(org)}, 'member', false, 'invited', ${lit(name)}, ${lit(token)}, now() + interval '72 hours',
-          ${requiresPassword}, ${lit(OWNER)})
+          ${requiresPassword}, ${handed}, ${lit(OWNER)})
   RETURNING id`;
 
 const t1 = hash();
@@ -159,7 +164,7 @@ check('the account behind it is untouched by the invitation',
 const tB = hash();
 sql(`UPDATE public.builder_organisation_memberships
         SET invite_token_hash = ${lit(tB)}, invite_token_expires_at = now() + interval '72 hours',
-            invite_requires_password = true
+            invite_requires_password = true, invite_link_handed = true
       WHERE id = ${lit(seat(PENDING, ORG_B))}`);
 const t2 = hash();
 const pendingInA = sql(invite(PENDING, ORG_A, t2, 'Typed Name', true));
@@ -179,6 +184,9 @@ check('a token that is not a peppered hash (a plaintext link) is refused',
 check('a token is refused without a record of what it was minted for',
   /builder_memberships_token_on_waiting_seat/.test(refusal(`UPDATE public.builder_organisation_memberships
     SET invite_requires_password = NULL WHERE id = ${lit(seat(PENDING, ORG_B))}`) ?? ''));
+check('a token is refused without a record of whether its link was handed to the inviter',
+  /builder_memberships_token_on_waiting_seat/.test(refusal(`UPDATE public.builder_organisation_memberships
+    SET invite_link_handed = NULL WHERE id = ${lit(seat(PENDING, ORG_B))}`) ?? ''));
 check('a token is refused without an expiry',
   /builder_memberships_token_on_waiting_seat/.test(refusal(`UPDATE public.builder_organisation_memberships
     SET invite_token_hash = ${lit(hash())}, invite_token_expires_at = NULL WHERE id = ${lit(seat(PENDING, ORG_B))}`) ?? ''));
@@ -265,6 +273,15 @@ check('a refused reservation does not move the queue for anybody else',
   // Behind four slots (~4 s less the time the reservations themselves took),
   // never behind five: the refused fifth reserved nothing.
   Number(other) >= 3500 && Number(other) <= 4100, `other waits ${other} ms, behind the burst's four`);
+const stamped = (scope) => sql(`SELECT count(*) FROM public.builder_email_send_scope_refusals WHERE scope = ${lit(scope)}`);
+check('a scope refused its share is stamped, and a scope that was not refused is not',
+  stamped('org:burst') === '1' && stamped('org:other') === '0');
+// A full queue refuses a scoped send too, and that is also the scope's to know.
+sql(`UPDATE public.builder_email_send_pacing SET next_slot_at = now() + interval '100 seconds'`);
+const late = sql(reserve(1000, 90000, 'org:late', 3));
+check('a scoped send refused because the whole queue is full stamps its scope as well',
+  late === '' && stamped('org:late') === '1', `late=${late || 'null'}`);
+sql(`UPDATE public.builder_email_send_pacing SET next_slot_at = now()`);
 
 // --- The delivery reading -------------------------------------------------------------------
 const claim = () => sql(`SELECT public.builder_claim_email_delivery_check(1800, 120)`);
@@ -282,13 +299,21 @@ check('only the two states a check can find may be recorded',
 sql(`UPDATE public.builder_email_send_pacing SET next_slot_at = now() + interval '45 seconds'`);
 check('the reading reports the queue as one number for the whole deployment',
   Number(sql(`SELECT backlog_ms FROM public.builder_email_delivery_reading()`)) >= 40000);
+const heldBack = (scope, windowSeconds = 900) => sql(`SELECT scope_held_back
+  FROM public.builder_email_delivery_reading(${lit(scope)}, ${windowSeconds})`);
+check('a scope whose sends were held back reads so; another scope, and no scope, do not',
+  heldBack('org:burst') === 't' && heldBack('org:other') === 'f' && heldBack(null) === 'f'
+    && sql(`SELECT scope_held_back FROM public.builder_email_delivery_reading()`) === 'f');
+sql(`UPDATE public.builder_email_send_scope_refusals SET refused_at = now() - interval '16 minutes' WHERE scope = 'org:burst'`);
+check('and only for a while — a refusal older than the window no longer reads as held back',
+  heldBack('org:burst') === 'f');
 
 // --- Nobody but service_role -----------------------------------------------------------------
 const fns = [
   'public.builder_reserve_email_send_slot(integer,integer,text,integer)',
   'public.builder_claim_email_delivery_check(integer,integer)',
   'public.builder_record_email_delivery_check(text)',
-  'public.builder_email_delivery_reading()',
+  'public.builder_email_delivery_reading(text,integer)',
 ];
 for (const fn of fns) {
   check(`${fn.replace(/\(.*$/, '')} is callable by service_role only`,
@@ -296,12 +321,23 @@ for (const fn of fns) {
       && sql(`SELECT has_function_privilege('anon', ${lit(fn)}, 'EXECUTE')`) === 'f'
       && sql(`SELECT has_function_privilege('authenticated', ${lit(fn)}, 'EXECUTE')`) === 'f');
 }
-for (const table of ['public.builder_email_send_pacing', 'public.builder_email_delivery_health',
-  'public.builder_email_send_reservations']) {
+const tables = ['public.builder_email_send_pacing', 'public.builder_email_delivery_health',
+  'public.builder_email_send_reservations', 'public.builder_email_send_scope_refusals'];
+for (const table of tables) {
   check(`${table} is unreadable to anon and authenticated, and RLS is on`,
     sql(`SELECT has_table_privilege('anon', ${lit(table)}, 'SELECT')`) === 'f'
       && sql(`SELECT has_table_privilege('authenticated', ${lit(table)}, 'SELECT')`) === 'f'
       && sql(`SELECT relrowsecurity FROM pg_class WHERE oid = ${lit(table)}::regclass`) === 't');
 }
+// A sequence is a new object like any other, and an identity column makes one.
+const sequences = sql(`SELECT string_agg(DISTINCT c.oid::regclass::text, ',')
+  FROM pg_class c JOIN pg_depend d ON d.objid = c.oid
+ WHERE c.relkind = 'S' AND d.refobjid IN (${tables.map((t) => `${lit(t)}::regclass`).join(', ')})`);
+check('the sequences behind those tables are closed to anon and authenticated', (() => {
+  const names = sequences ? sequences.split(',') : [];
+  return names.length > 0 && names.every((seq) => ['anon', 'authenticated'].every((role) =>
+    ['USAGE', 'SELECT', 'UPDATE'].every((privilege) =>
+      sql(`SELECT has_sequence_privilege(${lit(role)}, ${lit(seq)}, ${lit(privilege)})`) === 'f')));
+})(), `sequences=${sequences || 'none'}`);
 
 finish();
