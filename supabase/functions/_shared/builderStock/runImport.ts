@@ -65,7 +65,9 @@ import type {
 } from './extract.ts';
 import { extractStockRowsFromImages, extractStockRowsFromText } from './modelExtract.ts';
 import { StockModelExtractionError, modelFailureFromRouterError } from './modelExtractionFailure.pure.ts';
-import { assistedReaderFailure, SOURCE_HAS_COLUMNS } from './assistedReaderFailure.pure.ts';
+import {
+  assistedReaderFailure, SOURCE_HAS_COLUMNS, unreadWithoutAssistedReader,
+} from './assistedReaderFailure.pure.ts';
 import { createAiBudget } from './aiBudget.ts';
 import {
   assistedReaderDisposition, assistedReaderEnabled,
@@ -853,6 +855,11 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
           : 'No properties could be read from that file. Check that it lists one property per row with column headings.',
           detail);
       }
+      const unread = unreadWithoutAssistedReader({
+        classificationKind: decided.classificationKind,
+        strategy: decided.strategy,
+      });
+      if (unread) return fail('no_properties_found', unread, detail);
       return fail('no_properties_found',
         `We read that ${what}, but it did not describe a property we could list.`
         + ' If it should, check that it names the lot or address and its price.',

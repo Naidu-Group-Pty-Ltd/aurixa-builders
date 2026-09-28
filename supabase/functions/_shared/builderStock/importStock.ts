@@ -21,7 +21,7 @@
 import {
   coercePostcode, coerceState,
   developmentUnitMatchKey, normaliseStockRow, stockIdentityHints,
-  stockMatchKeys, stockRecordLabel, storedRowDevelopmentUnitKey,
+  statedPrice, stockMatchKeys, stockRecordLabel, storedRowDevelopmentUnitKey,
   type NormalisedStockRecord,
 } from './normalise.pure.ts';
 import { parseBuilderAddressLine } from '../builderStockAddress.pure.ts';
@@ -424,8 +424,15 @@ function writablePatch(
   set('property_type', record.property_type);
   set('land_size_sqm', record.land_size_sqm);
   set('building_size_sqm', record.building_size_sqm);
-  set('price', record.price);
-  set('price_display', record.price_display);
+  // One cell states both price columns — see `statedPrice`.
+  const priced = statedPrice(record);
+  if (priced) {
+    patch.price = priced.price;
+    patch.price_display = priced.price_display;
+  } else {
+    set('price', record.price);
+    set('price_display', record.price_display);
+  }
   set('expected_completion', record.expected_completion);
   set('description', record.description);
   // `unknown` is the absence of a reading, not a reading of absence.

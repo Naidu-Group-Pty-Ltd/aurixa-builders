@@ -34,12 +34,43 @@ function decodeXmlEntities(input: string): string {
 
 /** All text inside a fragment, tags removed, whitespace collapsed. */
 function textOf(fragment: string): string {
-  return decodeXmlEntities(fragment.replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
+  return decodeXmlEntities(fragment.replace(/<[^<>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
 }
 
 // ---------------------------------------------------------------------------
 // OpenDocument — .ods and .odt
 // ---------------------------------------------------------------------------
+
+/**
+ * An OpenDocument fragment's TEXT — what the document displays, not its markup.
+ *
+ * `textOf` makes every tag a space, which is right for a generic XML record
+ * and wrong here. ODF marks up INSIDE words: a formatting span, a bookmark,
+ * and `<text:soft-page-break/>`, the marker LibreOffice writes where a page
+ * break fell as it laid the document out. Measured 28 September 2026 on the
+ * live product: an ODT stock list whose table crossed a page imported
+ * `T0-42 2`, `12 For matcheck Street` and `Truga nina`, and lost the row's
+ * price and status with them.
+ *
+ * So whitespace comes only from the elements the format defines as whitespace
+ * — `text:s` (with its count), `text:tab`, `text:line-break` — and from a
+ * paragraph ending, which separates a cell's lines. Every other element
+ * contributes nothing of its own.
+ */
+function odfTextOf(fragment: string): string {
+  // `[^<>]*` rather than a lazy match hunting for `text:c`: an element cannot
+  // contain `<`, so a crafted, unterminated `<text:s …` is read in one pass
+  // (the lazy form backtracked — 172 KB took 4.3 s).
+  const spaced = fragment
+    .replace(/<text:s\b[^<>]*\/>/g, (element) => {
+      const count = /\btext:c\s*=\s*"(\d+)"/.exec(element)?.[1];
+      return ' '.repeat(Math.min(Math.max(Number(count) || 1, 1), 64));
+    })
+    .replace(/<text:(?:tab|line-break)\b[^<>]*\/>/g, ' ')
+    .replace(/<\/text:(?:p|h)>/g, ' ')
+    .replace(/<[^<>]*>/g, '');
+  return decodeXmlEntities(spaced).replace(/\s+/g, ' ').trim();
+}
 
 /**
  * `content.xml` from an ODS or ODT.
@@ -81,7 +112,7 @@ export function readOpenDocument(contentXml: string): {
       let match: RegExpExecArray | null;
       while ((match = cellPattern.exec(rowXml)) !== null) {
         const attributes = match[1] ?? '';
-        const value = match[2] === undefined ? '' : textOf(match[2]);
+        const value = match[2] === undefined ? '' : odfTextOf(match[2]);
         const repeatRaw = /table:number-columns-repeated\s*=\s*"(\d+)"/.exec(attributes)?.[1];
         // Expanded even when the cell is EMPTY: a repeated blank is a run of
         // real column positions, and collapsing it shifts every column after
@@ -101,7 +132,7 @@ export function readOpenDocument(contentXml: string): {
   });
 
   const paragraphs = (contentXml.match(/<text:(?:p|h)\b[\s\S]*?<\/text:(?:p|h)>/g) ?? [])
-    .map(textOf)
+    .map(odfTextOf)
     .filter((line) => line.length > 0);
 
   return { tables, tableSections, text: paragraphs.join('\n') };
@@ -136,7 +167,7 @@ export function readPresentation(slideXml: string[]): {
         for (const cellXml of rowXml.match(/<a:tc\b[\s\S]*?<\/a:tc>/g) ?? []) {
           cells.push(
             (cellXml.match(/<a:t>([\s\S]*?)<\/a:t>/g) ?? [])
-              .map((run) => decodeXmlEntities(run.replace(/<[^>]*>/g, '')))
+              .map((run) => decodeXmlEntities(run.replace(/<[^<>]*>/g, '')))
               .join('')
               .replace(/\s+/g, ' ')
               .trim(),
@@ -154,7 +185,7 @@ export function readPresentation(slideXml: string[]): {
     // a list rather than as one run-on sentence.
     for (const paragraph of xml.match(/<a:p\b[\s\S]*?<\/a:p>/g) ?? []) {
       const line = (paragraph.match(/<a:t>([\s\S]*?)<\/a:t>/g) ?? [])
-        .map((run) => decodeXmlEntities(run.replace(/<[^>]*>/g, '')))
+        .map((run) => decodeXmlEntities(run.replace(/<[^<>]*>/g, '')))
         .join('')
         .replace(/\s+/g, ' ')
         .trim();
@@ -186,8 +217,10 @@ export function readRichText(rtf: string): string {
     'rsidtbl', 'xmlnstbl',
   ]);
 
+  // `\par` ends a paragraph; `\pard` only resets formatting, and every table
+  // cell opens with one — reading it as a break put each cell on its own line.
   out = out
-    .replace(/\\par[d]?\b/g, '\n')
+    .replace(/\\par\b/g, '\n')
     .replace(/\\line\b/g, '\n')
     .replace(/\\cell\b/g, '\t')
     .replace(/\\(?:row|trowd)\b/g, '\n')

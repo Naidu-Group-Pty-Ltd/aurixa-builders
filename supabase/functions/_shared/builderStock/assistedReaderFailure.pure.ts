@@ -235,3 +235,29 @@ export const RETRYABLE_UPLOAD_ERROR_CODES: readonly string[] = [
   'assisted_reader_unavailable',
   'assisted_reader_timeout',
 ];
+
+/**
+ * What a builder is told when NOTHING read their file, because the only reader
+ * for it is the assisted one and it was not consulted.
+ *
+ * A photograph of a printed list is read by the assisted reader alone, and the
+ * legacy Word reader recovers no table from a `.doc`. With the assisted reader
+ * off (`assistedReaderPolicy.pure.ts`) both used to reach "We read that file,
+ * but it did not describe a property we could list" — a finding about a
+ * document nobody had read (measured 28 September 2026). A strategy carrying
+ * `+model` was read, so its finding stands and this answers null.
+ */
+export function unreadWithoutAssistedReader(input: {
+  classificationKind: StockFileKind;
+  strategy: string;
+}): string | null {
+  if (input.classificationKind === 'image' && input.strategy === 'image_vision') {
+    return 'Photographs and scans of a stock list can\'t be read here. Upload the list itself — a spreadsheet, '
+      + 'a CSV, a Word document, or a PDF whose text can be selected.';
+  }
+  if (input.classificationKind === 'word' && input.strategy === 'legacy_word_text') {
+    return 'The table in this older Word (.doc) file couldn\'t be read. Open it in Word, save it as a Word '
+      + 'document (.docx) or a PDF, and upload that.';
+  }
+  return null;
+}

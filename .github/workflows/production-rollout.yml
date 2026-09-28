@@ -293,6 +293,73 @@ name: Production rollout
 #            deterministic PDF reader over it, printing the figures read and
 #            whether the brochure's lot and design agree with the row's.
 #            SELECT and a document GET only; prints no link; writes nothing.
+#   stock-tier0-formats
+#            TIER-0: every format the Stock List accepts, imported by the live
+#            product exactly as a builder's browser imports it
+#            (`scripts/ops/fixtures/tier0`, digests pinned, nothing any
+#            customer's), each into an organisation of the run's own detached
+#            from every workspace and carried over a PROOF-ONLY transport to
+#            the live Command Centre door. Asserts, per format and per
+#            property: parsed and stored field by field against what the
+#            DOCUMENT states, served by the portal's own reads, published by
+#            the product's own settler (a property its document gave no
+#            photograph of gets one through the builder's own "Add picture"),
+#            mirrored by the Command Centre field by field, and read back
+#            through the Command Centre's own endpoint with its photograph.
+#            Kicks nothing and writes no lifecycle. `items` narrows it to some
+#            formats (comma-separated keys). Deletes everything on both sides.
+#   stock-tier0-lifecycle
+#            TIER-0: one stock list through its whole life on both products:
+#            imported, published and mirrored field by field with its typed
+#            documents; the builder's Stock List and the Command Centre's
+#            property page rendered in a real Chromium at three widths; an
+#            activation through the Command Centre's OWN select_for_client
+#            (a sold property refused, the builder told THAT and never for
+#            whom), acknowledged through the portal; a v2 re-upload (changed,
+#            removed, blank and new rows) applied and converged; the
+#            builder's own edits; a second organisation with the same estate
+#            and lot; a deleted list and a withdrawn activation. Playwright is
+#            installed for this phase only. Deletes everything on both sides.
+#   stock-tier0-edges
+#            TIER-0: what a builder gets when the file or the click is wrong —
+#            refused files with actionable reasons, malformed / partial /
+#            duplicate / unusual / Unicode / oversized content read without
+#            invention, the same upload processed twice at once, two lists
+#            uploaded one after the other, "Read again", rights, another
+#            organisation's ids, and links that must never be fetched.
+#            Detached organisations only. Deletes everything it creates.
+#   cc-page-probe
+#            which of its FIXED states the Command Centre shows a staff member
+#            who is NOT a superadmin: one disposable staff member (Listings +
+#            Client Management) opens a Builder Stock property page for an id
+#            that exists nowhere — a page that cannot draw genuine data — at
+#            desktop and phone widths, and the run prints the product's own
+#            state wording it met and every function it called with the status.
+#            No page text, no screenshot (this repository is public). Deletes
+#            the staff member and session.
+#   storage-residue-sweep
+#            the files proofs left in the Builder's stock buckets: in a stock
+#            bucket, under an organisation that no longer exists, named by no
+#            row, AND at a path a proof writes (proofResidue.pure.mjs). A real
+#            builder's disowned files are kept and counted. Dry run by default,
+#            by kind, count and a digest of the set (no file name: this log is
+#            public);
+#            removes only with apply=true AND items = the digest the dry run
+#            printed.
+#   portal-ui-audit
+#            the portal as each role sees it: an organisation of the run's own
+#            (detached, proof-only transport) holding a published stock list,
+#            two Command Centre activations, a project, tasks, notifications
+#            and an agency conversation, and five people (owner,
+#            administrator, manager, member, read-only). Every offered route
+#            for every role at desktop, laptop, tablet and phone widths (no
+#            script error, no 5xx, no sideways scroll, its content present),
+#            the controls a builder uses with this role's expected answer, the
+#            guided tour, the public pages, and a second sign-in attempt after
+#            a failed one (CAPTCHA script stubbed, login answer mocked: the
+#            browser's own logic is measured and no account is touched).
+#            Playwright is installed for this phase only; screenshots are the
+#            run's artifact. Deletes everything on both sides.
 #   network-connection-remap
 #            points the live connection at the builder organisation named in
 #            `organisation_id` and backfills its active stock. It refuses
@@ -315,13 +382,13 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | cc-frontend-build | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures | email-delivery-proof'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | cc-frontend-build | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures | email-delivery-proof | stock-tier0-formats | stock-tier0-lifecycle | stock-tier0-edges | portal-ui-audit | cc-page-probe | storage-residue-sweep'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures, email-delivery-proof]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures, email-delivery-proof, stock-tier0-formats, stock-tier0-lifecycle, stock-tier0-edges, portal-ui-audit, cc-page-probe, storage-residue-sweep]
       items:
-        description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1)'
+        description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1). storage-residue-sweep: with apply, the digest its dry run printed'
         required: false
         default: ''
         type: string
@@ -336,7 +403,7 @@ on:
         default: ''
         type: string
       apply:
-        description: 'item-reopen / stock-collateral-reprocess / network-connection-remap / stock-source-restore / agency-chat-backfill: false is a dry run that writes nothing'
+        description: 'item-reopen / stock-collateral-reprocess / network-connection-remap / stock-source-restore / agency-chat-backfill / storage-residue-sweep: false is a dry run that writes nothing'
         required: false
         default: false
         type: boolean
@@ -400,6 +467,22 @@ jobs:
           echo '::error::SUPABASE_ACCESS_TOKEN is not configured — nothing can run against the live project.'
           exit 1
 
+      # A BROWSER FOR THE PHASES THAT LOOK AT PAGES, installed here — in a step
+      # that holds no secret — into a prefix of its own with install scripts
+      # off. It used to be `npm install --no-package-lock` inside the step
+      # below, which resolved the repository's whole dependency tree afresh and
+      # ran its install scripts beside SUPABASE_ACCESS_TOKEN and the network
+      # secrets (independent review, 28 September 2026). Only the two packages
+      # the proofs import are copied into place.
+      - name: a browser for the proof, installed without secrets
+        if: ${{ inputs.phase == 'message-speed-proof' || inputs.phase == 'portal-browser-proof' || inputs.phase == 'stock-tier0-lifecycle' || inputs.phase == 'portal-ui-audit' || inputs.phase == 'cc-page-probe' }}
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/pw" --no-save --no-package-lock --ignore-scripts --no-audit --no-fund playwright@1.55.0
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps chromium
+          mkdir -p node_modules
+          cp -R "$RUNNER_TEMP/pw/node_modules/playwright" "$RUNNER_TEMP/pw/node_modules/playwright-core" node_modules/
+
       - name: run phase ${{ inputs.phase }}
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
@@ -424,6 +507,8 @@ jobs:
           MESSAGE_PROOF_BASELINE: ${{ inputs.baseline }}
           CC_EXPECTED_BUILD: ${{ inputs.cc_build }}
           PROOF_EMAIL_RECIPIENT: ${{ inputs.email_recipient }}
+          TIER0_ONLY: ${{ inputs.items }}
+          SWEEP_EXPECT: ${{ inputs.items }}
         run: |
           set -euo pipefail
           case "${{ inputs.phase }}" in
@@ -456,14 +541,10 @@ jobs:
             portal-performance-proof) node scripts/ops/portal-performance-proof.mjs ;;
             activation-speed-proof) node scripts/ops/activation-speed-proof.mjs ;;
             message-speed-proof)
-                                  npm install --no-save --no-package-lock --no-audit --no-fund playwright@1.55.0 \
-                                    && npx playwright install --with-deps chromium \
-                                    && node scripts/ops/message-speed-proof.mjs ;;
+                                  node scripts/ops/message-speed-proof.mjs ;;
             cc-frontend-build)    node scripts/ops/cc-frontend-build.mjs ;;
             portal-browser-proof)
-                                  npm install --no-save --no-package-lock --no-audit --no-fund playwright@1.55.0 \
-                                    && npx playwright install --with-deps chromium \
-                                    && node scripts/ops/portal-browser-proof.mjs ;;
+                                  node scripts/ops/portal-browser-proof.mjs ;;
             stock-overlay-audit)  deno run -A --config supabase/functions/deno.json scripts/ops/stock-overlay-audit.ts ;;
             upload-settlement-state)
                                   deno run -A --config supabase/functions/deno.json scripts/ops/stock-upload-settlement-state.ts ;;
@@ -471,6 +552,16 @@ jobs:
             stock-brochure-figures)
                                   deno run -A --config supabase/functions/deno.json scripts/ops/stock-brochure-figures.ts ;;
             email-delivery-proof) node scripts/ops/email-delivery-proof.mjs ;;
+            stock-tier0-formats)  node scripts/ops/stock-tier0-formats.mjs ;;
+            stock-tier0-lifecycle)
+                                  node scripts/ops/stock-tier0-lifecycle.mjs ;;
+            stock-tier0-edges)    node scripts/ops/stock-tier0-edges.mjs ;;
+            portal-ui-audit)
+                                  node scripts/ops/portal-ui-audit.mjs ;;
+            cc-page-probe)
+                                  node scripts/ops/cc-page-probe.mjs ;;
+            storage-residue-sweep)
+                                  node scripts/ops/storage-residue-sweep.mjs ;;
           esac
 
       - name: upload the browser proof's screenshots
@@ -478,6 +569,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: portal-browser-proof
+          path: proof-artifacts/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: upload the Tier-0 lifecycle screenshots
+        if: ${{ always() && (inputs.phase == 'stock-tier0-lifecycle' || inputs.phase == 'portal-ui-audit') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.phase }}
           path: proof-artifacts/
           if-no-files-found: warn
           retention-days: 7

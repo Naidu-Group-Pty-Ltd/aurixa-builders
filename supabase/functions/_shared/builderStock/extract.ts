@@ -18,7 +18,9 @@
  * fetched, and this function runs in an edge worker where a cold import is a
  * real failure mode.
  */
-import { keyRowsByHeader, parseDelimited } from './table.pure.ts';
+import {
+  keyRowsByHeader, malformedRecordWarnings, parseDelimited, parseDelimitedReport,
+} from './table.pure.ts';
 import {
   discoveryRefusal, IMAGERY_DEFERRED_WARNING, storageDeadlineFrom,
   type DiscoveryRefusal, type ImportBudget,
@@ -700,10 +702,21 @@ export async function extractStockFile(
 
   if (classification.kind === 'delimited') {
     const text = decodeText(bytes);
-    const keyed = keyRowsByHeader(parseDelimited(text));
+    const parsed = parseDelimitedReport(text);
+    const keyed = keyRowsByHeader(parsed.rows);
     if (keyed) {
       result.strategy = 'delimited_table';
       result.rows = keyed.rows.slice(0, MAX_ROWS);
+      /*
+       * A ROW THE READER COULD NOT SPLIT IS SAID, NOT LOST IN SILENCE.
+       * MEASURED 28 SEPTEMBER 2026: one unpaired quotation mark lost a
+       * property and reported `detected 1, failed 0`, and the builder was
+       * told nothing. The reader now confines it to its own row; this names
+       * that row. Only on the table path, where it was actually left out:
+       * read as text, the whole file goes to the model, and a prose file's
+       * quotation marks are not columns.
+       */
+      result.warnings.push(...malformedRecordWarnings(parsed.malformed, parsed.malformedTotal));
     } else {
       result.strategy = 'delimited_text';
       result.text = text.slice(0, MAX_TEXT_CHARS);

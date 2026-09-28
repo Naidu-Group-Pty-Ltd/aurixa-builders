@@ -2204,8 +2204,16 @@ function splitAddress(claim: Claim): Claim[] {
     return parts;
   }
   const lot = readLotHeading(claim.value);
+  if (!lot) return [claim];
+  /*
+   * `Lot 511 10 FORMATCHECK STREET` — where the street carries its own number
+   * the lot says WHICH and not WHERE, so the address is the street as written,
+   * as the one-line reader already makes it. `Lot 208 Fairweather Drive` has
+   * no number of its own and is kept whole, exactly as before.
+   */
+  const numbered = lotBeforeStreetNumber(claim.value);
   // A part split out of a value was read the way the whole was.
-  return lot ? [claim, { ...lot, via: claim.via }] : [claim];
+  return [numbered ? { ...claim, value: numbered.street } : claim, { ...lot, via: claim.via }];
 }
 
 /**
@@ -3978,6 +3986,34 @@ export function isIncidentalContent(line: string): boolean {
 }
 
 /**
+ * `Lot 511 10 Formatcheck Street`, `Lot 906, 14 Heath Street` — THE LOT, THEN
+ * THE STREET'S OWN NUMBER, UNBRACKETED.
+ *
+ * MEASURED 28 SEPTEMBER 2026 on the Tier-0 proof's `pdf-brochure.pdf`: its
+ * cover reads `Lot 511 10 Formatcheck Street` and its siting plan `Site
+ * Address: Lot 511 10 FORMATCHECK STREET`, and it imported with no lot and the
+ * lot inside the address. `readLotHeading` refused both because the tail
+ * carries a figure, and it took a street number only in brackets
+ * (`LOT_WITH_STREET_NUMBER`), while `readStreetLine` and the one-line reader
+ * have read these words as a lot and a numbered street all along.
+ *
+ * The rest must BE a numbered street by `readStreetLine`'s own rule (a street
+ * number, then a name ending in a type from the closed set), so `Lot 906 2
+ * Storey Home` and `Lot 12, 3 Bed` stay unread. It is returned as the document
+ * wrote it, full stop and all.
+ */
+function lotBeforeStreetNumber(value: string): { lot: string; street: string } | null {
+  const text = String(value ?? '').trim();
+  const [word = '', designation = ''] = text.split(/\s+/);
+  if (fieldForHeader(word) !== 'lot_number') return null;
+  const lot = designation.replace(DESIGNATION_PUNCTUATION, '');
+  if (!LOT_DESIGNATION.test(lot)) return null;
+  const street = text.replace(/^\S+\s+\S+\s+/, '');
+  if (street === text || !STREET_NUMBER.test(street.split(/\s+/)[0])) return null;
+  return readStreetLine(street) ? { lot, street } : null;
+}
+
+/**
  * `LOT 315`, `Lot 12A` — a line that is a lot designation and nothing else.
  *
  * Its own rule because a lot number is not a number: `12A` and `315/2` are
@@ -4018,7 +4054,8 @@ function readLotHeading(line: string): Claim | null {
    * heading this vocabulary would have read differently.
    */
   const tail = tokens.slice(2);
-  if (tail.length) {
+  // A numbered street is set aside as the bracketed number is: see `lotBeforeStreetNumber`.
+  if (tail.length && !lotBeforeStreetNumber(source)) {
     if (tail.length > MAX_NAME_TOKENS) return null;
     const rest = tail.join(' ');
     if (HAS_DIGIT.test(rest)) return null;

@@ -535,6 +535,24 @@ export function coercePrice(value: unknown): { price: number | null; display: st
 }
 
 /**
+ * THE PRICE A ROW STATES, AS ONE FACT.
+ *
+ * `price` and `price_display` are read from ONE cell (`coercePrice`): a figure
+ * fills the first, words fill the second, and a figure with words fills both.
+ * So when the cell states anything it decides BOTH columns, including which one
+ * is now empty. Written column by column, a revised list that priced a "POA"
+ * property kept "POA" beside the new figure, and every card, which prints the
+ * display text before the figure, went on showing "POA" (measured 28 Sep 2026,
+ * lot 104: $799,000 stored, "POA" shown). Null when the cell stated nothing, so
+ * a blank cell still erases nothing.
+ */
+export function statedPrice(record: { price: number | null; price_display: string | null }):
+  { price: number | null; price_display: string | null } | null {
+  return record.price === null && record.price_display === null ? null
+    : { price: record.price, price_display: record.price_display };
+}
+
+/**
  * ===========================================================================
  * A SUM OF MONEY AS A PRICE LIST WRITES IT, INCLUDING ITS MULTIPLIER.
  * ===========================================================================
