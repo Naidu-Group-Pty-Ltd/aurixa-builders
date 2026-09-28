@@ -22,7 +22,9 @@
  * controls, passed in rather than committed, and drives the two emails a new
  * client actually depends on through the live doors:
  *
- *   1. an invitation, whose response reports the provider's own verdict; and
+ *   1. an invitation, whose provider verdict the invite function records in
+ *      the activity log (the response no longer carries it: an answer that
+ *      varies with the address is an oracle over who holds an account); and
  *   2. a password reset, whose door answers generically by design — so the
  *      assertion is that the provider refused nothing and a reset code was
  *      minted.
@@ -144,6 +146,10 @@ async function cleanup(stage) {
   const MINE_SQL = `SELECT u.id FROM public.builder_portal_users u
                      WHERE u.email LIKE ${sqlLit(`${MARK}-${TAG}-%@example.com`)}${mineById}`;
   await q(`cleanup ${stage}`, `
+    DELETE FROM public.auth_rate_limits WHERE bucket_key IN (
+      SELECT 'binv_user:' || id::text FROM (${MINE_SQL}) AS mine
+      UNION ALL
+      SELECT 'binv_org:' || id::text FROM (${ORGS_SQL}) AS orgs);
     DELETE FROM public.builder_organisation_memberships
      WHERE organisation_id IN (${ORGS_SQL}) OR builder_user_id IN (${MINE_SQL});
     DELETE FROM public.builder_portal_sessions WHERE builder_user_id IN (${MINE_SQL});
@@ -280,10 +286,18 @@ try {
   // From here the cleanup may remove this account, because this run made it.
   MAILBOX.createdId = (await q('the account this run created', `
     SELECT id FROM public.builder_portal_users WHERE email = ${sqlLit(RECIPIENT)}`))[0]?.id ?? null;
+  // The provider's verdict, as the function recorded it for this account in
+  // this organisation. The response is `{"success":true}` for every address.
+  const sendRow = MAILBOX.createdId ? (await q('the recorded send outcome', `
+    SELECT l.metadata->>'email_sent' AS email_sent
+      FROM public.builder_portal_activity_log l
+     WHERE l.entity_id = ${id(MAILBOX.createdId)} AND l.organisation_id = ${id(orgId)}
+       AND l.action = 'builder_invite_sent'
+     ORDER BY l.created_at DESC LIMIT 1`))[0] : null;
   record('1: THE PROVIDER ACCEPTED THE INVITATION EMAIL — it left this platform',
-    invite.json?.email_sent === true,
-    `email_sent=${invite.json?.email_sent}. false means the provider refused it; the reason is now in ` +
-    'the function log as `provider_message`, beside the sender it tried and never the recipient.');
+    sendRow?.email_sent === 'true',
+    `email_sent (activity log)=${sendRow?.email_sent}. false means the provider refused it; the reason is ` +
+    'in the function log as `provider_message`, beside the sender it tried and never the recipient.');
   // The whole reason the takeover was reachable: a failed send hands the link
   // back. A send the provider accepted must not.
   record('1: and no one-time link came back in the response, because the email carries it',

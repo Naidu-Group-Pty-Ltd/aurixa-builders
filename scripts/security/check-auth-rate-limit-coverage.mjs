@@ -31,9 +31,14 @@
  * catching `-invite` writing a caller-set address into the activity log and
  * `-verify` hashing one into the record of a binding agreement acceptance.
  *
- * Every function must be classified: REQUIRED, SESSION_SURFACES, or EXEMPT
- * with a stated reason. A new one that is classified nowhere fails the gate,
- * so the author has to decide which it is rather than inherit a default.
+ * A fourth rule for the doors in SESSION_BUDGETED: a signed-in person's act
+ * that sends email or mints a credential is budgeted per authenticated
+ * identity through `enforceSessionRateLimit`, and never by source address.
+ *
+ * Every function must be classified: REQUIRED, SESSION_BUDGETED,
+ * SESSION_SURFACES, or EXEMPT with a stated reason. A new one that is
+ * classified nowhere fails the gate, so the author has to decide which it is
+ * rather than inherit a default.
  */
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, resolve, relative } from 'node:path';
@@ -60,7 +65,6 @@ const REQUIRED = new Set([
 const EXEMPT = new Map([
   ['builder-portal-logout', 'destroys the caller\'s own session; presents no credential to guess'],
   ['builder-portal-verify', 'session restore — the cookie is already the credential, and a ceiling here would log people out of a working session'],
-  ['builder-portal-invite', 'session-authenticated and permission-gated to owner/admin; a ceiling would cap legitimate onboarding rather than an attacker'],
 ]);
 
 /**
@@ -80,6 +84,27 @@ const SESSION_SURFACES = new Set([
   'builder-portal-stock',
   'builder-portal-transactions',
   'builder-portal-workspace',
+]);
+
+/**
+ * Doors a SESSION authenticates that nonetheless act on the world — they send
+ * email or mint a credential — and so must be budgeted per authenticated
+ * identity: the person, then the organisation, both from the validated session.
+ *
+ * `builder-portal-invite` was EXEMPT until 28 Sep 2026, on the reasoning that
+ * "a ceiling would cap legitimate onboarding rather than an attacker". That
+ * left any owner or administrator free to mint invitations and spend the
+ * shared mail provider's allowance without bound — the gap the independent
+ * review of the takeover fix named (doc 65). A ceiling sized for onboarding a
+ * whole team caps that without capping the workflow.
+ *
+ * NOT the IP-first helpers: through the portal's proxy, or with no trusted
+ * address header, every caller collapses into one bucket, and one organisation's
+ * burst would refuse everyone else's. Rule: the door calls
+ * `enforceSessionRateLimit` and no IP-first helper.
+ */
+const SESSION_BUDGETED = new Set([
+  'builder-portal-invite',
 ]);
 
 /** Comments are not code: a rule must hold in what actually runs. */
@@ -103,9 +128,11 @@ for (const door of doors) {
   const required = REQUIRED.has(door);
   const exempt = EXEMPT.has(door);
   const surface = SESSION_SURFACES.has(door);
-  if (!required && !exempt && !surface) {
+  const sessionBudgeted = SESSION_BUDGETED.has(door);
+  if (!required && !exempt && !surface && !sessionBudgeted) {
     failures.push(
       `${door} is classified nowhere. Add it to REQUIRED if it accepts a credential, `
+      + 'to SESSION_BUDGETED if a signed-in person uses it to send email or mint a credential, '
       + 'to SESSION_SURFACES if a session cookie is its only credential, or to EXEMPT '
       + 'with the reason it is not a guessing surface.',
     );
@@ -115,6 +142,20 @@ for (const door of doors) {
   const budgeted = /\b(enforceAuthRateLimit|beginAuthRateLimit)\s*\(/.test(code);
   if (required && !budgeted) {
     failures.push(`${door} accepts a credential but consumes no shared rate limit.`);
+  }
+
+  const sessionLimited = /\benforceSessionRateLimit\s*\(/.test(code);
+  if (sessionBudgeted && !sessionLimited) {
+    failures.push(
+      `${door} sends email or mints a credential for a session and is budgeted per authenticated `
+      + 'identity, but calls no enforceSessionRateLimit. Removing it removes the only ceiling.',
+    );
+  }
+  if (sessionBudgeted && budgeted) {
+    failures.push(
+      `${door} keys a session-authenticated act on the source address. Through the portal proxy `
+      + 'or with no trusted address header every caller shares that bucket; key it on the session.',
+    );
   }
 
   const rawRpc = /\.rpc\(\s*['"](check_and_bump_rate_limit|security_consume_rate_limit)['"]/.test(code);
@@ -135,7 +176,9 @@ for (const door of doors) {
   }
 
   checked.push(`${door}: ${
-    required ? (budgeted ? 'budgeted' : 'UNBUDGETED') : surface ? 'session surface' : 'exempt'
+    required ? (budgeted ? 'budgeted' : 'UNBUDGETED')
+      : sessionBudgeted ? (sessionLimited ? 'budgeted per session identity' : 'UNBUDGETED')
+      : surface ? 'session surface' : 'exempt'
   }`);
 }
 
@@ -147,6 +190,9 @@ for (const door of EXEMPT.keys()) {
 }
 for (const door of SESSION_SURFACES) {
   if (!doors.includes(door)) failures.push(`${door} is listed as a session surface but no such function exists.`);
+}
+for (const door of SESSION_BUDGETED) {
+  if (!doors.includes(door)) failures.push(`${door} is listed as session-budgeted but no such function exists.`);
 }
 
 /**
@@ -207,6 +253,7 @@ if (failures.length) {
 console.log(checked.map((line) => `  ${line}`).join('\n'));
 console.log(
   `auth rate-limit coverage gate passed (${REQUIRED.size} credential door(s) budgeted, `
+  + `${SESSION_BUDGETED.size} budgeted per session identity, `
   + `${SESSION_SURFACES.size} session surface(s), ${EXEMPT.size} exempt with a stated reason; `
   + `${scanned} runtime file(s) scanned, 0 reading X-Forwarded-For).`,
 );

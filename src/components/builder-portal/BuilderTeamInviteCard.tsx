@@ -19,7 +19,9 @@ import { builderInviteTeamMember } from '@/lib/builderPortal';
  * Renders only for an owner or administrator; that gate is a journey aid,
  * and `builder-portal-invite` enforces the real one. The response never
  * says whether the address already held an account — the difference is
- * delivered to the mailbox — so this card doesn't either. When mail
+ * delivered to the mailbox — so this card doesn't either. Nor whether an
+ * email left: that answer differed for an account an operator had revoked,
+ * which made it the tell, so the server no longer gives it. When mail
  * delivery is unconfigured the server hands back the one-time link and it
  * is shown ONCE, to be passed on out of band.
  */
@@ -69,11 +71,13 @@ export function BuilderTeamInviteCard() {
       return;
     }
     if (data.invite_url) setFallbackUrl(data.invite_url);
+    // One sentence for every address that can reach this line: whether the
+    // link came back depends on the deployment, never on the person.
     toast({
       title: 'Invitation recorded',
-      description: data.email_sent
-        ? `An email is on its way to ${email.trim()}.`
-        : 'Email delivery is not configured — pass the link on directly.',
+      description: data.invite_url
+        ? 'Email delivery is not configured — pass the link on directly.'
+        : `If ${email.trim()} can be added to ${activeOrganisation?.legal_name ?? 'your organisation'}, they'll get an email about it.`,
     });
     setName('');
     setEmail('');

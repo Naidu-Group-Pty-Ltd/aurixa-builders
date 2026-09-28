@@ -33,6 +33,14 @@
  *   G. multi-tenant isolation: another organisation's project, conversation,
  *      notification and organisation id are all refused, and a user in two
  *      organisations is refused a write filed under the wrong one.
+ *   J. an invitation answers the same bytes whatever the address already is —
+ *      new, pending elsewhere, already signed in, revoked — and so do a second
+ *      invitation of each and a resend of each seat, while the server handles
+ *      the four differently underneath;
+ *   K. the invitation ceiling: counted once per person and per organisation,
+ *      a burst refused past the person's ceiling with the shared 429, a
+ *      refused request leaving nothing behind, the organisation's ceiling
+ *      holding for a second administrator, and another organisation untouched.
  *
  * Every organisation, user, session, project, conversation, task and
  * notification it creates is deleted before it exits and counted to zero.
@@ -87,8 +95,12 @@ async function q(label, sql, ref = PROJECT_REF) {
 }
 
 const latency = {};
-/** Call a portal function through the same-origin proxy, as the browser does. */
-async function call(fn, body, cookie = null) {
+/**
+ * Call a portal function through the same-origin proxy, as the browser does —
+ * or, with `direct`, at the function itself, for the one thing the proxy does
+ * not carry back (it forwards only content-type and set-cookie).
+ */
+async function call(fn, body, cookie = null, { direct = false } = {}) {
   const headers = {
     'Content-Type': 'application/json',
     'x-portal-request': 'builder-portal',
@@ -96,7 +108,8 @@ async function call(fn, body, cookie = null) {
   };
   if (cookie) headers.Cookie = cookie;
   const started = Date.now();
-  const response = await fetch(`${ORIGIN}/fn/${fn}`, {
+  const url = direct ? `https://${PROJECT_REF}.supabase.co/functions/v1/${fn}` : `${ORIGIN}/fn/${fn}`;
+  const response = await fetch(url, {
     method: 'POST', headers, body: JSON.stringify(body ?? {}),
   });
   const text = await response.text();
@@ -105,7 +118,8 @@ async function call(fn, body, cookie = null) {
   const ms = Date.now() - started;
   (latency[fn + ':' + (body?.operation ?? body?.action ?? '')] ??= []).push(ms);
   return {
-    status: response.status, json, ms,
+    status: response.status, json, ms, text,
+    retryAfter: response.headers.get('retry-after'),
     setCookies: response.headers.getSetCookie?.() ?? [],
   };
 }
@@ -118,6 +132,12 @@ const cookieFrom = (setCookies) => (setCookies ?? [])
   .find((c) => c.startsWith('__Host-builder_session_token=')) ?? null;
 const tokenOf = (cookie) => cookie.slice('__Host-builder_session_token='.length);
 const refused = (status) => status === 401 || status === 403;
+/**
+ * A response body as it may be printed. On a deployment with no mail provider
+ * an invitation's answer carries a live one-time link, and this proof prints no
+ * token (header) — so a link is never printed, whatever the deployment.
+ */
+const shown = (text) => String(text ?? '').replace(/"invite_url"\s*:\s*"[^"]*"/g, '"invite_url":"[redacted]"');
 
 const cc = (label, sql) => q(`cc ${label}`, sql, CC_REF);
 
@@ -145,11 +165,25 @@ function detachFromNetwork(orgIdsSql) {
 }
 const ORGS_SQL = `SELECT id FROM public.builder_organisations WHERE legal_name LIKE ${sqlLit(`Smoke Rollout ${TAG} %`)}`;
 
+/**
+ * The invitation ceiling's buckets for this run's own people and organisations
+ * (`binv_user:<id>`, `binv_org:<id>`). Named by id, so it can only ever reach
+ * a bucket belonging to an account or organisation this proof created.
+ */
+const LIMITER_KEYS_SQL = `
+  SELECT 'binv_user:' || id::text FROM public.builder_portal_users WHERE email LIKE ${sqlLit(`${MARK}-${TAG}-%@example.com`)}
+  UNION ALL
+  SELECT 'binv_org:' || id::text FROM public.builder_organisations WHERE legal_name LIKE ${sqlLit(`Smoke Rollout ${TAG} %`)}`;
+let limiterKeysAtCleanup = [];
+
 async function cleanup(stage) {
   const orgIds = (await q(`cleanup (${stage}) organisations`, ORGS_SQL)).map((r) => r.id);
+  limiterKeysAtCleanup = (await q(`cleanup (${stage}) limiter keys`, `SELECT k FROM (${LIMITER_KEYS_SQL}) AS keys(k)`))
+    .map((r) => r.k);
   await q(`cleanup (${stage})`, `
     DO $$
     BEGIN
+      DELETE FROM public.auth_rate_limits WHERE bucket_key IN (${LIMITER_KEYS_SQL});
       ${detachFromNetwork(ORGS_SQL)}
       ALTER TABLE public.builder_project_status_history
         DISABLE TRIGGER trg_builder_project_status_history_append_only;
@@ -199,7 +233,9 @@ async function residue() {
       (SELECT count(*) FROM public.builder_project_access a WHERE NOT EXISTS
          (SELECT 1 FROM public.builder_projects p WHERE p.id = a.project_id)) AS orphan_project_access,
       (SELECT count(*) FROM public.workspace_connections c WHERE NOT EXISTS
-         (SELECT 1 FROM public.builder_organisations o WHERE o.id = c.builder_organisation_id)) AS orphan_connections`);
+         (SELECT 1 FROM public.builder_organisations o WHERE o.id = c.builder_organisation_id)) AS orphan_connections,
+      (SELECT count(*) FROM public.auth_rate_limits
+         WHERE bucket_key = ANY(ARRAY[${limiterKeysAtCleanup.map(sqlLit).join(', ') || "''"}]::text[])) AS limiter_buckets`);
   const ccRows = await cc('residue', `
     SELECT
       (SELECT count(*) FROM public.builder_network_connections WHERE builder_org_label LIKE ${sqlLit(`Smoke Rollout ${TAG} %`)}) AS cc_connections,
@@ -778,10 +814,21 @@ try {
    * provider refuses — and a failed send now returns nothing. The affordance
    * survives only where there is no mail provider at all, which this deployment
    * is not.
+   *
+   * That the send failed is read from the activity log, where the function
+   * records the provider's answer: the response stopped carrying `email_sent`
+   * because it differed for a revoked account (section J).
    */
+  const bSend = (await q('B invitation send outcome', `
+    SELECT l.metadata->>'email_sent' AS email_sent
+      FROM public.builder_portal_activity_log l
+      JOIN public.builder_portal_users u ON u.id = l.entity_id
+     WHERE u.email = ${sqlLit(victimEmail)} AND l.organisation_id = ${id(B.orgId)}
+       AND l.action = 'builder_invite_sent'
+     ORDER BY l.created_at DESC LIMIT 1`))[0];
   record('I: a failed send hands the inviter NO link, so nobody can claim the account behind an address',
-    bInvite.status === 200 && bInvite.json?.email_sent === false && !bInvite.json?.invite_url,
-    `email_sent=${bInvite.json?.email_sent} invite_url=${bInvite.json?.invite_url ? 'RETURNED' : 'absent'}`);
+    bInvite.status === 200 && bSend?.email_sent === 'false' && !bInvite.json?.invite_url,
+    `send (activity log)=${bSend?.email_sent} invite_url=${bInvite.json?.invite_url ? 'RETURNED' : 'absent'}`);
 
   // A now invites the same address. This is the attacker's move.
   const aInvite = await call('builder-portal-invite',
@@ -799,14 +846,14 @@ try {
   // assertion above proves it is withheld from A while still returned to B.
   record('I: and the same for an address that DOES belong elsewhere — no link either',
     aInvite.status === 200 && !aInvite.json?.invite_url,
-    `email_sent=${aInvite.json?.email_sent} invite_url=${aInvite.json?.invite_url ? 'RETURNED' : 'absent'}`);
+    `invite_url=${aInvite.json?.invite_url ? 'RETURNED' : 'absent'}`);
   // THE ORACLE IS GONE BECAUSE THE TWO ANSWERS ARE THE SAME ANSWER. Withholding
   // the link from one address and returning it for another makes its absence the
-  // disclosure; asserted as an equality so narrowing the rule cannot pass.
-  record('I: the two responses are the same shape, so a caller learns nothing about where an address belongs',
-    Object.keys(bInvite.json ?? {}).sort().join(',') === Object.keys(aInvite.json ?? {}).sort().join(','),
-    `belongs-nowhere=[${Object.keys(bInvite.json ?? {}).sort().join(',')}]`
-    + ` belongs-elsewhere=[${Object.keys(aInvite.json ?? {}).sort().join(',')}]`);
+  // disclosure; asserted as an equality of the whole body — values as well as
+  // keys — so narrowing the rule cannot pass.
+  record('I: the two responses are the same bytes, so a caller learns nothing about where an address belongs',
+    bInvite.status === aInvite.status && bInvite.text === aInvite.text,
+    `belongs-nowhere=${shown(bInvite.text)} belongs-elsewhere=${shown(aInvite.text)}`);
 
   // Accept A's invitation, with A's own token, exactly as the portal would.
   const crossToken = `${randomUUID()}-${randomUUID()}`;
@@ -899,6 +946,275 @@ try {
   record('I: only then does the session reach both — the rule protects them without stranding them',
     bothIds.length === 2 && bothIds.includes(A.orgId) && bothIds.includes(B.orgId),
     `reachable=${bothIds.length}`);
+
+  // --- J. An invitation answers the same, whatever the address already is ----
+  //
+  // `expires_at` came back for a new or pending address and not for one that
+  // already signs in, and `email_sent: false` came back for an operator-revoked
+  // account while mail worked — so the answer told an organisation's
+  // administrator whether an arbitrary address held a Builder Portal account.
+  // Asked of the live deployment over disposable addresses of all four kinds,
+  // three of each, from a disposable organisation (D) that nothing else in this
+  // run touches: the answers must be the same bytes. The server's own rows are
+  // read afterwards, to show the four really were handled four different ways.
+  console.log('\nJ. An invitation answers the same whatever the address already is');
+  const D = await seedOrganisation('D'); // the inviter
+  const E = await seedOrganisation('E'); // where the already-signed-in accounts live
+  for (const owner of [D, E]) {
+    owner.cookie = (await mintSession(owner.userId)).cookie;
+    const g = await govern(owner.cookie);
+    record(`J: owner ${owner.letter} is governed and reaches the dashboard`,
+      g.verify.status === 200 && g.verify.json?.governance === null,
+      `governance=${String(g.verify.json?.governance)}`);
+  }
+
+  /** An account that exists before D asks: signed in (a member of E), or revoked by an operator. */
+  const seedAccount = async (label, { revoked }) => {
+    const email = `${EMAIL_PREFIX}${label}@example.com`;
+    const rows = await q(`seed ${label}`, `
+      WITH person AS (
+        INSERT INTO public.builder_portal_users(
+          email, name, status, is_active, email_verified_at, password_hash, revoked_at)
+        VALUES (${sqlLit(email)}, ${sqlLit(`Access ${label}`)},
+                ${revoked ? "'revoked', false" : "'active', true"}, now(),
+                extensions.crypt(${sqlLit(`Acc3ss!${RUN}!${label}`)}, extensions.gen_salt('bf', 4)),
+                ${revoked ? 'now()' : 'NULL'})
+        RETURNING id
+      ), membership AS (
+        INSERT INTO public.builder_organisation_memberships(
+          builder_user_id, organisation_id, membership_role, is_primary, status)
+        SELECT person.id, ${id(E.orgId)}, 'member', true, 'active' FROM person WHERE ${revoked ? 'false' : 'true'}
+        RETURNING id
+      )
+      SELECT id FROM person`);
+    return { email, userId: rows[0]?.id };
+  };
+
+  const kinds = ['new', 'pending', 'established', 'revoked'];
+  const addressOf = (kind, i) => `${EMAIL_PREFIX}oracle-${kind}-${i}@example.com`;
+  for (let i = 1; i <= 3; i += 1) {
+    // Pending ELSEWHERE: B invites first, so the address is B's waiting invitee.
+    await call('builder-portal-invite',
+      { action: 'invite', email: addressOf('pending', i), name: `Access pending ${i}`, membership_role: 'member' }, B.cookie);
+    await seedAccount(`oracle-established-${i}`, { revoked: false });
+    await seedAccount(`oracle-revoked-${i}`, { revoked: true });
+  }
+  const answers = Object.fromEntries(kinds.map((kind) => [kind, []]));
+  for (let i = 1; i <= 3; i += 1) {
+    for (const kind of kinds) { // interleaved, so no kind runs on a warmer instance than another
+      answers[kind].push(await call('builder-portal-invite',
+        { action: 'invite', email: addressOf(kind, i), name: `Access ${kind} ${i}`, membership_role: 'read_only' },
+        D.cookie));
+    }
+  }
+  const every = kinds.flatMap((kind) => answers[kind]);
+  const bodies = [...new Set(every.map((a) => a.text))];
+  record('J: every kind of address gets 200 and the same bytes — new, pending elsewhere, already signed in, revoked',
+    every.every((a) => a.status === 200) && bodies.length === 1 && bodies[0] === '{"success":true}',
+    `statuses=[${[...new Set(every.map((a) => a.status))]}] distinct bodies=${bodies.length} body=${shown(bodies[0])}`);
+  record('J: no answer carries expires_at, email_sent or a link',
+    every.every((a) => a.json && !('expires_at' in a.json) && !('email_sent' in a.json) && !('invite_url' in a.json)),
+    `answers=${every.length}`);
+
+  // Underneath, the four were four different things. Counted by kind; no address is printed.
+  const truth = await q('what the server did with each kind', `
+    SELECT split_part(split_part(u.email, 'oracle-', 2), '-', 1) AS kind,
+           u.status AS account, m.status AS in_d, b.status AS in_b, count(*)::int AS n
+      FROM public.builder_portal_users u
+      LEFT JOIN public.builder_organisation_memberships m
+        ON m.builder_user_id = u.id AND m.organisation_id = ${id(D.orgId)} AND m.revoked_at IS NULL
+      LEFT JOIN public.builder_organisation_memberships b
+        ON b.builder_user_id = u.id AND b.organisation_id = ${id(B.orgId)} AND b.revoked_at IS NULL
+     WHERE u.email LIKE ${sqlLit(`${EMAIL_PREFIX}oracle-%`)}
+     GROUP BY 1, 2, 3, 4 ORDER BY 1`);
+  const shape = (kind) => truth.filter((r) => r.kind === kind)
+    .map((r) => `${r.account}/${r.in_d ?? 'none'}/${r.in_b ?? 'none'}x${r.n}`).join(',');
+  record('J: underneath, the four were handled four different ways (account / in D / in B)',
+    shape('new') === 'invited/invited/nonex3'
+      && shape('pending') === 'invited/invited/invitedx3'
+      && shape('established') === 'active/active/nonex3'
+      && shape('revoked') === 'revoked/none/nonex3',
+    kinds.map((kind) => `${kind}=${shape(kind)}`).join(' '));
+  const logged = (await q('where the send outcomes went', `
+    SELECT count(*) FILTER (WHERE l.action = 'builder_invite_sent' AND l.metadata ? 'email_sent')::int AS invitations,
+           count(*) FILTER (WHERE l.action = 'builder_membership_granted' AND l.metadata ? 'email_sent')::int AS grants
+      FROM public.builder_portal_activity_log l
+     WHERE l.organisation_id = ${id(D.orgId)}`))[0] ?? {};
+  record('J: whether each email left is still recorded — in the operator-only activity log, for invitations and grants alike',
+    Number(logged.invitations) === 6 && Number(logged.grants) === 3,
+    `invitations=${logged.invitations} grants=${logged.grants}`);
+  const median = (list) => [...list].sort((x, y) => x - y)[Math.floor(list.length / 2)];
+  record('J: response time by kind, median of three (ms) — measured, not asserted',
+    true, kinds.map((kind) => `${kind}=${median(answers[kind].map((a) => a.ms))}`).join(' '), { required: false });
+
+  // A SECOND invitation of every address, and a resend of every seat D now
+  // holds. The independent review found the first answer uniform and the
+  // repeat not: an address that already signed in held an active seat after
+  // one invitation, so the repeat answered 409 and `resend` 409
+  // `already_active`, while every other kind answered 200.
+  const again = Object.fromEntries(kinds.map((kind) => [kind, []]));
+  for (let i = 1; i <= 3; i += 1) {
+    for (const kind of kinds) {
+      again[kind].push(await call('builder-portal-invite',
+        { action: 'invite', email: addressOf(kind, i), name: `Access ${kind} ${i}`, membership_role: 'read_only' },
+        D.cookie));
+    }
+  }
+  const seatsInD = await q('the seats D holds, by kind', `
+    SELECT split_part(split_part(u.email, 'oracle-', 2), '-', 1) AS kind, u.id
+      FROM public.builder_portal_users u
+      JOIN public.builder_organisation_memberships m
+        ON m.builder_user_id = u.id AND m.organisation_id = ${id(D.orgId)} AND m.revoked_at IS NULL
+     WHERE u.email LIKE ${sqlLit(`${EMAIL_PREFIX}oracle-%`)}`);
+  const resends = Object.fromEntries(kinds.map((kind) => [kind, []]));
+  for (const seat of seatsInD) {
+    resends[seat.kind]?.push(await call('builder-portal-invite', { action: 'resend', builder_user_id: seat.id }, D.cookie));
+  }
+  const repeated = kinds.flatMap((kind) => [...again[kind], ...resends[kind]]);
+  const repeatBodies = [...new Set(repeated.map((a) => a.text))];
+  record('J: a second invitation, and a resend, answer those same bytes for every kind of address',
+    repeated.every((a) => a.status === 200) && repeatBodies.length === 1 && repeatBodies[0] === bodies[0]
+      && kinds.every((kind) => again[kind].length === 3)
+      && resends.new.length === 3 && resends.pending.length === 3 && resends.established.length === 3
+      && resends.revoked.length === 0,
+    `statuses=[${[...new Set(repeated.map((a) => a.status))]}] distinct bodies=${repeatBodies.length} `
+    + `resends ${kinds.map((kind) => `${kind}=${resends[kind].length}`).join(' ')} (a revoked address gets no seat to resend)`);
+  const grantsAfter = Number((await q('grants after the repeats', `
+    SELECT count(*)::int AS n FROM public.builder_portal_activity_log
+     WHERE organisation_id = ${id(D.orgId)} AND action = 'builder_membership_granted'`))[0]?.n);
+  record('J: repeating an address that already signs in grants nothing more and sends nothing',
+    grantsAfter === 3, `grants=${grantsAfter}`);
+  const inviteCallsByD = every.length + repeated.length;
+
+  // --- K. The invitation ceiling ------------------------------------------------
+  //
+  // `invite` and `resend` are now counted per person (40 an hour) and per
+  // organisation (100 an hour), on ids from the validated session. Crossed
+  // here with a real burst: the person's bucket is positioned two short of the
+  // ceiling, which is a row in this run's own disposable organisation, and three
+  // invitations go through the real door. Positioning rather than sending forty
+  // is what keeps this from spending forty sends at the provider every tenant
+  // shares — the counting itself is shown on the calls section J just made.
+  // (Section J spends 33 of D's owner's 40 and K's two invitations take it to
+  // 35; anything added to J must stay under the ceiling, or it meets its own 429.)
+  console.log('\nK. The invitation ceiling — per person, then per organisation');
+  const bucket = async (key) => {
+    const row = (await q('ceiling bucket', `
+      SELECT count FROM public.auth_rate_limits WHERE bucket_key = ${sqlLit(key)}`))[0];
+    return row ? Number(row.count) : null;
+  };
+  const personKey = (userId) => `binv_user:${userId}`;
+  const orgKey = (orgId) => `binv_org:${orgId}`;
+  record('K: every invitation and resend is counted once — against the person, and against the organisation',
+    await bucket(personKey(D.userId)) === inviteCallsByD && await bucket(orgKey(D.orgId)) === inviteCallsByD,
+    `person=${await bucket(personKey(D.userId))} organisation=${await bucket(orgKey(D.orgId))} `
+    + `after ${inviteCallsByD} calls`);
+
+  // A second administrator and a member of D, through the real invitation and acceptance.
+  const { user: dAdmin } = await inviteAndAccept(D, D.cookie, 'administrator', 'ceiling-admin');
+  const { user: dMember } = await inviteAndAccept(D, D.cookie, 'member', 'ceiling-member');
+  for (const u of [dAdmin, dMember]) if (u?.cookie) await govern(u.cookie);
+  record('K: a second administrator and a member of D sign in', !!dAdmin?.cookie && !!dMember?.cookie,
+    `admin=${!!dAdmin?.cookie} member=${!!dMember?.cookie}`);
+
+  // A member is refused by the role gate, BEFORE the ceiling, and spends none of it.
+  const orgBeforeMember = await bucket(orgKey(D.orgId));
+  const byMember = await call('builder-portal-invite',
+    { action: 'invite', email: `${EMAIL_PREFIX}by-ceiling-member@example.com`, name: 'Nope', membership_role: 'read_only' },
+    dMember?.cookie);
+  record('K: a member is refused (403) before the ceiling and spends none of the organisation\'s allowance',
+    byMember.status === 403 && await bucket(orgKey(D.orgId)) === orgBeforeMember
+      && await bucket(personKey(dMember?.userId)) === null,
+    `status=${byMember.status} organisation ${orgBeforeMember}→${await bucket(orgKey(D.orgId))}`);
+
+  // The person's ceiling, crossed by a burst.
+  await q('position the owner two short of the ceiling', `
+    UPDATE public.auth_rate_limits SET count = 38 WHERE bucket_key = ${sqlLit(personKey(D.userId))}`);
+  const burst = [];
+  for (let i = 1; i <= 2; i += 1) {
+    burst.push(await call('builder-portal-invite',
+      { action: 'invite', email: `${EMAIL_PREFIX}burst-${i}@example.com`, name: `Access burst ${i}`, membership_role: 'read_only' },
+      D.cookie));
+  }
+  const refusedEmail = `${EMAIL_PREFIX}burst-3@example.com`;
+  const activityInD = async () => Number((await q('D invitation activity', `
+    SELECT count(*)::int AS n FROM public.builder_portal_activity_log
+     WHERE organisation_id = ${id(D.orgId)}
+       AND action IN ('builder_invite_sent', 'builder_invite_resent', 'builder_membership_granted')`))[0]?.n);
+  const activityBefore = await activityInD();
+  const orgBeforeRefusal = await bucket(orgKey(D.orgId));
+  burst.push(await call('builder-portal-invite',
+    { action: 'invite', email: refusedEmail, name: 'Access burst 3', membership_role: 'read_only' }, D.cookie));
+  record('K: a burst is admitted up to the person\'s ceiling of 40 and refused past it',
+    burst[0].status === 200 && burst[1].status === 200 && burst[2].status === 429,
+    `statuses=${burst.map((b) => b.status).join(',')} person=${await bucket(personKey(D.userId))}`);
+  const waitFor = Number(burst[2].json?.retry_after_seconds);
+  record('K: the refusal is the shared 429, saying how long to wait',
+    burst[2].status === 429 && waitFor >= 1 && waitFor <= 3600 && typeof burst[2].json?.error === 'string',
+    `retry_after_seconds=${burst[2].json?.retry_after_seconds}`);
+  // The function sets `Retry-After` as well. The portal's proxy forwards only
+  // content-type and set-cookie, for every door alike, so it is read at the
+  // function itself — one more refused request, to an address of its own.
+  const directEmail = `${EMAIL_PREFIX}burst-4@example.com`;
+  const direct = await call('builder-portal-invite',
+    { action: 'invite', email: directEmail, name: 'Access burst 4', membership_role: 'read_only' }, D.cookie, { direct: true });
+  record('K: and the function sends Retry-After, matching the body',
+    direct.status === 429 && Number(direct.retryAfter) >= 1 && Number(direct.retryAfter) === direct.json?.retry_after_seconds,
+    `status=${direct.status} retry-after=${direct.retryAfter} body=${direct.json?.retry_after_seconds}`);
+  const trace = (await q('what the refused requests left', `
+    SELECT (SELECT count(*) FROM public.builder_portal_users
+             WHERE email IN (${sqlLit(refusedEmail)}, ${sqlLit(directEmail)}))::int AS accounts,
+           (SELECT count(*) FROM public.builder_organisation_memberships m
+              JOIN public.builder_portal_users u ON u.id = m.builder_user_id
+             WHERE u.email IN (${sqlLit(refusedEmail)}, ${sqlLit(directEmail)}))::int AS memberships`))[0] ?? {};
+  const activityAfter = await activityInD();
+  record('K: the refused requests wrote nothing — no account, no membership, no token, no email, no activity',
+    Number(trace.accounts) === 0 && Number(trace.memberships) === 0 && activityAfter === activityBefore,
+    `accounts=${trace.accounts} memberships=${trace.memberships} activity ${activityBefore}→${activityAfter}`);
+  record('K: a person over their own ceiling spends none of the organisation\'s',
+    await bucket(orgKey(D.orgId)) === orgBeforeRefusal,
+    `organisation ${orgBeforeRefusal}→${await bucket(orgKey(D.orgId))}`);
+
+  // Resend is under the same ceiling, and the refused one re-mints nothing.
+  const waiting = (await q('a waiting invitee of D', `
+    SELECT u.id, u.invite_token_hash FROM public.builder_portal_users u
+     WHERE u.email = ${sqlLit(addressOf('new', 1))}`))[0];
+  const resent = await call('builder-portal-invite', { action: 'resend', builder_user_id: waiting?.id }, D.cookie);
+  const waitingAfter = (await q('the waiting invitee after', `
+    SELECT invite_token_hash FROM public.builder_portal_users WHERE id = ${id(waiting?.id)}`))[0];
+  record('K: resend is under the same ceiling, and the refused resend re-minted nothing',
+    resent.status === 429 && !!waiting?.invite_token_hash && waitingAfter?.invite_token_hash === waiting.invite_token_hash,
+    `status=${resent.status} token ${waitingAfter?.invite_token_hash === waiting?.invite_token_hash ? 'unchanged' : 'CHANGED'}`);
+
+  // What sends nothing is not limited.
+  const stillLists = await call('builder-portal-invite', { action: 'list_members' }, D.cookie);
+  const pendingToCancel = (await q('a waiting invitee to cancel', `
+    SELECT id FROM public.builder_portal_users WHERE email = ${sqlLit(addressOf('new', 2))}`))[0]?.id;
+  const stillCancels = await call('builder-portal-invite',
+    { action: 'revoke_invite', builder_user_id: pendingToCancel }, D.cookie);
+  record('K: acts that send nothing are not limited — listing members and cancelling an invitation still answer',
+    stillLists.status === 200 && stillCancels.status === 200,
+    `list=${stillLists.status} cancel=${stillCancels.status}`);
+
+  // The organisation's ceiling holds for an administrator whose own allowance is untouched.
+  await q('position D at its organisation ceiling', `
+    UPDATE public.auth_rate_limits SET count = 100 WHERE bucket_key = ${sqlLit(orgKey(D.orgId))}`);
+  const orgRefusedEmail = `${EMAIL_PREFIX}org-ceiling@example.com`;
+  const byAdmin = await call('builder-portal-invite',
+    { action: 'invite', email: orgRefusedEmail, name: 'Access org ceiling', membership_role: 'read_only' }, dAdmin?.cookie);
+  const orgRefusedAccounts = Number((await q('what the organisation refusal left', `
+    SELECT count(*)::int AS n FROM public.builder_portal_users WHERE email = ${sqlLit(orgRefusedEmail)}`))[0]?.n);
+  record('K: the organisation\'s ceiling holds for a second administrator whose own allowance is untouched',
+    byAdmin.status === 429 && await bucket(personKey(dAdmin?.userId)) === 1 && orgRefusedAccounts === 0,
+    `status=${byAdmin.status} admin's own count=${await bucket(personKey(dAdmin?.userId))} accounts=${orgRefusedAccounts}`);
+
+  // Another organisation is untouched by D's exhausted ceilings.
+  const elsewhere = await call('builder-portal-invite',
+    { action: 'invite', email: `${EMAIL_PREFIX}other-organisation@example.com`, name: 'Access elsewhere', membership_role: 'read_only' },
+    E.cookie);
+  record('K: another organisation is unaffected — its administrators invite as normal',
+    elsewhere.status === 200 && elsewhere.text === '{"success":true}',
+    `status=${elsewhere.status}`);
 
   // --- C. Sessions ----------------------------------------------------------------
   console.log('\nC. Sessions');

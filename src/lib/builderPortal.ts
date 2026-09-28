@@ -282,6 +282,10 @@ export function builderResendVerificationEmail() {
 /**
  * Invite a colleague into the ACTIVE organisation (the admin-plane lift).
  * Owner/administrator only — the server enforces; the card mirrors.
+ *
+ * The answer is the same for every address (`tenantInviteResponse`): the
+ * one-time link appears only where the deployment has no mail provider. A
+ * 429 means the invitation ceiling was reached and nothing was sent.
  */
 export function builderInviteTeamMember(input: {
   name: string;
@@ -290,8 +294,6 @@ export function builderInviteTeamMember(input: {
 }) {
   return invokeBuilderFunction<{
     success?: boolean;
-    email_sent?: boolean;
-    expires_at?: string;
     invite_url?: string;
   }>('builder-portal-invite', { action: 'invite', ...input });
 }
