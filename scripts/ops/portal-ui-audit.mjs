@@ -332,6 +332,33 @@ try {
     await context.close();
   }
 
+  // --- A builder with more than twenty stock lists ------------------------------------------
+  {
+    const many = await seedOrganisation(TAG, 'manylists');
+    const headerOnly = fixture('neg/header-only.csv');
+    const names = [];
+    for (let i = 1; i <= 21; i++) {
+      const name = `List ${String(i).padStart(2, '0')} ${RUN}.csv`;
+      names.push(name);
+      const sentList = await uploadDocument(many.cookie, name, headerOnly, 'text/csv');
+      if (sentList.uploadId) await waitImported(sentList.uploadId, 3 * 60_000);
+    }
+    const listed = await stock({ operation: 'list_uploads', page: 1, page_size: 20 }, many.cookie);
+    const context = await openAs(many, VIEWPORTS[0]);
+    const page = await context.newPage();
+    await page.goto(`${ORIGIN}/builder/stock`, { waitUntil: 'networkidle', timeout: 60_000 }).catch(() => {});
+    await page.waitForTimeout(2500);
+    const text = await page.locator('body').innerText().catch(() => '');
+    const shown = names.filter((n) => text.includes(n.replace(/\.csv$/, ''))).length;
+    const oldestShown = text.includes(names[0].replace(/\.csv$/, ''));
+    const pager = await page.getByRole('button', { name: /Next|Show more|Older/i }).count();
+    await page.screenshot({ path: `${ARTIFACTS}/manylists-stock.png`, fullPage: true }).catch(() => {});
+    await context.close();
+    record('M: a builder with 21 stock lists can reach every one of them on the Stock List page',
+      oldestShown || pager > 0,
+      `server total ${listed.json?.pagination?.total ?? '?'}; ${shown} of 21 names on the page; oldest shown ${oldestShown}; pager ${pager}`);
+  }
+
   // --- Signed out: the public pages, and a second attempt after a failed one --------------
   {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
