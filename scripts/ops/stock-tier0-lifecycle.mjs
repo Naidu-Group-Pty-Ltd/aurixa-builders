@@ -42,7 +42,7 @@ import {
   RUN, record, net, cc, sleep, id, sha256, secs, waitFor, stock, portal, commandCentre, fixture, manifest,
   storageFor, withLinks, seedOrganisation, connectTransport, seedStaff, seedClient, uploadDocument,
   uploadRow, waitImported, itemsOf, differences, mirrorOf, cleanup, leftovers, finish, ITEM_FIELDS,
-  CC_FIELDS, NETWORK_REF, CC_REF, ORIGIN, CC_ORIGIN, sqlLit,
+  CC_FIELDS, NETWORK_REF, CC_REF, ORIGIN, CC_ORIGIN, sqlLit, inspectCommandCentrePage,
 } from './tier0/common.mjs';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
@@ -87,7 +87,7 @@ try {
   const viewer = await seedOrganisation(TAG, 'alphaviewer', { role: 'read_only', existingOrgId: alpha.orgId });
   const beta = await seedOrganisation(TAG, 'beta');
   await connectTransport(TAG, beta);
-  const agent = await seedStaff(TAG, 'agent', ['listings', 'clients']);
+  const agent = await seedStaff(TAG, 'agent', ['listings', 'client_management']);
   // The acknowledgement emails the activator: point that at Resend's sink.
   await cc('agent sink', `UPDATE public.custom_users SET email = ${sqlLit(`delivered+tier0-${RUN}@resend.dev`)}
                            WHERE id = ${id(agent.userId)}`);
@@ -179,27 +179,23 @@ try {
       record(`L2: no script error on the builder's Stock List (${name})`, errors.length === 0, errors.slice(0, 2).join(' | '));
       await context.close();
 
-      const ccContext = await browser.newContext({ viewport: { width, height } });
-      await ccContext.addCookies([{ name: '__Host-session_token', value: agent.token, domain: `${CC_REF}.supabase.co`,
-        path: '/', secure: true, httpOnly: true, sameSite: 'None' }]);
-      const ccPage = await ccContext.newPage();
-      const ccErrors = [];
-      ccPage.on('pageerror', (e) => ccErrors.push(String(e?.message ?? e).slice(0, 160)));
       const t2 = Date.now();
-      await ccPage.goto(`${CC_ORIGIN}/listings/builder-stock/${ids1['101']}`, { waitUntil: 'networkidle', timeout: 60_000 }).catch(() => {});
-      await ccPage.waitForTimeout(4000);
-      const ccText = await ccPage.locator('body').innerText().catch(() => '');
+      const seen = await inspectCommandCentrePage(browser,
+        { token: agent.token, path: `/listings/builder-stock/${ids1['101']}`, viewport: { width, height } });
+      const ccText = await seen.page.locator('body').innerText().catch(() => '');
       const ccFacts = ['12 Proofline Way', 'Truganina', '749,900', 'Aspen 25', 'Kestrel Grove', '448', '231.5']
         .filter((s) => ccText.includes(s));
-      const ccPictures = await ccPage.evaluate(() => [...document.images].filter((img) => img.complete && img.naturalWidth > 64).length);
-      const ccOverflow = await ccPage.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
-      await ccPage.screenshot({ path: `${ARTIFACTS}/cc-property-${name}.png`, fullPage: true }).catch(() => {});
+      const ccPictures = await seen.page.evaluate(() => [...document.images].filter((img) => img.complete && img.naturalWidth > 64).length);
+      await seen.page.screenshot({ path: `${ARTIFACTS}/cc-property-${name}.png`, fullPage: true }).catch(() => {});
+      const why = ccFacts.length === 7 ? '' : `; headings ${JSON.stringify(seen.headings)}; calls ${seen.calls.join(' ')}; text "${seen.snippet.slice(0, 200)}"`;
       record(`L2: the Command Centre's property page shows lot 101's facts (${name})`, ccFacts.length === 7,
-        `${ccFacts.length}/7: ${ccFacts.join(', ')}; url ${ccPage.url().replace(CC_ORIGIN, '')}; ${Date.now() - t2} ms`);
+        `${ccFacts.length}/7: ${ccFacts.join(', ')}; url ${seen.url}; ${Date.now() - t2} ms${why}`);
       record(`L2: the Command Centre's property page draws the photograph (${name})`, ccPictures >= 1, `${ccPictures} drawn`);
-      record(`L2: the Command Centre's property page fits the ${name} width`, !ccOverflow, ccOverflow ? 'wider than the viewport' : 'fits');
-      record(`L2: no script error on the Command Centre's property page (${name})`, ccErrors.length === 0, ccErrors.slice(0, 2).join(' | '));
-      await ccContext.close();
+      record(`L2: the Command Centre's property page fits the ${name} width`, !seen.overflow,
+        seen.overflow ? `wider than the viewport: ${seen.width}px, widest ${JSON.stringify(seen.widest)}` : 'fits');
+      record(`L2: no script error on the Command Centre's property page (${name})`,
+        !seen.errors.some((e) => !e.startsWith('console:')), seen.errors.slice(0, 2).join(' | '));
+      await seen.context.close();
     }
   }
 
@@ -290,18 +286,33 @@ try {
   const photo2 = await net('lot 102 photo', `
     SELECT im.source_detail->>'stored_sha256' AS sha, im.source_reference FROM public.builder_stock_items i
       JOIN public.builder_stock_item_images im ON im.id = i.primary_image_id WHERE i.id = ${id(ids1['102'])}`);
-  record('L4: lot 102 now leads with the new photograph the revision links', /facade-202/.test(String(photo2[0]?.source_reference ?? '')),
+  record('L4: lot 102 now leads with the new photograph the revision links', /facade-211/.test(String(photo2[0]?.source_reference ?? '')),
     `primary from ${String(photo2[0]?.source_reference ?? '—').replace(/\?.*$/, '').split('/').pop()}`);
   const m2 = await mirrorMatches(alpha.orgId);
   timings.mirror_v2_ms = m2.ms;
   record('L4: the Command Centre converges on the revision, field by field', m2.done,
     `${m2.rows?.length}/${m2.builder?.length} in ${secs(m2)}${m2.d?.length ? `; ${m2.d.slice(0, 6).join('; ')}` : ''}`);
-  // "Last synced" on the Command Centre's property page reads `last_seen_at`.
+  // "Last synced" is the latest revision the mirror APPLIED (`updated_at`);
+  // `last_seen_at` is when the network first saw the property and a revision
+  // does not move it, which is why the page used to show the first sync for
+  // ever. The row is checked, and then the page is read for what it SAYS.
   const syncedAt = await cc('lot 101 synced', `
     SELECT last_seen_at, updated_at, created_at FROM public.builder_network_stock_items WHERE id = ${id(ids1['101'])}`);
-  record('L4: the Command Centre\'s "Last synced" moved with the revision it just applied',
-    !!syncedAt[0] && new Date(syncedAt[0].last_seen_at).getTime() >= t5,
-    `last_seen_at ${syncedAt[0]?.last_seen_at}, updated_at ${syncedAt[0]?.updated_at}, revision uploaded ${new Date(t5).toISOString()}`);
+  record('L4: the Command Centre\'s mirror records applying the revision to lot 101',
+    !!syncedAt[0] && new Date(syncedAt[0].updated_at).getTime() >= t5,
+    `updated_at ${syncedAt[0]?.updated_at}, last_seen_at ${syncedAt[0]?.last_seen_at}, revision uploaded ${new Date(t5).toISOString()}`);
+  if (browser && syncedAt[0]?.updated_at) {
+    const seen = await inspectCommandCentrePage(browser,
+      { token: agent.token, path: `/listings/builder-stock/${ids1['101']}`, viewport: { width: 1440, height: 900 } });
+    const expected = await seen.page.evaluate((iso) => new Intl.DateTimeFormat('en-AU',
+      { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(iso)), syncedAt[0].updated_at).catch(() => null);
+    const shown = await seen.page.locator('body').innerText().catch(() => '');
+    await seen.page.screenshot({ path: `${ARTIFACTS}/cc-property-after-revision.png`, fullPage: true }).catch(() => {});
+    record('L4: the Command Centre\'s property page says "Last synced" at the revision it just applied',
+      !!expected && shown.includes(expected),
+      `expected "${expected}"; ${expected && shown.includes(expected) ? 'shown' : `not shown; headings ${JSON.stringify(seen.headings)}`}`);
+    await seen.context.close();
+  }
   const ccRemoved = await cc('lot 103', `SELECT lifecycle_status FROM public.builder_network_stock_items WHERE id = ${id(ids1['103'])}`);
   record('L4: the Command Centre takes the removed property off the marketplace', ccRemoved[0]?.lifecycle_status !== 'active',
     `mirror lifecycle ${ccRemoved[0]?.lifecycle_status ?? 'gone'}`);

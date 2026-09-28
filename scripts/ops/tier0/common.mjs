@@ -379,8 +379,16 @@ export async function connectTransport(tag, org) {
   return connection;
 }
 
-/** A proof staff member with the modules the marketplace asks for, and a session. */
-export async function seedStaff(tag, label, modules = ['listings', 'clients']) {
+/**
+ * A proof staff member with the modules the marketplace asks for, and a session.
+ *
+ * Every module named must be a module the Command Centre REGISTERS: the grant
+ * is an `INSERT … SELECT` over `dashboard_modules`, so a key nothing registers
+ * inserts nothing and says nothing. That is how this helper once seeded an
+ * "agent" with `clients` — a module no deployment has — and the proof then
+ * blamed the door for refusing a grant that was never made.
+ */
+export async function seedStaff(tag, label, modules = ['listings', 'client_management']) {
   const n = names(tag);
   await cc(`staff ${label}`, `
     SET LOCAL lock_timeout = '5s';
@@ -396,11 +404,58 @@ export async function seedStaff(tag, label, modules = ['listings', 'clients']) {
     INSERT INTO public.user_permissions(user_id, module_id, can_view, can_edit, can_delete)
     SELECT ${id(userId)}, m.id, true, true, false FROM public.dashboard_modules m
      WHERE m.module_key IN (${modules.map(sqlLit).join(', ')})`);
+  const granted = (await cc(`staff ${label} grants`, `
+    SELECT m.module_key FROM public.user_permissions p JOIN public.dashboard_modules m ON m.id = p.module_id
+     WHERE p.user_id = ${id(userId)} AND m.is_active`)).map((r) => r.module_key);
+  const missing = modules.filter((key) => !granted.includes(key));
+  if (missing.length) throw new Error(`the ${label} proof staff member could not be granted ${missing.join(', ')}: no active module has that key`);
   const token = randomBytes(32).toString('hex');
   await cc(`staff ${label} session`, `
     INSERT INTO public.user_sessions(user_id, session_token, expires_at, idle_expires_at, portal_scope)
     VALUES (${id(userId)}, ${sqlLit(token)}, now() + interval '4 hours', now() + interval '4 hours', 'staff')`);
   return { userId, token };
+}
+
+/**
+ * What a Command Centre page actually drew for a proof staff session: where it
+ * ended up, its headings and alerts, the start of its text, every function it
+ * called with the answer's status, script errors, and — when it is wider than
+ * the screen — the widest element. Diagnostic only; it asserts nothing.
+ */
+export async function inspectCommandCentrePage(browser, { token, path, viewport, wait = 4_000 }) {
+  const context = await browser.newContext({ viewport });
+  await context.addCookies([{ name: '__Host-session_token', value: token, domain: `${CC_REF}.supabase.co`,
+    path: '/', secure: true, httpOnly: true, sameSite: 'None' }]);
+  const page = await context.newPage();
+  const calls = [];
+  const errors = [];
+  page.on('response', (res) => {
+    const m = /\/functions\/v1\/([a-z0-9-]+)/.exec(res.url());
+    if (m) calls.push(`${m[1]}:${res.status()}`);
+  });
+  page.on('pageerror', (e) => errors.push(String(e?.message ?? e).slice(0, 160)));
+  page.on('console', (msg) => { if (msg.type() === 'error') errors.push(`console: ${msg.text().slice(0, 160)}`); });
+  await page.goto(`${CC_ORIGIN}${path}`, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {});
+  await page.waitForTimeout(wait);
+  const drawn = await page.evaluate(() => {
+    const text = (el) => (el?.innerText ?? '').replace(/\s+/g, ' ').trim();
+    const headings = [...document.querySelectorAll('h1, h2, [role="alert"], [data-sonner-toast]')].map(text).filter(Boolean).slice(0, 8);
+    const overflow = document.documentElement.scrollWidth > window.innerWidth + 1;
+    let widest = null;
+    if (overflow) {
+      for (const el of document.querySelectorAll('body *')) {
+        const r = el.getBoundingClientRect();
+        if (r.right > window.innerWidth + 1 && (!widest || r.right > widest.right)) {
+          widest = { right: Math.round(r.right), tag: el.tagName.toLowerCase(),
+            cls: String(el.className?.baseVal ?? el.className ?? '').slice(0, 120), text: text(el).slice(0, 60) };
+        }
+      }
+    }
+    return { headings, snippet: text(document.body).slice(0, 400), overflow,
+      width: document.documentElement.scrollWidth, widest };
+  }).catch((e) => ({ headings: [], snippet: `could not read the page: ${String(e?.message ?? e).slice(0, 120)}` }));
+  const url = page.url().replace(CC_ORIGIN, '');
+  return { page, context, url, calls, errors, ...drawn };
 }
 
 /** An invented client NOTHING may react to: every user trigger is off for this one insert. */
@@ -459,6 +514,7 @@ export const itemsOf = (orgId, extra = '') => net('items', `
          i.property_type, i.bedrooms, i.bathrooms, i.car_spaces, i.land_size_sqm, i.building_size_sqm,
          i.price, i.price_display, i.availability_status, i.expected_completion, i.description,
          i.lifecycle_status, i.image_work_stage, i.primary_image_id, i.enrichment_status,
+         public.builder_stock_photo_is_source_ready(i.primary_image_id) AS photo_ready,
          i.pending_patch IS NOT NULL AS pending, i.created_at, i.updated_at
     FROM public.builder_stock_items i WHERE i.organisation_id = ${id(orgId)} ${extra}
    ORDER BY i.lot_number, i.created_at`);

@@ -67,19 +67,22 @@ const CASES = [
   { key: 'xlsx', file: 'xlsx.xlsx', photos: 'embedded', fields: ALL },
   { key: 'xlsx-defaultns', file: 'xlsx-defaultns.xlsx', photos: 'embedded', fields: ALL },
   { key: 'xlsm', file: 'xlsm.xlsm', photos: 'embedded', fields: ALL },
-  { key: 'xls', file: 'xls.xls', photos: 'embedded', fields: ALL },
+  { key: 'xls', file: 'xls.xls', photos: 'limitation', fields: ALL,
+    limitation: 'a legacy .xls carries its pictures in a container the reader does not open, and the import says so' },
   { key: 'ods', file: 'ods.ods', photos: 'embedded', fields: ALL },
   { key: 'docx', file: 'docx.docx', photos: 'embedded', fields: ALL },
   { key: 'odt', file: 'odt.odt', photos: 'embedded', fields: ALL },
-  { key: 'doc', file: 'doc.doc', photos: 'embedded', fields: ALL },
-  { key: 'rtf', file: 'rtf.rtf', photos: 'embedded', fields: ALL },
+  { key: 'doc', file: 'doc.doc', photos: 'embedded', fields: ALL, refusal: /older Word \(\.doc\) file/ },
+  { key: 'rtf', file: 'rtf.rtf', photos: 'limitation', fields: ALL,
+    limitation: 'the RTF reader recovers the table and no pictures' },
   { key: 'pptx', file: 'pptx.pptx', photos: 'embedded', fields: ALL },
-  { key: 'pdf-schedule', file: 'pdf-schedule.pdf', photos: 'embedded', fields: SCHEDULE },
+  { key: 'pdf-schedule', file: 'pdf-schedule.pdf', photos: 'limitation', fields: SCHEDULE,
+    limitation: 'pictures on a page several properties share are kept for the builder to place, never guessed' },
   { key: 'pdf-brochure', file: 'pdf-brochure.pdf', photos: 'embedded', fields: BROCHURE, caseless: true },
-  { key: 'png', file: 'png.png', photos: 'none', fields: ALL },
-  { key: 'jpg', file: 'jpg.jpg', photos: 'none', fields: ALL },
-  { key: 'webp', file: 'webp.webp', photos: 'none', fields: ALL },
-  { key: 'gif', file: 'gif.gif', photos: 'none', fields: ALL },
+  { key: 'png', file: 'png.png', photos: 'none', fields: ALL, refusal: /Photographs and scans of a stock list/ },
+  { key: 'jpg', file: 'jpg.jpg', photos: 'none', fields: ALL, refusal: /Photographs and scans of a stock list/ },
+  { key: 'webp', file: 'webp.webp', photos: 'none', fields: ALL, refusal: /Photographs and scans of a stock list/ },
+  { key: 'gif', file: 'gif.gif', photos: 'none', fields: ALL, refusal: /Photographs and scans of a stock list/ },
 ].filter((c) => !ONLY.length || ONLY.includes(c.key));
 
 /** A photograph a builder would choose, from the pinned media, for the remedy. */
@@ -101,6 +104,21 @@ async function runCase(c, storage, staff) {
   const started = Date.now();
   const sent = await uploadDocument(org.cookie, c.file, bytes);
   row.processUpload = sent.processed?.status ?? sent.refusedAt;
+  /*
+   * A FILE THIS DEPLOYMENT CANNOT READ IS REFUSED, AND SAYS WHY. A photograph
+   * of a list is read by the assisted reader alone, which production has off,
+   * and the legacy Word reader recovers no table: the product's answer for
+   * both is a refusal naming what to upload instead — never "it did not
+   * describe a property" about a document nothing read.
+   */
+  if (c.refusal) {
+    const said = String(sent.processed?.json?.error ?? '');
+    record(`${c.key}: the product refuses a file it cannot read, and tells the builder what to upload instead`,
+      sent.processed?.status === 400 && c.refusal.test(said),
+      `create ${sent.created?.status}, put ${sent.put ?? '—'}, process ${sent.processed?.status ?? '—'} (${said.slice(0, 160)})`);
+    row.verdict = 'refused (limitation)';
+    return;
+  }
   if (!record(`${c.key}: the upload is accepted and processed`, !!sent.uploadId && sent.processed?.status === 200,
     `create ${sent.created?.status}, put ${sent.put ?? '—'}, process ${sent.processed?.status ?? '—'}`
     + `${sent.processed?.json?.error ? ` (${String(sent.processed.json.error).slice(0, 120)})` : ''}`)) {
@@ -160,11 +178,21 @@ async function runCase(c, storage, staff) {
     const u = await uploadRow(sent.uploadId);
     // The image engine's own terminal answers: a property is live, or its
     // work is `settled` / `failed` and nothing further will happen unaided.
-    const final = now.every((i) => i.lifecycle_status === 'active' || ['settled', 'failed'].includes(i.image_work_stage));
+    // A property whose OWN photograph is ready (the product's publication rule,
+    // `builder_stock_photo_is_source_ready`) is not waiting on the builder: it
+    // is waiting on the publication sweep, so it is waited for, not remedied.
+    const final = now.every((i) => i.lifecycle_status === 'active'
+      || (['settled', 'failed'].includes(i.image_work_stage) && !i.photo_ready));
     return { done: now.length > 0 && final, now, upload: u };
   }, deadline, 10_000);
   let ready = await waitReady(PUBLISH_DEADLINE_MS);
-  const photoless = (ready.now ?? []).filter((i) => i.lifecycle_status !== 'active');
+  const photoless = (ready.now ?? []).filter((i) => i.lifecycle_status !== 'active' && !i.photo_ready);
+  const readyButUnpublished = (ready.now ?? []).filter((i) => i.lifecycle_status !== 'active' && i.photo_ready);
+  if (readyButUnpublished.length) {
+    record(`${c.key}: every property with its own ready photograph is published without help`, false,
+      `${readyButUnpublished.length} ready but not live after ${secs({ ms: Date.now() - publishStarted })}; `
+      + `blocked: ${ready.upload?.publication_blocked_reason ?? '—'}`);
+  }
   row.fromDocument = (ready.now ?? []).length - photoless.length;
   if (photoless.length) {
     for (const item of photoless) {
@@ -180,7 +208,11 @@ async function runCase(c, storage, staff) {
       + ' — the builder adds one through "Add picture"', remedied === photoless.length,
     `${remedied}/${photoless.length} attached; blocked reason: ${ready.upload?.publication_blocked_reason ?? '—'}`,
     { required: c.photos === 'none' });
-    if (c.photos !== 'none') {
+    if (c.photos === 'limitation') {
+      record(`${c.key}: the document's own photographs reached every property it states`, false,
+        `PARTIAL by design — ${c.limitation}; ${photoless.length} of ${(ready.now ?? []).length} needed a builder-supplied picture`,
+        { required: false });
+    } else if (c.photos !== 'none') {
       record(`${c.key}: the document's own photographs reached every property it states`, false,
         `${photoless.length} of ${(ready.now ?? []).length} needed a builder-supplied picture`);
     }
