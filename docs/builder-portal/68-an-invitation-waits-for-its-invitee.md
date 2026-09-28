@@ -346,3 +346,76 @@ and the write was deactivated.
   Section J now requires every kind to answer no sooner than the floor and in
   the same time. Sections B, I and K replay tokens onto the seat, and section I
   shows an invitation sent again carries the role chosen now.
+
+## 10. Proved in production
+
+28 Sep 2026, after #144 merged (`e113fa3`) and deployed through the normal
+path. The migration is recorded, with every new column and function in place and
+no draft signature left behind. `builder-portal-invite`,
+`builder-portal-accept-invite` and `builder-network-admin` are at v843, and the
+Vercel production deployment of `e113fa3` succeeded. Every proof ran on
+disposable organisations only.
+
+**The first `portal-access-proof` run passed 161 of 165.** All four failures
+were the proof's:
+
+- Section G added an existing member to a second organisation by inviting
+  them, and expected the seat to be live at once. That is the auto-activation
+  this change removes, and the select was refused (403).
+- Section L compared two readings across the deployment's first-ever check.
+
+#145 (`b64f476`) fixed the script only.
+
+**Re-run: 166 of 166** (run `b2d5233a`).
+
+- **L — the rule.**
+  - An account that already signs in was invited, not added, and nothing was
+    written to it.
+  - The one-click join set no password and issued no session, and its link
+    was spent.
+  - Invited by two organisations before having an account, a person accepted
+    both.
+  - A mailbox link did not join an account whose password came another way.
+- **L — pacing.** Six invitations at once answered together in 3,456 ms. Their
+  emails left 1,002 / 993 / 1,000 / 1,000 / 1,001 ms apart.
+- **L — delivery reading.** The check read `operational`, and every
+  administrator read the same.
+- **J — timing.** Median answer times were new 1,988 ms, pending 1,973,
+  signed in 1,945 and revoked 1,954: within 43 ms of each other. Before this
+  change, a revoked account answered in 932 ms against about 1,440 for the
+  rest.
+- **G — acceptance first.** The second organisation cannot be selected before
+  its invitation is accepted.
+- **I — role.** An invitation sent again carries the role chosen now.
+- **Cleanup:** zero of everything.
+
+**The regression sequence**, one phase at a time:
+
+| Phase | Result |
+|---|---|
+| `verify` | nothing changed |
+| `smoke` | 81 checks, 0 failures |
+| `proxy-trust` | 12 of 12 |
+| `stock-messaging-proof` | 42 of 42 |
+| `stock-private-chat-proof` | 38 of 38 |
+| `portal-performance-proof` | 5 of 5 |
+| `activation-speed-proof` | 12 of 12 |
+| `portal-browser-proof` | 19 of 19 |
+| `message-speed-proof` | 24 of 24 |
+
+**The cleanup audit, last:** `AUDIT CLEAN — WITH EXPECTED RETAINED SECURITY LOG
+EVIDENCE`. It found:
+
+- 0 mutable proof artefacts;
+- 0 proof data in the real conversations;
+- 9 retained entries, which are earlier runs' deliberate refusals.
+
+It wrote nothing.
+
+The genuine accounts and seats were read before the regressions and after the
+audit, and their digests matched: 6 accounts, 6 live seats, none waiting.
+Afterwards production held no proof accounts, organisations, seat tokens or
+queued sends.
+
+**Still pending:** the real-inbox proof (`email-delivery-proof`), until a fresh
+mailbox is provided.
