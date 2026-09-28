@@ -44,8 +44,14 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0';
 import { enforceRawBodyLimit } from '../_shared/requestSecurity.ts';
 import { verifyMcAssertion } from '../_shared/mcFederation.ts';
 import { hashSessionToken } from '../_shared/sessionHash.ts';
-import { builderAppBaseUrl, mintBuilderInvite, INVITE_EXPIRY_HOURS } from '../_shared/builderInvite.ts';
+import {
+  builderAppBaseUrl,
+  mintBuilderInvite,
+  promoteWaitingMembership,
+  INVITE_EXPIRY_HOURS,
+} from '../_shared/builderInvite.ts';
 import { readOrganisationConflict } from '../_shared/builderOrganisationConflict.pure.ts';
+import { membershipStatusForGrant } from '../_shared/builderInviteScope.pure.ts';
 import {
   APPLICATION_WINDOW_HOURS,
   ORIGIN_WINDOWS,
@@ -524,6 +530,9 @@ Deno.serve(async (req) => {
             name: fields.contact_name,
             invite_token_hash: minted.tokenHash,
             invite_token_expires_at: minted.expiresAt.toISOString(),
+            // The token remembers its organisation, so acceptance promotes this
+            // owner seat and nothing else the address may be pending in.
+            invite_token_organisation_id: organisation.id,
             invited_at: new Date().toISOString(),
             status: 'invited',
             is_active: false,
@@ -546,9 +555,33 @@ Deno.serve(async (req) => {
           organisation_id: organisation.id,
           membership_role: 'owner',
           is_primary: true,
-          status: 'active',
+          // An owner seat granted to an account that cannot sign in yet WAITS
+          // for that account to accept THIS organisation's invitation. Left
+          // live, an invitation accepted in some other organisation would
+          // bring this seat up with it.
+          status: membershipStatusForGrant({ accountIsActive: established }),
         });
-      if (membershipError && String(membershipError.code) !== '23505') {
+      if (membershipError && String(membershipError.code) === '23505' && established) {
+        // An owner seat that is still WAITING, from an earlier approval this
+        // account had not accepted before it went active elsewhere. Nothing is
+        // minted for an established account, so nothing else would ever bring
+        // it up — and this is the operator's own door, so the stranding leaves
+        // an organisation with NO reachable owner and no surface that can fix
+        // it. See `promoteWaitingMembership`.
+        const { error: promoteError } = await promoteWaitingMembership(supabase, {
+          builderUserId: ownerId,
+          organisationId: organisation.id,
+          membershipRole: 'owner',
+        });
+        if (promoteError) {
+          await settle('refused', 'owner_not_attached', {
+            organisation_id: organisation.id,
+            builder_user_id: ownerId,
+          });
+          console.error('[builder-network-admin] owner seat still waiting', promoteError.message);
+          return json({ error: 'owner_not_attached', request_id: request.id }, 500);
+        }
+      } else if (membershipError && String(membershipError.code) !== '23505') {
         await settle('refused', 'owner_not_attached', {
           organisation_id: organisation.id,
           builder_user_id: ownerId,
@@ -739,6 +772,9 @@ Deno.serve(async (req) => {
             name,
             invite_token_hash: minted.tokenHash,
             invite_token_expires_at: minted.expiresAt.toISOString(),
+            // The token remembers its organisation — see the access-request
+            // door above and `builderInviteScope.pure.ts`.
+            invite_token_organisation_id: organisationId,
             invited_at: new Date().toISOString(),
             status: 'invited',
             is_active: false,
@@ -757,9 +793,22 @@ Deno.serve(async (req) => {
           organisation_id: organisationId,
           membership_role: 'owner',
           is_primary: true,
-          status: 'active',
+          // Waits for this organisation's own invitation — as above.
+          status: membershipStatusForGrant({ accountIsActive: established }),
         });
-      if (membershipError && String(membershipError.code) !== '23505') {
+      if (membershipError && String(membershipError.code) === '23505' && established) {
+        // As on the access-request door above: a waiting owner seat that
+        // nothing else can promote.
+        const { error: promoteError } = await promoteWaitingMembership(supabase, {
+          builderUserId: ownerId,
+          organisationId: organisationId,
+          membershipRole: 'owner',
+        });
+        if (promoteError) {
+          console.error('[builder-network-admin] owner seat still waiting', promoteError.message);
+          return json({ error: 'invite_failed' }, 500);
+        }
+      } else if (membershipError && String(membershipError.code) !== '23505') {
         console.error('[builder-network-admin] owner membership failed', membershipError);
         return json({ error: 'invite_failed' }, 500);
       }

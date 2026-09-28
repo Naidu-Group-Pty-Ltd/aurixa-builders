@@ -54,6 +54,7 @@ export interface AccessDenialReading {
     | "organisation_pending_activation"
     | "organisation_closed"
     | "membership_ended"
+    | "invitation_pending"
     | "no_membership"
     | "account_locked"
     | "unknown";
@@ -198,6 +199,29 @@ export function readAccessDenial(
       message:
         `${naming(closed.organisation_legal_name, "Your organisation")} has been closed on the ` +
         `Builders Network. Your sign-in details are correct, but a closed organisation cannot be reopened.`,
+    };
+  }
+
+  /*
+   * A membership that is WAITING is not one that ended.
+   *
+   * `invited` is a grant to an account that has not accepted this
+   * organisation's own invitation yet (20260928090000). It is not live, so
+   * without this reading it fell to `membership_ended` below and told a
+   * pending invitee their access "has been withdrawn or has expired" —
+   * which sends them to an administrator to fix something that is not
+   * broken. Read before the ended case precisely because it is not one.
+   */
+  const invited = rows.find(
+    (row) => row.status === "invited" && !row.revoked_at,
+  );
+  if (!live.length && invited) {
+    return {
+      code: "invitation_pending",
+      message:
+        `${naming(invited.organisation_legal_name, "Your organisation")} has invited you, and that ` +
+        `invitation has not been accepted yet. Open the invitation link that was emailed to you to ` +
+        `finish setting up your access. If you no longer have it, ask them to send it again.`,
     };
   }
 

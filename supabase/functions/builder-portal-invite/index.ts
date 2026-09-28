@@ -44,7 +44,13 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0';
 import { createCorsHeaders } from '../_shared/auth.ts';
 import { enforceCsrf, csrfDenied } from '../_shared/csrfGuard.ts';
 import { getBrandConfig } from '../_shared/brand-config.ts';
-import { builderAppBaseUrl, INVITE_EXPIRY_HOURS, inviteUrlFor, mintBuilderInvite } from '../_shared/builderInvite.ts';
+import {
+  builderAppBaseUrl,
+  INVITE_EXPIRY_HOURS,
+  inviteUrlFor,
+  mintBuilderInvite,
+  promoteWaitingMembership,
+} from '../_shared/builderInvite.ts';
 import { sendBuilderEmail } from '../_shared/builderInviteEmail.ts';
 import { getPortalClientIp } from '../_shared/requestSecurity.ts';
 import {
@@ -52,6 +58,10 @@ import {
   builderGovernanceError,
 } from '../_shared/builderPortalAuth.ts';
 import { MEMBER_ACTIONS, memberRefusal, shapeMembers } from '../_shared/builderMemberManagement.pure.ts';
+import {
+  inviteLinkDisclosure,
+  membershipStatusForGrant,
+} from '../_shared/builderInviteScope.pure.ts';
 
 
 /** Roles an owner or administrator may hand out. Never 'owner' — see header. */
@@ -157,6 +167,11 @@ Deno.serve(async (req) => {
         invite_token_expires_at: expiresAt.toISOString(),
         invited_by: caller.id,
         invited_at: new Date().toISOString(),
+        // The token REMEMBERS the organisation it was minted for, so acceptance
+        // activates that membership and no other. Without it, acceptance could
+        // only infer a scope from the account's whole membership set, which is
+        // the cross-organisation takeover `builderInviteScope.pure.ts` records.
+        invite_token_organisation_id: activeOrganisationId,
         status: 'invited',
         is_active: false,
       }).eq('id', target.id);
@@ -196,13 +211,47 @@ Deno.serve(async (req) => {
         { email_sent: emailSent, expires_at: expiresAt.toISOString() },
       );
 
+      /*
+       * THE LINK IS NEVER HANDED TO SOMEBODY ELSE'S ORGANISATION.
+       *
+       * It is returned so an inviter can pass it on by hand where mail is not
+       * configured — and that convenience was the takeover's delivery
+       * mechanism: an address still pending in another organisation had its one
+       * token replaced, and the new link came back to THIS caller. Acceptance
+       * is scoped now, so holding it confers nothing elsewhere, but a
+       * credential for a mailbox this caller does not own is still not theirs
+       * to hold. Withheld unless every membership the account has is this
+       * organisation's.
+       *
+       * The response says the same generic thing either way, and the refusal
+       * names no other organisation: a caller who may not hold the link may
+       * not learn where else the address belongs.
+       */
+      const { data: liveMemberships, error: scopeError } = await supabase
+        .from('builder_organisation_memberships')
+        .select('organisation_id, membership_role, status')
+        .eq('builder_user_id', target.id)
+        .is('revoked_at', null);
+      // A read that FAILED is not an account that belongs nowhere else. Fail
+      // closed: no link, rather than a link decided on missing evidence.
+      const disclosure = scopeError
+        ? { mayReturnLink: false, reason: 'membership_scope_unreadable' as const }
+        : inviteLinkDisclosure({
+          liveMemberships: (liveMemberships ?? []) as { organisation_id: string }[],
+          invitingOrganisationId: activeOrganisationId,
+        });
+      if (!disclosure.mayReturnLink && !emailSent) {
+        console.warn('[builder-portal-invite] link withheld from the caller', {
+          reason: disclosure.reason,
+          builder_user_id: target.id,
+        });
+      }
+
       return json({
         ...GENERIC_OK,
         email_sent: emailSent,
         expires_at: expiresAt.toISOString(),
-        // Returned so the inviter can pass the link on when mail delivery is
-        // not configured. It is not stored anywhere in plaintext.
-        invite_url: emailSent ? undefined : inviteUrl,
+        invite_url: emailSent || !disclosure.mayReturnLink ? undefined : inviteUrl,
       });
     };
 
@@ -250,6 +299,12 @@ Deno.serve(async (req) => {
       }
 
       // Membership in the CALLER'S organisation, idempotent on the live key.
+      //
+      // A grant to an account that cannot sign in yet WAITS: the invitation for
+      // this organisation is what promotes it, and nothing else can. An account
+      // that already signs in is being added by its own organisation's
+      // administrator, so that membership is live at once — unchanged.
+      const accountIsActive = !!(target.invite_accepted_at || target.password_hash);
       const { error: membershipError } = await supabase
         .from('builder_organisation_memberships')
         .insert({
@@ -257,12 +312,35 @@ Deno.serve(async (req) => {
           organisation_id: activeOrganisationId,
           membership_role: role,
           is_primary: false,
-          status: 'active',
+          status: membershipStatusForGrant({ accountIsActive }),
           granted_by: caller.id,
         });
-      if (membershipError && String(membershipError.code) !== '23505') throw membershipError;
+      if (membershipError && String(membershipError.code) === '23505' && accountIsActive) {
+        /*
+         * A LIVE ACCOUNT MUST END UP LIVE IN THIS ORGANISATION.
+         *
+         * 23505 on the live key means a membership already exists — and it may
+         * be one that is still WAITING, from an invitation issued before this
+         * account accepted somebody else's. Adding a colleague who already
+         * signs in is not an invitation and mints nothing, so nothing would
+         * ever promote that row: the notice below would promise access the
+         * portal then refused, and the seat would be stuck for good.
+         *
+         * Only ever from `invited`. A `suspended` membership is an
+         * administrator's decision and an invitation may not undo it.
+         */
+        const { error: promoteError } = await promoteWaitingMembership(supabase, {
+          builderUserId: target.id,
+          organisationId: activeOrganisationId,
+          membershipRole: role,
+          grantedBy: caller.id,
+        });
+        if (promoteError) throw promoteError;
+      } else if (membershipError && String(membershipError.code) !== '23505') {
+        throw membershipError;
+      }
 
-      if (target.invite_accepted_at || target.password_hash) {
+      if (accountIsActive) {
         // Already active on the network: access granted, nothing to accept.
         // The notice goes to the MAILBOX, not the caller.
         const brand = await getBrandConfig();

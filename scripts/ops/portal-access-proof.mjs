@@ -289,7 +289,8 @@ async function inviteAndAccept(owner, ownerCookie, role, label) {
   await q('mint invite token', `
     UPDATE public.builder_portal_users
        SET invite_token_hash = ${sqlLit(hmacHex(PEPPER, inviteToken))},
-           invite_token_expires_at = now() + interval '1 hour'
+           invite_token_expires_at = now() + interval '1 hour',
+           invite_token_organisation_id = ${id(owner.orgId)}
      WHERE id = ${id(userRow.id)}`);
   const accepted = await call('builder-portal-accept-invite',
     { action: 'accept', token: inviteToken, password });
@@ -728,6 +729,113 @@ try {
   const audited = (await q('member audit', `SELECT count(*) AS n FROM public.builder_portal_activity_log
     WHERE organisation_id = ${id(A.orgId)} AND entity_type = 'membership' AND actor_type = 'builder_user'`))[0];
   record('H: every membership act was audited', Number(audited.n) >= 5, `rows=${audited.n}`);
+
+  // --- I. One invitation opens one organisation ------------------------------
+  //
+  // The cross-organisation invitation takeover, reproduced against the live
+  // deployment with disposable organisations only, and then shown refused.
+  //
+  // Before the fix: A's administrator invites an address that is still a
+  // pending invitee of B; the send fails so the link comes back to A; and
+  // accepting it activated the ACCOUNT, bringing B's membership alive too —
+  // up to `owner`. The guarantee now is that acceptance promotes exactly the
+  // organisation whose token was accepted, and that a link is never handed to
+  // an organisation the address does not belong to.
+  const victimEmail = `${EMAIL_PREFIX}crossorg@example.com`;
+  const victimPassword = `Cr0ss!${RUN}!org`;
+
+  // B invites first, at the highest role an invitation may carry.
+  const bInvite = await call('builder-portal-invite',
+    { action: 'invite', email: victimEmail, name: 'Access crossorg', membership_role: 'administrator' },
+    B.cookie);
+  const membershipStatus = async (orgId) => (await q('cross-org membership', `
+    SELECT m.status, m.membership_role
+      FROM public.builder_organisation_memberships m
+      JOIN public.builder_portal_users u ON u.id = m.builder_user_id
+     WHERE u.email = ${sqlLit(victimEmail)} AND m.organisation_id = ${id(orgId)}
+       AND m.revoked_at IS NULL`))[0] ?? null;
+  const bPending = await membershipStatus(B.orgId);
+  record('I: a membership granted to an account that cannot sign in yet WAITS for its own invitation',
+    bInvite.status === 200 && bPending?.status === 'invited',
+    `invite=${bInvite.status} B.status=${bPending?.status} role=${bPending?.membership_role}`);
+
+  // A now invites the same address. This is the attacker's move.
+  const aInvite = await call('builder-portal-invite',
+    { action: 'invite', email: victimEmail, name: 'Access crossorg', membership_role: 'read_only' },
+    A.cookie);
+  const aPending = await membershipStatus(A.orgId);
+  record('I: the second organisation may invite the same address, and its grant waits too',
+    aInvite.status === 200 && aPending?.status === 'invited',
+    `invite=${aInvite.status} A.status=${aPending?.status}`);
+  // The link is the delivery mechanism the takeover needed. Every Builder send
+  // is currently refused by the mail provider, so before the fix this response
+  // carried a working credential for B's pending seat.
+  record('I: the one-time link is WITHHELD from an organisation the address does not belong to',
+    aInvite.status === 200 && !aInvite.json?.invite_url,
+    `email_sent=${aInvite.json?.email_sent} invite_url=${aInvite.json?.invite_url ? 'RETURNED' : 'absent'}`);
+
+  // Accept A's invitation, with A's own token, exactly as the portal would.
+  const crossToken = `${randomUUID()}-${randomUUID()}`;
+  const victimId = (await q('cross-org user', `
+    SELECT id FROM public.builder_portal_users WHERE email = ${sqlLit(victimEmail)}`))[0]?.id;
+  await q('mint cross-org token', `
+    UPDATE public.builder_portal_users
+       SET invite_token_hash = ${sqlLit(hmacHex(PEPPER, crossToken))},
+           invite_token_expires_at = now() + interval '1 hour',
+           invite_token_organisation_id = ${id(A.orgId)}
+     WHERE id = ${id(victimId)}`);
+
+  // What the form is told before a password is set: this organisation only.
+  const validated = await call('builder-portal-accept-invite', { action: 'validate', token: crossToken });
+  const named = validated.json?.organisations ?? [];
+  record('I: the acceptance form names the ONE organisation being joined, never where else the address is pending',
+    validated.status === 200 && named.length === 1 && named[0]?.organisation_id === A.orgId,
+    `status=${validated.status} named=${named.length}`);
+
+  const crossAccepted = await call('builder-portal-accept-invite',
+    { action: 'accept', token: crossToken, password: victimPassword });
+  const crossCookie = cookieFrom(crossAccepted.setCookies);
+  const aAfter = await membershipStatus(A.orgId);
+  const bAfter = await membershipStatus(B.orgId);
+  record('I: accepting activates the organisation whose invitation it was',
+    crossAccepted.status === 200 && aAfter?.status === 'active',
+    `status=${crossAccepted.status} A.status=${aAfter?.status}`);
+  record('I: and leaves the OTHER organisation exactly where it was — the takeover is refused',
+    bAfter?.status === 'invited',
+    `B.status=${bAfter?.status} role=${bAfter?.membership_role}`);
+
+  // Asked of the runtime rather than of the rows: the session cannot reach B.
+  const crossRestore = crossCookie
+    ? await call('builder-portal-verify', {}, crossCookie)
+    : { status: 0, json: null };
+  const reachable = (crossRestore.json?.organisations ?? []).map((o) => o.organisation_id);
+  record('I: the session the acceptance issued reaches that organisation and no other',
+    crossRestore.status === 200 && reachable.length === 1 && reachable[0] === A.orgId,
+    `restore=${crossRestore.status} reachable=${reachable.length}`);
+  const intoB = crossCookie
+    ? await call('builder-portal-verify', { action: 'select_organisation', organisation_id: B.orgId }, crossCookie)
+    : { status: 0, json: null };
+  record('I: selecting the other organisation is refused, by the server, on the live deployment',
+    intoB.status === 403 && intoB.json?.code === 'organisation_not_accessible',
+    `status=${intoB.status} code=${intoB.json?.code}`);
+
+  // No lockout, and no seat stuck waiting for ever. The victim now has an
+  // account, so B adding them is no longer an invitation: B's administrator
+  // grants it and the waiting row is promoted on the spot.
+  const bRegrant = await call('builder-portal-invite',
+    { action: 'invite', email: victimEmail, name: 'Access crossorg', membership_role: 'manager' },
+    B.cookie);
+  const bFinal = await membershipStatus(B.orgId);
+  record('I: the other organisation can still add them itself, and the waiting seat is promoted',
+    bRegrant.status === 200 && bFinal?.status === 'active',
+    `regrant=${bRegrant.status} B.status=${bFinal?.status} role=${bFinal?.membership_role}`);
+  const reachesBoth = crossCookie
+    ? await call('builder-portal-verify', {}, crossCookie)
+    : { status: 0, json: null };
+  const bothIds = (reachesBoth.json?.organisations ?? []).map((o) => o.organisation_id).sort();
+  record('I: only then does the session reach both — the rule protects them without stranding them',
+    bothIds.length === 2 && bothIds.includes(A.orgId) && bothIds.includes(B.orgId),
+    `reachable=${bothIds.length}`);
 
   // --- C. Sessions ----------------------------------------------------------------
   console.log('\nC. Sessions');

@@ -256,3 +256,31 @@ describe('there is one send path', () => {
     expect(fn).not.toMatch(/\bthrow\b/);
   });
 });
+
+describe('what a refusal records', () => {
+  const source = readFileSync(
+    join(__dirname, '..', '..', '..', 'supabase', 'functions', '_shared', 'builderInviteEmail.ts'),
+    'utf8',
+  );
+
+  it("logs the provider's own message, because a bare status was not a diagnosis", () => {
+    // 110 invitations were refused from 16 Sep 2026 and the log said only
+    // `422`, so the cause was inferred from the provider's domain list instead
+    // of read from the refusal — and inferred WRONG (doc 65 §4). An unverified
+    // sender and an undeliverable recipient both land here.
+    expect(source).toMatch(/provider_message/);
+    expect(source).toMatch(/response\.text\(\)/);
+  });
+
+  it('records the sender it tried, since an unverified sender is the usual fault', () => {
+    const refusal = source.slice(source.indexOf('Resend refused the send'));
+    expect(refusal.slice(0, 400)).toMatch(/from:/);
+  });
+
+  it('never records the recipient beside the refusal', () => {
+    // A refusal is a fact about this deployment's configuration. An
+    // operational log is no place for a customer's address.
+    const refusal = source.slice(source.indexOf('const detail = await response.text'), source.indexOf("return { sent: false, reason: 'refused' }"));
+    expect(refusal).not.toMatch(/args\.to|\bto:/);
+  });
+});

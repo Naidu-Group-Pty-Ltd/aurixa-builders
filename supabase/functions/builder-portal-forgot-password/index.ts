@@ -127,7 +127,18 @@ Deno.serve(async (req) => {
 
     if (resendApiKey) {
       try {
-        await meteredFetch('https://api.resend.com/emails', {
+        /*
+         * THE ANSWER IS READ. It was not, and that is why a reset email that
+         * never left could not be told from one that did: the response was
+         * discarded, so a refusal by the provider produced no status, no
+         * message and no log line anywhere. The caller is answered generically
+         * either way — a reset must not confirm whether an account exists — so
+         * the operational log is the ONLY place this can be seen.
+         *
+         * The recipient is deliberately not logged: a refusal is a fact about
+         * this deployment's configuration, not about a customer.
+         */
+        const response = await meteredFetch('https://api.resend.com/emails', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${resendApiKey}` },
           body: JSON.stringify({
@@ -138,6 +149,14 @@ Deno.serve(async (req) => {
             tags: [{ name: 'category', value: 'builder_portal_reset' }],
           }),
         });
+        if (!response.ok) {
+          const detail = await response.text().catch(() => '');
+          console.error('[builder-portal-forgot-password] the provider refused the reset email', response.status, {
+            provider_message: detail.slice(0, 300),
+            from: brand.fromHeaderAdmin,
+            category: 'builder_portal_reset',
+          });
+        }
       } catch (error) {
         console.error('[builder-portal-forgot-password] email send failed', error);
       }
