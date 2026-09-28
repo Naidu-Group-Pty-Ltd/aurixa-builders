@@ -74,6 +74,14 @@ jobs:
       # and bounded, and the delivery reading is one row claimed by one checker.
       - name: an invitation waits for its invitee, and invitations are paced
         run: npm run db:invitation-acceptance:check
+      # A stock list is superseded by a newer version of ITSELF: two lists that
+      # never met on a property both publish, while an abandoned draft of the
+      # same list stays blocked even after a re-read has rewritten what the
+      # current list says it replaced, and a superseded draft never re-points a
+      # property the current list dropped. Uploads that predate the lineage
+      # record keep the old rule.
+      - name: a stock list is replaced only by its own lineage
+        run: npm run db:stock-list-lineage:check
 
   edge:
     name: edge functions typecheck + gates
