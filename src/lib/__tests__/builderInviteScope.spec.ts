@@ -199,8 +199,14 @@ describe('the handlers that must obey these rules', () => {
   const accept = read('builder-portal-accept-invite', 'index.ts');
   const admin = read('builder-network-admin', 'index.ts');
 
-  it('the invite function records which organisation a token was minted for', () => {
-    expect(invite).toMatch(/invite_token_organisation_id/);
+  it('the invite function mints each invitation onto this organisation\'s own seat', () => {
+    // Doc 68: the token used to live in the account's ONE slot and record its
+    // organisation beside it; a second organisation's invitation overwrote the
+    // first. It now lives on the seat it opens, so the organisation is the
+    // seat's own and nothing can replace another organisation's.
+    const grant = invite.match(/\.from\('builder_organisation_memberships'\)\s*\.insert\(\{[\s\S]*?\}\)/)?.[0] ?? '';
+    expect(grant).toMatch(/organisation_id: activeOrganisationId/);
+    expect(grant).toMatch(/invite_token_hash: minted\.tokenHash/);
   });
 
   it('both doors that can return a link ask this module — each its own rule', () => {
@@ -216,14 +222,19 @@ describe('the handlers that must obey these rules', () => {
      * who can already see the whole network, gets the membership rule: what is
      * withheld from them is the credential, not the fact.
      */
-    expect(invite).toMatch(/mayHandLinkToInviter/);
+    expect(invite).toMatch(/inviterMayHoldInvitationLink/);
     expect(invite).not.toMatch(/operatorMayHandLink/);
     expect(admin).toMatch(/operatorMayHandLink/);
     expect(admin).not.toMatch(/mayHandLinkToInviter/);
   });
 
-  it('the invite function grants a membership at this module status, never a literal', () => {
-    expect(invite).toMatch(/membershipStatusForGrant/);
+  it('the invite function grants every membership at this module\'s waiting status, never a literal', () => {
+    // Doc 68: an organisation's invitation waits for its invitee whoever they
+    // already are, so the tenant door no longer asks `membershipStatusForGrant`
+    // (which made an established account's grant live). The operator door
+    // still does — below.
+    expect(invite).toMatch(/status: PENDING_MEMBERSHIP_STATUS/);
+    expect(invite).not.toMatch(/membershipStatusForGrant/);
   });
 
   it('the acceptance function reads the token organisation and scopes on it', () => {
@@ -231,7 +242,7 @@ describe('the handlers that must obey these rules', () => {
     expect(accept).toMatch(/acceptanceActivation/);
   });
 
-  it('the acceptance function activates one membership — the one the rule chose', () => {
+  it('the acceptance function activates one membership — the one the rule chose, or the one the token is on', () => {
     /*
      * This used to assert `.eq('organisation_id'` in this file, which was a
      * statement about where the promotion happened to be WRITTEN rather than
@@ -242,8 +253,15 @@ describe('the handlers that must obey these rules', () => {
      * owes is that the organisation it passes is the one the RULE chose, never
      * the account's whole membership set.
      */
-    const promotion = accept.slice(accept.indexOf('promoteWaitingMembership(supabase, {'));
-    expect(promotion.slice(0, 300)).toMatch(/organisationId: scope\.activate/);
+    const calls = [...accept.matchAll(/promoteWaitingMembership\(supabase, \{/g)].map((m) => accept.slice(m.index, m.index + 300));
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      // An account-slot token activates the organisation the scoping rule
+      // chose; a seat token activates the seat it is on, and uses it up.
+      const scoped = /organisationId: scope\.activate/.test(call);
+      const seat = /organisationId: seat\.organisation_id/.test(call) && /inviteTokenHash: tokenHash/.test(call);
+      expect(scoped || seat, call).toBe(true);
+    }
   });
 
   it('the operator door grants a first owner at this module status too', () => {
@@ -297,8 +315,12 @@ describe('a seat that was left waiting', () => {
       for (const update of updates) {
         expect(update, `${name} promotes a membership by hand`).not.toMatch(/status:\s*'active'/);
       }
-      expect(source).toMatch(/promoteWaitingMembership/);
     }
+    // Acceptance and the operator's bootstrap bring a seat up; an
+    // organisation's invitation never does (doc 68) — only its invitee does.
+    expect(accept).toMatch(/promoteWaitingMembership/);
+    expect(admin).toMatch(/promoteWaitingMembership/);
+    expect(invite).not.toMatch(/promoteWaitingMembership/);
   });
 
   it('is promoted only from waiting — never from suspended or revoked', () => {
@@ -320,8 +342,11 @@ describe('a seat that was left waiting', () => {
     expect(fn).toMatch(/\.eq\('organisation_id', args\.organisationId\)/);
   });
 
-  it('is reached on the portal door only where the account already signs in', () => {
-    expect(invite).toMatch(/23505' && accountIsActive/);
+  it('is never reached on the portal door — an invitation brings nothing up, whoever it is for', () => {
+    // It used to promote a waiting seat the moment an organisation re-added an
+    // account that signs in. Doc 68: only the invitee's acceptance may.
+    expect(invite).not.toMatch(/23505' && accountIsActive/);
+    expect(invite).not.toMatch(/promoteWaitingMembership/);
   });
 
   it('is reached on BOTH operator doors, where stranding costs an organisation its owner', () => {
@@ -331,13 +356,15 @@ describe('a seat that was left waiting', () => {
     expect(promotions.length).toBe(2);
   });
 
-  it('never fails an acceptance, because the single-use token is already spent', () => {
-    // The promotion is after the update that decides the race, so a failure
-    // here leaves the account active with nothing accessible — refused by the
-    // session, explained, and recoverable by re-sending. It must not throw.
-    const promotion = accept.slice(accept.indexOf('promoteWaitingMembership(supabase, {'));
-    expect(promotion.slice(0, 600)).not.toMatch(/throw/);
-    expect(promotion).toMatch(/console\.error/);
+  it('never fails an acceptance by throwing, because the act it follows may already be spent', () => {
+    // On activation the promotion is after the update that decides the race, so
+    // a failure there leaves the account active with nothing accessible —
+    // refused by the session, explained, and recoverable by re-sending. On a
+    // join it IS the act, and a refusal is answered, never thrown.
+    const calls = [...accept.matchAll(/promoteWaitingMembership\(supabase, \{/g)].map((m) => accept.slice(m.index, m.index + 600));
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) expect(call).not.toMatch(/\bthrow\b/);
+    expect(accept).toMatch(/console\.error\('\[builder-portal-accept-invite\] membership promotion failed'/);
   });
 
   it('returns its error rather than throwing, so each door decides', () => {
@@ -368,16 +395,22 @@ describe('what the independent review found in the first fix', () => {
     expect(admin).toMatch(/invite_url: established \|\| !linkIsTheirs \? null/);
   });
 
-  it('the tenant door decides its link WITHOUT reading anything about the invitee', () => {
-    // Any per-address variation is an oracle over other tenants' staff. The
-    // decision reads the provider state alone.
-    expect(invite).toMatch(/mayHandLinkToInviter\(\{ send: sendState \}\)/);
+  it('the tenant door decides its link from the deployment first, and never hands over a join link', () => {
+    // Any per-address variation is an oracle over other tenants' staff, so
+    // where there is a mail provider the decision is no link for anybody. Where
+    // there is none, only a password-setting link may be handed over: a join
+    // link would let the inviter accept on an established account's behalf
+    // (doc 68). That residual difference exists only without a provider.
+    expect(invite).toMatch(/inviterMayHoldInvitationLink\(\{\s*send: providerConfigured \? 'sent' : 'not_configured',\s*requiresPassword/);
     expect(invite).not.toMatch(/inviteLinkDisclosure/);
   });
 
   it('a link is never handed over merely because one send failed', () => {
+    // The decision is taken from the deployment's configuration BEFORE any
+    // send (doc 68 moved every send after the answer), so no send's outcome
+    // can reach it at all.
     expect(mayHandLinkToInviter({ send: 'failed' })).toBe(false);
-    expect(invite).toMatch(/outcome\.reason === 'not_configured' \? 'not_configured' : 'failed'/);
+    expect(invite).toMatch(/const providerConfigured = builderEmailConfigured\(\)/);
   });
 
   it('reads the send outcome by narrowing the union, never through a derived string', () => {
@@ -406,7 +439,7 @@ describe('what the independent review found in the first fix', () => {
     // have access" over a membership the portal still refuses.
     expect(helper).toMatch(/\.select\('id'\)/);
     expect(helper).toMatch(/promoted: Array\.isArray\(data\) \? data\.length : 0/);
-    expect(invite).toMatch(/promotion\.promoted === 0/);
+    expect(accept).toMatch(/\.promoted === 0/);
     expect((admin.match(/promotion\.promoted === 0/g) ?? []).length).toBe(2);
   });
 

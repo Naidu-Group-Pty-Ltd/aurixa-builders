@@ -1,0 +1,213 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import {
+  INVITEE_NAME_MAX_CHARS,
+  readInviteeName,
+} from '../../../supabase/functions/_shared/builderInviteScope.pure';
+import {
+  DELIVERY_BACKLOG_DELAYED_MS,
+  DELIVERY_CHECK_RECIPIENT_DEFAULT,
+  EMAIL_SEND_MAX_WAIT_MS,
+  EMAIL_SEND_SPACING_MS,
+  INVITE_ANSWER_FLOOR_MS,
+  answerDelayMs,
+  deliveryCheckState,
+  deliveryHealthView,
+  readSendSlot,
+} from '../../../supabase/functions/_shared/builderEmailDelivery.pure';
+
+/**
+ * THE INVITATION DOOR'S REMAINING HARDENING (doc 68). Each block is one of the
+ * findings doc 67 §3 left open, stated as the property that closes it.
+ */
+
+const repo = (...parts: string[]) => readFileSync(join(__dirname, '..', '..', '..', ...parts), 'utf8');
+const stripComments = (source: string) =>
+  source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+const inviteSource = repo('supabase', 'functions', 'builder-portal-invite', 'index.ts');
+const invite = stripComments(inviteSource);
+const block = (from: string, to: string) => invite.slice(invite.indexOf(from), invite.indexOf(to));
+const inviteBlock = block("if (action === 'invite')", "if (action === 'resend')");
+const resendBlock = block("if (action === 'resend')", "if (action === 'revoke_invite')");
+const migrationSql = repo('supabase', 'migrations', '20260929090000_an_invitation_waits_for_its_invitee.sql');
+
+describe('1. the answer takes the same time whatever the address is', () => {
+  /*
+   * Measured in production (doc 67 §5): a revoked account answered in ~930 ms,
+   * every other kind in ~1,350–1,450 ms, because only they sent an email before
+   * answering. The answer now waits for a fixed floor and every email is sent
+   * after it, so the time an answer takes is the floor, for every kind.
+   */
+  it('is held to a floor that clears the work done before it', () => {
+    expect(INVITE_ANSWER_FLOOR_MS).toBeGreaterThanOrEqual(1000);
+    expect(answerDelayMs(10_000, 10_200)).toBe(INVITE_ANSWER_FLOOR_MS - 200);
+    expect(answerDelayMs(10_000, 10_000 + INVITE_ANSWER_FLOOR_MS + 5)).toBe(0);
+  });
+
+  it('every answer invite and resend give is held to it — successes and refusals alike', () => {
+    for (const [name, body] of [['invite', inviteBlock], ['resend', resendBlock]] as const) {
+      expect(body.length, `${name} block found`).toBeGreaterThan(300);
+      const returns = [...body.matchAll(/\breturn\b[^;]*;/g)].map((m) => m[0]);
+      expect(returns.length).toBeGreaterThan(1);
+      for (const statement of returns) {
+        expect(statement, `${name}: an answer that skips the floor`).toMatch(/return await answer\(/);
+      }
+    }
+  });
+
+  it('sends nothing before answering — every email leaves after the answer', () => {
+    for (const body of [inviteBlock, resendBlock]) {
+      expect(body).not.toMatch(/await sendBuilderEmail\(/);
+      expect(body).not.toMatch(/await sendPacedBuilderEmail\(/);
+      expect(body).toMatch(/afterAnswer\(/);
+    }
+  });
+});
+
+describe('2. invitations are paced, so a burst cannot hammer the shared mail provider', () => {
+  it('spaces sends further apart than the provider\'s per-second ceiling allows', () => {
+    // Resend admits 2 requests a second per team, shared with every other send
+    // this deployment makes; invitations take at most one of them.
+    expect(EMAIL_SEND_SPACING_MS).toBeGreaterThanOrEqual(500);
+    // A queued send waits inside the edge worker's own lifetime.
+    expect(EMAIL_SEND_MAX_WAIT_MS).toBeLessThanOrEqual(120_000);
+  });
+
+  it('reads the reservation as a wait, a full queue, or a degraded pacer — never as "send now"', () => {
+    expect(readSendSlot({ data: 2500, error: null })).toEqual({ kind: 'wait', ms: 2500 });
+    expect(readSendSlot({ data: 0, error: null })).toEqual({ kind: 'wait', ms: 0 });
+    expect(readSendSlot({ data: null, error: null })).toEqual({ kind: 'paced_out' });
+    expect(readSendSlot({ data: null, error: { message: 'boom' } })).toEqual({ kind: 'unpaced' });
+    expect(readSendSlot({ data: 'nonsense', error: null })).toEqual({ kind: 'unpaced' });
+  });
+
+  it('every invitation email goes through the pacer', () => {
+    const delivery = repo('supabase', 'functions', '_shared', 'builderEmailDelivery.ts');
+    expect(delivery).toMatch(/rpc\('builder_reserve_email_send_slot'/);
+    expect(invite).toMatch(/sendPacedBuilderEmail\(/);
+    expect(invite).not.toMatch(/[^d]sendBuilderEmail\(\{\s*to: target/);
+  });
+
+  it('the reservation is one statement under one lock, in the database', () => {
+    expect(migrationSql).toMatch(/CREATE OR REPLACE FUNCTION public\.builder_reserve_email_send_slot/);
+    expect(migrationSql).toMatch(/FOR UPDATE/);
+  });
+});
+
+describe('3. a deployment-wide delivery signal that names no address and no message', () => {
+  it('is read from a delivery check and the queue, and nothing else', () => {
+    const view = deliveryHealthView({ configured: true, reading: { state: 'operational', checked_at: 't', backlog_ms: 0 } });
+    expect(view).toEqual({ state: 'operational', checked_at: 't' });
+    expect(deliveryHealthView({ configured: true, reading: { state: 'degraded', checked_at: 't', backlog_ms: 0 } }).state)
+      .toBe('degraded');
+    expect(deliveryHealthView({
+      configured: true, reading: { state: 'operational', checked_at: 't', backlog_ms: DELIVERY_BACKLOG_DELAYED_MS },
+    }).state).toBe('delayed');
+    expect(deliveryHealthView({ configured: true, reading: null }).state).toBe('unknown');
+    expect(deliveryHealthView({ configured: false, reading: null }).state).toBe('not_configured');
+  });
+
+  it('its inputs have no field through which an address or a message could arrive', () => {
+    const pure = repo('supabase', 'functions', '_shared', 'builderEmailDelivery.pure.ts');
+    const fn = pure.slice(pure.indexOf('export function deliveryHealthView'));
+    const params = fn.slice(0, fn.indexOf('{', fn.indexOf(')')));
+    expect(params).toMatch(/configured/);
+    expect(params).not.toMatch(/email|address|recipient|message|invite|user|member/i);
+  });
+
+  it('checks delivery by sending to a sink that belongs to nobody, never to a real invitee', () => {
+    expect(DELIVERY_CHECK_RECIPIENT_DEFAULT).toBe('delivered@resend.dev');
+    expect(deliveryCheckState({ sent: true })).toBe('operational');
+    expect(deliveryCheckState({ sent: false, reason: 'refused' })).toBe('degraded');
+    expect(deliveryCheckState({ sent: false, reason: 'unreachable' })).toBe('degraded');
+    expect(deliveryCheckState({ sent: false, reason: 'paced_out' })).toBe('degraded');
+  });
+
+  it('is behind the same owner-or-administrator gate, and reads nothing about any invitee', () => {
+    const health = block("if (action === 'delivery_health')", "if (action === 'invite')");
+    expect(health.length).toBeGreaterThan(50);
+    expect(invite.indexOf("if (action === 'delivery_health')"))
+      .toBeGreaterThan(invite.indexOf("membershipRole !== 'owner' && membershipRole !== 'administrator'"));
+    expect(health).not.toMatch(/body\.|builder_portal_users|builder_organisation_memberships|activity/);
+  });
+
+  it('is refreshed on a clock, never because one send failed', () => {
+    // An early re-check after a failure would itself say "your send failed".
+    const delivery = stripComments(repo('supabase', 'functions', '_shared', 'builderEmailDelivery.ts'));
+    const paced = delivery.slice(delivery.indexOf('export async function sendPacedBuilderEmail'));
+    expect(paced.slice(0, paced.indexOf('\n}\n'))).not.toMatch(/builder_claim_email_delivery_check|runDeliveryCheck/);
+  });
+});
+
+describe('4. an invitee name has a ceiling', () => {
+  it('is the registration door\'s own ceiling', () => {
+    expect(INVITEE_NAME_MAX_CHARS).toBe(200);
+    const schemas = repo('supabase', 'functions', '_shared', 'authBodySchemas.ts');
+    expect(schemas).toMatch(/name: optionalField\(z\.string\(\)\.max\(200\)\)/);
+  });
+
+  it('trims, requires a name, and refuses one past the ceiling rather than cutting it', () => {
+    expect(readInviteeName('  Sam  ')).toEqual({ ok: true, name: 'Sam' });
+    expect(readInviteeName('   ').ok).toBe(false);
+    expect(readInviteeName(undefined).ok).toBe(false);
+    expect(readInviteeName('x'.repeat(200))).toEqual({ ok: true, name: 'x'.repeat(200) });
+    const long = readInviteeName('x'.repeat(201));
+    expect(long.ok).toBe(false);
+    if (!long.ok) expect(long.error).toMatch(/200/);
+  });
+
+  it('counts characters, not UTF-16 units', () => {
+    expect(readInviteeName('\u{1F3D7}'.repeat(200)).ok).toBe(true);
+    expect(readInviteeName('\u{1F3D7}'.repeat(201)).ok).toBe(false);
+  });
+
+  it('is enforced by the door and by the column', () => {
+    expect(inviteBlock).toMatch(/readInviteeName\(body\.name\)/);
+    expect(migrationSql).toMatch(/char_length\(invited_name\)/);
+  });
+});
+
+describe('5. one organisation cannot replace another organisation\'s invitation', () => {
+  it('the invite door never writes a token on the account', () => {
+    // The account's single token slot was the thing a second organisation
+    // overwrote. Each invitation now lives on its own organisation's seat.
+    const userWrites = invite.match(/\.from\('builder_portal_users'\)\s*\.update\(\{[\s\S]*?\}\)/g) ?? [];
+    for (const write of userWrites) expect(write).not.toMatch(/invite_token_hash:\s*(?!null)/);
+  });
+
+  it('a re-sent invitation replaces only its own seat\'s token, and only while that seat waits', () => {
+    const reissue = invite.slice(invite.indexOf('const reissueSeatInvitation'));
+    expect(reissue.length).toBeGreaterThan(100);
+    const body = reissue.slice(0, reissue.indexOf('};'));
+    expect(body).toMatch(/\.eq\('id', seatId\)/);
+    expect(body).toMatch(/\.eq\('status', PENDING_MEMBERSHIP_STATUS\)/);
+    expect(body).toMatch(/\.eq\('organisation_id', activeOrganisationId\)/);
+  });
+
+  it('the database holds one live token per seat, unique, only while the seat waits', () => {
+    expect(migrationSql).toMatch(/CREATE UNIQUE INDEX[\s\S]*invite_token_hash[\s\S]*WHERE invite_token_hash IS NOT NULL/);
+    expect(migrationSql).toMatch(/invite_token_hash IS NULL OR \(status = 'invited' AND revoked_at IS NULL/);
+    expect(migrationSql).toMatch(/BEFORE UPDATE OF status, revoked_at ON public\.builder_organisation_memberships/);
+  });
+});
+
+describe('6. an account whose state changes mid-invitation is never deactivated or downgraded', () => {
+  it('the invite door writes no status and no activity flag to any account', () => {
+    const userWrites = invite.match(/\.from\('builder_portal_users'\)\s*\.update\(\{[\s\S]*?\}\)/g) ?? [];
+    for (const write of userWrites) {
+      expect(write).not.toMatch(/\bstatus:/);
+      expect(write).not.toMatch(/is_active:/);
+    }
+  });
+
+  it('the operator door stamps an owner invitation only on an account that is still unaccepted, and reads the count', () => {
+    const admin = stripComments(repo('supabase', 'functions', 'builder-network-admin', 'index.ts'));
+    const stamps = admin.match(/\.from\('builder_portal_users'\)\s*\.update\(\{[\s\S]*?invite_token_hash: minted\.tokenHash[\s\S]*?\.select\('id'\)/g) ?? [];
+    expect(stamps.length).toBe(2);
+    for (const stamp of stamps) {
+      expect(stamp).toMatch(/\.is\('password_hash', null\)/);
+      expect(stamp).toMatch(/\.is\('invite_accepted_at', null\)/);
+    }
+  });
+});
