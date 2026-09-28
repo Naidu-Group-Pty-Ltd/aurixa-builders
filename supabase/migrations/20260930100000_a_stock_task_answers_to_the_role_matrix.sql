@@ -18,7 +18,9 @@
  *
  * The resolver now asks `builder_resolve_permission` for the item's own
  * organisation. What it answers for is unchanged — tasks, view and edit, and
- * nothing else on a stock scope — and so is its active-user check. Production's
+ * nothing else on a stock scope, and never a NULL level (which the old body
+ * refused and the matrix would read as `delete`) — and so is its active-user
+ * check. Production's
  * role defaults give tasks view and edit to owner, administrator, manager and
  * member, and view alone to read_only, so the only default that changes is
  * read_only's edit. Proved by `scripts/db/stock-task-permission-check.mjs`
@@ -40,7 +42,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $fn$
   -- WHERE clause the planner attaches the matrix call to the item scan and
   -- asks it before the membership join can rule the row out.
   SELECT CASE
-    WHEN _permission_key IS DISTINCT FROM 'tasks' OR _level NOT IN ('view', 'edit') THEN false
+    WHEN _permission_key IS DISTINCT FROM 'tasks' OR _level IS NULL OR _level NOT IN ('view', 'edit') THEN false
     WHEN NOT EXISTS (
       SELECT 1
       FROM public.builder_stock_items i

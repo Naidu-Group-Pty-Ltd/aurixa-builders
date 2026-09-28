@@ -73,6 +73,7 @@ const ORG = randomUUID(); const OTHER_ORG = randomUUID(); const ITEM = randomUUI
 const people = {
   owner: randomUUID(), administrator: randomUUID(), manager: randomUUID(), member: randomUUID(),
   read_only: randomUUID(), denied: randomUUID(), suspended: randomUUID(), inactive: randomUUID(), outsider: randomUUID(),
+  delete_allowed: randomUUID(),
 };
 q1(`
   INSERT INTO public.builder_organisations(id, legal_name, org_type, status, is_active, activated_at)
@@ -91,10 +92,14 @@ q1(`
          (${lit(people.denied)}, ${lit(ORG)}, 'member', false, 'active'),
          (${lit(people.suspended)}, ${lit(ORG)}, 'member', false, 'suspended'),
          (${lit(people.inactive)}, ${lit(ORG)}, 'member', false, 'active'),
-         (${lit(people.outsider)}, ${lit(OTHER_ORG)}, 'owner', true, 'active');
+         (${lit(people.outsider)}, ${lit(OTHER_ORG)}, 'owner', true, 'active'),
+         (${lit(people.delete_allowed)}, ${lit(ORG)}, 'read_only', false, 'active');
   INSERT INTO public.builder_membership_permissions(membership_id, permission_key, scope_type, view_decision, edit_decision, delete_decision)
   SELECT m.id, 'tasks', 'organisation', 'inherit', 'deny', 'deny'
     FROM public.builder_organisation_memberships m WHERE m.builder_user_id = ${lit(people.denied)};
+  INSERT INTO public.builder_membership_permissions(membership_id, permission_key, scope_type, view_decision, edit_decision, delete_decision)
+  SELECT m.id, 'tasks', 'organisation', 'inherit', 'inherit', 'allow'
+    FROM public.builder_organisation_memberships m WHERE m.builder_user_id = ${lit(people.delete_allowed)};
   INSERT INTO public.builder_stock_items(id, organisation_id, lot_number, address_line, lifecycle_status)
   VALUES (${lit(ITEM)}, ${lit(ORG)}, '101', '1 Task Street', 'active');
 `);
@@ -113,6 +118,15 @@ check('an inactive user gets nothing', !may('inactive', 'view') && !may('inactiv
 check('another organisation\'s owner gets nothing', !may('outsider', 'view') && !may('outsider', 'edit'));
 check('nothing but tasks is answered on a stock scope', !may('owner', 'view', 'documents') && !may('owner', 'view', 'messages'));
 check('no one may delete through a stock scope', !may('owner', 'delete'));
+// FOUND BY THE INDEPENDENT RE-REVIEW: `_level NOT IN ('view', 'edit')` is NULL
+// for a NULL level, so the CASE fell through to the matrix, which reads a NULL
+// level as `delete` — and a read_only colleague with a tasks delete override
+// was answered TRUE where the old body refused. No caller passes NULL today;
+// the resolver refuses it anyway, so the new body is never more open.
+check('a NULL level is refused, even for a colleague whose override allows task deletes',
+  q1(`SELECT public.builder_resolve_stock_item_permission(
+    ${lit(people.delete_allowed)}::uuid, ${lit(ITEM)}::uuid, 'tasks', NULL)`) === 'f'
+  && may('delete_allowed', 'view') && !may('delete_allowed', 'edit'));
 // FOUND BY THE INDEPENDENT RE-REVIEW (28 Sep 2026): `builder_accessible_tasks`
 // asks the resolver about EVERY task in the network, so routing it through the
 // role matrix made "My tasks" pay a plpgsql call per task of every OTHER

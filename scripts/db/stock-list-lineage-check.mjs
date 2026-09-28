@@ -361,6 +361,40 @@ if (hasLineage) {
     p2.published === false && lifecycle(v2Own) === 'staged', JSON.stringify(p2));
 }
 
+// === RE-REVIEW: only a list that had PUBLISHED is given back ====================
+// v1 published (a, b). Draft v2 holds values back on a and adds x and y; its
+// pictures are not yet settled, so it never publishes. v3 keeps a, b and the
+// draft's y and drops x: it publishes, and `replaces` names v1 AND v2, because
+// the importer matched y while v2 supplied it. The builder deletes v3. Found by
+// the independent re-review on the first version of the exception below: v2
+// stopped being superseded, x's picture settled, the minute sweep published v2
+// and x — the lot v3 dropped, a sold one say — went live, and stayed live after
+// the list was added again.
+{
+  const org = organisation();
+  const v1 = upload(org);
+  const [a, b] = stage(org, v1, 2);
+  settle(org, v1, a);
+  settle(org, v1, b);
+  publish(v1);
+  const v2 = upload(org, { replaces: [v1] });
+  holdBack(a, v2);
+  const [x, y] = stage(org, v2, 2);
+  const v3 = upload(org, { replaces: [v1, v2] });
+  holdBack(a, v3);
+  holdBack(b, v3);
+  takeOver(y, v3);
+  settle(org, v3, y);
+  const p3 = publish(v3);
+  q1(`UPDATE public.builder_stock_uploads SET deleted_at = now() WHERE id = ${lit(v3)}::uuid`);
+  settle(org, v2, x);
+  check('a deleted replacement does not give back a DRAFT it replaced — only a list that had published',
+    p3.published === true && superseded(v2), JSON.stringify(p3));
+  q1('SELECT public.publish_ready_builder_stock_uploads()');
+  check('so the lot the replacement dropped never goes live, even once its picture settles',
+    lifecycle(x) === 'staged', `x ${lifecycle(x)}`);
+}
+
 // === RE-REVIEW NEW-1: deleting the version that replaced a list gives it back ====
 // v1 published; v2 matched every property, published and cut over (it REPLACED
 // v1). The builder deletes v2, whose properties are archived, and reads v1

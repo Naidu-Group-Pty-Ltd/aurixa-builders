@@ -59,10 +59,16 @@
  *     list again (new rows, no meeting with the draft) must not bring the
  *     abandoned draft back. A version that never published and was deleted
  *     supersedes nothing, as before. And a deleted version no longer holds
- *     down the list it REPLACED (named in its `replaces_upload_ids`): deleting
- *     it and reading that list again gives the list back, as uploading it
- *     again would. Found by the independent re-review: that list answered
- *     "superseded" and its properties stayed staged, with nothing saying why.
+ *     down a PUBLISHED list it REPLACED (named in its `replaces_upload_ids`):
+ *     deleting it and reading that list again gives the list back, as
+ *     uploading it again would. Found by the independent re-review: that list
+ *     answered "superseded" and its properties stayed staged, with nothing
+ *     saying why. Only a list that had published: `replaces_upload_ids` also
+ *     names a never-published draft whose staged row the replacement matched,
+ *     and excusing that draft let it publish a property the replacement had
+ *     dropped (a lot since sold, say) once its pictures settled — the case
+ *     the rule exists for, reopened by the first version of this exception
+ *     and found by the same re-review.
  * Two lists that have never met on a property do not supersede each other,
  * and both publish.
  *
@@ -187,7 +193,7 @@ CREATE OR REPLACE FUNCTION public.builder_stock_upload_superseded(p_upload_id uu
  SET search_path TO 'public', 'pg_temp'
 AS $function$
   WITH RECURSIVE this AS (
-    SELECT u.id, u.organisation_id, u.created_at
+    SELECT u.id, u.organisation_id, u.created_at, u.published_at
       FROM public.builder_stock_uploads u
      WHERE u.id = p_upload_id
   ),
@@ -230,7 +236,8 @@ AS $function$
         OR (newer.deleted_at IS NULL AND NOT newer.lineage_recorded)
         OR ((newer.deleted_at IS NULL
              OR (newer.published_at IS NOT NULL
-                 AND NOT (p_upload_id = ANY (coalesce(newer.replaces_upload_ids, '{}'::uuid[])))))
+                 AND NOT (p_upload_id = ANY (coalesce(newer.replaces_upload_ids, '{}'::uuid[]))
+                          AND (SELECT published_at FROM this) IS NOT NULL)))
             AND newer.id IN (SELECT id FROM lineage))
   );
 $function$;
