@@ -58,7 +58,11 @@
  *     cut over replaced the draft for good: deleting it later and adding the
  *     list again (new rows, no meeting with the draft) must not bring the
  *     abandoned draft back. A version that never published and was deleted
- *     supersedes nothing, as before.
+ *     supersedes nothing, as before. And a deleted version no longer holds
+ *     down the list it REPLACED (named in its `replaces_upload_ids`): deleting
+ *     it and reading that list again gives the list back, as uploading it
+ *     again would. Found by the independent re-review: that list answered
+ *     "superseded" and its properties stayed staged, with nothing saying why.
  * Two lists that have never met on a property do not supersede each other,
  * and both publish.
  *
@@ -188,7 +192,7 @@ AS $function$
      WHERE u.id = p_upload_id
   ),
   newer AS (
-    SELECT n.id, n.status, n.deleted_at, n.published_at, n.lineage_recorded
+    SELECT n.id, n.status, n.deleted_at, n.published_at, n.lineage_recorded, n.replaces_upload_ids
       FROM public.builder_stock_uploads n
       JOIN this ON n.organisation_id = this.organisation_id
      WHERE n.id <> this.id
@@ -224,7 +228,9 @@ AS $function$
       FROM newer
      WHERE (newer.deleted_at IS NULL AND newer.status IN ('uploaded', 'parsing', 'imported'))
         OR (newer.deleted_at IS NULL AND NOT newer.lineage_recorded)
-        OR ((newer.deleted_at IS NULL OR newer.published_at IS NOT NULL)
+        OR ((newer.deleted_at IS NULL
+             OR (newer.published_at IS NOT NULL
+                 AND NOT (p_upload_id = ANY (coalesce(newer.replaces_upload_ids, '{}'::uuid[])))))
             AND newer.id IN (SELECT id FROM lineage))
   );
 $function$;

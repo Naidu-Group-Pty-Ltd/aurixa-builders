@@ -361,6 +361,38 @@ if (hasLineage) {
     p2.published === false && lifecycle(v2Own) === 'staged', JSON.stringify(p2));
 }
 
+// === RE-REVIEW NEW-1: deleting the version that replaced a list gives it back ====
+// v1 published; v2 matched every property, published and cut over (it REPLACED
+// v1). The builder deletes v2, whose properties are archived, and reads v1
+// again. v1 is the list v2 replaced, not a draft v2 abandoned, so reading it
+// again publishes it — as uploading it again would. Measured by the independent
+// re-review on the first version of this rule: v1 answered "superseded" and its
+// properties stayed staged, with nothing telling the builder why.
+{
+  const org = organisation();
+  const v1 = upload(org);
+  const live = stage(org, v1, 2);
+  live.forEach((id) => settle(org, v1, id));
+  publish(v1);
+  const v2 = upload(org, { replaces: [v1] });
+  live.forEach((id) => holdBack(id, v2));
+  const p2 = publish(v2);
+  q1(`UPDATE public.builder_stock_uploads SET deleted_at = now() WHERE id = ${lit(v2)}::uuid`);
+  q1(`UPDATE public.builder_stock_items SET lifecycle_status = 'archived'
+       WHERE id IN (${live.map((id) => `${lit(id)}::uuid`).join(', ')})`);
+  // What reading v1 again leaves: its published stamp cleared and the
+  // properties it matched staged under it again.
+  q1(`UPDATE public.builder_stock_uploads SET published_at = NULL WHERE id = ${lit(v1)}::uuid`);
+  q1(`UPDATE public.builder_stock_items SET upload_id = ${lit(v1)}::uuid, lifecycle_status = 'staged',
+         pending_upload_id = NULL, pending_patch = NULL
+       WHERE id IN (${live.map((id) => `${lit(id)}::uuid`).join(', ')})`);
+  check('a list is not held down by the deleted version that replaced it',
+    p2.published === true && !superseded(v1), JSON.stringify(p2));
+  const again = publish(v1);
+  check('so reading it again publishes it, and its properties are live',
+    again.published === true && live.every((id) => lifecycle(id) === 'active'), JSON.stringify(again));
+}
+
 // === REVIEW: supersession is decided ONCE, by publish ===========================
 // It was decided again inside the patch, after readiness: a list created in
 // between made the cut-over patch only rows this upload already supplied, and
