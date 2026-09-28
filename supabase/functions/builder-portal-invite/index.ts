@@ -53,6 +53,8 @@ import {
 } from '../_shared/builderInvite.ts';
 import { sendBuilderEmail } from '../_shared/builderInviteEmail.ts';
 import { getPortalClientIp } from '../_shared/requestSecurity.ts';
+import { authRateLimitedResponse, enforceSessionRateLimit } from '../_shared/authRateLimit.ts';
+import { INVITE_SEND_BUDGETS, INVITE_SEND_SCOPE } from '../_shared/sessionRateLimit.pure.ts';
 import {
   resolveBuilderSession,
   builderGovernanceError,
@@ -62,6 +64,7 @@ import {
   type InviteSendState,
   mayHandLinkToInviter,
   membershipStatusForGrant,
+  tenantInviteResponse,
 } from '../_shared/builderInviteScope.pure.ts';
 
 
@@ -109,6 +112,33 @@ Deno.serve(async (req) => {
     }
     const caller = session.user;
 
+    /*
+     * A CEILING ON WHAT AN ADMINISTRATOR CAN SEND.
+     *
+     * `invite` and `resend` each mint a token and send an email through the
+     * mail provider every tenant shares, and nothing bounded them. Counted per
+     * person and per organisation, on ids the validated session supplied —
+     * never the source address, which behind the portal's proxy can be one
+     * address for everybody. After the role gate, so a member cannot spend the
+     * organisation's allowance on requests that were going to be refused; and
+     * before anything is looked up, written, minted or sent, so a refused
+     * request leaves no trace and the refusal cannot vary with the address.
+     */
+    if (action === 'invite' || action === 'resend') {
+      const ceiling = await enforceSessionRateLimit(supabase, {
+        scope: INVITE_SEND_SCOPE,
+        userId: caller.id,
+        organisationId: activeOrganisationId,
+        budgets: INVITE_SEND_BUDGETS,
+      });
+      if (!ceiling.allowed) {
+        console.warn('[builder-portal-invite] invitation ceiling reached',
+          { refused_by: ceiling.refusedBy, degraded: ceiling.degraded });
+        return authRateLimitedResponse(corsHeaders, ceiling.retryAfterSeconds,
+          'Too many invitations have been sent recently. Please try again later.');
+      }
+    }
+
     const logInviteActivity = async (
       logAction: string,
       builderUserId: string,
@@ -155,11 +185,24 @@ Deno.serve(async (req) => {
       return user ?? null;
     };
 
-    const issueInvite = async (target: { id: string; email: string; name: string | null }, resent: boolean) => {
+    /**
+     * Mint, store, send and log an invitation, and say what happened. Each
+     * action shapes its own answer from this, because they owe their callers
+     * different things: `invite` reaches an arbitrary address and may say
+     * nothing that varies with it (`tenantInviteResponse`); `resend` reaches
+     * only this organisation's own waiting invitee.
+     */
+    const issueInvite = async (
+      target: { id: string; email: string; name: string | null },
+      resent: boolean,
+    ): Promise<
+      | { readonly refused: Response }
+      | { readonly refused: null; readonly emailSent: boolean; readonly expiresAt: Date; readonly handedLink: string | null }
+    > => {
       const minted = await mintBuilderInvite();
       if (!minted) {
         console.error('[builder-portal-invite] hashing unavailable — refusing to store an unpeppered invite token');
-        return json({ error: 'Invite service unavailable' }, 503);
+        return { refused: json({ error: 'Invite service unavailable' }, 503) };
       }
       const { token: inviteToken, tokenHash: inviteTokenHash, expiresAt } = minted;
 
@@ -256,12 +299,12 @@ Deno.serve(async (req) => {
         }
       }
 
-      return json({
-        ...GENERIC_OK,
-        email_sent: emailSent,
-        expires_at: expiresAt.toISOString(),
-        invite_url: mayHandLinkToInviter({ send: sendState }) ? inviteUrl : undefined,
-      });
+      return {
+        refused: null,
+        emailSent,
+        expiresAt,
+        handedLink: mayHandLinkToInviter({ send: sendState }) ? inviteUrl : null,
+      };
     };
 
     // ---------------------------------------------------------------- invite
@@ -288,8 +331,10 @@ Deno.serve(async (req) => {
       let target = existing ?? null;
       if (target && (target.revoked_at || target.status === 'revoked')) {
         // A revoked account is an operator decision this surface may not
-        // undo — and saying so would confirm the account exists. Generic.
-        return json({ ...GENERIC_OK, email_sent: false });
+        // undo — and saying so would confirm the account exists. The same
+        // answer a brand-new address gets; it used to add `email_sent: false`,
+        // which beside a working mail provider said exactly that.
+        return json(tenantInviteResponse({ inviteUrl: null }));
       }
       if (!target) {
         const { data: created, error: createError } = await supabase
@@ -299,8 +344,8 @@ Deno.serve(async (req) => {
           .single();
         if (createError) {
           if (String(createError.code) === '23505') {
-            // The case-variant race: the account exists. Same generic path.
-            return json({ ...GENERIC_OK, email_sent: false });
+            // The case-variant race: the account exists. Same generic answer.
+            return json(tenantInviteResponse({ inviteUrl: null }));
           }
           throw createError;
         }
@@ -391,13 +436,17 @@ Deno.serve(async (req) => {
             action: { label: 'Open the Builder Portal', url: builderAppBaseUrl() },
           },
         });
-        await logInviteActivity('builder_membership_granted', target.id, { membership_role: role });
-        // Was `!!resendApiKey` — which reported a send that a 403 from an
-        // unverified sender domain had refused. It reports the send now.
-        return json({ ...GENERIC_OK, email_sent: notice.sent });
+        // Whether the notice left is the operator's to read, in the activity
+        // log; it used to be the response's `email_sent`, and the response is
+        // no place for anything that differs from a brand-new address's.
+        await logInviteActivity('builder_membership_granted', target.id,
+          { membership_role: role, email_sent: notice.sent });
+        return json(tenantInviteResponse({ inviteUrl: null }));
       }
 
-      return await issueInvite(target, false);
+      const issued = await issueInvite(target, false);
+      if (issued.refused) return issued.refused;
+      return json(tenantInviteResponse({ inviteUrl: issued.handedLink }));
     }
 
     // ---------------------------------------------------------------- resend
@@ -413,7 +462,19 @@ Deno.serve(async (req) => {
           code: 'already_active',
         }, 409);
       }
-      return await issueInvite(target, true);
+      const issued = await issueInvite(target, true);
+      if (issued.refused) return issued.refused;
+      // Unchanged: `resend` reaches only this organisation's own waiting
+      // invitee (`loadScopedUser`), and nothing below depends on whether that
+      // person holds an account anywhere else — the expiry is always the one
+      // just minted, and `email_sent` is the provider's answer about an
+      // address this organisation typed itself.
+      return json({
+        ...GENERIC_OK,
+        email_sent: issued.emailSent,
+        expires_at: issued.expiresAt.toISOString(),
+        invite_url: issued.handedLink ?? undefined,
+      });
     }
 
     // ---------------------------------------------------------- revoke_invite

@@ -57,6 +57,12 @@
  */
 
 import { getPortalClientIp } from './requestSecurity.ts';
+import {
+  enforceSessionLimits,
+  sessionRateLimitDimensions,
+  type SessionRateLimitBudgets,
+  type SessionRateLimitDecision,
+} from './sessionRateLimit.pure.ts';
 
 /**
  * The Supabase client, structurally. `rpc()` returns a PostgrestFilterBuilder —
@@ -248,6 +254,29 @@ export async function enforceAuthRateLimit(
     return { ...decision, ip: gate.ip, ipTrusted: gate.ipTrusted };
   }
   return { allowed: true, retryAfterSeconds: 0, degraded: gate.degraded, ip: gate.ip, ipTrusted: gate.ipTrusted };
+}
+
+/**
+ * The counterpart for an act a signed-in person takes for an organisation:
+ * consume the person's bucket, then the organisation's, both keyed on ids the
+ * validated session supplied. No address dimension — see
+ * `sessionRateLimit.pure.ts` for why one would pool every tenant behind the
+ * proxy into one bucket. Same backends and the same never-500 posture as
+ * every other door, because it is `consumeAuthRateLimit` underneath.
+ */
+export function enforceSessionRateLimit(
+  supabase: SupabaseLike,
+  options: {
+    scope: string;
+    userId: string;
+    organisationId: string;
+    budgets: SessionRateLimitBudgets;
+  },
+): Promise<SessionRateLimitDecision> {
+  return enforceSessionLimits(
+    sessionRateLimitDimensions(options),
+    (key, budget) => consumeAuthRateLimit(supabase, key, budget),
+  );
 }
 
 /**

@@ -269,6 +269,20 @@ async function audit() {
   await orphan('sessions / temporary auth', 'cc', 'user_sessions', 'user_id', 'custom_users');
   await marker('sessions / temporary auth', 'cc', 'user_sessions');
   await orphan('sessions / temporary auth', 'net', 'builder_portal_sessions', 'builder_user_id', 'builder_portal_users');
+
+  // ---- rate-limit buckets ----------------------------------------------------
+  // The invitation ceiling (28 Sep 2026) keys its buckets on ids:
+  // `binv_user:<account>` and `binv_org:<organisation>`. No real account or
+  // organisation is ever deleted here, while every proof deletes its own — so
+  // a bucket naming an id that no longer exists is what a proof left behind.
+  await count('rate-limit buckets', 'net', 'auth_rate_limits: invitation ceiling → missing account or organisation',
+    ['auth_rate_limits.bucket_key', 'builder_portal_users.id', 'builder_organisations.id'], `
+    SELECT count(*)::int AS n, (array_agg(left(md5(x.bucket_key), 8)))[1:5] AS refs
+      FROM public.auth_rate_limits x
+     WHERE (x.bucket_key LIKE 'binv\\_user:%'
+            AND NOT EXISTS (SELECT 1 FROM public.builder_portal_users u WHERE u.id::text = substr(x.bucket_key, 11)))
+        OR (x.bucket_key LIKE 'binv\\_org:%'
+            AND NOT EXISTS (SELECT 1 FROM public.builder_organisations o WHERE o.id::text = substr(x.bucket_key, 10)))`);
 }
 
 // ---------------------------------------------------------------------------

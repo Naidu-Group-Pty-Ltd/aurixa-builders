@@ -157,6 +157,12 @@ async function cleanup(stage) {
         (SELECT id FROM public.builder_organisations WHERE legal_name LIKE 'Smoke Rollout %');
       ALTER TABLE public.builder_project_status_history
         ENABLE TRIGGER trg_builder_project_status_history_append_only;
+      -- The invitation ceiling's buckets for these accounts and organisations,
+      -- named by id before the rows that own them go.
+      DELETE FROM public.auth_rate_limits WHERE bucket_key IN (
+        SELECT 'binv_user:' || id::text FROM public.builder_portal_users WHERE email LIKE '${MARK}-%@example.com'
+        UNION ALL
+        SELECT 'binv_org:' || id::text FROM public.builder_organisations WHERE legal_name LIKE 'Smoke Rollout %');
       DELETE FROM public.builder_organisations WHERE legal_name LIKE 'Smoke Rollout %';
       DELETE FROM public.builder_portal_users WHERE email LIKE '${MARK}-%@example.com';
     END $$;`;

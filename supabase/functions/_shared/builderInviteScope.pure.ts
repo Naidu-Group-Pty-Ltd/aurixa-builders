@@ -146,6 +146,47 @@ export function mayHandLinkToInviter(args: { readonly send: InviteSendState }): 
   return args.send === "not_configured";
 }
 
+/** Everything a tenant administrator's `invite` may be told. */
+export interface TenantInviteResponse {
+  readonly success: true;
+  readonly invite_url?: string;
+}
+
+/**
+ * THE ONE ANSWER `invite` GIVES A TENANT ADMINISTRATOR, WHATEVER THE ADDRESS IS.
+ *
+ * It used to vary with the state of an account that may belong to somebody the
+ * caller has never met:
+ *
+ *   a brand-new or pending address   success, email_sent, expires_at
+ *   an address that already signs in success, email_sent             (no expiry)
+ *   an account an operator revoked   success, email_sent: false
+ *
+ * So `expires_at`'s ABSENCE said "this address already has a Builder Portal
+ * account", and `email_sent: false` beside a working mail provider said "and it
+ * was revoked" — one request per guess, over other organisations' staff.
+ *
+ * Neither field is needed by the caller. `expires_at` was read by nothing in the
+ * product, and expiry is enforced where the token is accepted, not by what the
+ * inviter is told. Whether an email left is recorded in the activity log, which
+ * only an operator can read.
+ *
+ * So this takes only the link, and has no parameter through which anything else
+ * about the invitee could arrive. Where the deployment HAS a mail provider —
+ * production does — the link is never handed over (`mayHandLinkToInviter`) and
+ * every address gets `{ success: true }`, byte for byte.
+ *
+ * One residual is stated rather than hidden. On a deployment with NO mail
+ * provider the inviter is the only postman, and only an invitation that minted
+ * a link has one to give: an address that already signs in is added without
+ * one and a revoked account is given nothing. There, and only there, the link's
+ * presence still separates "must set a password" from "need not". Closing that
+ * would mean withholding the one delivery channel such a deployment has.
+ */
+export function tenantInviteResponse(args: { readonly inviteUrl: string | null }): TenantInviteResponse {
+  return args.inviteUrl ? { success: true, invite_url: args.inviteUrl } : { success: true };
+}
+
 export type AcceptanceRefusal =
   | "token_organisation_not_a_membership"
   | "unscoped_token_spans_organisations"
