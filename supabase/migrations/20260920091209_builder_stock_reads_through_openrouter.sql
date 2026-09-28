@@ -1,0 +1,73 @@
+-- ============================================================================
+-- RECORD ONLY. Applied to production out of band; deliberately NOT re-executed.
+--
+-- Moves the assignment to OpenRouter. The repository file of the same name carries
+-- the same scoped upsert; production's row is what this one wrote, because the
+-- repository file's WHERE route = 'gateway' then matched nothing.
+--
+-- ledger version   20260920091209
+-- ledger name      builder_stock_reads_through_openrouter
+-- applied          20 Sep 2026 09:12:09 UTC, straight to production through
+--                  the Supabase apply_migration tool, which records the SQL on
+--                  the ledger row (this file's body is read back from that row)
+-- body md5         d04780b40bdf6b03f60b5e701924cc0d   (of the recorded body with each leading --| removed)
+-- effect carried   20260920100000_builder_stock_reads_through_openrouter.sql
+--
+-- WHY IT DOES NOT EXECUTE. Production ran this version BEFORE the repository
+-- file above, which then ran on top of it through the deploy lane; production's
+-- end state is therefore that file's. A rebuild runs files in VERSION order, so
+-- this body — if it executed — would run AFTER that file instead, and replace
+-- what production has with what production replaced. Measured on 28 Sep 2026:
+-- restored as executable SQL, the six out-of-band records leave four ai_budget_*
+-- function bodies different from production's. Restored as records, a rebuild
+-- reproduces production on every object they touched, including that only
+-- service_role may execute the five ai_budget_* functions.
+--
+-- WHY IT EXISTS. `production-rollout verify` halts on any ledger version the
+-- repository does not carry, and it halted on this one from 20 Sep 2026. Deleting
+-- this file brings that halt back; it does not change the database.
+--
+-- Pinned by src/lib/__tests__/migrationLedgerRecords.spec.ts (the body recovers
+-- to the md5 above, and nothing here executes) and by
+-- scripts/db/ai-budget-rebuild-check.mjs (a rebuild equals production).
+-- ============================================================================
+-- >>> BEGIN RECORDED BODY
+--|-- Builder Stock's assisted reader moves to OpenRouter.
+--|--   primary   openrouter  openai/gpt-5.6-luna      OPENROUTER_API_KEY
+--|--   fallback  openrouter  google/gemini-3.8-flash  OPENROUTER_API_KEY
+--|--
+--|-- Not a new integration: llmRouter has supported the `openrouter` route since
+--|-- the repository's first commit and llmUsageBinding already maps it to
+--|-- OPENROUTER_API_KEY for metering. Scoped to the gateway row this repository
+--|-- seeded, so an operator's own chain is left alone.
+--|
+--|INSERT INTO public.agent_model_assignments (
+--|  agent_key, agent_label, agent_category, agent_description,
+--|  route, model_id, fallback_chain, temperature, max_tokens, is_active
+--|)
+--|VALUES (
+--|  'builder_stock_extraction',
+--|  'Builder stock extraction',
+--|  'builder_portal',
+--|  'Reads properties out of stock lists the deterministic parsers cannot: PDF '
+--|    || 'brochures, Word documents, photographed schedules. Must support tool '
+--|    || 'calling — the answer is returned through record_stock_items. Capped at '
+--|    || 'US$10 per calendar month by ai_budget_reserve.',
+--|  'openrouter',
+--|  'openai/gpt-5.6-luna',
+--|  '[{"route": "openrouter", "model_id": "google/gemini-3.8-flash"}]'::jsonb,
+--|  0,
+--|  8000,
+--|  true
+--|)
+--|ON CONFLICT (agent_key) DO UPDATE
+--|   SET route          = EXCLUDED.route,
+--|       model_id       = EXCLUDED.model_id,
+--|       fallback_chain = EXCLUDED.fallback_chain,
+--|       temperature    = EXCLUDED.temperature,
+--|       max_tokens     = EXCLUDED.max_tokens,
+--|       is_active      = true,
+--|       agent_description = EXCLUDED.agent_description,
+--|       updated_at     = now()
+--| WHERE public.agent_model_assignments.route = 'gateway';
+-- >>> END RECORDED BODY
