@@ -758,6 +758,13 @@ try {
   record('I: a membership granted to an account that cannot sign in yet WAITS for its own invitation',
     bInvite.status === 200 && bPending?.status === 'invited',
     `invite=${bInvite.status} B.status=${bPending?.status} role=${bPending?.membership_role}`);
+  // The legitimate case, asserted rather than assumed: a brand-new address
+  // belongs nowhere else, so the inviter still gets the link to pass on by hand
+  // where mail is not configured. Withholding it HERE would have broken every
+  // ordinary invitation, which is the regression this fix had to avoid.
+  record('I: and a first invitation to an address that belongs nowhere else still hands its inviter the link',
+    bInvite.status === 200 && bInvite.json?.email_sent === false && !!bInvite.json?.invite_url,
+    `email_sent=${bInvite.json?.email_sent} invite_url=${bInvite.json?.invite_url ? 'returned' : 'ABSENT'}`);
 
   // A now invites the same address. This is the attacker's move.
   const aInvite = await call('builder-portal-invite',
@@ -767,9 +774,12 @@ try {
   record('I: the second organisation may invite the same address, and its grant waits too',
     aInvite.status === 200 && aPending?.status === 'invited',
     `invite=${aInvite.status} A.status=${aPending?.status}`);
-  // The link is the delivery mechanism the takeover needed. Every Builder send
-  // is currently refused by the mail provider, so before the fix this response
-  // carried a working credential for B's pending seat.
+  // The link is the delivery mechanism the takeover needed, and this run's own
+  // recipient is a reserved `@example.com` name the provider refuses — so the
+  // send fails here for the same reason every proof send always has (doc 65
+  // §4), and before the fix this response carried a working credential for B's
+  // pending seat. The withholding is what makes that unreachable; note the
+  // assertion above proves it is withheld from A while still returned to B.
   record('I: the one-time link is WITHHELD from an organisation the address does not belong to',
     aInvite.status === 200 && !aInvite.json?.invite_url,
     `email_sent=${aInvite.json?.email_sent} invite_url=${aInvite.json?.invite_url ? 'RETURNED' : 'absent'}`);
