@@ -380,6 +380,26 @@ describe('what the independent review found in the first fix', () => {
     expect(invite).toMatch(/outcome\.reason === 'not_configured' \? 'not_configured' : 'failed'/);
   });
 
+  it('reads the send outcome by narrowing the union, never through a derived string', () => {
+    /*
+     * `reason` exists only on the unsent arm of `InviteEmailOutcome`, and a
+     * derived `sendState` string cannot carry that discrimination back —
+     * `deno check` rejected exactly that (TS2339) after the whole local suite
+     * had passed, because Deno is not installed in the development sandbox and
+     * CI is the only place this class is caught. This assertion is the local
+     * half: every read of `outcome.reason` sits inside an `if (!outcome.sent)`.
+     */
+    const reads = [...invite.matchAll(/outcome\.reason/g)].map((m) => m.index ?? 0);
+    expect(reads.length).toBeGreaterThan(0);
+    const guard = invite.indexOf('if (!outcome.sent) {');
+    expect(guard).toBeGreaterThan(-1);
+    const guardEnd = invite.indexOf('\n      }', guard);
+    for (const at of reads) {
+      expect(at, 'a reason read outside the unsent branch').toBeGreaterThan(guard);
+      expect(at, 'a reason read after the unsent branch closes').toBeLessThan(guardEnd);
+    }
+  });
+
   it('the promoter reports whether it promoted anything, and every caller reads it', () => {
     // A zero-row update carries no error, so silence used to read as success:
     // a `suspended` membership matched nothing and the caller emailed "you now

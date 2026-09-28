@@ -241,14 +241,19 @@ Deno.serve(async (req) => {
        * that went wrong. The response is now the SAME SHAPE for every address,
        * which is what removes the oracle rather than narrowing it.
        */
-      const sendState: InviteSendState = outcome.sent
-        ? 'sent'
-        : outcome.reason === 'not_configured' ? 'not_configured' : 'failed';
-      if (sendState === 'failed') {
-        console.warn('[builder-portal-invite] the invitation email did not leave; no link is returned', {
-          reason: outcome.reason,
-          builder_user_id: target.id,
-        });
+      // Narrowed on `outcome` itself, not on `sendState`: `reason` exists only
+      // on the unsent arm of the union, and a derived string cannot carry that
+      // discrimination back. (`deno check` is what says so; it cannot run in
+      // this sandbox, so CI is where this class is caught.)
+      let sendState: InviteSendState = 'sent';
+      if (!outcome.sent) {
+        sendState = outcome.reason === 'not_configured' ? 'not_configured' : 'failed';
+        if (sendState === 'failed') {
+          console.warn('[builder-portal-invite] the invitation email did not leave; no link is returned', {
+            reason: outcome.reason,
+            builder_user_id: target.id,
+          });
+        }
       }
 
       return json({
