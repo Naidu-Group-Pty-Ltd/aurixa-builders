@@ -121,21 +121,59 @@ const cookieFrom = (setCookies) => (setCookies ?? [])
 const ORGS_SQL = `SELECT id FROM public.builder_organisations WHERE legal_name LIKE ${sqlLit(`Smoke Rollout ${TAG} %`)}`;
 
 /**
- * Everything this run made, and nothing else. The mailbox's own account is
- * removed with it: a proof that leaves a real address holding a membership in
- * a deleted organisation has not cleaned up.
+ * THE MAILBOX'S ACCOUNT IS REMOVED BY ID, AND ONLY IF THIS RUN CREATED IT.
+ *
+ * The first version of this deleted `WHERE email = RECIPIENT`, in a cleanup
+ * that runs BEFORE anything else — so pointed at an operator's own address,
+ * which is exactly the kind of address this phase asks for, it would have
+ * destroyed a real account and every membership on it before sending a thing.
+ * A proof must not be able to do more damage than the defect it measures.
+ *
+ * So: the recipient is never named in a DELETE. `MAILBOX` is filled in only
+ * with the id of an account this run brought into existence, the pre-flight
+ * below refuses to run at all if the address already has one, and everything
+ * else is matched by this run's own disposable patterns.
  */
+const MAILBOX = { createdId: null };
+
 async function cleanup(stage) {
+  // Two things, joined by OR rather than by a clever expression: the accounts
+  // this run's own disposable pattern names, and — only once it exists — the
+  // one account this run created for the mailbox, by id.
+  const mineById = MAILBOX.createdId ? ` OR u.id = ${id(MAILBOX.createdId)}` : '';
+  const MINE_SQL = `SELECT u.id FROM public.builder_portal_users u
+                     WHERE u.email LIKE ${sqlLit(`${MARK}-${TAG}-%@example.com`)}${mineById}`;
   await q(`cleanup ${stage}`, `
     DELETE FROM public.builder_organisation_memberships
-     WHERE organisation_id IN (${ORGS_SQL});
-    DELETE FROM public.builder_portal_sessions
-     WHERE builder_user_id IN (
-       SELECT id FROM public.builder_portal_users
-        WHERE email LIKE ${sqlLit(`${MARK}-${TAG}-%@example.com`)} OR email = ${sqlLit(RECIPIENT)});
+     WHERE organisation_id IN (${ORGS_SQL}) OR builder_user_id IN (${MINE_SQL});
+    DELETE FROM public.builder_portal_sessions WHERE builder_user_id IN (${MINE_SQL});
     DELETE FROM public.builder_organisations WHERE legal_name LIKE ${sqlLit(`Smoke Rollout ${TAG} %`)};
-    DELETE FROM public.builder_portal_users
-     WHERE email LIKE ${sqlLit(`${MARK}-${TAG}-%@example.com`)} OR email = ${sqlLit(RECIPIENT)};`);
+    DELETE FROM public.builder_portal_users WHERE id IN (${MINE_SQL});`);
+}
+
+/*
+ * REFUSED BEFORE ANYTHING IS TOUCHED: an address that already has an account.
+ *
+ * This phase asks for an operator's own mailbox, which is precisely the kind of
+ * address likely to hold a real Builder Portal account — and it must create the
+ * account it then invites, and remove it afterwards. Against an existing
+ * account it would be inviting a real person into a disposable organisation and
+ * then deleting their account. There is no safe version of that, so it is not
+ * attempted: use an address with no Builder Portal account. A plus-addressed
+ * alias reaches the same inbox and is still a mailbox the operator controls.
+ */
+const already = (await q('does this mailbox already have an account?', `
+  SELECT count(*)::int AS n FROM public.builder_portal_users
+   WHERE email = ${sqlLit(RECIPIENT)}`))[0];
+if (Number(already?.n) !== 0) {
+  console.error(
+    `email delivery proof refuses this mailbox: it already has a Builder Portal account.\n` +
+    'This phase creates the account it invites and removes it afterwards, so running it here would\n' +
+    'invite a real person into a disposable organisation and then delete their account.\n' +
+    'Use an address with no account — a plus-addressed alias (you+proof@your-domain) reaches the\n' +
+    'same inbox and is still a mailbox you control.',
+  );
+  process.exit(1);
 }
 
 let crashed = null;
@@ -239,6 +277,9 @@ try {
   const invite = await call('builder-portal-invite',
     { action: 'invite', email: RECIPIENT, name: 'Delivery Proof', membership_role: 'read_only' }, cookie);
   record('1: the invitation door accepted the request', invite.status === 200, `status=${invite.status}`);
+  // From here the cleanup may remove this account, because this run made it.
+  MAILBOX.createdId = (await q('the account this run created', `
+    SELECT id FROM public.builder_portal_users WHERE email = ${sqlLit(RECIPIENT)}`))[0]?.id ?? null;
   record('1: THE PROVIDER ACCEPTED THE INVITATION EMAIL — it left this platform',
     invite.json?.email_sent === true,
     `email_sent=${invite.json?.email_sent}. false means the provider refused it; the reason is now in ` +
@@ -275,8 +316,8 @@ try {
     SELECT (SELECT count(*) FROM public.builder_organisations
              WHERE legal_name LIKE ${sqlLit(`Smoke Rollout ${TAG} %`)})::int AS orgs,
            (SELECT count(*) FROM public.builder_portal_users
-             WHERE email = ${sqlLit(RECIPIENT)}
-                OR email LIKE ${sqlLit(`${MARK}-${TAG}-%@example.com`)})::int AS users`))[0];
+             WHERE email LIKE ${sqlLit(`${MARK}-${TAG}-%@example.com`)}
+                ${MAILBOX.createdId ? `OR id = ${id(MAILBOX.createdId)}` : ''})::int AS users`))[0];
   record('cleanup: the disposable organisation and the mailbox\'s account are both gone',
     Number(residue.orgs) === 0 && Number(residue.users) === 0,
     `orgs=${residue.orgs} users=${residue.users}`);
