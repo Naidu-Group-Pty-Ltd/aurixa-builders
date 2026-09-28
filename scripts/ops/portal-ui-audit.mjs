@@ -92,6 +92,31 @@ try {
   const projectId = activated.projects?.[0]?.id ?? null;
   record('0: both activations reach the builder and open a project', activated.done, `${activated.projects?.length ?? 0} project(s) in ${secs(activated)}`);
 
+  // --- Server authority on the activation's tasks (read-only must not edit) ------------------
+  {
+    const collab = (body, who) => portal('builder-portal-collaboration', body, who.cookie);
+    const task = (await net('activation task', `
+      SELECT id, row_version, status FROM public.builder_tasks
+       WHERE scope_type = 'stock_item' AND scope_id = ${id(byLot['101'])} ORDER BY created_at LIMIT 1`))[0] ?? null;
+    const viewerCreate = await collab({ operation: 'upsert_task', scope_type: 'stock_item', scope_id: byLot['101'],
+      title: 'A read-only colleague writes a task' }, people.viewer);
+    const viewerEdit = task ? await collab({ operation: 'upsert_task', task_id: task.id, expected_version: Number(task.row_version),
+      status: 'done', reason: 'read-only probe' }, people.viewer) : { status: 0 };
+    const after = task ? (await net('task after', `SELECT status FROM public.builder_tasks WHERE id = ${id(task.id)}`))[0] : null;
+    record('T: a read-only colleague cannot create a task on an activated property', viewerCreate.status === 403,
+      `HTTP ${viewerCreate.status}${viewerCreate.json?.error ? ` "${viewerCreate.json.error}"` : ''}`);
+    record('T: a read-only colleague cannot change an activation task', viewerEdit.status === 403 && after?.status === task?.status,
+      `HTTP ${viewerEdit.status}; status ${task?.status} → ${after?.status}`);
+    const memberCreate = await collab({ operation: 'upsert_task', scope_type: 'stock_item', scope_id: byLot['101'],
+      title: 'A member writes a task' }, people.member);
+    record('T: a member (tasks: view and edit) can create one', memberCreate.status === 200, `HTTP ${memberCreate.status}`);
+    const other = await seedOrganisation(TAG, 'outsider');
+    const outsiderCreate = await collab({ operation: 'upsert_task', scope_type: 'stock_item', scope_id: byLot['101'],
+      title: 'Another organisation writes a task' }, other);
+    record('T: another organisation cannot touch this organisation\'s activation tasks', [403, 404].includes(outsiderCreate.status),
+      `HTTP ${outsiderCreate.status}`);
+  }
+
   // --- Every offered route, every role, four widths --------------------------------------
   const routes = [
     ['dashboard', '/builder', /Dashboard|Active projects|Figures as at/i],

@@ -462,8 +462,14 @@ export const itemsOf = (orgId, extra = '') => net('items', `
 /** Two values that mean the same figure or the same words. */
 export function same(want, have) {
   if (want === null || want === undefined || want === '') return have === null || have === undefined || have === '';
-  if (typeof want === 'number') return have !== null && have !== undefined && Math.abs(Number(have) - want) < 1e-6;
-  return String(have ?? '') === String(want);
+  if (have === null || have === undefined) return false;
+  // A figure is a figure whichever way a reader spelled it: `numeric(12,2)`
+  // arrives as "749900.00" through one API and 749900 through another.
+  const figure = /^-?\d+(?:\.\d+)?$/;
+  if (figure.test(String(want).trim()) && figure.test(String(have).trim())) {
+    return Math.abs(Number(have) - Number(want)) < 1e-6;
+  }
+  return String(have) === String(want);
 }
 /** Field-by-field differences between what the document states and what was stored. */
 export function differences(wantRows, haveRows, fields = ITEM_FIELDS, key = 'lot_number') {
