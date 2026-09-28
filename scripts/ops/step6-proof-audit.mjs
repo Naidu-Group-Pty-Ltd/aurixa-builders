@@ -272,17 +272,23 @@ async function audit() {
 
   // ---- rate-limit buckets ----------------------------------------------------
   // The invitation ceiling (28 Sep 2026) keys its buckets on ids:
-  // `binv_user:<account>` and `binv_org:<organisation>`. No real account or
-  // organisation is ever deleted here, while every proof deletes its own — so
-  // a bucket naming an id that no longer exists is what a proof left behind.
+  // `binv_user:<account>` and `binv_org:<organisation>`. Every proof deletes the
+  // accounts and organisations it made, and removes their buckets first — so a
+  // bucket naming an id that no longer exists is what a proof left behind.
+  // Bounded to buckets used in the last seven days: the limiter never prunes
+  // its own rows, and an operator may delete a real account
+  // (`builder_admin_delete_user`), whose long-expired bucket would otherwise be
+  // reported here for ever. Every proof run is followed by this audit, well
+  // inside that window.
   await count('rate-limit buckets', 'net', 'auth_rate_limits: invitation ceiling → missing account or organisation',
-    ['auth_rate_limits.bucket_key', 'builder_portal_users.id', 'builder_organisations.id'], `
+    ['auth_rate_limits.bucket_key', 'auth_rate_limits.updated_at', 'builder_portal_users.id', 'builder_organisations.id'], `
     SELECT count(*)::int AS n, (array_agg(left(md5(x.bucket_key), 8)))[1:5] AS refs
       FROM public.auth_rate_limits x
-     WHERE (x.bucket_key LIKE 'binv\\_user:%'
-            AND NOT EXISTS (SELECT 1 FROM public.builder_portal_users u WHERE u.id::text = substr(x.bucket_key, 11)))
-        OR (x.bucket_key LIKE 'binv\\_org:%'
-            AND NOT EXISTS (SELECT 1 FROM public.builder_organisations o WHERE o.id::text = substr(x.bucket_key, 10)))`);
+     WHERE x.updated_at > now() - interval '7 days'
+       AND ((x.bucket_key LIKE 'binv\\_user:%'
+             AND NOT EXISTS (SELECT 1 FROM public.builder_portal_users u WHERE u.id::text = substr(x.bucket_key, 11)))
+         OR (x.bucket_key LIKE 'binv\\_org:%'
+             AND NOT EXISTS (SELECT 1 FROM public.builder_organisations o WHERE o.id::text = substr(x.bucket_key, 10))))`);
 }
 
 // ---------------------------------------------------------------------------

@@ -186,19 +186,15 @@ Deno.serve(async (req) => {
     };
 
     /**
-     * Mint, store, send and log an invitation, and say what happened. Each
-     * action shapes its own answer from this, because they owe their callers
-     * different things: `invite` reaches an arbitrary address and may say
-     * nothing that varies with it (`tenantInviteResponse`); `resend` reaches
-     * only this organisation's own waiting invitee.
+     * Mint, store, send and log an invitation. What the caller may be told is
+     * shaped by `tenantInviteResponse` at the call site: whether the email left
+     * and when the link expires go to the activity log, never to the answer,
+     * because an answer that varies with the address is an oracle (doc 67).
      */
     const issueInvite = async (
       target: { id: string; email: string; name: string | null },
       resent: boolean,
-    ): Promise<
-      | { readonly refused: Response }
-      | { readonly refused: null; readonly emailSent: boolean; readonly expiresAt: Date; readonly handedLink: string | null }
-    > => {
+    ): Promise<{ readonly refused: Response } | { readonly refused: null; readonly handedLink: string | null }> => {
       const minted = await mintBuilderInvite();
       if (!minted) {
         console.error('[builder-portal-invite] hashing unavailable — refusing to store an unpeppered invite token');
@@ -265,11 +261,12 @@ Deno.serve(async (req) => {
        * found:
        *
        *  * a FAILED send is attacker-triggerable (the provider limits sends per
-       *    second and this endpoint has no limiter of its own), and holding the
-       *    link for an unclaimed address lets the caller accept it themselves —
-       *    setting a password and stamping the mailbox verified on an account
-       *    bearing somebody else's address. Acceptance is scoped, so that
-       *    account reaches nowhere today; but an account that already signs in
+       *    second, and this endpoint had no limiter of its own; the ceiling doc
+       *    67 added bounds that without making a failure impossible to provoke),
+       *    and holding the link for an unclaimed address lets the caller accept
+       *    it themselves — setting a password and stamping the mailbox verified
+       *    on an account bearing somebody else's address. Acceptance is scoped,
+       *    so that account reaches nowhere today; but an account that already signs in
        *    is granted a LIVE membership whenever any organisation adds it
        *    later, correctly and by design, so the claim pays off the first time
        *    the real person is invited somewhere.
@@ -299,12 +296,7 @@ Deno.serve(async (req) => {
         }
       }
 
-      return {
-        refused: null,
-        emailSent,
-        expiresAt,
-        handedLink: mayHandLinkToInviter({ send: sendState }) ? inviteUrl : null,
-      };
+      return { refused: null, handedLink: mayHandLinkToInviter({ send: sendState }) ? inviteUrl : null };
     };
 
     // ---------------------------------------------------------------- invite
@@ -369,6 +361,46 @@ Deno.serve(async (req) => {
           status: membershipStatusForGrant({ accountIsActive }),
           granted_by: caller.id,
         });
+      if (membershipError && String(membershipError.code) === '23505') {
+        /*
+         * THIS ORGANISATION ALREADY HOLDS A LIVE SEAT FOR THEM, AND THE SEAT DECIDES.
+         *
+         * What happens next is read from that seat — this organisation's own row,
+         * which its administrators already see on the members list — never from
+         * the account behind it. Keyed on the account, a SECOND invitation of the
+         * same address answered 409 exactly when the address already signed in
+         * somewhere and 200 when it did not: the oracle the first answer stopped
+         * giving, one request later (doc 67 §2; found by the independent review).
+         *
+         *  * `suspended` — an administrator's decision an invitation may not undo,
+         *    so it is refused whatever the account is. Only an `active` seat can
+         *    be suspended from the portal, so this is the case that refused before.
+         *  * `active`, for an account that signs in — already a working member
+         *    here: nothing to grant and nothing to send, answered as every
+         *    invitation is.
+         *  * `invited` — the invitation still owed: promoted at once below for an
+         *    account that has since started signing in, re-sent otherwise.
+         */
+        const { data: seat, error: seatError } = await supabase
+          .from('builder_organisation_memberships')
+          .select('status')
+          .eq('builder_user_id', target.id)
+          .eq('organisation_id', activeOrganisationId)
+          .is('revoked_at', null)
+          .maybeSingle();
+        if (seatError) throw seatError;
+        if (!seat) throw new Error('the seat that refused the grant is no longer live');
+        if (seat.status === 'suspended') {
+          return json({
+            error: 'That person already has a membership here that is not waiting on an invitation. '
+              + 'Reactivate them on the members list instead.',
+            code: 'membership_not_promotable',
+          }, 409);
+        }
+        if (seat.status === 'active' && accountIsActive) {
+          return json(tenantInviteResponse({ inviteUrl: null }));
+        }
+      }
       if (membershipError && String(membershipError.code) === '23505' && accountIsActive) {
         /*
          * A LIVE ACCOUNT MUST END UP LIVE IN THIS ORGANISATION.
@@ -457,24 +489,21 @@ Deno.serve(async (req) => {
         return json({ error: 'This user has been revoked.' }, 409);
       }
       if (target.invite_accepted_at || target.password_hash) {
-        return json({
-          error: 'This account is already active. Use the password reset flow instead.',
-          code: 'already_active',
-        }, 409);
+        /*
+         * NOTHING IS OWED: THE PERSON ALREADY SIGNS IN.
+         *
+         * This answered 409 `already_active`. One invitation gives the caller a
+         * seat for ANY address it typed, so `invite` then `resend` told an
+         * administrator whether that address already had an account — the
+         * oracle `invite` no longer gives, by a second route (doc 67 §2; found
+         * by the independent review). It is answered as a re-sent invitation is,
+         * and nothing is sent: an account that signs in has nothing to accept.
+         */
+        return json(tenantInviteResponse({ inviteUrl: null }));
       }
       const issued = await issueInvite(target, true);
       if (issued.refused) return issued.refused;
-      // Unchanged: `resend` reaches only this organisation's own waiting
-      // invitee (`loadScopedUser`), and nothing below depends on whether that
-      // person holds an account anywhere else — the expiry is always the one
-      // just minted, and `email_sent` is the provider's answer about an
-      // address this organisation typed itself.
-      return json({
-        ...GENERIC_OK,
-        email_sent: issued.emailSent,
-        expires_at: issued.expiresAt.toISOString(),
-        invite_url: issued.handedLink ?? undefined,
-      });
+      return json(tenantInviteResponse({ inviteUrl: issued.handedLink }));
     }
 
     // ---------------------------------------------------------- revoke_invite

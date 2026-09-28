@@ -127,6 +127,48 @@ describe('every way builder-portal-invite can answer an invitation', () => {
     }
   });
 
+  it('a SECOND invitation of the same address is decided by this organisation\'s seat, never by the account', () => {
+    /*
+     * Found by the independent review. The first answer was the same for every
+     * address, but a repeat was not: an address that already signed in held an
+     * `active` seat after the first invitation, the repeat hit the live key, the
+     * account was active, nothing could be promoted — 409. Every other kind of
+     * address answered 200 twice. So two requests still told an administrator
+     * whether an arbitrary address had an account.
+     */
+    const start = block.indexOf("String(membershipError.code) === '23505'");
+    expect(start).toBeGreaterThan(-1);
+    const conflict = block.slice(start);
+    // The seat is read, and it is what decides.
+    expect(conflict).toMatch(/\.select\('status'\)/);
+    const suspended = conflict.indexOf("seat.status === 'suspended'");
+    const alreadyHere = conflict.indexOf("seat.status === 'active' && accountIsActive");
+    expect(suspended).toBeGreaterThan(-1);
+    expect(alreadyHere).toBeGreaterThan(-1);
+    // A suspended seat is refused, whatever the account is ...
+    expect(conflict.slice(suspended, suspended + 400)).toMatch(/409\)/);
+    // ... and an active member of this organisation is answered as everyone is.
+    expect(conflict.slice(alreadyHere, alreadyHere + 200)).toMatch(/return json\(tenantInviteResponse\(\{ inviteUrl: null \}\)\)/);
+    // The seat is read before any 409 in the branch can be reached.
+    expect(conflict.indexOf(".select('status')")).toBeLessThan(conflict.search(/409\)/));
+  });
+
+  it('resend answers the same whether or not the person already signs in', () => {
+    // Reached for ANY address once one invitation has given the caller a seat
+    // for it, so `invite` then `resend` was the same oracle by another route.
+    const resend = code.slice(code.indexOf("if (action === 'resend')"), code.indexOf("if (action === 'revoke_invite')"));
+    expect(resend.length).toBeGreaterThan(200);
+    expect(resend).not.toMatch(/already_active/);
+    const successes = [...resend.matchAll(/return (?:await )?json\((?![^)]*\b[45]\d\d\))/g)];
+    expect(successes.length).toBeGreaterThanOrEqual(2);
+    for (const m of successes) {
+      expect(resend.slice(m.index, m.index + 160), 'a resend success not shaped by tenantInviteResponse')
+        .toMatch(/json\(tenantInviteResponse\(/);
+    }
+    expect(resend).not.toMatch(/\bexpires_at\s*:/);
+    expect(resend).not.toMatch(/\bemail_sent\s*:/);
+  });
+
   it('still records whether the email left — in the activity log, where an operator reads it', () => {
     // Removing the field from the answer must not remove the evidence: the
     // invitation's send, and the access notice to an address that already

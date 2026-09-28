@@ -118,9 +118,11 @@ export type InviteSendState = "sent" | "not_configured" | "failed";
  * with returning the link whenever a send merely FAILED.
  *
  *  * **A failed send is attacker-triggerable.** The provider limits sends per
- *    second and `builder-portal-invite` has no rate limit of its own, so a
- *    caller can force `failed` at will. Holding the link for an address nobody
- *    has claimed yet lets the CALLER accept it: acceptance sets a password of
+ *    second, and `builder-portal-invite` had no rate limit of its own, so a
+ *    caller could force `failed` at will. (Its ceiling, doc 67, bounds that; it
+ *    does not make a failure impossible to provoke, so this rule stands.)
+ *    Holding the link for an address nobody has claimed yet lets the CALLER
+ *    accept it: acceptance sets a password of
  *    their choosing and stamps the mailbox verified, so they own an account
  *    bearing somebody else's address. Scoping acceptance stops that account
  *    reaching another organisation TODAY — but an account that already signs in

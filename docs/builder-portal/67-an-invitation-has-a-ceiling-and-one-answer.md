@@ -84,9 +84,28 @@ see 0 of its 2,699 rows), no edge function reads it, and the one reader a
 tenant reaches, `builder_visible_activity`, returns no metadata and admits no
 `portal_user` entry, which is what every invitation is logged against.
 
-`resend` keeps its shape. It reaches only the organisation's own waiting
-invitees, and nothing in its answer depends on whether that person holds an
-account anywhere else.
+**And the same answer the second time.** The independent review of this
+change found that the first answer was uniform and a repeat was not. After one
+invitation the caller's organisation holds a seat for any address it typed —
+`active` at once for an address that already signs in, `invited` for any other —
+and two more answers were keyed on the account behind that seat:
+
+| After one invitation | Before | Now |
+|---|---|---|
+| `invite` the same address again | **409** `membership_not_promotable` if it already signs in, 200 otherwise | 200, same bytes |
+| `resend` its seat | **409** `already_active` if it already signs in, 200 otherwise | 200, same bytes |
+
+A repeat is now decided by this organisation's own seat, which its
+administrators already see on the members list, never by the account: a
+`suspended` seat is refused whatever the account is (only an `active` seat can
+be suspended from the portal, so this is the case that refused before); an
+`active` seat of an account that signs in is a working member already, so there
+is nothing to grant or send; an `invited` seat is re-sent, or promoted at once
+for an account that has since started signing in, as before. `resend` of an
+account that already signs in sends nothing, because there is nothing for it to
+accept, and answers as a re-sent invitation does. `resend`'s answer lost
+`email_sent` and `expires_at` for the same reason `invite`'s did. Nothing in the
+product read `resend`'s answer.
 
 The portal's card no longer reads either field. Its message comes from the
 link alone: "If <address> can be added to <organisation>, they'll get an email
@@ -96,33 +115,56 @@ about it", or, where there is no mail provider, the link to pass on.
 
 Stated so nobody reads the response fix as more than it is.
 
-- **The members list still separates them.** An address that already signs in
-  is added as a live member at once, which is the owner's recorded decision —
-  there is nothing for it to accept — so `list_members` then shows a member
-  where a new address shows a pending invitation, and a revoked account shows
-  nothing. Closing that means changing that decision, not this door.
+- **The members list still separates them.** This is now the one place a
+  tenant administrator can still tell. An address that already signs in joins
+  as a live member at once, which is the owner's recorded decision: there is
+  nothing for it to accept. So after one invitation, `list_members` shows:
+  - a member, under the account's own registered name, for an address that
+    already signs in;
+  - a pending invitation for a new address;
+  - for an address another organisation is already inviting, the name that
+    organisation typed;
+  - nothing at all for a revoked account.
+
+  Closing it means changing that decision (a grant to an established account
+  that waits for the person to accept joining, and a list that shows the name
+  the inviter typed), not this door.
 - **With no mail provider**, the link's presence still separates "must set a
-  password" from "need not". There the inviter is the only postman; withholding
-  the link would stop the deployment inviting anybody. Production has a
-  provider, so it never returns a link.
-- **`resend`'s 409 `already_active`** tells an organisation that its own waiting
-  invitee has since activated an account, which can only have happened through
-  another organisation's invitation.
-- **Response time** differs by path — a revoked account sends no email, so it
-  answers sooner. Measured in production and recorded by the proof run.
+  password" from "need not". There the inviter is the only postman, and
+  withholding the link would stop the deployment inviting anybody. Production
+  has a provider, so it never returns a link.
+- **Response time** differs by path. A revoked account, and a repeat for an
+  active member, send no email, so they answer sooner. Measured in production
+  by the proof run. The remedy is to answer first and send afterwards.
 - **A missing token pepper** makes new and pending addresses answer 503 while
-  established ones answer 200 — a misconfiguration that also stops every
+  established ones answer 200. That misconfiguration also stops every
   invitation, so it cannot persist unnoticed.
+- **The ceiling is hourly, not paced.** 40 (or an organisation's 100) can be
+  spent in one burst, and nothing caps a day, while the mail provider limits
+  sends per second across every tenant. Every door here shares that property.
+  The remedy is paced sending through an outbox, not a second window on one
+  door.
+- **A failed send is invisible to the inviter.** The answer that used to say so
+  varied with the address, which was the leak. What is missing is a
+  deployment-level delivery-health signal; a per-address one would reopen the
+  oracle.
+- **Unchanged, and out of scope here:** the colleague's `name` has no length
+  bound before it reaches an email (now capped at the ceiling's volume); one
+  organisation re-inviting another's pending invitee still replaces that
+  invitee's single token (doc 65); join-request emails are unbudgeted but
+  bounded, because nothing creates join requests any more.
 
 ## 4. How it is held
 
 - `builderInviteRateLimit.spec.ts` — the keys, the budgets, the order, and
   where the handler checks: after the role gate, before the first write, mint,
   send or log, answered with the shared 429, never an IP-first helper.
-- `builderInviteOracle.spec.ts` — every 2xx in the invite block is
-  `tenantInviteResponse`, neither field is named in anything it answers, the
-  evidence is still logged, expiry is still enforced at acceptance, and no
-  tenant-facing reader returns those log entries or their metadata.
+- `builderInviteOracle.spec.ts` — every 2xx in the invite and resend blocks is
+  `tenantInviteResponse`, a repeat is decided by the seat and not the account,
+  neither field is named in anything either answers, the evidence is still
+  logged, expiry is still enforced at acceptance, and no tenant-facing reader
+  returns those log entries or their metadata. The two repeat assertions failed
+  on the code the review read, before the fix.
 - Both specs failed on `main`: 8 of the oracle spec's 13, and the whole ceiling
   spec — 4 of its 15 still failing once its module existed, because the handler
   had no ceiling. Five mutants — the ceiling moved after a write, moved before
@@ -132,10 +174,12 @@ Stated so nobody reads the response fix as more than it is.
   call `enforceSessionRateLimit` and no IP-first helper.
 - `portal-access-proof.mjs` sections J and K, on the live deployment with
   disposable organisations only: three addresses of each of the four kinds
-  answer the same bytes while the server handles them four different ways; the
+  answer the same bytes, as do a second invitation of every one and a resend of
+  every seat, while the server handles them four different ways; the
   ceiling counts once per person and per organisation, admits a burst to 40 and
   refuses past it, leaves nothing behind when it refuses, holds for a second
   administrator once the organisation's allowance is spent, and leaves another
-  organisation untouched. Every proof that invites removes its own buckets, and
-  the cleanup audit counts any bucket naming an account or organisation that no
-  longer exists.
+  organisation untouched. A printed body never shows a link. Every proof that
+  invites removes its own buckets, and the cleanup audit counts any bucket used
+  in the last week that names an account or organisation which no longer
+  exists.

@@ -34,8 +34,9 @@
  *      notification and organisation id are all refused, and a user in two
  *      organisations is refused a write filed under the wrong one.
  *   J. an invitation answers the same bytes whatever the address already is —
- *      new, pending elsewhere, already signed in, revoked — while the server
- *      handles the four differently underneath;
+ *      new, pending elsewhere, already signed in, revoked — and so do a second
+ *      invitation of each and a resend of each seat, while the server handles
+ *      the four differently underneath;
  *   K. the invitation ceiling: counted once per person and per organisation,
  *      a burst refused past the person's ceiling with the shared 429, a
  *      refused request leaving nothing behind, the organisation's ceiling
@@ -131,6 +132,12 @@ const cookieFrom = (setCookies) => (setCookies ?? [])
   .find((c) => c.startsWith('__Host-builder_session_token=')) ?? null;
 const tokenOf = (cookie) => cookie.slice('__Host-builder_session_token='.length);
 const refused = (status) => status === 401 || status === 403;
+/**
+ * A response body as it may be printed. On a deployment with no mail provider
+ * an invitation's answer carries a live one-time link, and this proof prints no
+ * token (header) — so a link is never printed, whatever the deployment.
+ */
+const shown = (text) => String(text ?? '').replace(/"invite_url"\s*:\s*"[^"]*"/g, '"invite_url":"[redacted]"');
 
 const cc = (label, sql) => q(`cc ${label}`, sql, CC_REF);
 
@@ -846,7 +853,7 @@ try {
   // keys — so narrowing the rule cannot pass.
   record('I: the two responses are the same bytes, so a caller learns nothing about where an address belongs',
     bInvite.status === aInvite.status && bInvite.text === aInvite.text,
-    `belongs-nowhere=${bInvite.text} belongs-elsewhere=${aInvite.text}`);
+    `belongs-nowhere=${shown(bInvite.text)} belongs-elsewhere=${shown(aInvite.text)}`);
 
   // Accept A's invitation, with A's own token, exactly as the portal would.
   const crossToken = `${randomUUID()}-${randomUUID()}`;
@@ -1004,7 +1011,7 @@ try {
   const bodies = [...new Set(every.map((a) => a.text))];
   record('J: every kind of address gets 200 and the same bytes — new, pending elsewhere, already signed in, revoked',
     every.every((a) => a.status === 200) && bodies.length === 1 && bodies[0] === '{"success":true}',
-    `statuses=[${[...new Set(every.map((a) => a.status))]}] distinct bodies=${bodies.length} body=${bodies[0]}`);
+    `statuses=[${[...new Set(every.map((a) => a.status))]}] distinct bodies=${bodies.length} body=${shown(bodies[0])}`);
   record('J: no answer carries expires_at, email_sent or a link',
     every.every((a) => a.json && !('expires_at' in a.json) && !('email_sent' in a.json) && !('invite_url' in a.json)),
     `answers=${every.length}`);
@@ -1040,6 +1047,45 @@ try {
   record('J: response time by kind, median of three (ms) — measured, not asserted',
     true, kinds.map((kind) => `${kind}=${median(answers[kind].map((a) => a.ms))}`).join(' '), { required: false });
 
+  // A SECOND invitation of every address, and a resend of every seat D now
+  // holds. The independent review found the first answer uniform and the
+  // repeat not: an address that already signed in held an active seat after
+  // one invitation, so the repeat answered 409 and `resend` 409
+  // `already_active`, while every other kind answered 200.
+  const again = Object.fromEntries(kinds.map((kind) => [kind, []]));
+  for (let i = 1; i <= 3; i += 1) {
+    for (const kind of kinds) {
+      again[kind].push(await call('builder-portal-invite',
+        { action: 'invite', email: addressOf(kind, i), name: `Access ${kind} ${i}`, membership_role: 'read_only' },
+        D.cookie));
+    }
+  }
+  const seatsInD = await q('the seats D holds, by kind', `
+    SELECT split_part(split_part(u.email, 'oracle-', 2), '-', 1) AS kind, u.id
+      FROM public.builder_portal_users u
+      JOIN public.builder_organisation_memberships m
+        ON m.builder_user_id = u.id AND m.organisation_id = ${id(D.orgId)} AND m.revoked_at IS NULL
+     WHERE u.email LIKE ${sqlLit(`${EMAIL_PREFIX}oracle-%`)}`);
+  const resends = Object.fromEntries(kinds.map((kind) => [kind, []]));
+  for (const seat of seatsInD) {
+    resends[seat.kind]?.push(await call('builder-portal-invite', { action: 'resend', builder_user_id: seat.id }, D.cookie));
+  }
+  const repeated = kinds.flatMap((kind) => [...again[kind], ...resends[kind]]);
+  const repeatBodies = [...new Set(repeated.map((a) => a.text))];
+  record('J: a second invitation, and a resend, answer those same bytes for every kind of address',
+    repeated.every((a) => a.status === 200) && repeatBodies.length === 1 && repeatBodies[0] === bodies[0]
+      && kinds.every((kind) => again[kind].length === 3)
+      && resends.new.length === 3 && resends.pending.length === 3 && resends.established.length === 3
+      && resends.revoked.length === 0,
+    `statuses=[${[...new Set(repeated.map((a) => a.status))]}] distinct bodies=${repeatBodies.length} `
+    + `resends ${kinds.map((kind) => `${kind}=${resends[kind].length}`).join(' ')} (a revoked address gets no seat to resend)`);
+  const grantsAfter = Number((await q('grants after the repeats', `
+    SELECT count(*)::int AS n FROM public.builder_portal_activity_log
+     WHERE organisation_id = ${id(D.orgId)} AND action = 'builder_membership_granted'`))[0]?.n);
+  record('J: repeating an address that already signs in grants nothing more and sends nothing',
+    grantsAfter === 3, `grants=${grantsAfter}`);
+  const inviteCallsByD = every.length + repeated.length;
+
   // --- K. The invitation ceiling ------------------------------------------------
   //
   // `invite` and `resend` are now counted per person (40 an hour) and per
@@ -1048,7 +1094,7 @@ try {
   // ceiling, which is a row in this run's own disposable organisation, and three
   // invitations go through the real door. Positioning rather than sending forty
   // is what keeps this from spending forty sends at the provider every tenant
-  // shares — the counting itself is shown on the twelve section J just made.
+  // shares — the counting itself is shown on the calls section J just made.
   console.log('\nK. The invitation ceiling — per person, then per organisation');
   const bucket = async (key) => {
     const row = (await q('ceiling bucket', `
@@ -1057,9 +1103,10 @@ try {
   };
   const personKey = (userId) => `binv_user:${userId}`;
   const orgKey = (orgId) => `binv_org:${orgId}`;
-  record('K: every invitation is counted once — against the person, and against the organisation',
-    await bucket(personKey(D.userId)) === 12 && await bucket(orgKey(D.orgId)) === 12,
-    `person=${await bucket(personKey(D.userId))} organisation=${await bucket(orgKey(D.orgId))} after 12 invitations`);
+  record('K: every invitation and resend is counted once — against the person, and against the organisation',
+    await bucket(personKey(D.userId)) === inviteCallsByD && await bucket(orgKey(D.orgId)) === inviteCallsByD,
+    `person=${await bucket(personKey(D.userId))} organisation=${await bucket(orgKey(D.orgId))} `
+    + `after ${inviteCallsByD} calls`);
 
   // A second administrator and a member of D, through the real invitation and acceptance.
   const { user: dAdmin } = await inviteAndAccept(D, D.cookie, 'administrator', 'ceiling-admin');
