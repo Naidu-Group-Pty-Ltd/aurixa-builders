@@ -752,15 +752,31 @@ try {
   if (multi) {
     const addToB = await call('builder-portal-invite',
       { action: 'invite', email: multi.email, name: 'Access multi', membership_role: 'member' }, B.cookie);
+    // Since doc 68 an invitation waits for its invitee, somebody who already
+    // belongs elsewhere included: B is not theirs to select until they accept.
+    const selectBeforeAccepting = await call('builder-portal-verify',
+      { action: 'select_organisation', organisation_id: B.orgId }, multi.cookie);
+    record('G: invited into a second organisation, they cannot select it before they accept',
+      addToB.status === 200 && selectBeforeAccepting.status === 403
+        && selectBeforeAccepting.json?.code === 'organisation_not_accessible',
+      `invite=${addToB.status} select=${selectBeforeAccepting.status} code=${selectBeforeAccepting.json?.code}`);
+    // Their acceptance, as the one-click join makes it (section L proves that
+    // join through the real door; here it only sets the scene, and the
+    // acceptance door's hourly allowance is spent where acceptance is proved).
+    const accepted = await q('B\'s waiting seat, accepted', `
+      UPDATE public.builder_organisation_memberships SET status = 'active'
+       WHERE builder_user_id = ${id(multi.userId)} AND organisation_id = ${id(B.orgId)}
+         AND status = 'invited' AND revoked_at IS NULL
+       RETURNING id`);
     const gate = await call('builder-portal-workspace', { operation: 'workspace_summary' }, multi.cookie);
     const selectB = await call('builder-portal-verify',
       { action: 'select_organisation', organisation_id: B.orgId }, multi.cookie);
     const activeRow = (await q('active org', `
       SELECT active_organisation_id FROM public.builder_portal_sessions
       WHERE token_hash = ${sqlLit(hmacHex(PEPPER, tokenOf(multi.cookie)))}`))[0];
-    record('G: a user in two organisations can select the second one', addToB.status === 200
+    record('G: a user in two organisations can select the second one', accepted.length === 1
       && selectB.status === 200 && activeRow?.active_organisation_id === B.orgId,
-      `added=${addToB.status} workspace-before-select=${gate.status}${gate.json?.code ? `/${gate.json.code}` : ''} select=${selectB.status}`);
+      `accepted=${accepted.length} workspace-before-select=${gate.status}${gate.json?.code ? `/${gate.json.code}` : ''} select=${selectB.status}`);
     const mismatch = await call('builder-portal-stock',
       { operation: 'list_stock', expected_organisation_id: A.orgId }, multi.cookie);
     record('G: a request filed under the organisation the session no longer names is refused (409)',
@@ -1530,16 +1546,12 @@ try {
       && gaps.every((gap) => gap >= 900) && burstDeliveries.every((d) => d?.outcome !== 'paced_out'),
     `answered together in ${burstMs} ms; emails left ${gaps.map((gap) => `${gap}`).join(' / ')} ms apart`);
 
-  // 5. One delivery reading for the whole deployment.
-  const readingF = await call('builder-portal-invite', { action: 'delivery_health' }, F.cookie);
-  const readingE = await call('builder-portal-invite', { action: 'delivery_health' }, E.cookie);
-  record('L: every administrator reads the same deployment-wide delivery reading, and it names nothing else',
-    readingF.status === 200 && readingE.status === 200
-      && same(Object.keys(readingF.json?.delivery ?? {}).sort(), ['checked_at', 'state'])
-      && readingF.json?.delivery?.state === readingE.json?.delivery?.state,
-    `state=${readingF.json?.delivery?.state} / ${readingE.json?.delivery?.state}`);
+  // 5. One delivery reading for the whole deployment. The first read may be
+  //    the one that finds it stale and starts the check, so the reading can
+  //    change underneath it; administrators are compared once it has settled.
   const readingByMember = await call('builder-portal-invite', { action: 'delivery_health' }, dMember?.cookie);
   record('L: a member may not read it', readingByMember.status === 403, `status=${readingByMember.status}`);
+  const readingFirst = await call('builder-portal-invite', { action: 'delivery_health' }, F.cookie);
   let check = null;
   for (const deadline = Date.now() + 150_000; Date.now() < deadline;) {
     check = (await q('the delivery check', `
@@ -1549,6 +1561,14 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 3000));
   }
   const readingAfter = await call('builder-portal-invite', { action: 'delivery_health' }, F.cookie);
+  const readingE = await call('builder-portal-invite', { action: 'delivery_health' }, E.cookie);
+  record('L: every administrator reads the same deployment-wide delivery reading, and it names nothing else',
+    readingFirst.status === 200 && readingAfter.status === 200 && readingE.status === 200
+      && same(Object.keys(readingFirst.json?.delivery ?? {}).sort(), ['checked_at', 'state'])
+      && same(Object.keys(readingE.json?.delivery ?? {}).sort(), ['checked_at', 'state'])
+      && readingAfter.json?.delivery?.state === readingE.json?.delivery?.state
+      && readingAfter.json?.delivery?.checked_at === readingE.json?.delivery?.checked_at,
+    `first=${readingFirst.json?.delivery?.state} settled=${readingAfter.json?.delivery?.state} / ${readingE.json?.delivery?.state}`);
   record('L: the delivery check ran after an answer, to the provider\'s sink, and the reading says mail is leaving',
     check?.checked === true && check.state === 'operational'
       && ['operational', 'delayed'].includes(readingAfter.json?.delivery?.state),
