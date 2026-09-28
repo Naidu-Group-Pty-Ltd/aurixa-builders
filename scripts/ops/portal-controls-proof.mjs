@@ -395,6 +395,33 @@ async function browserControls({ owner, member, projectId, conversationId, byLot
       await context.close();
     }
 
+    // --- The routes no other proof visits: catch-alls, the organisation chooser, the gates ---
+    await step('G14: the catch-all routes, the organisation chooser and the gate pages', async () => {
+      const cookie = await establishSession(owner);
+      const { context, page } = await openAs(browser, cookie);
+      await go(page, '/');
+      const root = new URL(page.url()).pathname;
+      await go(page, `/builder/no-such-page-${RUN}`);
+      const unknown = new URL(page.url()).pathname;
+      await go(page, '/builder/select-organisation');
+      const cards = await page.getByRole('button', { name: new RegExp(owner.orgName) }).count();
+      await page.getByRole('button', { name: new RegExp(owner.orgName) }).first().click();
+      await page.waitForTimeout(2000);
+      const chosen = new URL(page.url()).pathname;
+      const active = (await verify(cookie)).json?.active_organisation?.organisation_id ?? null;
+      await go(page, '/builder/terms');
+      const terms = new URL(page.url()).pathname;
+      const termsText = await page.locator('body').innerText().catch(() => '');
+      await go(page, '/builder/onboarding');
+      const onboarding = new URL(page.url()).pathname;
+      await context.close();
+      record('G14: the catch-all routes, the organisation chooser and the gate pages',
+        root.startsWith('/builder') && unknown === '/builder' && cards >= 1 && chosen === '/builder' && active === owner.orgId
+          && !terms.startsWith('/builder/login') && /agreement|terms/i.test(termsText) && !onboarding.startsWith('/builder/login'),
+        `/ → ${root}; unknown → ${unknown}; chooser cards ${cards}, chose → ${chosen}, active own ${active === owner.orgId}; `
+        + `terms at ${terms}; onboarding at ${onboarding}`);
+    });
+
     // --- Signed out: forgotten password, for an address with no account (no email is sent) ----
     await step('G13: signed out, "Forgot your password?" leads to a code form that never names an account', async () => {
       const context = await browser.newContext({ viewport: DESKTOP });
