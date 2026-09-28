@@ -356,7 +356,7 @@ try {
       status: 200, contentType: 'application/javascript',
       body: `window.__tokens=0;window.turnstile={render:function(el,o){var n=++window.__tokens;setTimeout(function(){o.callback('stub-token-'+n)},50);window.__opts=o;return 'w'+n;},
         reset:function(){var n=++window.__tokens;setTimeout(function(){window.__opts.callback('stub-token-'+n)},50);},remove:function(){},getResponse:function(){return null;}};
-        (window.onloadTurnstileCallback||function(){})();`,
+        if (typeof window.onTurnstileLoad === 'function') window.onTurnstileLoad();`,
     }));
     await retry.route('**/fn/builder-portal-login', async (route) => {
       bodies.push(route.request().postDataJSON());
@@ -371,10 +371,12 @@ try {
     await page2.waitForTimeout(1500);
     await page2.getByRole('button', { name: /Sign in/i }).first().click().catch(() => {});
     await page2.waitForTimeout(1500);
+    const resets = await page2.evaluate(() => window.__tokens ?? 0).catch(() => 0);
     record('A: a second sign-in attempt after a failed one carries a fresh security check',
       bodies.length === 2 && !!bodies[1]?.turnstile_token && bodies[1].turnstile_token !== bodies[0]?.turnstile_token,
       `attempts ${bodies.length}: first ${bodies[0]?.turnstile_token ? 'with' : 'WITHOUT'} a token, second `
-      + `${bodies[1]?.turnstile_token ? `with ${bodies[1].turnstile_token === bodies[0]?.turnstile_token ? 'the SAME (spent) token' : 'a fresh token'}` : 'WITHOUT a token — the server answers "Security verification required"'}`);
+      + `${bodies[1]?.turnstile_token ? `with ${bodies[1].turnstile_token === bodies[0]?.turnstile_token ? 'the SAME (spent) token' : 'a fresh token'}` : 'WITHOUT a token — the server answers "Security verification required"'}`
+      + `; tokens the widget issued: ${resets}`);
     await retry.close();
     const noToken = await portal('builder-portal-login', { email: 'nobody@example.com', password: 'x' });
     record('A: the live server refuses a sign-in that carries no security check', noToken.status === 400
