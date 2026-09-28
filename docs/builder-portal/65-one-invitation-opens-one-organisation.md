@@ -117,7 +117,10 @@ Production held no such token when this shipped.
 - Production-rollout phase `email-delivery-proof` settles §4's diagnosis from
   the database and drives one invitation and one password reset to a mailbox the
   operator supplies.
-- Production-rollout phase `portal-access-proof`, section **I**: the whole
+- Production-rollout phase `portal-access-proof` passed **116 of 116** against
+  the live deployment (run `dfb89c37`, 28 Sep 2026), up exactly two from the
+  114 the pre-review code passed: the uniform-response-shape assertion and the
+  refusal-is-not-a-grant one. Section **I**: the whole
   attack on the live deployment with disposable organisations — B invites, A
   invites the same address, the link is withheld, the form names one
   organisation, acceptance activates A, **B is untouched**, the issued session
