@@ -26,7 +26,10 @@
 --     review of doc 68). A handed link therefore keeps the kind it was minted
 --     for. A link only the mailbox holds follows the account, so a person
 --     invited by two organisations before they had an account can accept both
---     (the second review).
+--     (the second review) — but only where the account's own password was set
+--     through such a link too (`builder_portal_users.password_set_by_mailbox_link_at`),
+--     so a password an inviter set through a handed link never gains the
+--     account a membership through the mailbox (the third review).
 --
 --  2. THE NAME THE INVITER TYPED. A waiting seat is drawn on the members list
 --     under the name this organisation typed, never the account's: the account
@@ -50,7 +53,10 @@
 --     it also says whether that scope's own sends were held back lately, and
 --     never another scope's.
 --
--- Re-runnable: IF NOT EXISTS / CREATE OR REPLACE / DROP ... IF EXISTS.
+-- Re-runnable: IF NOT EXISTS / CREATE OR REPLACE / DROP ... IF EXISTS — over
+-- itself, and over an earlier draft of itself (whose function signatures are
+-- dropped before the ones below are created). No database has run a draft:
+-- the version is absent from production's ledger.
 
 -- ---------------------------------------------------------------------------
 -- 1 and 2. The seat's own invitation, and the name the inviter typed.
@@ -100,6 +106,17 @@ COMMENT ON COLUMN public.builder_organisation_memberships.invite_link_handed IS
   'provider). A handed link keeps the kind it was minted for, and acceptance '
   'refuses it once the account no longer matches; a link only the mailbox holds '
   'follows the account.';
+-- When the account's password was set by accepting a seat invitation that
+-- only its mailbox held. Nothing else sets it, so NULL is every account whose
+-- password came any other way — a handed link, an operator's link, a
+-- registration — and for those a mailbox-held link keeps the kind it was
+-- minted for. Existing accounts read NULL; no row is written.
+ALTER TABLE public.builder_portal_users
+  ADD COLUMN IF NOT EXISTS password_set_by_mailbox_link_at timestamptz;
+COMMENT ON COLUMN public.builder_portal_users.password_set_by_mailbox_link_at IS
+  'When this account''s password was set through a seat invitation only its mailbox '
+  'held (doc 68). NULL for a password set any other way.';
+
 COMMENT ON COLUMN public.builder_organisation_memberships.invited_name IS
   'The name the inviting organisation typed. The members list shows it for a '
   'waiting seat, never the account''s own name.';
@@ -164,6 +181,10 @@ CREATE TABLE IF NOT EXISTS public.builder_email_send_scope_refusals (
 ALTER TABLE public.builder_email_send_scope_refusals ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.builder_email_send_scope_refusals FROM PUBLIC, anon, authenticated;
 GRANT ALL ON public.builder_email_send_scope_refusals TO service_role;
+
+-- An earlier draft took two arguments; a database that ran it keeps that
+-- signature beside this one unless it is dropped.
+DROP FUNCTION IF EXISTS public.builder_reserve_email_send_slot(integer, integer);
 
 -- How long this send must wait for its slot, in milliseconds; NULL when the
 -- queue is already longer than _max_wait_ms, or when _scope already has
@@ -275,6 +296,10 @@ BEGIN
      SET state = _state, checked_at = clock_timestamp(), check_started_at = NULL
    WHERE id;
 END $fn$;
+
+-- An earlier draft took no arguments, and beside this one a call with none
+-- would be ambiguous.
+DROP FUNCTION IF EXISTS public.builder_email_delivery_reading();
 
 -- The reading, and how long the send queue is — one number for the whole
 -- deployment, measured on the database's clock — and, read under a scope,

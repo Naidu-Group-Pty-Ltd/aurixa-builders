@@ -259,7 +259,9 @@ Deno.serve(async (req) => {
           invite_requires_password: requiresPassword,
           invite_link_handed: handed,
           ...(invitedNameIfMissing ? { invited_name: invitedNameIfMissing } : {}),
-          ...(roleIfChanged ? { membership_role: roleIfChanged } : {}),
+          // A changed role is this caller's grant now, as member management
+          // records it (the third review).
+          ...(roleIfChanged ? { membership_role: roleIfChanged, granted_by: caller.id } : {}),
         })
         .eq('id', seatId)
         .eq('organisation_id', activeOrganisationId)
@@ -272,12 +274,23 @@ Deno.serve(async (req) => {
 
     /**
      * The act, logged when it happens. Whether its email left is logged when
-     * THAT happens, after the answer, by `deliverInvitation` (doc 68).
+     * THAT happens, after the answer, by `deliverInvitation` (doc 68). The
+     * seat's role is recorded with it, and the role it replaced where inviting
+     * again changed it (the third review: that change left no record).
      */
-    const recordInvitation = (targetId: string, resent: boolean, minted: MintedInvite, requiresPassword: boolean) =>
+    const recordInvitation = (
+      targetId: string,
+      resent: boolean,
+      minted: MintedInvite,
+      requiresPassword: boolean,
+      seatRole: string | null = null,
+      previousRole: string | null = null,
+    ) =>
       logInviteActivity(resent ? 'builder_invite_resent' : 'builder_invite_sent', targetId, {
         expires_at: minted.expiresAt.toISOString(),
         requires_password: requiresPassword,
+        ...(seatRole ? { membership_role: seatRole } : {}),
+        ...(previousRole ? { previous_role: previousRole } : {}),
       });
 
     /**
@@ -420,6 +433,8 @@ Deno.serve(async (req) => {
        * of theirs to deactivate or downgrade if it changes meanwhile.
        */
       let inviteeName = invitee.name;
+      let seatRole = role;
+      let previousRole: string | null = null;
       const { error: membershipError } = await supabase
         .from('builder_organisation_memberships')
         .insert({
@@ -474,8 +489,10 @@ Deno.serve(async (req) => {
         if (seat.status === 'active') {
           return await answer(json(tenantInviteResponse({ inviteUrl: null })));
         }
+        // The role chosen now, where it differs — never onto an owner's seat.
+        const roleChange = seat.membership_role !== 'owner' && seat.membership_role !== role ? role : null;
         const reissued = await reissueSeatInvitation(seat.id, minted, requiresPassword, handed,
-          seat.invited_name ? null : invitee.name, seat.membership_role === 'owner' ? null : role);
+          seat.invited_name ? null : invitee.name, roleChange);
         if (!reissued) {
           /*
            * NOTHING WAS WAITING BY THE TIME THE RE-MINT RAN: the invitee
@@ -499,6 +516,8 @@ Deno.serve(async (req) => {
           }, 409));
         }
         inviteeName = seat.invited_name ?? invitee.name;
+        seatRole = roleChange ?? seat.membership_role;
+        previousRole = roleChange ? seat.membership_role : null;
       } else if (membershipError) {
         throw membershipError;
       }
@@ -507,7 +526,7 @@ Deno.serve(async (req) => {
       // activates. An account that signs in already has its own, and adding
       // steps behind its back could park it at a gate it had already passed.
       if (requiresPassword) await supabase.rpc('builder_ensure_onboarding_steps', { _builder_user_id: target.id });
-      await recordInvitation(target.id, false, minted, requiresPassword);
+      await recordInvitation(target.id, false, minted, requiresPassword, seatRole, previousRole);
 
       if (providerConfigured) {
         // Started only once the answer's floor has passed, so nothing about the

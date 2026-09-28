@@ -51,11 +51,20 @@ it, established accounts included.
     signing in elsewhere is refused, not turned into a join, since a join would
     let the inviter accept for the person. The organisation invites again, and
     the person is emailed a join.
-  - A link **only the mailbox holds** follows the account. Its holder is the
+  - A link **only the mailbox holds** follows the account, where the account's
+    own password was set through such a link too. Its holder is then the
     person, who could reset the password with that mailbox anyway. So someone
     invited by two organisations before they had an account can accept both:
     the second link joins (the second review; it used to stop working until the
     organisation sent it again).
+  - **A password set any other way is not the mailbox's.** Acceptance records
+    `password_set_by_mailbox_link_at` only for a seat link nobody was handed. A
+    password set through a handed link belongs to whoever set it, possibly the
+    inviter. Had a mailbox link followed that account, it would have joined the
+    inviter's account to another organisation (the third review). So for any
+    account without that record (a handed link, an operator's link, a
+    registration), a mailbox link keeps the kind it was minted for, as the
+    handed one does.
   - Every account-slot token was minted for an account with no password, and
     may be an operator's, so the slot path still refuses an account that has
     one (`already_active`), as it always did.
@@ -63,7 +72,11 @@ it, established accounts included.
   `active` seat stays `active`.
 - **The page.** `BuilderAcceptInvite` shows no password form for a join, says
   there is nothing to set, and after the click sends the person to the portal
-  rather than pretending a session exists.
+  rather than pretending a session exists. Validating a seat link answers only
+  that invitation's own facts: the address, the name this organisation typed
+  and the organisation. It never answers the account's own name or job title,
+  which would tell a link's holder where the address already belongs (the third
+  review).
 - **The members list** shows a waiting seat under the name this organisation
   typed (`invited_name`), never the account's. Once the person accepts, they are
   a member and are shown as they call themselves. `revoke_invite` cancels a
@@ -72,7 +85,9 @@ it, established accounts included.
 - **Inviting a waiting person again carries the role chosen now** (the second
   review: the first invitation's role used to stand, so lowering it by inviting
   again did not take). An owner's seat, which only the operator's doors create,
-  is never re-roled here. A re-send chooses no role and changes none.
+  is never re-roled here. A re-send chooses no role and changes none. A changed
+  role is credited to the caller (`granted_by`), and `builder_invite_sent`
+  records the seat's role and the one it replaced (the third review).
 
 **Not changed, deliberately:** the operator's doors (`builder-network-admin`:
 `invite_organisation_owner`, which seeds an EMPTY organisation's first owner, and
@@ -176,10 +191,13 @@ refreshed on the clock and never because one send failed, since an early check
 would itself say "your send failed". A check that never left the queue records
 nothing: it learned nothing about the provider, and recording `degraded` would
 let one tenant's burst tell every tenant delivery was broken. Nor does a check
-the provider throttled (HTTP 429): every other send this deployment makes shares
-that ceiling unpaced, so a throttle says the provider was busy, and anyone able
-to time two sends against a stale check could otherwise make every tenant's
-card read "not working" for half an hour (the second review). Its inputs have
+the provider throttled (HTTP 429 named `rate_limit_exceeded`): every other send
+this deployment makes shares that ceiling unpaced, so a throttle says the
+provider was busy, and anyone able to time two sends against a stale check could
+otherwise make every tenant's card read "not working" for half an hour (the
+second review). The provider answers 429 for an exhausted daily or monthly
+quota too, when nothing is delivered at all. So any 429 not named a throttle is
+`degraded` (the third review). Its inputs have
 no field through which an address, an invitation or a message could arrive, and
 a spec holds it to that. The invite card shows `degraded`, `held_back`,
 `delayed` and `not_configured`, and nothing otherwise, and reads again after
@@ -239,7 +257,9 @@ and the write was deactivated.
   1.5 s.** A database stall longer than that shows through, for every kind alike.
 - **A join is one click on the emailed page.** A mail scanner that renders pages
   and presses buttons could accept one. A first invitation is safe from this
-  while the person has no password, because it needs one. Requiring a signed-in session instead would
+  only while the person has no password. Once they set one through another
+  organisation's emailed link, this organisation's first link is a one-click
+  join as well. Requiring a signed-in session instead would
   strand the accounts with no organisation open (3 of 6 in production), who
   cannot sign in.
 - **Repeats reach the person again.** Inviting or re-sending to an established
@@ -257,6 +277,10 @@ and the write was deactivated.
   21, 20, 20, 20 and 10 slots, and a sixth refused). The hourly ceilings bound
   it, the refused organisations are told (`held_back`), and inviting again
   re-sends.
+- **An application naming an account an operator suspended before it
+  accepted** is refused `invite_not_issued`, and leaves its new organisation
+  without an owner, as the withdrawn refusal already does. That door already
+  tells its caller which accounts are withdrawn or established.
 - **An operator-seeded owner who accepts another organisation's invitation
   first** is left with an owner link that is refused (`already_active`), and
   `invite_organisation_owner` answers 409 because the organisation already has a
@@ -279,7 +303,8 @@ and the write was deactivated.
     each saying so.
 - **Database.** `db:invitation-acceptance:check` rebuilds from the migrations,
   with Supabase's own default privileges in force, and proves:
-  - the migration changes no existing row;
+  - the migration changes no existing row, and replaces an earlier draft's
+    function signatures rather than leaving two;
   - the token rules (CHECK, uniqueness, hex shape, kind, the trigger);
   - the name bound;
   - pacing under eight concurrent reservations, the bounded wait, one
@@ -294,9 +319,10 @@ and the write was deactivated.
   - the one-click join sets no password and issues no session;
   - per-seat tokens: a re-send replaces only its own;
   - invited by two organisations before they had an account, the person can
-    accept both, and the second link joins;
-  - a link handed to the inviter stops working once the person signs in, and
-    inviting again mints a join the mailbox alone holds;
+    accept both, and the second link joins, because the first recorded the
+    password as the mailbox holder's;
+  - a mailbox link does not join an account whose password came some other
+    way, and inviting again mints a join the mailbox alone holds;
   - the name ceiling;
   - a concurrent burst answers alike while its emails leave at least a second
     apart;

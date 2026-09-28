@@ -1447,40 +1447,53 @@ try {
       && fSeatAfterFirst?.status === 'active' && same(await accountRow(sharedUser?.id), sharedBefore),
     `E accept=${eAccepted.status} F's first link=${fFirstAccept.status} F.seat=${fSeatAfterFirst?.status}`);
 
-  // A link HANDED to the inviter (a deployment with no mail provider) keeps
-  // the kind it was minted for. Production has a provider, so the seat is
-  // written the way such a deployment writes it, on a disposable account whose
-  // password is then set as though it had accepted another invitation.
-  const handedEmail = `${EMAIL_PREFIX}doc68-handed@example.com`;
-  const handedInvite = await call('builder-portal-invite',
-    { action: 'invite', email: handedEmail, name: 'Handed F', membership_role: 'member' }, F.cookie);
-  const handedUser = (await q('the handed invitee', `
-    SELECT id FROM public.builder_portal_users WHERE email = ${sqlLit(handedEmail)}`))[0];
-  const handedLink = `${randomUUID()}-${randomUUID()}`;
-  await q('a link as a deployment with no mail provider hands it over', `
-    UPDATE public.builder_organisation_memberships
-       SET invite_token_hash = ${sqlLit(hmacHex(PEPPER, handedLink))},
-           invite_token_expires_at = now() + interval '1 hour', invite_link_handed = true
-     WHERE builder_user_id = ${id(handedUser?.id)} AND organisation_id = ${id(F.orgId)}
-       AND status = 'invited' AND revoked_at IS NULL AND invite_requires_password;
+  // E's link was only the mailbox's, so the password it set is recorded as the
+  // mailbox holder's — the one thing that lets F's link follow the account.
+  const sharedMarked = (await q('how the shared invitee\'s password was set', `
+    SELECT password_set_by_mailbox_link_at IS NOT NULL AS marked
+      FROM public.builder_portal_users WHERE id = ${id(sharedUser?.id)}`))[0];
+  record('L: a password set through a link only the mailbox held is recorded as the mailbox holder\'s',
+    sharedMarked?.marked === true, `recorded=${sharedMarked?.marked}`);
+
+  // A password set any OTHER way — through a link handed to an inviter on a
+  // deployment with no mail provider, or an operator's — is not the mailbox's,
+  // so a mailbox link keeps the kind it was minted for and does not join that
+  // account (the third review). Production has a provider, so the disposable
+  // account is given a password the way those routes leave one: set, and not
+  // recorded as the mailbox's. Each setup statement must touch exactly the row
+  // it names, or the refusal below would prove nothing.
+  const otherEmail = `${EMAIL_PREFIX}doc68-other-route@example.com`;
+  const otherInvite = await call('builder-portal-invite',
+    { action: 'invite', email: otherEmail, name: 'Other Route F', membership_role: 'member' }, F.cookie);
+  const otherLink = await replayOntoSeat(otherEmail, F.orgId);
+  const otherSeatBefore = (await q('the other-route seat', `
+    SELECT m.invite_token_hash = ${sqlLit(hmacHex(PEPPER, otherLink))} AS holds_link,
+           m.invite_requires_password AS requires_password, m.invite_link_handed AS handed
+      FROM public.builder_organisation_memberships m
+      JOIN public.builder_portal_users u ON u.id = m.builder_user_id
+     WHERE u.email = ${sqlLit(otherEmail)} AND m.organisation_id = ${id(F.orgId)} AND m.revoked_at IS NULL`))[0] ?? {};
+  const otherAccount = await q('a password set other than through a mailbox-only link', `
     UPDATE public.builder_portal_users
-       SET password_hash = extensions.crypt(${sqlLit(`H4nded!${RUN}`)}, extensions.gen_salt('bf', 4)),
+       SET password_hash = extensions.crypt(${sqlLit(`0ther!${RUN}`)}, extensions.gen_salt('bf', 4)),
            invite_accepted_at = now(), email_verified_at = now(), status = 'active', is_active = true
-     WHERE id = ${id(handedUser?.id)}`);
-  const handedAccept = await call('builder-portal-accept-invite', { action: 'accept', token: handedLink });
-  const handedSeat = await seatIn(handedUser?.id, F.orgId);
-  record('L: a link handed to the inviter never becomes a join once the person has a password',
-    handedInvite.status === 200 && handedAccept.status === 400 && !cookieFrom(handedAccept.setCookies)
-      && handedSeat?.status === 'invited',
-    `invite=${handedInvite.status} handed link=${handedAccept.status} F.seat=${handedSeat?.status}`);
+     WHERE email = ${sqlLit(otherEmail)} AND password_hash IS NULL AND password_set_by_mailbox_link_at IS NULL
+     RETURNING id`);
+  const otherAccept = await call('builder-portal-accept-invite', { action: 'accept', token: otherLink });
+  const otherSeat = await seatIn(otherAccount[0]?.id, F.orgId);
+  record('L: a mailbox link does not join an account whose password came some other way — it keeps its kind',
+    otherInvite.status === 200 && otherSeatBefore.holds_link === true && otherSeatBefore.requires_password === true
+      && otherSeatBefore.handed === false && otherAccount.length === 1
+      && otherAccept.status === 400 && !cookieFrom(otherAccept.setCookies) && otherSeat?.status === 'invited',
+    `setup: link ${otherSeatBefore.holds_link ? 'on the seat' : 'NOT ON THE SEAT'}, account rows=${otherAccount.length}; `
+    + `accept=${otherAccept.status} F.seat=${otherSeat?.status}`);
   // Inviting again re-mints the seat as a join, held by the mailbox alone
   // (section I accepts one end to end).
   const fAgain = await call('builder-portal-invite',
-    { action: 'invite', email: handedEmail, name: 'Handed F', membership_role: 'member' }, F.cookie);
+    { action: 'invite', email: otherEmail, name: 'Other Route F', membership_role: 'member' }, F.cookie);
   const fKind = (await q('what F\'s new link is for', `
     SELECT m.invite_requires_password AS requires_password, m.invite_link_handed AS handed
       FROM public.builder_organisation_memberships m
-     WHERE m.builder_user_id = ${id(handedUser?.id)} AND m.organisation_id = ${id(F.orgId)} AND m.revoked_at IS NULL`))[0];
+     WHERE m.builder_user_id = ${id(otherAccount[0]?.id)} AND m.organisation_id = ${id(F.orgId)} AND m.revoked_at IS NULL`))[0];
   record('L: inviting again, once they sign in, mints a join the mailbox alone holds',
     fAgain.status === 200 && fKind?.requires_password === false && fKind?.handed === false,
     `invite=${fAgain.status} requires_password=${fKind?.requires_password} handed=${fKind?.handed}`);

@@ -112,6 +112,15 @@ describe('2. invitations are paced, so a burst cannot hammer the shared mail pro
     expect(migrationSql).toMatch(/FOR UPDATE/);
   });
 
+  it('replaces what an earlier draft of it defined, so a function is never left ambiguous', () => {
+    // The third review: a database that ran an earlier body keeps the old
+    // signatures beside the new ones, and a zero-argument call is then "not
+    // unique". No database has run one (the version is absent from
+    // production's ledger), and this keeps it re-runnable if one ever did.
+    expect(migrationSql).toMatch(/DROP FUNCTION IF EXISTS public\.builder_email_delivery_reading\(\);/);
+    expect(migrationSql).toMatch(/DROP FUNCTION IF EXISTS public\.builder_reserve_email_send_slot\(integer, integer\);/);
+  });
+
   it('nothing it creates is left with Supabase\'s default grants — its sequence included', () => {
     // The second review: an identity column's sequence is granted to anon and
     // authenticated by default like any other new object.
@@ -161,9 +170,15 @@ describe('3. a deployment-wide delivery signal that names no address and no mess
     // provider's per-second ceiling unpaced, so anyone able to time two sends
     // against a stale check could have every tenant's card read "not working"
     // for half an hour. A throttle is not a failure to deliver.
-    expect(deliveryCheckState({ sent: false, reason: 'refused', status: 429 })).toBeNull();
+    expect(deliveryCheckState({ sent: false, reason: 'refused', status: 429, code: 'rate_limit_exceeded' })).toBeNull();
+    // The third review: the provider answers 429 for an exhausted quota too,
+    // and then nothing is delivered at all — that is degraded, as is any 429
+    // the provider did not name as a throttle.
+    expect(deliveryCheckState({ sent: false, reason: 'refused', status: 429, code: 'daily_quota_exceeded' })).toBe('degraded');
+    expect(deliveryCheckState({ sent: false, reason: 'refused', status: 429, code: 'monthly_quota_exceeded' })).toBe('degraded');
+    expect(deliveryCheckState({ sent: false, reason: 'refused', status: 429 })).toBe('degraded');
     const sender = stripComments(repo('supabase', 'functions', '_shared', 'builderInviteEmail.ts'));
-    expect(sender).toMatch(/return \{ sent: false, reason: 'refused', status: response\.status \};/);
+    expect(sender).toMatch(/return \{ sent: false, reason: 'refused', status: response\.status, code: providerErrorName\(detail\) \};/);
   });
 
   it('tells an organisation\'s administrators when their own invitation emails were held back — and only theirs', () => {

@@ -40,9 +40,13 @@
  * emailed a join. A link only the mailbox holds follows the account, because
  * its holder is the person — who could reset the password with that mailbox
  * anyway — so somebody invited by two organisations before they had an
- * account can accept both (the second review). Every account-slot token was
- * minted for an account with no password and may be an operator's, so an
- * account that has one is turned away there, as it always was.
+ * account can accept both (the second review). But only where the account's
+ * own password was set through such a link too: a password an inviter set
+ * through a HANDED link belongs to whoever set it, and a link that followed
+ * that account would join the inviter's account to another organisation (the
+ * third review). Every account-slot token was minted for an account with no
+ * password and may be an operator's, so an account that has one is turned
+ * away there, as it always was.
  *
  * Actions: `validate` (render the form, and say whether a password is asked
  * for) and accept (default).
@@ -141,7 +145,12 @@ Deno.serve(async (req) => {
      * An account-slot token is used up here, in the same statement. A seat's
      * own token is used up by the promotion that follows, in its statement.
      */
-    const activateAccount = async (accountId: string, consumeSlotToken: boolean) => {
+    /**
+     * `mailboxOnly`: the link being accepted was held by the mailbox and
+     * nobody else, so the password set here is the mailbox holder's — which is
+     * what lets a later mailbox-held link follow this account (header).
+     */
+    const activateAccount = async (accountId: string, consumeSlotToken: boolean, mailboxOnly: boolean) => {
       if (!password || typeof password !== 'string') {
         return json({ error: 'Password is required' }, 400);
       }
@@ -162,6 +171,7 @@ Deno.serve(async (req) => {
             ? { invite_token_hash: null, invite_token_expires_at: null, invite_token_organisation_id: null }
             : {}),
           invite_accepted_at: new Date().toISOString(),
+          ...(mailboxOnly ? { password_set_by_mailbox_link_at: new Date().toISOString() } : {}),
           // Accepting an emailed token proves the mailbox (network governance
           // reads this; see builderPortalAuth.builderGovernanceError).
           email_verified_at: new Date().toISOString(),
@@ -347,7 +357,7 @@ Deno.serve(async (req) => {
      */
     const { data: seat, error: seatError } = await supabase
       .from('builder_organisation_memberships')
-      .select(`id, builder_user_id, organisation_id, membership_role, status, revoked_at,
+      .select(`id, builder_user_id, organisation_id, membership_role, status, revoked_at, invited_name,
                invite_token_expires_at, invite_requires_password, invite_link_handed`)
       .eq('invite_token_hash', tokenHash)
       .maybeSingle();
@@ -368,7 +378,7 @@ Deno.serve(async (req) => {
       const [{ data: account, error: accountError }, { data: organisation, error: organisationError }] =
         await Promise.all([
           supabase.from('builder_portal_users')
-            .select('id, email, name, job_title, status, revoked_at, invite_accepted_at, password_hash')
+            .select('id, email, status, revoked_at, invite_accepted_at, password_hash, password_set_by_mailbox_link_at')
             .eq('id', seat.builder_user_id)
             .maybeSingle(),
           supabase.from('builder_organisations')
@@ -391,10 +401,14 @@ Deno.serve(async (req) => {
         membership_role: seat.membership_role,
       };
       const requiresPassword = invitationRequiresPassword(account);
-      // A link handed to the inviter must still be what the account needs: it
-      // never becomes a join (header). Same answer as every other refusal, so
-      // the holder learns nothing more than that the link no longer works.
-      if (seat.invite_link_handed && seat.invite_requires_password !== requiresPassword) {
+      // What a link is for may follow the account only while nobody but the
+      // mailbox has held a credential for it: not this link, and not the one
+      // that set the account's password (header). Otherwise the link must
+      // still be what the account needs — a password-setting link never
+      // becomes a join. Same answer as every other refusal, so the holder
+      // learns nothing more than that the link no longer works.
+      const kindFollowsAccount = !seat.invite_link_handed && !!account.password_set_by_mailbox_link_at;
+      if (seat.invite_requires_password !== requiresPassword && !kindFollowsAccount) {
         return json({ error: GENERIC_INVITE_ERROR, valid: false }, 400);
       }
       // A password is set only on an account that is still an invitation —
@@ -405,11 +419,14 @@ Deno.serve(async (req) => {
       }
 
       if (action === 'validate') {
+        // Only this invitation's own facts: the name THIS organisation typed,
+        // never the account's, which is another organisation's typed name or
+        // the person's registered one — where the address already belongs.
         return json({
           valid: true,
           email: account.email,
-          name: account.name,
-          job_title: account.job_title,
+          name: seat.invited_name ?? null,
+          job_title: null,
           requires_password: requiresPassword,
           organisations: [joining],
         });
@@ -424,7 +441,7 @@ Deno.serve(async (req) => {
         return await joinOnly({ promotion, builderUserId: account.id, organisation: joining });
       }
 
-      const activated = await activateAccount(account.id, false);
+      const activated = await activateAccount(account.id, false, !seat.invite_link_handed);
       if (activated instanceof Response) return activated;
       /*
        * THE SEAT THE TOKEN IS ON, AND IT IS USED UP HERE: promoted only while
@@ -545,7 +562,8 @@ Deno.serve(async (req) => {
       });
     }
 
-    const activated = await activateAccount(portalUser.id, true);
+    // An account-slot link may have been an operator's to hand on.
+    const activated = await activateAccount(portalUser.id, true, false);
     if (activated instanceof Response) return activated;
 
     /*

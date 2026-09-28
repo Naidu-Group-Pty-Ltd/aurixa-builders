@@ -111,24 +111,30 @@ export const DELIVERY_CHECK_RECIPIENT_DEFAULT = 'delivered@resend.dev';
 
 export type DeliveryCheckState = 'operational' | 'degraded';
 
+/** The provider's own name for a throttle — as opposed to an exhausted quota, which it also answers 429. */
+export const PROVIDER_THROTTLE_CODE = 'rate_limit_exceeded';
+
 /**
  * What one check found: a send that left is operational, a send the provider
  * refused or could not be reached for is degraded — and a check that never left
  * the queue found out nothing about the provider, so it records no reading
  * (null) rather than calling delivery broken for half an hour because
  * somebody else's burst filled the queue. Nor did a check the provider
- * THROTTLED (429): every other send this deployment makes shares the
- * provider's per-second ceiling unpaced, so a throttle says the provider was
- * busy, not that it will not deliver — and anyone able to time two sends
- * against a stale check could otherwise have every tenant's card read "not
- * working" for half an hour (the second review).
+ * THROTTLED: every other send this deployment makes shares the provider's
+ * per-second ceiling unpaced, so a throttle says the provider was busy, not
+ * that it will not deliver — and anyone able to time two sends against a stale
+ * check could otherwise have every tenant's card read "not working" for half
+ * an hour (the second review). Only a refusal the provider NAMES a throttle is
+ * one: it answers 429 for an exhausted daily or monthly quota as well, and
+ * then nothing is delivered at all, so every other 429 is degraded (the third
+ * review).
  */
 export function deliveryCheckState(
-  outcome: { readonly sent: boolean; readonly reason?: string; readonly status?: number },
+  outcome: { readonly sent: boolean; readonly reason?: string; readonly status?: number; readonly code?: string },
 ): DeliveryCheckState | null {
   if (outcome.sent) return 'operational';
   if (outcome.reason === 'paced_out') return null;
-  if (outcome.reason === 'refused' && outcome.status === 429) return null;
+  if (outcome.reason === 'refused' && outcome.status === 429 && outcome.code === PROVIDER_THROTTLE_CODE) return null;
   return 'degraded';
 }
 

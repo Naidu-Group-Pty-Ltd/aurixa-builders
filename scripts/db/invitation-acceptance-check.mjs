@@ -5,7 +5,10 @@
  *
  * `20260929090000_an_invitation_waits_for_its_invitee.sql` must:
  *   * change no existing row: every membership and account reads the same
- *     after it as before it;
+ *     after it as before it, and no account is recorded as having set its
+ *     password through a link only its mailbox held;
+ *   * replace what an earlier draft of it defined, so no function is left
+ *     with two signatures;
  *   * let a seat carry its own invitation — a token that is unique, only ever
  *     on a waiting, live seat, records what it was minted for and whether its
  *     link was handed to the inviter, and is destroyed by whatever moves the
@@ -125,6 +128,15 @@ const snapshot = () => sql(`
       FROM public.builder_portal_users u) rows`);
 const beforeMigration = snapshot();
 
+// What an earlier draft of the migration defined, as a database that ran it
+// would still hold: the reading with no arguments and the two-argument pacer.
+sql(`
+  CREATE FUNCTION public.builder_email_delivery_reading()
+  RETURNS TABLE (state text, checked_at timestamptz, backlog_ms integer)
+  LANGUAGE sql AS $fn$ SELECT NULL::text, NULL::timestamptz, 0 $fn$;
+  CREATE FUNCTION public.builder_reserve_email_send_slot(integer, integer)
+  RETURNS integer LANGUAGE sql AS $fn$ SELECT 0 $fn$;`);
+
 psql(['-d', DB, '-q', '-f', join(repoRoot, 'supabase/migrations', MIGRATION)]);
 check('the migration applies over the migrations before it', true);
 check('it changes no existing membership or account', snapshot() === beforeMigration);
@@ -133,6 +145,14 @@ check('it leaves every existing seat without a token, a kind, a holder or a type
        WHERE invite_token_hash IS NOT NULL OR invite_token_expires_at IS NOT NULL
           OR invite_requires_password IS NOT NULL OR invite_link_handed IS NOT NULL
           OR invited_name IS NOT NULL`) === '0');
+check('it records no account as having set its password through a mailbox-only link',
+  sql(`SELECT count(*) FROM public.builder_portal_users WHERE password_set_by_mailbox_link_at IS NOT NULL`) === '0');
+check('it replaces an earlier draft\'s functions — one reading, one pacer, and a call with no arguments is not ambiguous',
+  sql(`SELECT count(*) FROM pg_proc WHERE proname = 'builder_email_delivery_reading'
+         AND pronamespace = 'public'::regnamespace`) === '1'
+    && sql(`SELECT count(*) FROM pg_proc WHERE proname = 'builder_reserve_email_send_slot'
+              AND pronamespace = 'public'::regnamespace`) === '1'
+    && refusal(`SELECT * FROM public.builder_email_delivery_reading()`) === null);
 check('it is re-runnable', (() => {
   psql(['-d', DB, '-q', '-f', join(repoRoot, 'supabase/migrations', MIGRATION)]);
   return snapshot() === beforeMigration;

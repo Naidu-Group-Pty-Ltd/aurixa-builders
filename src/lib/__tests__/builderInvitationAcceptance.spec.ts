@@ -213,11 +213,24 @@ describe('the invite door grants nothing an invitee has not accepted', () => {
     expect(reissue.slice(0, reissue.indexOf('};'))).toMatch(/membership_role: roleIfChanged/);
     const repeat = code.slice(code.indexOf("if (membershipError && String(membershipError.code) === '23505')"));
     expect(repeat).toMatch(/\.select\('id, status, invited_name, membership_role'\)/);
-    expect(repeat).toMatch(/seat\.membership_role === 'owner' \? null : role/);
+    expect(repeat).toMatch(/seat\.membership_role !== 'owner' && seat\.membership_role !== role \? role : null/);
     // The resend act chooses no role, so it changes none.
     const resend = code.slice(code.indexOf("if (action === 'resend')"));
     expect(resend.slice(0, resend.indexOf("if (action === 'revoke_invite')")))
       .toMatch(/reissueSeatInvitation\(seat\.id, minted, requiresPassword, handed, null, null\)/);
+  });
+
+  it('a role changed by inviting again is recorded — who changed it, from what, to what', () => {
+    // The third review: the change left no record, and `granted_by` still
+    // named the first inviter, while member management logs the same act.
+    const reissue = code.slice(code.indexOf('const reissueSeatInvitation'));
+    expect(reissue.slice(0, reissue.indexOf('};')))
+      .toMatch(/roleIfChanged \? \{ membership_role: roleIfChanged, granted_by: caller\.id \} : \{\}/);
+    const record = code.slice(code.indexOf('const recordInvitation'));
+    expect(record.slice(0, record.indexOf(');\n') + 3)).toMatch(/membership_role:/);
+    expect(record.slice(0, record.indexOf(');\n') + 3)).toMatch(/previous_role:/);
+    const invite = code.slice(code.indexOf("if (action === 'invite')"), code.indexOf("if (action === 'resend')"));
+    expect(invite).toMatch(/recordInvitation\(target\.id, false, minted, requiresPassword, seatRole, previousRole\)/);
   });
 
   it('files every invitation\'s typed name for the list, and the list reads it', () => {
@@ -277,11 +290,15 @@ describe('the acceptance door: one click for an account that already signs in', 
   });
 
   it('a link handed to the inviter never becomes a join — on the seat or in the account slot', () => {
-    // The seat path compares what a HANDED token was minted for with the
-    // account as it is now, and refuses a mismatch before anything else is
-    // done. A link only the mailbox holds follows the account: its holder is
-    // the person, who could reset the password with the same mailbox.
-    const mismatch = code.indexOf('seat.invite_link_handed && seat.invite_requires_password !== requiresPassword');
+    // The seat path compares what a token was minted for with the account as
+    // it is now, and refuses a mismatch before anything else is done — unless
+    // nobody but the mailbox has ever held a credential for the account: not
+    // this link (never handed), and not the link that set its password (the
+    // third review: a password set through a HANDED link is not the mailbox's,
+    // so a link that followed the account would join the inviter's account).
+    expect(code).toMatch(
+      /const kindFollowsAccount = !seat\.invite_link_handed && !!account\.password_set_by_mailbox_link_at;/);
+    const mismatch = code.indexOf('seat.invite_requires_password !== requiresPassword && !kindFollowsAccount');
     expect(mismatch).toBeGreaterThan(-1);
     expect(code.slice(mismatch, mismatch + 200)).toMatch(/GENERIC_INVITE_ERROR/);
     expect(mismatch).toBeLessThan(code.indexOf("if (action === 'validate')"));
@@ -290,6 +307,27 @@ describe('the acceptance door: one click for an account that already signs in', 
     // may be held by an operator, so an account that has one is turned away
     // there, as it always was.
     expect(code).toMatch(/if \(portalUser\.invite_accepted_at \|\| portalUser\.password_hash\) \{\s*return json\(\{ error: GENERIC_INVITE_ERROR, valid: false, already_active: true \}, 400\);/);
+  });
+
+  it('records that a password was set through a link only the mailbox held — and only then', () => {
+    const activations = code.match(/\.from\('builder_portal_users'\)\s*\.update\(\{[\s\S]*?password_hash: hashedPassword[\s\S]*?\.maybeSingle\(\)/g) ?? [];
+    expect(activations.length).toBe(1);
+    expect(activations[0]).toMatch(/\.\.\.\(mailboxOnly \? \{ password_set_by_mailbox_link_at: new Date\(\)\.toISOString\(\) \} : \{\}\)/);
+    // The seat path says so only for a link it never handed out; the account
+    // slot never does, since an operator may have held that link.
+    expect(code).toMatch(/activateAccount\(account\.id, false, !seat\.invite_link_handed\)/);
+    expect(code).toMatch(/activateAccount\(portalUser\.id, true, false\)/);
+  });
+
+  it('tells a link\'s holder nothing about the account beyond the address and this invitation', () => {
+    // The third review: `validate` on the seat path answered the account's
+    // own name and job title — another organisation's typed name, or the
+    // person's registered one — to whoever held the link.
+    const seatPath = code.slice(code.indexOf('if (seat) {'), code.indexOf('const { data: portalUser'));
+    const answer = seatPath.slice(seatPath.indexOf("if (action === 'validate')"));
+    expect(answer.slice(0, 400)).toMatch(/name: seat\.invited_name \?\? null/);
+    expect(answer.slice(0, 400)).toMatch(/job_title: null/);
+    expect(answer.slice(0, 400)).not.toMatch(/account\.name|account\.job_title/);
   });
 
   it('offers a password form only while the account is still an invitation — validate agrees with accept', () => {
