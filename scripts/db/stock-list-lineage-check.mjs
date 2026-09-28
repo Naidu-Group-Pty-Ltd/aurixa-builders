@@ -380,9 +380,9 @@ if (hasLineage) {
   q1(`UPDATE public.builder_stock_uploads SET deleted_at = now() WHERE id = ${lit(v2)}::uuid`);
   q1(`UPDATE public.builder_stock_items SET lifecycle_status = 'archived'
        WHERE id IN (${live.map((id) => `${lit(id)}::uuid`).join(', ')})`);
-  // What reading v1 again leaves: its published stamp cleared and the
-  // properties it matched staged under it again.
-  q1(`UPDATE public.builder_stock_uploads SET published_at = NULL WHERE id = ${lit(v1)}::uuid`);
+  // What reading v1 again leaves: the properties it matched staged under it
+  // again. Its own published stamp stays — nothing clears it — so the list
+  // is published again by the late promotion, the path a re-read takes.
   q1(`UPDATE public.builder_stock_items SET upload_id = ${lit(v1)}::uuid, lifecycle_status = 'staged',
          pending_upload_id = NULL, pending_patch = NULL
        WHERE id IN (${live.map((id) => `${lit(id)}::uuid`).join(', ')})`);
@@ -390,7 +390,8 @@ if (hasLineage) {
     p2.published === true && !superseded(v1), JSON.stringify(p2));
   const again = publish(v1);
   check('so reading it again publishes it, and its properties are live',
-    again.published === true && live.every((id) => lifecycle(id) === 'active'), JSON.stringify(again));
+    again.published === true && again.mode === 'late' && live.every((id) => lifecycle(id) === 'active'),
+    JSON.stringify(again));
 }
 
 // === REVIEW: supersession is decided ONCE, by publish ===========================
