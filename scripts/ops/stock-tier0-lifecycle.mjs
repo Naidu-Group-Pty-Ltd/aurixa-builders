@@ -296,6 +296,12 @@ try {
   timings.mirror_v2_ms = m2.ms;
   record('L4: the Command Centre converges on the revision, field by field', m2.done,
     `${m2.rows?.length}/${m2.builder?.length} in ${secs(m2)}${m2.d?.length ? `; ${m2.d.slice(0, 6).join('; ')}` : ''}`);
+  // "Last synced" on the Command Centre's property page reads `last_seen_at`.
+  const syncedAt = await cc('lot 101 synced', `
+    SELECT last_seen_at, updated_at, created_at FROM public.builder_network_stock_items WHERE id = ${id(ids1['101'])}`);
+  record('L4: the Command Centre\'s "Last synced" moved with the revision it just applied',
+    !!syncedAt[0] && new Date(syncedAt[0].last_seen_at).getTime() >= t5,
+    `last_seen_at ${syncedAt[0]?.last_seen_at}, updated_at ${syncedAt[0]?.updated_at}, revision uploaded ${new Date(t5).toISOString()}`);
   const ccRemoved = await cc('lot 103', `SELECT lifecycle_status FROM public.builder_network_stock_items WHERE id = ${id(ids1['103'])}`);
   record('L4: the Command Centre takes the removed property off the marketplace', ccRemoved[0]?.lifecycle_status !== 'active',
     `mirror lifecycle ${ccRemoved[0]?.lifecycle_status ?? 'gone'}`);
