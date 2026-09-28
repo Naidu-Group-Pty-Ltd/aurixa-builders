@@ -82,6 +82,8 @@ jobs:
       # record keep the old rule.
       - name: a stock list is replaced only by its own lineage
         run: npm run db:stock-list-lineage:check
+      - name: a task on a stock item answers to the role matrix
+        run: npm run db:stock-task-permission:check
 
   edge:
     name: edge functions typecheck + gates
