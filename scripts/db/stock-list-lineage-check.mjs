@@ -64,6 +64,8 @@ const psql = (args) => execFileSync('psql', [...conn, '-q', '-v', 'ON_ERROR_STOP
 });
 const q1 = (statement) => psql(['-d', DB, '-At', '-c', statement]).trim();
 const lit = (v) => (v === null || v === undefined ? 'NULL' : `'${String(v).replace(/'/g, "''")}'`);
+/** A one-value query that answers 'f' where the statement itself fails (a missing function, say). */
+const q1OrFalse = (statement) => { try { return q1(statement); } catch { return 'f'; } };
 function refusal(statement) {
   try { q1(statement); return null; } catch (error) { return String(error.stderr ?? error.message); }
 }
@@ -82,6 +84,12 @@ psql(['-d', 'postgres', '-c', `DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`]);
 psql(['-d', 'postgres', '-c', `CREATE DATABASE ${DB}`]);
 psql(['-d', DB, '-f', join(repoRoot, 'scripts/db/00-supabase-bootstrap.sql')]);
 psql(['-d', DB, '-c', 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;']);
+// Supabase grants every new table and function to anon, authenticated and
+// service_role by default; a migration is only as tight as what it revokes
+// from THAT, so the check starts where production does.
+psql(['-d', DB, '-c', `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated, service_role;
+  ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO anon, authenticated, service_role;
+  ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;`]);
 psql(['-d', DB, '-f', join(repoRoot, 'supabase/migrations/00000000000000_network_baseline.sql')]);
 for (const file of readdirSync(join(repoRoot, 'supabase/migrations'))
   .filter((f) => /^\d{14}_.+\.sql$/.test(f) && !f.startsWith('00000000000000')).sort()) {
@@ -306,6 +314,109 @@ if (hasLineage) {
     superseded(legacyList) && superseded(legacySibling));
 }
 
+// === REVIEW (28 Sep 2026): "still being read" is a STATUS, not a stamp ==========
+// A failed read stamps `processing_completed_at` and a retry never clears it,
+// so a list being read AGAIN looked finished and an older draft published
+// beside it — before the retry recorded what it takes over.
+{
+  const org = organisation();
+  const x = upload(org);
+  const [item] = stage(org, x, 1);
+  settle(org, x, item);
+  const y = upload(org);
+  q1(`UPDATE public.builder_stock_uploads SET status = 'failed' WHERE id = ${lit(y)}::uuid`);
+  check('a newer list whose read FAILED, having touched nothing of this one, does not supersede it', !superseded(x));
+  q1(`UPDATE public.builder_stock_uploads SET status = 'parsing' WHERE id = ${lit(y)}::uuid`);
+  check('while that list is read AGAIN it supersedes, though its completion stamp is from the failed read', superseded(x));
+  q1(`UPDATE public.builder_stock_uploads SET status = 'imported' WHERE id = ${lit(y)}::uuid`);
+  check('and still while its rows are being written (status imported)', superseded(x));
+  q1(`UPDATE public.builder_stock_uploads SET status = 'uploaded', processing_completed_at = NULL WHERE id = ${lit(y)}::uuid`);
+  check('and while it is uploaded and not yet read at all', superseded(x));
+}
+
+// === REVIEW: a newer version that PUBLISHED supersedes for good ================
+// v3 replaced v1 and published; the builder deleted v3 and added the list
+// again as v4, all new rows. v2 — the draft v3 abandoned — must not come back.
+{
+  const org = organisation();
+  const v1 = upload(org);
+  const live = stage(org, v1, 2);
+  live.forEach((id) => settle(org, v1, id));
+  publish(v1);
+  const v2 = upload(org, { replaces: [v1] });
+  holdBack(live[0], v2);
+  const [v2Own] = stage(org, v2, 1);
+  const v3 = upload(org, { replaces: [v1] });
+  holdBack(live[0], v3);
+  holdBack(live[1], v3);
+  const p3 = publish(v3);
+  q1(`UPDATE public.builder_stock_uploads SET deleted_at = now() WHERE id = ${lit(v3)}::uuid`);
+  const v4 = upload(org);
+  stage(org, v4, 1);
+  settle(org, v2, v2Own);
+  check('a newer version that published still supersedes the draft it replaced after it is deleted',
+    p3.published === true && superseded(v2), JSON.stringify(p3));
+  const p2 = publish(v2);
+  check('so the abandoned draft\'s own property still never promotes',
+    p2.published === false && lifecycle(v2Own) === 'staged', JSON.stringify(p2));
+}
+
+// === REVIEW: supersession is decided ONCE, by publish ===========================
+// It was decided again inside the patch, after readiness: a list created in
+// between made the cut-over patch only rows this upload already supplied, and
+// the archive step then took every property it had matched.
+{
+  let publishDef = '';
+  let applyDef = '';
+  try { publishDef = q1(`SELECT pg_get_functiondef('public.publish_builder_stock_upload(uuid)'::regprocedure)`); } catch { /* reported below */ }
+  try { applyDef = q1(`SELECT pg_get_functiondef('public.apply_builder_stock_pending_patch(uuid, boolean)'::regprocedure)`); } catch { /* reported below */ }
+  const calls = [...publishDef.matchAll(/apply_builder_stock_pending_patch\(([^)]*)\)/g)].map((m) => m[1].replace(/\s+/g, ' ').trim());
+  check('publish hands the patch its own decision: the superseded branch patches own rows, every other call all rows',
+    JSON.stringify(calls) === JSON.stringify(['p_upload_id, true', 'p_upload_id, false', 'p_upload_id, false']),
+    JSON.stringify(calls));
+  check('the patch does not decide supersession itself', !!applyDef && !/builder_stock_upload_superseded/.test(applyDef));
+  check('no one-argument patch remains to be called by mistake',
+    q1(`SELECT count(*) FROM pg_proc WHERE proname = 'apply_builder_stock_pending_patch'`) === '1');
+
+  const org = organisation();
+  const v1 = upload(org);
+  const live = stage(org, v1, 2);
+  live.forEach((id) => settle(org, v1, id));
+  publish(v1);
+  const v2 = upload(org, { replaces: [v1] });
+  holdBack(live[0], v2);
+  holdBack(live[1], v2);
+  upload(org, { reading: true });   // arrives between publish's decision and its patch
+  let patched = null;
+  try { patched = Number(q1(`SELECT public.apply_builder_stock_pending_patch(${lit(v2)}::uuid, false)`)); } catch { /* reported below */ }
+  const repointed = Number(q1(`SELECT count(*) FROM public.builder_stock_items
+    WHERE id IN (${live.map((id) => `${lit(id)}::uuid`).join(', ')}) AND upload_id = ${lit(v2)}::uuid`));
+  check('a cut-over decided "not superseded" re-points every row it matched, whatever arrives meanwhile',
+    patched === 2 && repointed === 2, `patched ${patched}, re-pointed ${repointed}`);
+}
+
+// === REVIEW: the rule is priced as the walk it is ===============================
+{
+  check('the supersession rule is declared expensive, so every cheaper filter runs first',
+    Number(q1(`SELECT procost FROM pg_proc WHERE oid = 'public.builder_stock_upload_superseded(uuid)'::regprocedure`)) >= 1000);
+  // The shape the walk is slowest on: 150 versions, each meeting only the
+  // one before it, so the lineage is a chain 150 long.
+  const org = organisation();
+  const ids = [];
+  for (let i = 0; i < 150; i += 1) ids.push(upload(org));
+  for (let k = 0; k + 1 < ids.length; k += 1) {
+    const [row] = stage(org, ids[k], 1);
+    takeOver(row, ids[k + 1]);
+  }
+  q1(`UPDATE public.builder_stock_items SET lifecycle_status = 'active' WHERE organisation_id = ${lit(org)}::uuid`);
+  q1(`UPDATE public.builder_stock_uploads SET published_at = now() WHERE organisation_id = ${lit(org)}::uuid`);
+  const started = Date.now();
+  q1('SELECT public.publish_ready_builder_stock_uploads()');
+  const ms = Date.now() - started;
+  check('the publication sweep over an organisation whose 150 versions are all published takes under two seconds',
+    ms < 2000, `${ms} ms`);
+}
+
 // === SAFE: posture ===============================================================
 if (hasLineage) {
   check('RLS is on for the lineage record',
@@ -323,6 +434,16 @@ if (hasLineage) {
             OR EXISTS (SELECT 1 FROM pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
                         WHERE p.oid = '${fn}'::regprocedure AND a.grantee = 0 AND a.privilege_type = 'EXECUTE')`) === 'f');
   }
+  check('service_role may read the lineage record and nothing else — append only is enforced, not a convention',
+    q1(`SELECT has_table_privilege('service_role', 'public.builder_stock_upload_contacts', 'SELECT')
+          AND NOT has_table_privilege('service_role', 'public.builder_stock_upload_contacts', 'INSERT')
+          AND NOT has_table_privilege('service_role', 'public.builder_stock_upload_contacts', 'UPDATE')
+          AND NOT has_table_privilege('service_role', 'public.builder_stock_upload_contacts', 'DELETE')
+          AND NOT has_table_privilege('service_role', 'public.builder_stock_upload_contacts', 'TRUNCATE')`) === 't');
+  check('the patch is executable by service_role and by no one else',
+    q1OrFalse(`SELECT has_function_privilege('service_role', 'public.apply_builder_stock_pending_patch(uuid, boolean)', 'EXECUTE')
+          AND NOT has_function_privilege('anon', 'public.apply_builder_stock_pending_patch(uuid, boolean)', 'EXECUTE')
+          AND NOT has_function_privilege('authenticated', 'public.apply_builder_stock_pending_patch(uuid, boolean)', 'EXECUTE')`) === 't');
   check('service_role may execute the supersession rule',
     q1(`SELECT has_function_privilege('service_role', 'public.builder_stock_upload_superseded(uuid)', 'EXECUTE')`) === 't');
 
