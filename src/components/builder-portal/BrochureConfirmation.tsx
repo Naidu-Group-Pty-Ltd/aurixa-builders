@@ -71,10 +71,12 @@ export function BrochureImageChoice({
   item,
   note,
   listingIdentity,
+  canEdit = true,
 }: {
   item: BuilderStockItem;
   note: Note;
   listingIdentity: string;
+  canEdit?: boolean;
 }) {
   const { toast } = useToast();
   const confirm = useConfirmBrochureImage();
@@ -82,7 +84,7 @@ export function BrochureImageChoice({
   // A listing the server named at the act that the page had not shown.
   const [namedAtAct, setNamedAtAct] = useState<ListingReference | null>(null);
 
-  if (!note.confirmable || !note.document_key || !note.states) return null;
+  if (!canEdit || !note.confirmable || !note.document_key || !note.states) return null;
   const inUse = namedAtAct ?? note.in_use_by ?? null;
   const inUseBy = inUse?.identity ?? null;
 
@@ -196,13 +198,23 @@ function stateLine(confirmation: StockBrochureConfirmation): string | null {
  * of it, and the undo. Drawn whether or not the card has a picture: a confirmed
  * brochure usually IS the picture, and the undo has to stay in reach.
  */
-export function BrochureConfirmations({ item }: { item: BuilderStockItem }) {
+export function BrochureConfirmations({
+  item, canEdit = true,
+}: {
+  item: BuilderStockItem;
+  canEdit?: boolean;
+}) {
   const confirmations = item.brochure_confirmations ?? [];
   if (!confirmations.length) return null;
   return (
     <ul className="flex w-full flex-col gap-2">
       {confirmations.map((confirmation) => (
-        <BrochureConfirmationLine key={confirmation.id} item={item} confirmation={confirmation} />
+        <BrochureConfirmationLine
+          key={confirmation.id}
+          item={item}
+          confirmation={confirmation}
+          canEdit={canEdit}
+        />
       ))}
     </ul>
   );
@@ -211,9 +223,11 @@ export function BrochureConfirmations({ item }: { item: BuilderStockItem }) {
 function BrochureConfirmationLine({
   item,
   confirmation,
+  canEdit,
 }: {
   item: BuilderStockItem;
   confirmation: StockBrochureConfirmation;
+  canEdit: boolean;
 }) {
   const { toast } = useToast();
   const undo = useUndoBrochureImage();
@@ -251,55 +265,59 @@ function BrochureConfirmationLine({
           {confirmation.states ? ` \u2014 ${confirmation.states}` : ''}
         </span>
       </p>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="mt-2 h-7 gap-1.5 px-2.5 text-xs"
-        onClick={() => setOpen(true)}
-      >
-        <Undo2 className="h-3.5 w-3.5" aria-hidden />
-        {COPY.undo}
-      </Button>
-      <AlertDialog open={open} onOpenChange={(next) => { if (!undo.isPending) setOpen(next); }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{COPY.undoTitle}</AlertDialogTitle>
-            <AlertDialogDescription>{COPY.undoBody}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={undo.isPending}>{COPY.undoKeep}</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={undo.isPending}
-              onClick={(event) => {
-                event.preventDefault();
-                undo.mutate(
-                  { stockItemId: item.id, confirmationId: confirmation.id },
-                  {
-                    onSuccess: () => {
-                      setOpen(false);
-                      toast({ title: COPY.undoneToastTitle, description: COPY.undoneToastBody });
+      {canEdit ? (
+        <>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="mt-2 h-7 gap-1.5 px-2.5 text-xs"
+          onClick={() => setOpen(true)}
+        >
+          <Undo2 className="h-3.5 w-3.5" aria-hidden />
+          {COPY.undo}
+        </Button>
+        <AlertDialog open={open} onOpenChange={(next) => { if (!undo.isPending) setOpen(next); }}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{COPY.undoTitle}</AlertDialogTitle>
+              <AlertDialogDescription>{COPY.undoBody}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={undo.isPending}>{COPY.undoKeep}</AlertDialogCancel>
+              <AlertDialogAction
+                disabled={undo.isPending}
+                onClick={(event) => {
+                  event.preventDefault();
+                  undo.mutate(
+                    { stockItemId: item.id, confirmationId: confirmation.id },
+                    {
+                      onSuccess: () => {
+                        setOpen(false);
+                        toast({ title: COPY.undoneToastTitle, description: COPY.undoneToastBody });
+                      },
+                      onError: (error) => {
+                        setOpen(false);
+                        toast({
+                          title: 'The confirmation could not be undone',
+                          description: errorMessage(error),
+                          variant: 'destructive',
+                        });
+                      },
                     },
-                    onError: (error) => {
-                      setOpen(false);
-                      toast({
-                        title: 'The confirmation could not be undone',
-                        description: errorMessage(error),
-                        variant: 'destructive',
-                      });
-                    },
-                  },
-                );
-              }}
-            >
-              {undo.isPending ? (
-                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin motion-reduce:animate-none" aria-hidden />
-              ) : null}
-              {COPY.undoConfirm}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+                  );
+                }}
+              >
+                {undo.isPending ? (
+                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin motion-reduce:animate-none" aria-hidden />
+                ) : null}
+                {COPY.undoConfirm}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+        </>
+      ) : null}
     </li>
   );
 }

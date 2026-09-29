@@ -2,9 +2,11 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  OFFERED_BUILDER_SCOPE_TYPES,
   WITHDRAWN_BUILDER_SECTIONS,
   WITHDRAWN_BUILDER_SECTION_KEYS,
   isWithdrawnBuilderPath,
+  offeredBuilderScopeType,
   withdrawnSectionForPath,
 } from '@/lib/builderHiddenSections.pure';
 
@@ -53,6 +55,15 @@ describe('withdrawn builder sections — the set itself', () => {
     ]) {
       expect(isWithdrawnBuilderPath(path)).toBe(false);
     }
+  });
+
+  it('does not re-offer withdrawn aggregates through collaboration scope pickers', () => {
+    expect(OFFERED_BUILDER_SCOPE_TYPES).toEqual(['project']);
+    expect(offeredBuilderScopeType('project')).toBe('project');
+    expect(offeredBuilderScopeType('unit')).toBe('project');
+    expect(offeredBuilderScopeType('transaction')).toBe('project');
+    expect(offeredBuilderScopeType('construction_case')).toBe('project');
+    expect(offeredBuilderScopeType('made_up')).toBe('project');
   });
 
   it('answers a missing path without throwing', () => {
@@ -120,6 +131,25 @@ describe('withdrawn builder sections — every door asks the same list', () => {
     const dash = read('src/pages/builder/BuilderDashboard.tsx');
     // Both figure arrays plus the attention list, and the import.
     expect(dash.match(/isWithdrawnBuilderPath/g)?.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('the collaboration picker asks the same offer and dormant child queries stay dormant', () => {
+    const picker = readCode('src/components/builder-portal/BuilderScopePicker.tsx');
+    expect(picker).toContain('OFFERED_BUILDER_SCOPE_TYPES.map');
+    expect(picker).not.toMatch(/\bBUILDER_SCOPE_TYPES\.map/);
+    expect(picker).toContain("enabled: childEnabled && value.scopeType === 'unit'");
+    expect(picker).toContain("enabled: childEnabled && value.scopeType === 'transaction'");
+    expect(picker).toContain("enabled: childEnabled && value.scopeType === 'construction_case'");
+
+    const queries = readCode('src/lib/builderQueries.ts');
+    expect(queries.match(/options: \{ enabled\?: boolean \} = \{\}/g)?.length).toBeGreaterThanOrEqual(3);
+
+    for (const path of [
+      'src/pages/builder/BuilderMessages.tsx',
+      'src/pages/builder/BuilderTasks.tsx',
+    ]) {
+      expect(readCode(path)).toContain('offeredBuilderScopeType');
+    }
   });
 
   it('the onboarding tour drops the steps whose anchors are gone', () => {

@@ -5,8 +5,9 @@ import {
   useBuilderConstructionCases, useBuilderProjects, useBuilderTransactions, useBuilderUnits,
 } from '@/lib/builderQueries';
 import {
-  BUILDER_SCOPE_TYPES, SCOPE_TYPE_LABELS, type BuilderScopeType,
+  SCOPE_TYPE_LABELS, type BuilderScopeType,
 } from '@/lib/builderCollaboration';
+import { OFFERED_BUILDER_SCOPE_TYPES } from '@/lib/builderHiddenSections.pure';
 
 /**
  * Choose the aggregate a collaboration surface is scoped to.
@@ -36,15 +37,15 @@ export function BuilderScopePicker({
   const unitsQuery = useBuilderUnits({
     projectId: childEnabled && value.scopeType === 'unit' ? projectId : '',
     search: '', availabilityStatus: '', releaseStatus: '', page: 1, pageSize: 100,
-  });
+  }, { enabled: childEnabled && value.scopeType === 'unit' });
   const transactionsQuery = useBuilderTransactions({
     projectId: childEnabled && value.scopeType === 'transaction' ? projectId : '',
     search: '', status: '', page: 1, pageSize: 100,
-  });
+  }, { enabled: childEnabled && value.scopeType === 'transaction' });
   const casesQuery = useBuilderConstructionCases({
     projectId: childEnabled && value.scopeType === 'construction_case' ? projectId : '',
     search: '', status: '', page: 1, pageSize: 100,
-  });
+  }, { enabled: childEnabled && value.scopeType === 'construction_case' });
 
   const children: Array<{ id: string; label: string }> = (() => {
     if (value.scopeType === 'unit') {
@@ -98,7 +99,7 @@ export function BuilderScopePicker({
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {BUILDER_SCOPE_TYPES.map((scopeType) => (
+          {OFFERED_BUILDER_SCOPE_TYPES.map((scopeType) => (
             <SelectItem key={scopeType} value={scopeType}>
               {SCOPE_TYPE_LABELS[scopeType]}
             </SelectItem>

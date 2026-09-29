@@ -261,60 +261,90 @@ try {
     if (await search.count()) {
       await search.fill('Tierzero');
       await page.waitForTimeout(1800);
-      const t = await page.locator('main').innerText().catch(() => '');
-      searchOk = t.includes('Tierzero') && !t.includes('12 Proofline Way');
+      const plates = page.locator('.builder-stock-list-workspace .builder-stock-list-plates > .bd-plate');
+      const plateText = (await plates.allInnerTexts().catch(() => [])).join(' | ');
+      searchOk = (await plates.count()) === 1
+        && plateText.includes('20 Tierzero Crescent')
+        && !plateText.includes('Proofline Way');
       await search.fill('');
       await page.waitForTimeout(1200);
     }
     record(`S: ${label} — Stock List search narrows the list to what matches`, searchOk);
     const availability = page.getByLabel(/Availability for .*16 Proofline Way/i).first();
-    let availabilityResult = 'no control';
-    if (await availability.count()) {
-      await availability.click().catch(() => {});
-      await page.getByRole('option', { name: /^Reserved$|^On hold$/ }).first().click().catch(() => {});
-      await page.waitForTimeout(2500);
-      const after = await itemsOf(person.orgId, `AND i.id = ${id(byLot['103'])}`);
-      availabilityResult = `${after[0]?.availability_status}; toast: ${await toast()}`;
-      const changed = after[0]?.availability_status !== 'reserved' || /on_hold/.test(after[0]?.availability_status);
-      if (CAN_EDIT_STOCK[label]) {
-        record(`S: ${label} — changing a property's availability on the Stock List saves it`, after[0]?.availability_status === 'on_hold', availabilityResult);
+    const availabilityCount = await availability.count();
+    if (CAN_EDIT_STOCK[label]) {
+      if (availabilityCount) {
+        await availability.click().catch(() => {});
+        await page.getByRole('option', { name: /^On hold$/ }).first().click().catch(() => {});
+        await page.waitForTimeout(2500);
+        const after = await itemsOf(person.orgId, `AND i.id = ${id(byLot['103'])}`);
+        record(`S: ${label} — changing a property's availability on the Stock List saves it`,
+          after[0]?.availability_status === 'on_hold', `${after[0]?.availability_status}; toast: ${await toast()}`);
         await stock({ operation: 'set_availability', stock_item_id: byLot['103'], availability_status: 'reserved' }, owner.cookie);
       } else {
-        record(`S: ${label} — the Stock List refuses an availability change this role may not make, and says so`,
-          after[0]?.availability_status === 'reserved' && /permission|not allowed|could not/i.test(availabilityResult),
-          `${availabilityResult}; sent: ${lastWrites()}`);
-        record(`S: ${label} — the availability control is not offered to a role that cannot use it`, false,
-          'the control is drawn and the server refuses (UI: none)', { required: false });
+        record(`S: ${label} — availability control is offered to a role with edit rights`, false, 'not found');
       }
-      void changed;
     } else {
-      record(`S: ${label} — availability control present`, false, 'not found');
+      const refusal = await stock({
+        operation: 'set_availability', stock_item_id: byLot['103'], availability_status: 'on_hold',
+      }, person.cookie);
+      const after = await itemsOf(person.orgId, `AND i.id = ${id(byLot['103'])}`);
+      record(`S: ${label} — availability is not offered without edit rights and a forged write is refused`,
+        availabilityCount === 0 && refusal.status === 403 && after[0]?.availability_status === 'reserved',
+        `control ${availabilityCount}; HTTP ${refusal.status}; state ${after[0]?.availability_status}`);
     }
+
     const removeButton = page.getByRole('button', { name: /Remove .*18 Proofline Way/i }).first();
-    if (await removeButton.count()) {
-      await removeButton.click().catch(() => {});
-      const confirm = page.getByRole('button', { name: /^Remove property$/ });
-      const dialog = await confirm.count();
-      if (dialog && !CAN_DELETE_STOCK[label]) {
-        await confirm.click().catch(() => {});
-        await page.waitForTimeout(2000);
-        const after = await itemsOf(person.orgId, `AND i.id = ${id(byLot['104'])}`);
-        record(`S: ${label} — removing a property is refused for a role without delete rights, and the page says so`,
-          after[0]?.lifecycle_status === 'active' && /permission|could not/i.test(await toast()),
-          `${after[0]?.lifecycle_status}; ${await toast()}; sent: ${lastWrites()}`);
-      } else if (dialog) {
-        await page.getByRole('button', { name: /^Cancel$/ }).first().click().catch(() => {});
-        record(`S: ${label} — the remove confirmation opens and cancels without removing`, true);
+    const removeCount = await removeButton.count();
+    if (CAN_DELETE_STOCK[label]) {
+      if (removeCount) {
+        await removeButton.click().catch(() => {});
+        const confirm = page.getByRole('button', { name: /^Remove property$/ });
+        const dialog = await confirm.count();
+        if (dialog) await page.getByRole('button', { name: /^Cancel$/ }).first().click().catch(() => {});
+        record(`S: ${label} — the remove confirmation opens and cancels without removing`, dialog > 0);
+      } else {
+        record(`S: ${label} — Remove is offered to a role with delete rights`, false, 'not found');
       }
+    } else {
+      const refusal = await stock({ operation: 'archive_stock_item', stock_item_id: byLot['104'] }, person.cookie);
+      const after = await itemsOf(person.orgId, `AND i.id = ${id(byLot['104'])}`);
+      record(`S: ${label} — Remove is not offered without delete rights and a forged delete is refused`,
+        removeCount === 0 && refusal.status === 403 && after[0]?.lifecycle_status === 'active',
+        `control ${removeCount}; HTTP ${refusal.status}; state ${after[0]?.lifecycle_status}`);
     }
+
     const addList = page.getByRole('button', { name: /Add stock list/i }).first();
-    if (await addList.count()) {
-      await addList.click().catch(() => {});
-      const opened = await page.getByRole('tab', { name: /Add from URL/i }).count();
-      await page.getByRole('tab', { name: /Add from URL/i }).click().catch(() => {});
-      await page.keyboard.press('Escape').catch(() => {});
-      record(`S: ${label} — the Add stock list dialog opens with its two ways in`, opened > 0);
+    const addCount = await addList.count();
+    if (CAN_EDIT_STOCK[label]) {
+      if (addCount) {
+        await addList.click().catch(() => {});
+        const opened = await page.getByRole('tab', { name: /Add from URL/i }).count();
+        await page.getByRole('tab', { name: /Add from URL/i }).click().catch(() => {});
+        await page.keyboard.press('Escape').catch(() => {});
+        record(`S: ${label} — the Add stock list dialog opens with its two ways in`, opened > 0);
+      } else {
+        record(`S: ${label} — Add stock list is offered with edit rights`, false, 'not found');
+      }
+    } else {
+      record(`S: ${label} — Add stock list is not offered without edit rights`, addCount === 0,
+        `${addCount} control(s)`);
     }
+
+    const acknowledgeCount = await page.getByRole('button', { name: /^Acknowledge$/ }).count();
+    record(`S: ${label} — acknowledgement follows stock edit permission`,
+      CAN_EDIT_STOCK[label] ? acknowledgeCount > 0 : acknowledgeCount === 0,
+      `${acknowledgeCount} control(s)`);
+
+    const figuresCount = await page.getByRole('button', { name: /schedule for .*Proofline Way/i }).count();
+    const imageCount = await page.getByRole('button', { name: /Replace the picture for .*Proofline Way/i }).count();
+    const retryImagesCount = await page.getByRole('button', { name: /Retry image lookup/i }).count();
+    const recoverSourceCount = await page.getByRole('button', { name: /Recover source images for/i }).count();
+    record(`S: ${label} — repair and correction controls follow stock edit permission`,
+      CAN_EDIT_STOCK[label]
+        ? figuresCount > 0 && imageCount > 0 && retryImagesCount > 0 && recoverSourceCount > 0
+        : figuresCount === 0 && imageCount === 0 && retryImagesCount === 0 && recoverSourceCount === 0,
+      `schedule ${figuresCount}; image ${imageCount}; retry ${retryImagesCount}; source ${recoverSourceCount}`);
 
     // Projects and the property record.
     if (projectId) {
@@ -332,11 +362,30 @@ try {
     await page.goto(`${ORIGIN}/builder/notifications`, { waitUntil: 'networkidle', timeout: 60_000 }).catch(() => {});
     await page.waitForTimeout(1200);
     const markAll = page.getByRole('button', { name: /Mark all read/i }).first();
-    if (await markAll.count() && await markAll.isEnabled().catch(() => false)) {
+    const beforeUnread = await portal('builder-portal-collaboration', { operation: 'unread_counts' }, person.cookie);
+    const peer = label === 'owner' ? people.admin : people.owner;
+    const peerBefore = await portal('builder-portal-collaboration', { operation: 'unread_counts' }, peer.cookie);
+    const beforeCount = Number(beforeUnread.json?.unread_notifications ?? -1);
+    const peerBeforeCount = Number(peerBefore.json?.unread_notifications ?? -1);
+    const markOffered = await markAll.count() > 0 && await markAll.isEnabled().catch(() => false);
+    if (beforeCount > 0 && markOffered) {
       await markAll.click().catch(() => {});
       await page.waitForTimeout(1500);
-      record(`N: ${label} — "Mark all read" clears the unread notifications`, /marked as read|Nothing left/i.test(await toast()) || true, await toast(), { required: false });
     }
+    const afterUnread = await portal('builder-portal-collaboration', { operation: 'unread_counts' }, person.cookie);
+    const peerAfter = await portal('builder-portal-collaboration', { operation: 'unread_counts' }, peer.cookie);
+    const afterCount = Number(afterUnread.json?.unread_notifications ?? -1);
+    const peerAfterCount = Number(peerAfter.json?.unread_notifications ?? -1);
+    record(`N: ${label} — "Mark all read" clears only this user's unread notifications`,
+      beforeUnread.status === 200
+        && peerBefore.status === 200
+        && beforeCount > 0
+        && markOffered
+        && afterUnread.status === 200
+        && afterCount === 0
+        && peerAfter.status === 200
+        && peerAfterCount === peerBeforeCount,
+      `self ${beforeCount}->${afterCount}; peer ${peerBeforeCount}->${peerAfterCount}; offered ${markOffered}; toast: ${await toast()}`);
     await page.goto(`${ORIGIN}/builder/settings`, { waitUntil: 'networkidle', timeout: 60_000 }).catch(() => {});
     await page.waitForTimeout(1500);
     const save = page.getByRole('button', { name: /Save preferences/i }).first();

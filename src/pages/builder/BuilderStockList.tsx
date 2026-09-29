@@ -24,6 +24,7 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { SearchInput } from '@/components/ui/search-input';
 import { useToast } from '@/hooks/use-toast';
+import { useBuilderPortalAuth } from '@/hooks/useBuilderPortalAuth';
 import { cn } from '@/lib/utils';
 import {
   describeDistribution,
@@ -130,6 +131,9 @@ const PHASE_PERCENT: Record<StockUploadProgress['phase'], number> = {
 
 export default function BuilderStockList() {
   const { toast } = useToast();
+  const { can } = useBuilderPortalAuth();
+  const canEditStock = can('inventory', 'edit');
+  const canDeleteStock = can('inventory', 'delete');
   const fileInput = useRef<HTMLInputElement>(null);
 
   const [search, setSearch] = useState('');
@@ -692,12 +696,14 @@ export default function BuilderStockList() {
             <RefreshCw className={cn('mr-2 h-4 w-4', itemsQuery.isFetching && 'animate-spin')} aria-hidden />
             Refresh
           </Button>
-          <Button className="builder-stock-list-hero-action" size="sm" onClick={() => setAddOpen(true)} disabled={busy}>
-            {busy
-              ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
-              : <Plus className="mr-2 h-4 w-4" aria-hidden />}
-            Add stock list
-          </Button>
+          {canEditStock ? (
+            <Button className="builder-stock-list-hero-action" size="sm" onClick={() => setAddOpen(true)} disabled={busy}>
+              {busy
+                ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+                : <Plus className="mr-2 h-4 w-4" aria-hidden />}
+              Add stock list
+            </Button>
+          ) : null}
         </>
       }
     >
@@ -794,24 +800,26 @@ export default function BuilderStockList() {
                     className="mt-1"
                   />
                 </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={acknowledge.isPending}
-                  onClick={() => {
-                    acknowledge.mutate(selection.id, {
-                      onSuccess: () => toast({ title: 'Acknowledged' }),
-                      onError: (error) => toast({
-                        title: 'Could not acknowledge',
-                        description: (error as Error).message,
-                        variant: 'destructive',
-                      }),
-                    });
-                  }}
-                >
-                  <CheckCircle2 className="mr-2 h-4 w-4" aria-hidden />
-                  Acknowledge
-                </Button>
+                {canEditStock ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={acknowledge.isPending}
+                    onClick={() => {
+                      acknowledge.mutate(selection.id, {
+                        onSuccess: () => toast({ title: 'Acknowledged' }),
+                        onError: (error) => toast({
+                          title: 'Could not acknowledge',
+                          description: (error as Error).message,
+                          variant: 'destructive',
+                        }),
+                      });
+                    }}
+                  >
+                    <CheckCircle2 className="mr-2 h-4 w-4" aria-hidden />
+                    Acknowledge
+                  </Button>
+                ) : null}
               </div>
             ))}
           </CardContent>
@@ -1044,6 +1052,8 @@ export default function BuilderStockList() {
                     key={item.id}
                     item={item}
                     saving={setAvailabilityMutation.isPending}
+                    canEdit={canEditStock}
+                    canDelete={canDeleteStock}
                     onAvailabilityChange={(next) => {
                       setAvailabilityMutation.mutate(
                         { stockItemId: item.id, availability: next },
@@ -1118,6 +1128,8 @@ export default function BuilderStockList() {
                     key={item.id}
                     item={item}
                     saving={setAvailabilityMutation.isPending}
+                    canEdit={canEditStock}
+                    canDelete={canDeleteStock}
                     onAvailabilityChange={(next) => {
                       setAvailabilityMutation.mutate(
                         { stockItemId: item.id, availability: next },
@@ -1172,31 +1184,33 @@ export default function BuilderStockList() {
               Every stock list you have added — uploaded or linked — and what happened to it.
             </CardDescription>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={enrichPending.isPending}
-            onClick={() => {
-              enrichPending.mutate(undefined, {
-                onSuccess: (result) => toast({
-                  title: result.processed
-                    ? `Images found for ${result.processed} propert${result.processed === 1 ? 'y' : 'ies'}`
-                    : 'Nothing was waiting for images',
-                  description: result.remaining ? `${result.remaining} still to go.` : undefined,
-                }),
-                onError: (error) => toast({
-                  title: 'Image lookup could not run',
-                  description: (error as Error).message,
-                  variant: 'destructive',
-                }),
-              });
-            }}
-          >
-            {enrichPending.isPending
-              ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
-              : <Sparkles className="mr-2 h-4 w-4" aria-hidden />}
-            Retry image lookup
-          </Button>
+          {canEditStock ? (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={enrichPending.isPending}
+              onClick={() => {
+                enrichPending.mutate(undefined, {
+                  onSuccess: (result) => toast({
+                    title: result.processed
+                      ? `Images found for ${result.processed} propert${result.processed === 1 ? 'y' : 'ies'}`
+                      : 'Nothing was waiting for images',
+                    description: result.remaining ? `${result.remaining} still to go.` : undefined,
+                  }),
+                  onError: (error) => toast({
+                    title: 'Image lookup could not run',
+                    description: (error as Error).message,
+                    variant: 'destructive',
+                  }),
+                });
+              }}
+            >
+              {enrichPending.isPending
+                ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+                : <Sparkles className="mr-2 h-4 w-4" aria-hidden />}
+              Retry image lookup
+            </Button>
+          ) : null}
         </CardHeader>
         <CardContent>
           {/*
@@ -1335,7 +1349,7 @@ export default function BuilderStockList() {
                           recover; the server refuses in every other case, so
                           this is a convenience rather than the control.
                         */}
-                        {canRefreshBrochureLinks(upload) ? (
+                        {canEditStock && canRefreshBrochureLinks(upload) ? (
                           <Button
                             variant="ghost"
                             size="sm"
@@ -1367,7 +1381,7 @@ export default function BuilderStockList() {
                           server itself calls retryable, which is why the list
                           comes from the shared module rather than from here.
                         */}
-                        {canRetryFailure(upload) ? (
+                        {canEditStock && canRetryFailure(upload) ? (
                           <Button
                             variant="ghost"
                             size="sm"
@@ -1381,7 +1395,7 @@ export default function BuilderStockList() {
                             </span>
                           </Button>
                         ) : null}
-                        {canReprocess(upload) ? (
+                        {canEditStock && canReprocess(upload) ? (
                           <Button
                             variant="ghost"
                             size="sm"
@@ -1396,27 +1410,31 @@ export default function BuilderStockList() {
                             </span>
                           </Button>
                         ) : null}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          disabled={recoverImages.isPending || deleteSource.isPending || busy}
-                          onClick={() => recoverSourceImages(upload)}
-                          aria-label={`Recover source images for ${stockSourceLabel(upload)}`}
-                        >
-                          <ImageDown className="h-4 w-4" aria-hidden />
-                          <span className="sr-only sm:not-sr-only sm:ml-2">Source images</span>
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-destructive hover:text-destructive"
-                          disabled={deleteSource.isPending || busy}
-                          onClick={() => setPendingDelete(upload)}
-                          aria-label={`Delete ${stockSourceLabel(upload)}`}
-                        >
-                          <Trash2 className="h-4 w-4" aria-hidden />
-                          <span className="sr-only sm:not-sr-only sm:ml-2">Delete</span>
-                        </Button>
+                        {canEditStock ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={recoverImages.isPending || deleteSource.isPending || busy}
+                            onClick={() => recoverSourceImages(upload)}
+                            aria-label={`Recover source images for ${stockSourceLabel(upload)}`}
+                          >
+                            <ImageDown className="h-4 w-4" aria-hidden />
+                            <span className="sr-only sm:not-sr-only sm:ml-2">Source images</span>
+                          </Button>
+                        ) : null}
+                        {canDeleteStock ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-destructive hover:text-destructive"
+                            disabled={deleteSource.isPending || busy}
+                            onClick={() => setPendingDelete(upload)}
+                            aria-label={`Delete ${stockSourceLabel(upload)}`}
+                          >
+                            <Trash2 className="h-4 w-4" aria-hidden />
+                            <span className="sr-only sm:not-sr-only sm:ml-2">Delete</span>
+                          </Button>
+                        ) : null}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -1428,7 +1446,7 @@ export default function BuilderStockList() {
       </Card>
 
       {/* Add a source: a file from this computer, or an address to fetch. */}
-      <Dialog open={addOpen} onOpenChange={(open) => { if (!busy) setAddOpen(open); }}>
+      <Dialog open={canEditStock && addOpen} onOpenChange={(open) => { if (canEditStock && !busy) setAddOpen(open); }}>
         <DialogContent className="builder-stock-list-dialog sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Add a stock list</DialogTitle>
@@ -1768,7 +1786,13 @@ function PriceBlock({ item }: { item: BuilderStockItem }) {
  * found nothing is drawn dashed and muted rather than being written out, and
  * its full label and reason stay on the element for hover and screen readers.
  */
-function ImageSources({ item, showLabels = false }: { item: BuilderStockItem; showLabels?: boolean }) {
+function ImageSources({
+  item, showLabels = false, canEdit = true,
+}: {
+  item: BuilderStockItem;
+  showLabels?: boolean;
+  canEdit?: boolean;
+}) {
   const image = primaryStockImage(item);
   const stages = stockImageStageSummary(item);
   /*
@@ -1872,6 +1896,7 @@ function ImageSources({ item, showLabels = false }: { item: BuilderStockItem; sh
               item={item}
               note={note}
               listingIdentity={listingIdentity}
+              canEdit={canEdit}
             />
           ))}
           <DocumentNotesPanel notes={notes.filter((note) => !isDrawableMismatch(note))} />
@@ -1883,7 +1908,7 @@ function ImageSources({ item, showLabels = false }: { item: BuilderStockItem; sh
         whether or not the card has a picture, because a confirmed brochure is
         usually what gave it one.
       */}
-      {showLabels ? <BrochureConfirmations item={item} /> : null}
+      {showLabels ? <BrochureConfirmations item={item} canEdit={canEdit} /> : null}
 
       {/*
         Whatever else went wrong, somebody can fix this one card. The picture a
@@ -1891,11 +1916,13 @@ function ImageSources({ item, showLabels = false }: { item: BuilderStockItem; sh
         property's picture", and nothing was read or inferred to arrive at it —
         so it outranks anything taken out of a document.
       */}
-      <BuilderPropertyImageButton
-        stockItemId={item.id}
-        propertyLabel={stockItemTitle(item)}
-        hasImage={!!image}
-      />
+      {canEdit ? (
+        <BuilderPropertyImageButton
+          stockItemId={item.id}
+          propertyLabel={stockItemTitle(item)}
+          hasImage={!!image}
+        />
+      ) : null}
 
       <ul className="builder-stock-list-image-stages flex flex-wrap items-center gap-1">
         {stages.map((stage) => {
@@ -1993,6 +2020,8 @@ function SelectionStatus({ item }: { item: BuilderStockItem }) {
 interface StockPresentationProps {
   item: BuilderStockItem;
   saving: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
   onAvailabilityChange: (next: string) => void;
   onRemoved: () => void;
 }
@@ -2120,7 +2149,7 @@ function RemoveProperty({ item, onRemoved }: {
  *
  */
 export function StockPlate({
-  item, saving, onAvailabilityChange, onRemoved,
+  item, saving, canEdit, canDelete, onAvailabilityChange, onRemoved,
 }: StockPresentationProps) {
   const image = primaryStockImage(item);
   const title = stockItemTitle(item);
@@ -2137,7 +2166,7 @@ export function StockPlate({
           className="bd-plate-frame"
           alt={`${title} — the picture shown on the marketplace`}
           emptyLabel="No picture found yet"
-          emptyAction={
+          emptyAction={canEdit ? (
             <div className="mt-2">
               <BuilderPropertyImageButton
                 stockItemId={item.id}
@@ -2145,7 +2174,7 @@ export function StockPlate({
                 hasImage={false}
               />
             </div>
-          }
+          ) : null}
         />
         {/*
           Under the picture, because everything in it is ABOUT the picture:
@@ -2155,7 +2184,7 @@ export function StockPlate({
           number was decoration colliding with a button.
         */}
         <div className="bd-plate-caption">
-          <ImageSources item={item} showLabels />
+          <ImageSources item={item} showLabels canEdit={canEdit} />
         </div>
       </div>
 
@@ -2185,7 +2214,7 @@ export function StockPlate({
           */}
           <div className="bd-plate-controls">
             <SelectionStatus item={item} />
-            <RemoveProperty item={item} onRemoved={onRemoved} />
+            {canDelete ? <RemoveProperty item={item} onRemoved={onRemoved} /> : null}
           </div>
         </div>
 
@@ -2194,7 +2223,7 @@ export function StockPlate({
             item={item}
             price={price ? amount : null}
             terms={qualifier}
-            availability={
+            availability={canEdit ? (
               /* Bounded. The trigger declares `w-full` for the narrow
                  presentations that used to call it, and in a 910px column
                  that drew a 908px empty select across the foot of the row. */
@@ -2204,7 +2233,12 @@ export function StockPlate({
                 onAvailabilityChange={onAvailabilityChange}
                 className="h-9 w-[12rem]"
               />
-            }
+            ) : (
+              <span className="text-sm font-medium">
+                {STOCK_AVAILABILITY_LABELS[item.availability_status as StockAvailability]
+                  ?? item.availability_status}
+              </span>
+            )}
           />
           {/*
             THE NOTE UNDER THE SCHEDULE, which is where a drawing puts one and
@@ -2214,7 +2248,7 @@ export function StockPlate({
             same thing up to five times — and the control beside it changes its
             wording with what is outstanding.
           */}
-          <StockFiguresNote item={item} />
+          <StockFiguresNote item={item} canEdit={canEdit} />
         </div>
       </div>
     </li>
@@ -2222,12 +2256,12 @@ export function StockPlate({
 }
 
 /** What the stock list did not say, and the way to say it. */
-function StockFiguresNote({ item }: { item: BuilderStockItem }) {
+function StockFiguresNote({ item, canEdit }: { item: BuilderStockItem; canEdit: boolean }) {
   const reading = describeManualStats(item);
   return (
     <div className="bd-spec-note">
       {reading.note ? <p className="bd-spec-note-text">{reading.note}</p> : null}
-      <BuilderStockFiguresButton item={item} />
+      {canEdit ? <BuilderStockFiguresButton item={item} /> : null}
     </div>
   );
 }
