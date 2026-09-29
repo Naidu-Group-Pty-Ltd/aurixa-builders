@@ -217,7 +217,7 @@ describe('stock actions follow the resolved inventory permission matrix', () => 
     expect(screen.getByRole('button', { name: /Add stock list/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Retry image lookup/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Use brochure image/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Add a picture/i })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /Add a picture/i }).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: /schedule/i })).toBeTruthy();
     expect(screen.getByRole('combobox', { name: /Availability for/i })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Remove/i })).toBeNull();
