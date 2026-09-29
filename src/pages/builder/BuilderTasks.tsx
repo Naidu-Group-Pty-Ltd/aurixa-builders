@@ -29,8 +29,9 @@ import {
 import {
   TASK_PRIORITY_CLASSES, TASK_PRIORITY_LABELS, TASK_STATUS_CLASSES, TASK_STATUS_LABELS,
   describeDueDate, formatCollaborationDate, isTaskOverdue,
-  type BuilderScopeType, type BuilderTask, type BuilderTaskPriority, type BuilderTaskStatus,
+  type BuilderTask, type BuilderTaskPriority, type BuilderTaskStatus,
 } from '@/lib/builderCollaboration';
+import { offeredBuilderScopeType } from '@/lib/builderHiddenSections.pure';
 
 const PRIORITIES = Object.keys(TASK_PRIORITY_LABELS) as BuilderTaskPriority[];
 const STATUSES = Object.keys(TASK_STATUS_LABELS) as BuilderTaskStatus[];
@@ -164,9 +165,10 @@ export default function BuilderTasks() {
   const { toast } = useToast();
 
   const projectId = params.get('project') ?? '';
+  const scopeType = offeredBuilderScopeType(params.get('scope'));
   const scope: BuilderScopeValue = {
-    scopeType: (params.get('scope') as BuilderScopeType) || 'project',
-    scopeId: params.get('scopeId') ?? (params.get('scope') ? '' : projectId),
+    scopeType,
+    scopeId: scopeType === 'project' ? projectId : (params.get('scopeId') ?? ''),
   };
 
   const patchParams = (changes: Record<string, string | null>) => {

@@ -217,6 +217,10 @@ export function readRichText(rtf: string): string {
     'rsidtbl', 'xmlnstbl',
   ]);
 
+  // \uN FIRST, while its fallback is still the text that follows it. See
+  // `decodeRtfUnicode`.
+  out = decodeRtfUnicode(out);
+
   // `\par` ends a paragraph; `\pard` only resets formatting, and every table
   // cell opens with one — reading it as a break put each cell on its own line.
   out = out
@@ -231,13 +235,6 @@ export function readRichText(rtf: string): string {
   out = out.replace(/\\'([0-9a-fA-F]{2})/g, (_whole, hex: string) =>
     String.fromCharCode(Number.parseInt(hex, 16)));
 
-  // \uNNNN? — a Unicode code point followed by its fallback character.
-  out = out.replace(/\\u(-?\d+)\s*\??/g, (_whole, code: string) => {
-    const value = Number(code);
-    const point = value < 0 ? value + 65536 : value;
-    return Number.isFinite(point) && point > 0 && point < 0x110000 ? String.fromCodePoint(point) : '';
-  });
-
   // Any remaining control word, then the escapes and braces.
   out = out.replace(/\\[a-zA-Z]+-?\d*\s?/g, ' ')
     .replace(/\\([\\{}])/g, '$1')
@@ -248,6 +245,52 @@ export function readRichText(rtf: string): string {
     .map((line) => line.replace(/[ \u00a0]+/g, ' ').replace(/ *\t */g, '\t').trim())
     .filter((line) => line.length > 0)
     .join('\n');
+}
+
+/**
+ * `\uN` — a Unicode code point — and the fallback that follows it.
+ *
+ * Every `\uN` is followed by `\ucN` characters (one unless the document says
+ * otherwise) for a reader that does not understand Unicode, and a reader that
+ * does must skip them. A `\'hh` escape is ONE such character. Word and
+ * LibreOffice write an em dash as `\u8212\'97`.
+ *
+ * MEASURED 28 SEPTEMBER 2026 on the live product (phase `stock-tier0-formats`):
+ * this reader decoded every `\'hh` before it read `\uN`, so the `\'97` survived
+ * as its Latin-1 reading — the invisible C1 control U+0097 — beside the dash,
+ * and both properties of an RTF list stored a description that printed like
+ * the document's and was not equal to it. It also took `\s*` after the code
+ * point, which swallowed a paragraph break (`\u8212\par` merged two lines).
+ *
+ * So: one pass, in document order, before anything else is decoded. `\ucN`
+ * sets the count from where it appears (RTF scopes it to its group; reading it
+ * in order is what every writer this product meets relies on). Skipping stops
+ * at a control word, a brace or an escaped backslash — a fallback is never
+ * one — and a line break in the source is not a character (RTF ignores it).
+ */
+function decodeRtfUnicode(rtf: string): string {
+  const token = /\\\\|\\uc(\d+) ?|\\u(-?\d+) ?/g;
+  let skip = 1;
+  let out = '';
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = token.exec(rtf)) !== null) {
+    out += rtf.slice(cursor, match.index);
+    cursor = token.lastIndex;
+    if (match[0] === '\\\\') { out += match[0]; continue; }
+    if (match[1] !== undefined) { skip = Number(match[1]); continue; }
+    const value = Number(match[2]);
+    const point = value < 0 ? value + 65536 : value;
+    if (Number.isFinite(point) && point > 0 && point < 0x110000) out += String.fromCodePoint(point);
+    for (let n = 0; n < skip && cursor < rtf.length; n++) {
+      while (rtf[cursor] === '\r' || rtf[cursor] === '\n') cursor++;
+      if (/^\\'[0-9a-fA-F]{2}/.test(rtf.slice(cursor, cursor + 4))) cursor += 4;
+      else if (cursor >= rtf.length || rtf[cursor] === '\\' || rtf[cursor] === '{' || rtf[cursor] === '}') break;
+      else cursor += 1;
+    }
+    token.lastIndex = cursor;
+  }
+  return out + rtf.slice(cursor);
 }
 
 /**

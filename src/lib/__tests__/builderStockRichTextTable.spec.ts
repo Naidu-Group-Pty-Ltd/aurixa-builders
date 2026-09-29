@@ -51,3 +51,52 @@ describe('an RTF stock list', () => {
     expect(text.split('\n').map((line) => line.trim()).filter(Boolean)).toEqual(['First line', 'Second line', 'Third line']);
   });
 });
+
+/**
+ * A `\uN` IS FOLLOWED BY ITS FALLBACK, AND A READER THAT UNDERSTANDS `\u`
+ * SKIPS IT.
+ *
+ * MEASURED 28 SEPTEMBER 2026 on the live product (phase `stock-tier0-formats`,
+ * run mulp2q808ecae7): both properties of the RTF stock list stored a
+ * description that printed exactly like the document's, "PROOF ONLY — not for
+ * sale.", and was not equal to it. Word and LibreOffice write an em dash as
+ * `舒\'97` — the code point, then the byte a reader without Unicode shows
+ * instead. The reader decoded every `\'hh` BEFORE it read `\uN`, so the
+ * fallback survived as its Latin-1 reading, the invisible C1 control U+0097,
+ * beside the dash. `\ucN` says how many fallback characters follow (one by
+ * default, and `\'hh` is one character).
+ */
+describe('an RTF Unicode escape', () => {
+  it('stores the stock list\'s description exactly as the document states it (the measured defect)', () => {
+    const rtf = readFileSync(resolve(__dirname, '../../../scripts/ops/fixtures/tier0/rtf.rtf'), 'latin1');
+    const rows = readTable(rtf)!.rows as Array<Record<string, unknown>>;
+    const descriptions = rows.map((row) => Object.values(row).map(String).find((v) => v.startsWith('PROOF ONLY')));
+    expect(descriptions).toEqual(['PROOF ONLY — not for sale.', 'PROOF ONLY — not for sale.']);
+    expect(descriptions.join('')).not.toMatch(/[\u0080-\u009f]/);
+  });
+
+  // Plain strings, not String.raw: the test transform cooks `\u` escapes even
+  // inside a raw template, which hands the reader the wrong character.
+  const B = '\\';
+  it('skips a fallback however it is written', () => {
+    expect(readRichText(`{${B}rtf1 A${B}u8212${B}'97 B}`)).toBe('A— B');
+    expect(readRichText(`{${B}rtf1 A${B}u8212? B}`)).toBe('A— B');
+    expect(readRichText(`{${B}rtf1 A${B}u8212 ?B}`)).toBe('A—B');
+    expect(readRichText(`{${B}rtf1${B}uc2 A${B}u8212${B}'97${B}'97 B}`)).toBe('A— B');
+  });
+
+  it('skips nothing where \\uc0 says there is no fallback', () => {
+    expect(readRichText(`{${B}rtf1${B}uc0 A${B}u8212 B}`)).toBe('A—B');
+    expect(readRichText(`{${B}rtf1${B}uc0 caf${B}u233 s}`)).toBe('cafés');
+  });
+
+  it('never takes a control word or a brace for a fallback', () => {
+    expect(readRichText(`{${B}rtf1 A${B}u8212${B}par B}`)).toBe('A—\nB');
+    expect(readRichText(`{${B}rtf1 {A${B}u8212}B}`)).toBe('A— B');
+  });
+
+  it('still decodes a plain \\\'hh escape and a negative \\u', () => {
+    expect(readRichText(`{${B}rtf1 caf${B}'e9}`)).toBe('café');
+    expect(readRichText(`{${B}rtf1 ${B}u-4064?}`)).toBe(String.fromCharCode(61472));
+  });
+});

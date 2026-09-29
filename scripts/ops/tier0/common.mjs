@@ -411,6 +411,15 @@ export const COMMAND_CENTRE_PAGE_STATES = [
  * the screen — the widest element's tag and width. Never the page's text, a
  * class list or a screenshot: those can carry genuine data. The page stays
  * open for the caller to read what IT seeded, and is the caller's to close.
+ *
+ * `navigation` is what answered the navigation itself: its HTTP status, and
+ * whether Cloudflare's bot protection answered instead of the app (its own
+ * `cf-mitigated: challenge` header on that response, or its interstitial
+ * still being the page once the wait is over). A page that shows none of its
+ * states and calls no function reads the same whether the app drew nothing or
+ * never ran; measured 28 Sep 2026, the runner's plain requests to this origin
+ * were answered "challenged" (phase `cc-frontend-build`), so the two are told
+ * apart here rather than guessed at.
  */
 export async function inspectCommandCentrePage(browser, { token, path, viewport, wait = 4_000 }) {
   const context = await browser.newContext({ viewport });
@@ -424,8 +433,14 @@ export async function inspectCommandCentrePage(browser, { token, path, viewport,
     if (m) calls.push(`${m[1]}:${res.status()}`);
   });
   page.on('pageerror', () => errors.push('uncaught script error'));
-  await page.goto(`${CC_ORIGIN}${path}`, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {});
+  const answer = await page.goto(`${CC_ORIGIN}${path}`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+    .catch(() => null);
   await page.waitForTimeout(wait);
+  const interstitial = await page.evaluate(() => document.title === 'Just a moment...').catch(() => false);
+  const navigation = {
+    status: answer ? answer.status() : null,
+    challenged: (answer?.headers()['cf-mitigated'] ?? '') === 'challenge' || interstitial,
+  };
   const drawn = await page.evaluate((known) => {
     const text = document.body?.innerText ?? '';
     const overflow = document.documentElement.scrollWidth > window.innerWidth + 1;
@@ -442,7 +457,7 @@ export async function inspectCommandCentrePage(browser, { token, path, viewport,
       width: document.documentElement.scrollWidth, widest };
   }, COMMAND_CENTRE_PAGE_STATES).catch(() => ({ states: [], overflow: false, width: null, widest: null }));
   const url = new URL(page.url()).pathname;
-  return { page, context, url, calls, errors, ...drawn };
+  return { page, context, url, calls, errors, navigation, ...drawn };
 }
 
 /**
@@ -551,8 +566,14 @@ export function differences(wantRows, haveRows, fields = ITEM_FIELDS, key = 'lot
  */
 export function printPropertyEvidence(source, {
   expected, stored = [], served = [], mirror = [], ccByItem = new Map(), fields = ITEM_FIELDS, photoSource = null, extra = {},
+  caseless = false,
 }) {
   const verdict = (diffs) => (diffs.length ? diffs.join('; ') : 'exact');
+  // A brochure sets its text in capitals and the product stores what the page
+  // says, so the source is compared the way its own check compares it — and
+  // the line says so, rather than reporting a difference that check excuses.
+  const fold = (row) => (caseless && row
+    ? Object.fromEntries(Object.entries(row).map(([k, v]) => [k, typeof v === 'string' ? v.toLowerCase() : v])) : row);
   for (const want of expected) {
     const lot = String(want.lot_number);
     const row = stored.find((i) => String(i.lot_number) === lot) ?? null;
@@ -563,7 +584,7 @@ export function printPropertyEvidence(source, {
     console.log(`PROPERTY ${JSON.stringify({
       source, lot,
       stated: Object.fromEntries(statedFields.map((f) => [f, want[f]])),
-      builder_db: row ? verdict(differences([want], [row], statedFields)) : 'MISSING',
+      builder_db: row ? `${verdict(differences([fold(want)], [fold(row)], statedFields))}${caseless ? ' (letter case aside: the document sets it in capitals)' : ''}` : 'MISSING',
       builder_portal: !row ? '—' : shown ? verdict(differences([row], [shown], statedFields.filter((f) => f in shown), 'id')) : 'not listed',
       lifecycle: row?.lifecycle_status ?? null,
       availability: row?.availability_status ?? null,

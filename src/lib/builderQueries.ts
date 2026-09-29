@@ -255,7 +255,7 @@ export interface InventoryStats {
   released: number;
 }
 
-export function useBuilderUnits(filters: UnitFilters) {
+export function useBuilderUnits(filters: UnitFilters, options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: builderKeys.units(filters),
     queryFn: async ({ signal }) => await invoke('builder-portal-inventory', {
@@ -269,6 +269,7 @@ export function useBuilderUnits(filters: UnitFilters) {
     }, signal) as UnitsPage,
     placeholderData: (previous) => previous,
     staleTime: 30_000,
+    enabled: options.enabled ?? true,
     retry: retryBuilderQuery,
   });
 }
@@ -364,7 +365,7 @@ export interface PipelineBoard {
   columns: BuilderPipelineColumn[];
 }
 
-export function useBuilderTransactions(filters: TransactionFilters) {
+export function useBuilderTransactions(filters: TransactionFilters, options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: builderKeys.transactions(filters),
     queryFn: async ({ signal }) => await invoke('builder-portal-transactions', {
@@ -377,6 +378,7 @@ export function useBuilderTransactions(filters: TransactionFilters) {
     }, signal) as TransactionsPage,
     placeholderData: (previous) => previous,
     staleTime: 30_000,
+    enabled: options.enabled ?? true,
     retry: retryBuilderQuery,
   });
 }
@@ -471,7 +473,7 @@ export interface ConstructionStats {
   overdue: number;
 }
 
-export function useBuilderConstructionCases(filters: ConstructionFilters) {
+export function useBuilderConstructionCases(filters: ConstructionFilters, options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: builderKeys.constructionCases(filters),
     queryFn: async ({ signal }) => await invoke('builder-portal-construction', {
@@ -484,6 +486,7 @@ export function useBuilderConstructionCases(filters: ConstructionFilters) {
     }, signal) as ConstructionPage,
     placeholderData: (previous) => previous,
     staleTime: 30_000,
+    enabled: options.enabled ?? true,
     retry: retryBuilderQuery,
   });
 }

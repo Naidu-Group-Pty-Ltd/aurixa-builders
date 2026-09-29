@@ -48,6 +48,7 @@ try {
   for (const [viewport, width, height] of VIEWPORTS) {
     const seen = await inspectCommandCentrePage(browser, { token: staff.token, path: NOWHERE, viewport: { width, height }, wait: 6_000 });
     console.log(`  property page for an id that exists nowhere (${viewport}) → ${seen.url === NOWHERE ? 'stayed' : seen.url}`);
+    console.log(`    document: HTTP ${seen.navigation.status ?? '—'}${seen.navigation.challenged ? ', challenged by Cloudflare bot protection' : ''}`);
     console.log(`    states: ${JSON.stringify(seen.states)}`);
     console.log(`    calls: ${seen.calls.join(' ') || '—'}`);
     console.log(`    script errors: ${seen.errors.length}`);

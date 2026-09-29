@@ -34,6 +34,8 @@
  * server's permission matrix, not in a client-side list.
  */
 
+import { BUILDER_SCOPE_TYPES, type BuilderScopeType } from '@/lib/builderCollaboration';
+
 export interface WithdrawnBuilderSection {
   /** The section's own key — matches the tour's `data-tour` anchor. */
   key: string;
@@ -59,6 +61,25 @@ export const WITHDRAWN_BUILDER_SECTIONS: readonly WithdrawnBuilderSection[] = [
 /** Just the keys — what the tour filters its steps by. */
 export const WITHDRAWN_BUILDER_SECTION_KEYS: readonly string[] =
   WITHDRAWN_BUILDER_SECTIONS.map((section) => section.key);
+
+const BUILDER_SCOPE_SECTION_PATH: Record<BuilderScopeType, string> = {
+  project: '/builder/projects',
+  unit: '/builder/inventory',
+  transaction: '/builder/transactions',
+  construction_case: '/builder/construction',
+};
+
+export const OFFERED_BUILDER_SCOPE_TYPES: readonly BuilderScopeType[] =
+  BUILDER_SCOPE_TYPES.filter(
+    (scopeType) => !isWithdrawnBuilderPath(BUILDER_SCOPE_SECTION_PATH[scopeType]),
+  );
+
+export function offeredBuilderScopeType(
+  value: string | null | undefined,
+): BuilderScopeType {
+  const candidate = BUILDER_SCOPE_TYPES.find((scopeType) => scopeType === value) ?? 'project';
+  return OFFERED_BUILDER_SCOPE_TYPES.includes(candidate) ? candidate : 'project';
+}
 
 /**
  * Whether a path sits inside a withdrawn section.

@@ -196,7 +196,8 @@ try {
         .filter((s) => ccText.includes(s));
       const ccPictures = await seen.page.evaluate(() => [...document.images].filter((img) => img.complete && img.naturalWidth > 64).length);
       // No screenshot of a Command Centre page: this repository is public.
-      const why = ccFacts.length === 7 ? '' : `; states ${JSON.stringify(seen.states)}; calls ${seen.calls.join(' ')}`;
+      const why = ccFacts.length === 7 ? '' : `; document HTTP ${seen.navigation.status ?? '—'}${seen.navigation.challenged
+        ? ' challenged by Cloudflare bot protection' : ''}; states ${JSON.stringify(seen.states)}; calls ${seen.calls.join(' ')}`;
       record(`L2: the Command Centre's property page shows lot 101's facts (${name})`, ccFacts.length === 7,
         `${ccFacts.length}/7: ${ccFacts.join(', ')}; url ${seen.url}; ${Date.now() - t2} ms${why}`);
       record(`L2: the Command Centre's property page draws the photograph (${name})`, ccPictures >= 1, `${ccPictures} drawn`);
@@ -332,7 +333,8 @@ try {
     const shown = await seen.page.locator('body').innerText().catch(() => '');
     record('L4: the Command Centre\'s property page says "Last synced" at the revision it just applied',
       !!expected && shown.includes(expected),
-      `expected "${expected}"; ${expected && shown.includes(expected) ? 'shown' : `not shown; states ${JSON.stringify(seen.states)}`}`);
+      `expected "${expected}"; ${expected && shown.includes(expected) ? 'shown' : `not shown; document HTTP ${seen.navigation.status ?? '—'}${
+        seen.navigation.challenged ? ' challenged by Cloudflare bot protection' : ''}; states ${JSON.stringify(seen.states)}`}`);
     await seen.context.close();
   }
   const ccRemoved = await cc('lot 103', `SELECT lifecycle_status FROM public.builder_network_stock_items WHERE id = ${id(ids1['103'])}`);

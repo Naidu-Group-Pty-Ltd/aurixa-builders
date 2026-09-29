@@ -40,11 +40,12 @@ export function isDrawableMismatch(note: Note): boolean {
 export const STOCK_DOCUMENT_NOTES_HEADING = 'Why these links gave no photo';
 
 export function DocumentMismatchCallout({
-  item, note, listingIdentity,
+  item, note, listingIdentity, canEdit = true,
 }: {
   item: BuilderStockItem;
   note: Note;
   listingIdentity: string;
+  canEdit?: boolean;
 }) {
   return (
     <section
@@ -85,7 +86,12 @@ export function DocumentMismatchCallout({
         <FileText className="h-3.5 w-3.5 shrink-0" aria-hidden />
         <span className="min-w-0 truncate">{note.document}</span>
       </p>
-      <BrochureImageChoice item={item} note={note} listingIdentity={listingIdentity} />
+      <BrochureImageChoice
+        item={item}
+        note={note}
+        listingIdentity={listingIdentity}
+        canEdit={canEdit}
+      />
     </section>
   );
 }

@@ -25,7 +25,7 @@
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -58,6 +58,8 @@ const state = vi.hoisted(() => ({
   undoCalls: [] as unknown[],
   // The next confirmation's refusal, once; null confirms.
   confirmRefusal: null as unknown,
+  canEdit: true,
+  canDelete: true,
 }));
 
 vi.mock('@/lib/builderStockQueries', () => {
@@ -124,7 +126,19 @@ vi.mock('@/lib/builderStockQueries', () => {
   };
 });
 vi.mock('@/components/builder-portal/BuilderPortalShell', () => ({
-  BuilderPortalShell: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  BuilderPortalShell: ({
+    children, actions,
+  }: {
+    children: React.ReactNode;
+    actions?: React.ReactNode;
+  }) => <div>{actions}{children}</div>,
+}));
+vi.mock('@/hooks/useBuilderPortalAuth', () => ({
+  useBuilderPortalAuth: () => ({
+    can: (_key: string, level: 'view' | 'edit' | 'delete' = 'view') => (
+      level === 'delete' ? state.canDelete : level === 'edit' ? state.canEdit : true
+    ),
+  }),
 }));
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: () => {} }) }));
 
@@ -163,7 +177,52 @@ function draw(items: BuilderStockItem[]) {
 /** The whole rendered page as a person reads it, whitespace collapsed. */
 const pageText = () => (document.body.textContent ?? '').replace(/\s+/g, ' ').trim();
 
+beforeEach(() => {
+  state.canEdit = true;
+  state.canDelete = true;
+});
+
 // ---------------------------------------------------------------------------
+
+describe('stock actions follow the resolved inventory permission matrix', () => {
+  const confirmable: Note = {
+    document: 'Lot-1307.pdf',
+    detail: 'read in full',
+    finding: 'identity_mismatch',
+    states: 'Lot 1307',
+    document_key: 'https://example.invalid/lot-1307.pdf',
+    confirmable: true,
+  } as Note;
+
+  it('read-only sees the stock evidence but none of its mutation controls', () => {
+    state.canEdit = false;
+    state.canDelete = false;
+    draw([lot1037([confirmable])]);
+
+    expect(screen.queryByRole('button', { name: /Add stock list/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Retry image lookup/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Use brochure image/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Add a picture/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /schedule/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Remove/i })).toBeNull();
+    expect(screen.queryByRole('combobox', { name: /Availability for/i })).toBeNull();
+    expect(pageText()).toContain(STOCK_DOCUMENT_MISMATCH_COPY.heading);
+  });
+
+  it('manager-style edit without delete keeps edits and withholds Remove', () => {
+    state.canEdit = true;
+    state.canDelete = false;
+    draw([lot1037([confirmable])]);
+
+    expect(screen.getByRole('button', { name: /Add stock list/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Retry image lookup/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Use brochure image/i })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /Add a picture/i }).length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: /schedule/i })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: /Availability for/i })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Remove/i })).toBeNull();
+  });
+});
 
 describe('a brochure that names a different property says so', () => {
   const mismatch: Note = {

@@ -24,8 +24,9 @@ import {
 } from '@/lib/builderQueries';
 import {
   CONVERSATION_STATUS_LABELS, formatCollaborationTime,
-  type BuilderConversationStatus, type BuilderScopeType,
+  type BuilderConversationStatus,
 } from '@/lib/builderCollaboration';
+import { offeredBuilderScopeType } from '@/lib/builderHiddenSections.pure';
 
 /**
  * Builder Portal — Messages: the portal's one home for messaging.
@@ -95,9 +96,10 @@ function ProjectConversations() {
   const { toast } = useToast();
 
   const projectId = params.get('project') ?? '';
+  const scopeType = offeredBuilderScopeType(params.get('scope'));
   const scope: BuilderScopeValue = {
-    scopeType: (params.get('scope') as BuilderScopeType) || 'project',
-    scopeId: params.get('scopeId') ?? (params.get('scope') ? '' : projectId),
+    scopeType,
+    scopeId: scopeType === 'project' ? projectId : (params.get('scopeId') ?? ''),
   };
   const selectedId = params.get('conversation') ?? '';
 
