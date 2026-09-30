@@ -321,6 +321,14 @@ for (const [url, linked] of byUrl) {
     const pk = got.bytes[0] === 0x50 && got.bytes[1] === 0x4b;
     console.log(`  dl=1 answers HTTP ${got.status}, ${got.type}, ${(got.bytes.length / 1048576).toFixed(1)} MB in ${got.ms} ms from ${got.host}${pk ? ' — a ZIP' : ''}`);
     if (pk) {
+      // Does the host serve a byte range of the zip? (A range would let one file be taken from 237 MB.)
+      for (const range of ['bytes=0-1023', 'bytes=-1024']) {
+        try {
+          const r = await fetch(file, { redirect: 'follow', headers: { Range: range } });
+          const body = new Uint8Array(await r.arrayBuffer());
+          say(`  Range ${range}: HTTP ${r.status}, ${body.length} bytes, content-range ${r.headers.get('content-range') ?? '—'}, accept-ranges ${r.headers.get('accept-ranges') ?? '—'}, content-length ${r.headers.get('content-length') ?? '—'}`);
+        } catch (error) { say(`  Range ${range}: ${String((error as Error)?.message ?? error).slice(0, 100)}`); }
+      }
       // Local headers: can a zip this size be streamed entry by entry?
       const view = new DataView(got.bytes.buffer);
       const methods = new Map<string, number>();

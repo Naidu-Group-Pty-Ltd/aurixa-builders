@@ -54,6 +54,7 @@ import {
 } from './pdfOutlineFigures.pure.ts';
 import type { ScanRasterLocation } from './ocr/scanRaster.pure.ts';
 import { cropRows, encodePng, inflate, sha256Hex } from './rasterPng.ts';
+import { decodeAscii85, imageStreamFlags } from './pdfAscii85.pure.ts';
 import { validateSourceImageBytes } from './sourceAssets.pure.ts';
 import {
   isPrimaryRole, noPrimaryEvidence, type SourceImageRoleAssignment,
@@ -330,7 +331,7 @@ export async function locatePdfPagePhoto(
       ? {
         start: chosen.image.start,
         end: chosen.image.end,
-        flate: chosen.image.filters[0] === 'FlateDecode',
+        ...imageStreamFlags(chosen.image.filters),
         width: chosen.image.width,
         height: chosen.image.height,
         objectNumber: chosen.image.objectNumber,
@@ -390,6 +391,7 @@ export async function photoAtLocation(
       start: chosen.start,
       end: chosen.end,
       flate: chosen.flate,
+      ascii85: chosen.ascii85,
       width: chosen.width,
       height: chosen.height,
     });
@@ -627,6 +629,7 @@ interface RawCandidate {
   start: number;
   end: number;
   flate: boolean;
+  ascii85?: boolean;
   pageAreaShare: number;
   placementsOnPage: number;
   /** See `PdfMediaPlacement.drawn`. Null where the spaces cannot be compared. */
@@ -726,7 +729,7 @@ async function discoverCandidates(
         height: candidate.image.height,
         start: candidate.image.start,
         end: candidate.image.end,
-        flate: candidate.image.filters[0] === 'FlateDecode',
+        ...imageStreamFlags(candidate.image.filters),
         pageAreaShare: candidate.pageAreaShare,
         placementsOnPage: candidate.placements,
       });
@@ -791,12 +794,21 @@ async function discoverCandidates(
  */
 export async function pictureFromStream(
   bytes: Uint8Array,
-  stream: { start: number; end: number; flate: boolean; width: number; height: number },
+  stream: {
+    start: number; end: number; flate: boolean; width: number; height: number;
+    /** The stream is ASCII85 text in front of its own encoding. */
+    ascii85?: boolean;
+  },
 ): Promise<{
   bytes: Uint8Array; contentType: string;
   sourceSha256: string; storedSha256: string; transformation: string | null;
 } | null> {
-  const raw = bytes.slice(stream.start, stream.end);
+  let raw: Uint8Array = bytes.slice(stream.start, stream.end);
+  if (stream.ascii85) {
+    const unwrapped = decodeAscii85(raw);
+    if (!unwrapped) return null;
+    raw = unwrapped;
+  }
   const asset = stream.flate ? await inflate(raw).catch(() => null) : raw;
   if (!asset) return null;
 

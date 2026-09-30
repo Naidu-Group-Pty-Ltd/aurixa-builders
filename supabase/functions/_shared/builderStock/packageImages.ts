@@ -28,7 +28,7 @@
 import {
   driveDownloadUrl, driveFileId, driveFolderId, driveFolderUrl, driveRenditionUrl,
   isGoogleDriveHost, isNonFacadeImageName,
-  designTokenFrom, lotAndDesignFrom, parseDriveFolderListing, selectLotFolder, selectPackageDocument,
+  designTokenFrom, lotAndDesignFrom, unitFrom, parseDriveFolderListing, selectLotFolder, selectPackageDocument,
   selectNamedDocument, selectPropertyPhotograph, streetAddressFrom,
   type ScopedEntry,
   DRIVE_FOLDER_MIME, type DriveEntry,
@@ -324,7 +324,14 @@ async function recoverPackageImageInner(
   }
 
   const labelParts = lotAndDesignFrom(input.label);
-  const lot = labelParts.lot;
+  /*
+   * A LOT, OR FAILING THAT A UNIT — whichever the builder's own files repeat.
+   * `word` travels with the number so a unit is only ever matched as
+   * "unit N", never as "lot N".
+   */
+  const unit = labelParts.lot ? null : unitFrom(input.label);
+  const lot = labelParts.lot ?? unit;
+  const word: 'lot' | 'unit' = labelParts.lot ? 'lot' : 'unit';
   /*
    * The label's bracketed design where the label carries one, and the row's own
    * canonical `house_design` otherwise. A spreadsheet row has no brackets, so
@@ -425,7 +432,7 @@ async function recoverPackageImageInner(
     return { status: 'not_identified', detail: 'That package link names neither a folder nor a file.' };
   }
   if (!lot) {
-    return { status: 'not_identified', detail: 'This property does not name a lot to look for.' };
+    return { status: 'not_identified', detail: 'This property does not name a lot or unit to look for.' };
   }
 
   const root = await cache.list(rootId);
@@ -433,7 +440,7 @@ async function recoverPackageImageInner(
     return { status: 'unreachable', detail: 'That package folder is not readable without signing in.' };
   }
 
-  const lotFolderId = await findLotFolder(cache, root, lot);
+  const lotFolderId = await findLotFolder(cache, root, lot, word);
   const entries = lotFolderId ? await cache.list(lotFolderId) : root;
   /*
    * A LIBRARY THAT FILES BY SUBJECT RATHER THAN BY LOT.
@@ -454,10 +461,10 @@ async function recoverPackageImageInner(
    * still the source declining to say, and the answer is still no image.
    */
   const selectPackage = async (key: string | null) =>
-    selectPackageDocument(entries, { lot, design: key })
+    selectPackageDocument(entries, { lot, design: key, word })
       ?? (lotFolderId
         ? null
-        : selectPackageDocument(await subtreeEntries(cache, root), { lot, design: key }));
+        : selectPackageDocument(await subtreeEntries(cache, root), { lot, design: key, word }));
   let document = await selectPackage(design);
   // The design the row names in its own field, where the lot alone could not decide.
   let chosenDesign = design;
@@ -483,7 +490,7 @@ async function recoverPackageImageInner(
    * works today can change. Each is still the source naming the property, and
    * each still refuses on ambiguity.
    */
-  const identity = { lot, street: streetAddressFrom(input.label), design };
+  const identity = { lot, street: streetAddressFrom(input.label), design, word };
   let photograph: ScopedEntry | null = null;
   if (!document) {
     const scope = lotFolderId ? entries : await subtreeEntries(cache, root);
@@ -590,12 +597,13 @@ async function findLotFolder(
   cache: DriveListingCache,
   root: DriveEntry[],
   lot: string,
+  word: 'lot' | 'unit' = 'lot',
 ): Promise<string | null> {
   let level = root;
   let levelIds: string[] = [];
 
   for (let depth = 0; depth < MAX_DEPTH; depth++) {
-    const hit = selectLotFolder(level, lot);
+    const hit = selectLotFolder(level, lot, word);
     if (hit) return hit;
 
     const children = level
