@@ -39,7 +39,7 @@ import {
 } from './pdfSourcePhoto.ts';
 import { withPdfDecodeSlot } from './pdfDecodeSlot.pure.ts';
 import {
-  coverIdentityQuote, coverIdentityRefusal, findPropertyCoverPages, statedOtherLotDesignation,
+  coverIdentityQuote, coverIdentityRefusal, displayHomeCoverStated, findPropertyCoverPages, statedOtherLotDesignation,
 } from './pdfPrimaryImage.pure.ts';
 import { DOCUMENT_IDENTITY_MISMATCH } from './negativeProvenance.pure.ts';
 import { TEXT_FREE_COVER_NOT_ELECTED } from './pdfElectionBoundary.pure.ts';
@@ -186,7 +186,10 @@ export async function electFromPdfBytes(
       // by the ordinary rule, so a document that already elects is untouched.
       : (identifiedBy === 'folder_structure'
           && !findPropertyCoverPages(pageTexts, label, identityHints ?? [], false, confirmedLots).length
-          && coverIdentityRefusal(pageTexts[0] ?? '', label, identityHints ?? [], false, confirmedLots) === null
+          && (coverIdentityRefusal(pageTexts[0] ?? '', label, identityHints ?? [], false, confirmedLots) === null
+            // A display home, filed under its design and estate: its cover
+            // names the design and a street the listing never states.
+            || displayHomeCoverStated(pageTexts[0] ?? '', label, design))
         ? 1 : null),
   });
   const photo = selection.primary;
