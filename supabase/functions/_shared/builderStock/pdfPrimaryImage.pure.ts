@@ -1220,14 +1220,20 @@ export function assignPdfMediaRoles(input: {
     && Number.isInteger(input.structuralCoverPage)
     && (input.structuralCoverPage as number) > 0
     && !covers.length
-    // Only where NOTHING could be read. A document whose text was read and did
-    // not name this property has answered the question, and this must not
-    // overrule it.
-    && (input.pageTexts ?? []).every((text) => !String(text ?? '').trim())
+    // Where NOTHING could be read — or where the page itself STATES this
+    // property. A document whose text was read and did not name this property
+    // has answered the question, and this must not overrule it.
+    && ((input.pageTexts ?? []).every((text) => !String(text ?? '').trim())
+      || pageStatesIdentity(
+        (input.pageTexts ?? [])[(input.structuralCoverPage as number) - 1] ?? '',
+        String(input.label ?? ''), input.identityHints ?? [],
+        input.soleProperty === true, input.confirmedLots ?? []))
     ? {
       page: input.structuralCoverPage as number,
       identity: String(input.label ?? ''),
-      packageFacts: ['the builder\'s own folder names this document for this property'],
+      packageFacts: [(input.pageTexts ?? []).every((text) => !String(text ?? '').trim())
+        ? 'the builder\'s own folder names this document for this property'
+        : 'the builder\'s own folder names this document for this property, and its cover page states it'],
     }
     : null;
   /*

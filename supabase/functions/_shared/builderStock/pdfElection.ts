@@ -38,7 +38,9 @@ import {
   coverRastersInspected, selectPdfPropertyPrimaryHoldingSlot,
 } from './pdfSourcePhoto.ts';
 import { withPdfDecodeSlot } from './pdfDecodeSlot.pure.ts';
-import { coverIdentityQuote, statedOtherLotDesignation } from './pdfPrimaryImage.pure.ts';
+import {
+  coverIdentityQuote, coverIdentityRefusal, findPropertyCoverPages, statedOtherLotDesignation,
+} from './pdfPrimaryImage.pure.ts';
 import { DOCUMENT_IDENTITY_MISMATCH } from './negativeProvenance.pure.ts';
 import { TEXT_FREE_COVER_NOT_ELECTED } from './pdfElectionBoundary.pure.ts';
 // Type-only, so it is erased at compile time and no runtime cycle exists
@@ -174,7 +176,18 @@ export async function electFromPdfBytes(
     // Supplied ONLY when the builder's folder already named this document for
     // this one property and the document itself can say nothing. See
     // `assignPdfMediaRoles`.
-    structuralCoverPage: textFree ? 1 : null,
+    structuralCoverPage: textFree
+      ? 1
+      // A unit pack whose first page names the unit but states a single package
+      // fact (Thornton's industrial packs print a price and little else): the
+      // builder's own folder tied the document to this one property and the
+      // page itself states it, so it is the cover — `selectCoverHero` still
+      // has to find exactly one photograph on it. Only when no page qualified
+      // by the ordinary rule, so a document that already elects is untouched.
+      : (identifiedBy === 'folder_structure'
+          && !findPropertyCoverPages(pageTexts, label, identityHints ?? [], false, confirmedLots).length
+          && coverIdentityRefusal(pageTexts[0] ?? '', label, identityHints ?? [], false, confirmedLots) === null
+        ? 1 : null),
   });
   const photo = selection.primary;
   if (!photo) {

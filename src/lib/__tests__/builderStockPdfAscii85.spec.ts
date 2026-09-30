@@ -152,3 +152,45 @@ describe('a cover that pads its unit number', () => {
     expect(coverIdentityRefusal(page('90'), label, hints)).not.toBeNull();
   });
 });
+
+describe('a unit pack the builder’s folder tied to this property', () => {
+  const LABEL = 'Unit 9 Thornton NSW · Industrial';
+  const HINTS = ['Thornton Industrial - 5 Kestrel Ave NSW 2322'];
+  // Page 1 names the unit and states ONE package fact (a price) — Thornton’s packs.
+  const PAGE_1 = 'THORNTON INDUSTRIAL PACK UNIT 09 5 KESTREL AVE THORNTON NSW 2322 PRICE $684,000';
+  const PAGE_2 = 'FLOOR PLAN UNIT 09 162 m2';
+  const media = [{ page: 1, name: null, placementsOnPage: 1, pagesDrawnOn: 1, pageAreaShare: 0.6 }];
+
+  it('is not a cover by the ordinary rule: one fact is a coincidence', async () => {
+    const m = await import('../../../supabase/functions/_shared/builderStock/pdfPrimaryImage.pure');
+    expect(m.findPropertyCoverPages([PAGE_1, PAGE_2], LABEL, HINTS)).toEqual([]);
+    const roles = m.assignPdfMediaRoles({
+      label: LABEL, pageTexts: [PAGE_1, PAGE_2], pageOrderAuthoritative: true, media,
+      identityHints: HINTS,
+    });
+    expect(roles[0].role).not.toBe('primary_property');
+  });
+
+  it('is the cover once the folder tied it and its first page states the unit', async () => {
+    const m = await import('../../../supabase/functions/_shared/builderStock/pdfPrimaryImage.pure');
+    expect(m.coverIdentityRefusal(PAGE_1, LABEL, HINTS)).toBeNull();
+    const roles = m.assignPdfMediaRoles({
+      label: LABEL, pageTexts: [PAGE_1, PAGE_2], pageOrderAuthoritative: true, media,
+      identityHints: HINTS, structuralCoverPage: 1,
+    });
+    expect(roles[0].role).toBe('primary_property');
+    expect(m.coverSearchPages({
+      label: LABEL, pageTexts: [PAGE_1, PAGE_2], identityHints: HINTS, structuralCoverPage: 1,
+    })).toEqual([1]);
+  });
+
+  it('is NOT promoted when the page states another unit — the folder alone attributes nothing', async () => {
+    const m = await import('../../../supabase/functions/_shared/builderStock/pdfPrimaryImage.pure');
+    const other = PAGE_1.replace('UNIT 09', 'UNIT 19');
+    const roles = m.assignPdfMediaRoles({
+      label: LABEL, pageTexts: [other, PAGE_2], pageOrderAuthoritative: true, media,
+      identityHints: HINTS, structuralCoverPage: 1,
+    });
+    expect(roles[0].role).not.toBe('primary_property');
+  });
+});
