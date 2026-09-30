@@ -40,7 +40,8 @@ import {
 } from '../../supabase/functions/_shared/builderStock/normalise.pure.ts';
 import { designOfRecordOrRow } from '../../supabase/functions/_shared/builderStock/builderSuppliedImage.pure.ts';
 import { electFromPdfBytes } from '../../supabase/functions/_shared/builderStock/pdfElection.ts';
-import { coverIdentityRefusal } from '../../supabase/functions/_shared/builderStock/pdfPrimaryImage.pure.ts';
+import { coverIdentityRefusal, displayHomeCoverStated } from '../../supabase/functions/_shared/builderStock/pdfPrimaryImage.pure.ts';
+import { scanStoredZip } from '../../supabase/functions/_shared/builderStock/zipStream.pure.ts';
 import { indexPdfObjects, readPdfPage } from '../../supabase/functions/_shared/builderStock/pdfPageImages.pure.ts';
 import { pictureFromStream, selectPdfPropertyPrimary } from '../../supabase/functions/_shared/builderStock/pdfSourcePhoto.ts';
 import { readPdfPageTextResult } from '../../supabase/functions/_shared/builderStock/pdfText.ts';
@@ -396,6 +397,37 @@ for (const [url, linked] of byUrl) {
         pathUrl2.searchParams.set('dl', '1');
         const two = await plainGet(pathUrl2.toString(), 30 * 1024 * 1024);
         say(`  same, without the zip's top folder: HTTP ${two.status}, ${two.type}, ${(two.bytes.length / 1024).toFixed(0)} KB, sniffed ${sniffImageContentType(two.bytes) ?? 'not an image'}`);
+      }
+      // The display-home brochures, read as the folder reader would hand them to the election.
+      {
+        const scan = await scanStoredZip((async function* () { yield got.bytes; })(), {
+          want: (name) => /display home/i.test(name) && /\.pdf$/i.test(name),
+          maxEntryBytes: 16 * 1024 * 1024, maxKeptBytes: 64 * 1024 * 1024, maxTotalBytes: 1024 * 1024 * 1024,
+        });
+        for (const row of linked) {
+          const record = (row.source_row ?? {}) as Record<string, unknown>;
+          const label = stockRecordLabel(record as never);
+          const design = designOfRecordOrRow(record) ?? lotAndDesignFrom(label).design;
+          say(`  row ${String(row.id).slice(0, 8)}: label (masked) "${mask(label, who)}", design (masked) "${design ? mask(design, who) : '—'}"`);
+        }
+        for (const entry of scan.entries.filter((e) => e.data)) {
+          const pages = await readPdfPageTextResult(entry.data!);
+          const first = pages.ok ? pages.pages[0] ?? '' : '';
+          const lotWords = (first.match(/\b(lot|unit)\s*\d{1,5}\b/gi) ?? []).length;
+          say(`    brochure ${mask(entry.name.split('/').pop() ?? '', who)}: pages ${pages.ok ? pages.pages.length : 'unread'}, page-1 lot/unit designations ${lotWords}`);
+          say(`      page-1 words (masked): ${mask(first.slice(0, 400), who)}`);
+          for (const row of linked) {
+            const record = (row.source_row ?? {}) as Record<string, unknown>;
+            const label = stockRecordLabel(record as never);
+            const design = designOfRecordOrRow(record) ?? lotAndDesignFrom(label).design;
+            say(`      for ${String(row.id).slice(0, 8)}: displayHomeCoverStated=${displayHomeCoverStated(first, label, design)} coverIdentityRefusal=${coverIdentityRefusal(first, label, stockIdentityHints(record as never)) ?? 'none'}`);
+            const outcome = await electFromPdfBytes(entry.data!, readPdfPageTextResult, {
+              label, identifiedBy: 'folder_structure', design, identityHints: stockIdentityHints(record as never),
+              documentName: 'brochure.pdf', url: 'https://example.invalid/brochure.pdf',
+            } as never);
+            say(`        in-process election: ${outcome.status}${'detail' in outcome && outcome.detail ? ` — ${mask(String(outcome.detail).slice(0, 160), who)}` : ''}`);
+          }
+        }
       }
       const entries = zipEntries(got.bytes);
       console.log(`  zip holds ${entries.length} entr(ies):`);
