@@ -36,6 +36,8 @@ export interface EmbeddedScanRaster {
   end: number;
   /** The stream is `FlateDecode`d: raw samples, wrapped losslessly as PNG. */
   flate: boolean;
+  /** The stream is ASCII85 text in front of its own encoding. Absent on every record written before this existed. */
+  ascii85?: boolean;
   width: number;
   height: number;
   objectNumber: number;
@@ -95,7 +97,10 @@ function readEmbedded(stored: unknown): EmbeddedScanRaster | null {
   if (!span || typeof flate !== 'boolean' || !isCount(width) || !isCount(height)) return null;
   if (!isCount(objectNumber) || typeof resourceName !== 'string' || !isReal(pageAreaShare)) return null;
   if (!isDigest(sha256)) return null;
-  return { ...span, flate, width, height, objectNumber, resourceName, pageAreaShare, sha256 };
+  return {
+    ...span, flate, ...(entry.ascii85 === true ? { ascii85: true } : {}),
+    width, height, objectNumber, resourceName, pageAreaShare, sha256,
+  };
 }
 
 function readFlattened(stored: unknown): FlattenedScanRaster | null {

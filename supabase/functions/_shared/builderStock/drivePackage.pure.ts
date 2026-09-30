@@ -186,6 +186,38 @@ export function lotAndDesignFrom(label: string): { lot: string | null; design: s
 }
 
 /**
+ * WHAT THE PROPERTY IS CALLED IN THE BUILDER'S FILES: A LOT OR A UNIT.
+ *
+ * MEASURED 30 SEPTEMBER 2026. Mairandi's ten Thornton industrial units link
+ * one folder holding ten packs called "<suburb> Unit 9 Industrial … Pack.pdf".
+ * They have no lot, so the reader stopped at "This property does not name a
+ * lot to look for" before opening the folder. A unit is the same kind of
+ * evidence as a lot — a number the builder's own file repeats — and gets the
+ * same exact-token rule ("Unit 1" is never "Unit 11").
+ */
+export type DesignationWord = 'lot' | 'unit';
+
+/**
+ * Does this NORMALISED name carry that designation? A lot is compared exactly
+ * ("lot 5" is never "lot 51"); a unit also tolerates the leading zeros a
+ * builder's file names pad it with — MEASURED 30 SEPTEMBER 2026, Thornton's
+ * ten packs are "Unit 06 … Unit 19" against rows called "Unit 6 … Unit 19".
+ */
+export function carriesDesignation(normalisedName: string, word: DesignationWord, value: string): boolean {
+  const wanted = normaliseDriveName(value);
+  if (word === 'unit') {
+    const bare = wanted.replace(/^0+(?=\d)/, '');
+    return new RegExp(`(?:^| )unit 0*${bare.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?: |$)`).test(normalisedName);
+  }
+  return ` ${normalisedName} `.includes(` ${word} ${wanted} `);
+}
+
+export function unitFrom(label: string): string | null {
+  const unit = /(?:^|[^a-z0-9])unit\s*([0-9]{1,4}[a-z]?)\b/i.exec(String(label ?? ''))?.[1] ?? null;
+  return unit ? unit.toLowerCase() : null;
+}
+
+/**
  * The design a piece of a label names — `Stradbroke 180`, `Esme 13` — as the
  * token a Drive filename is compared against, or null.
  *
@@ -207,10 +239,14 @@ export function designTokenFrom(text: string | null | undefined): string | null 
  * "Lot 51". Two folders with the same name — the live library has three called
  * "Lot 53" — is an ambiguity the source has to resolve, not us.
  */
-export function selectLotFolder(entries: DriveEntry[], lot: string): string | null {
-  const wanted = `lot ${normaliseDriveName(lot)}`;
-  const hits = entries.filter((entry) =>
-    entry.mimeType === DRIVE_FOLDER_MIME && normaliseDriveName(entry.name) === wanted);
+export function selectLotFolder(entries: DriveEntry[], lot: string, word: DesignationWord = 'lot'): string | null {
+  const wanted = `${word} ${normaliseDriveName(lot)}`;
+  const hits = entries.filter((entry) => {
+    if (entry.mimeType !== DRIVE_FOLDER_MIME) return false;
+    const clean = normaliseDriveName(entry.name);
+    return clean === wanted || (word === 'unit' && carriesDesignation(clean, 'unit', lot)
+      && clean.replace(/^unit 0*/, '').split(' ').length === 1);
+  });
   return hits.length === 1 ? hits[0].id : null;
 }
 
@@ -276,15 +312,14 @@ export function driveDocumentKind(name: string): DriveDocumentKind {
 
 export function selectPackageDocument(
   entries: DriveEntry[],
-  key: { lot: string; design: string | null },
+  key: { lot: string; design: string | null; word?: DesignationWord; dualKey?: boolean },
 ): DriveEntry | null {
-  const lotToken = `lot ${normaliseDriveName(key.lot)}`;
   const documents = entries.filter((entry) =>
     entry.mimeType !== DRIVE_FOLDER_MIME && entry.mimeType === 'application/pdf');
 
   const named = documents.filter((entry) => {
     const name = ` ${normaliseDriveName(entry.name)} `;
-    if (!name.includes(` ${lotToken} `)) return false;
+    if (!carriesDesignation(name.trim(), key.word ?? 'lot', key.lot)) return false;
     return key.design ? name.includes(` ${key.design} `) : true;
   });
 
@@ -354,7 +389,28 @@ export function selectPackageDocument(
   });
   if (marked.length === 1) return marked[0];
 
+  /*
+   * TWO PACKS FOR ONE LOT, TOLD APART BY THE TENURE THE ROW STATES.
+   *
+   * MEASURED 30 SEPTEMBER 2026, Mairandi Lot 113: one folder holds
+   * "Lot 113 … pack.pdf" and "Lot 113 … Dual Key pack.pdf", and the list has
+   * two rows for the lot — one called "· 180", one "· 210 Dual-Key". Both
+   * packs name the lot, so the folder declined; the row said which it was all
+   * along. Reached only after every rule above declined, and it decides only
+   * when EXACTLY ONE candidate agrees with the row about dual-key or not.
+   */
+  if (key.dualKey !== undefined) {
+    const agreeing = packages.filter((entry) =>
+      /\bdual (?:key|occ)/.test(normaliseDriveName(entry.name)) === key.dualKey);
+    if (agreeing.length === 1) return agreeing[0];
+  }
+
   return null;
+}
+
+/** Does the row's own label say the property is dual-key/dual-occupancy? */
+export function dualKeyStated(label: string): boolean {
+  return /\bdual[\s-]*(?:key|occ)/i.test(String(label ?? ''));
 }
 
 // ---------------------------------------------------------------------------
@@ -468,10 +524,10 @@ export function streetAddressFrom(label: string): { number: string; street: stri
  */
 export function namesThisProperty(
   name: string,
-  key: { lot: string | null; street: { number: string; street: string } | null },
+  key: { lot: string | null; street: { number: string; street: string } | null; word?: DesignationWord },
 ): boolean {
   const clean = ` ${normaliseDriveName(name)} `;
-  if (key.lot && clean.includes(` lot ${normaliseDriveName(key.lot)} `)) return true;
+  if (key.lot && carriesDesignation(clean.trim(), key.word ?? 'lot', key.lot)) return true;
   if (key.street) {
     const { number, street } = key.street;
     if (clean.includes(` ${number} ${street} `)) return true;
@@ -547,6 +603,7 @@ export function namedPackageCandidates(
   identity: {
     lot: string | null;
     street: { number: string; street: string } | null;
+    word?: DesignationWord;
     /**
      * THE DESIGN IS NEVER DROPPED.
      *
@@ -582,6 +639,7 @@ export function selectNamedDocument(
   identity: {
     lot: string | null;
     street: { number: string; street: string } | null;
+    word?: DesignationWord;
     design?: string | null;
   },
   buildingSqm?: number | null,
@@ -610,7 +668,7 @@ export function selectNamedDocument(
  */
 export function selectPropertyPhotograph(
   scoped: ScopedEntry[],
-  identity: { lot: string | null; street: { number: string; street: string } | null },
+  identity: { lot: string | null; street: { number: string; street: string } | null; word?: DesignationWord },
 ): ScopedEntry | null {
   const usable = scoped.filter(({ entry, path }) =>
     isPackageImage(entry)

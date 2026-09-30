@@ -86,7 +86,8 @@ export type StockImageProgress =
   | 'none_found'
   /**
    * Finished, and the row links something — but nothing this pipeline can
-   * read a photograph out of: a Dropbox FOLDER, a portal page.
+   * read a photograph out of: a portal page, a web page. (A Dropbox FOLDER was
+   * on this list until 30 September 2026 and is read now — see `zipStream`.)
    *
    * NOT `no_document`, which tells the builder their row attaches nothing.
    * Measured 30 September 2026, three display homes on the live Notion list
@@ -269,7 +270,7 @@ export const STOCK_IMAGE_PROGRESS_DETAIL: Record<StockImageProgress, string> = {
     + "photograph of this property. Add a picture with “Add picture”, or link a "
     + 'brochure that shows the house.',
   unsupported_link: 'This row links a folder or page photos can\u2019t be read from '
-    + '(a Dropbox folder, for example). Link the brochure or photo file itself, '
+    + '(a web page or a portal, for example). Link the brochure or photo file itself, '
     + 'or add a picture with \u201cAdd picture\u201d.',
 };
 

@@ -122,9 +122,22 @@ function lotDesignations(value: string): string[] {
   for (let index = 0; index < tokens.length - 1; index++) {
     if (tokens[index] !== 'lot' && tokens[index] !== 'unit') continue;
     const next = tokens[index + 1];
-    if (/^\d{1,5}$/.test(next)) found.push(next);
+    if (/^\d{1,5}$/.test(next)) found.push(unpadUnit(tokens[index], next));
   }
   return found;
+}
+
+/**
+ * A unit number without the zeros a builder's document pads it with.
+ *
+ * MEASURED 30 SEPTEMBER 2026: Thornton's packs print "UNIT 09" and the stock
+ * list says "Unit 9", so a page that plainly named the property was refused as
+ * naming another unit. Applied to UNITS only, and to both sides of the
+ * comparison (the label and the page go through the same functions), so it can
+ * only join two spellings of one number — never "Unit 9" to "Unit 19".
+ */
+function unpadUnit(word: string, digits: string): string {
+  return word === 'unit' ? digits.replace(/^0+(?=\d)/, '') : digits;
 }
 
 /**
@@ -169,7 +182,7 @@ function lotDesignationReadings(value: string): LotReading[] {
       if (fused.length + tokens[next].length > 5) break;
       fused += tokens[next];
     }
-    found.push({ strict: first, fused });
+    found.push({ strict: unpadUnit(tokens[index], first), fused: unpadUnit(tokens[index], fused) });
   }
   return found;
 }
@@ -1207,14 +1220,20 @@ export function assignPdfMediaRoles(input: {
     && Number.isInteger(input.structuralCoverPage)
     && (input.structuralCoverPage as number) > 0
     && !covers.length
-    // Only where NOTHING could be read. A document whose text was read and did
-    // not name this property has answered the question, and this must not
-    // overrule it.
-    && (input.pageTexts ?? []).every((text) => !String(text ?? '').trim())
+    // Where NOTHING could be read — or where the page itself STATES this
+    // property. A document whose text was read and did not name this property
+    // has answered the question, and this must not overrule it.
+    && ((input.pageTexts ?? []).every((text) => !String(text ?? '').trim())
+      || pageStatesIdentity(
+        (input.pageTexts ?? [])[(input.structuralCoverPage as number) - 1] ?? '',
+        String(input.label ?? ''), input.identityHints ?? [],
+        input.soleProperty === true, input.confirmedLots ?? []))
     ? {
       page: input.structuralCoverPage as number,
       identity: String(input.label ?? ''),
-      packageFacts: ['the builder\'s own folder names this document for this property'],
+      packageFacts: [(input.pageTexts ?? []).every((text) => !String(text ?? '').trim())
+        ? 'the builder\'s own folder names this document for this property'
+        : 'the builder\'s own folder names this document for this property, and its cover page states it'],
     }
     : null;
   /*

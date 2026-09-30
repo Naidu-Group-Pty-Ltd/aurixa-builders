@@ -54,6 +54,7 @@ import {
 } from './pdfOutlineFigures.pure.ts';
 import type { ScanRasterLocation } from './ocr/scanRaster.pure.ts';
 import { cropRows, encodePng, inflate, sha256Hex } from './rasterPng.ts';
+import { decodeAscii85, imageStreamFlags } from './pdfAscii85.pure.ts';
 import { validateSourceImageBytes } from './sourceAssets.pure.ts';
 import {
   isPrimaryRole, noPrimaryEvidence, type SourceImageRoleAssignment,
@@ -93,6 +94,25 @@ export interface PdfPhoto {
 
 /** Pages a single document may be searched through for its lead photograph. */
 const MAX_PAGES_SEARCHED = 12;
+/**
+ * A content or form stream as text-ready bytes: ASCII85 unwrapped where the
+ * document wrapped it, then inflated where it compressed it. Throws on a
+ * stream that cannot be read, exactly as `inflate` does, so every caller's
+ * existing catch still means "this stream contributes nothing".
+ */
+async function unwrapAndInflate(
+  raw: Uint8Array,
+  stream: { flate: boolean; ascii85?: boolean },
+): Promise<Uint8Array> {
+  let data = raw;
+  if (stream.ascii85) {
+    const unwrapped = decodeAscii85(raw);
+    if (!unwrapped) throw new Error('an ASCII85 stream could not be decoded');
+    data = unwrapped;
+  }
+  return stream.flate ? await inflate(data) : data;
+}
+
 /** Form streams one page may have inflated. A cost guard, not a rule. */
 const MAX_FORMS_PER_PAGE = 48;
 
@@ -134,7 +154,7 @@ async function collectDrawnImages(
     const raw = bytes.slice(widget.form.start, widget.form.end);
     let text: string;
     try {
-      text = new TextDecoder('latin1').decode(widget.form.flate ? await inflate(raw) : raw);
+      text = new TextDecoder('latin1').decode(await unwrapAndInflate(raw, widget.form));
     } catch {
       continue; // an appearance we cannot inflate simply contributes nothing
     }
@@ -150,7 +170,7 @@ async function collectDrawnImages(
     const raw = bytes.slice(form.start, form.end);
     let text: string;
     try {
-      text = new TextDecoder('latin1').decode(form.flate ? await inflate(raw) : raw);
+      text = new TextDecoder('latin1').decode(await unwrapAndInflate(raw, form));
     } catch {
       continue; // a form we cannot inflate simply contributes nothing
     }
@@ -186,7 +206,7 @@ async function collectOutlinePaths(
     const raw = bytes.slice(form.start, form.end);
     let text: string;
     try {
-      text = new TextDecoder('latin1').decode(form.flate ? await inflate(raw) : raw);
+      text = new TextDecoder('latin1').decode(await unwrapAndInflate(raw, form));
     } catch {
       continue; // a form we cannot inflate simply contributes nothing
     }
@@ -239,7 +259,7 @@ export async function recoverCompressedObjects(
     const raw = bytes.slice(slice.start, slice.end);
     let text: string;
     try {
-      text = new TextDecoder('latin1').decode(slice.flate ? await inflate(raw) : raw);
+      text = new TextDecoder('latin1').decode(await unwrapAndInflate(raw, slice));
     } catch {
       unreadStreams += 1;
       continue;
@@ -310,7 +330,7 @@ export async function locatePdfPagePhoto(
   for (const slice of page.contents) {
     const raw = bytes.slice(slice.start, slice.end);
     try {
-      const decoded = slice.flate ? await inflate(raw) : raw;
+      const decoded = await unwrapAndInflate(raw, slice);
       content += new TextDecoder('latin1').decode(decoded);
     } catch {
       /* an unreadable content stream simply contributes nothing */
@@ -330,7 +350,7 @@ export async function locatePdfPagePhoto(
       ? {
         start: chosen.image.start,
         end: chosen.image.end,
-        flate: chosen.image.filters[0] === 'FlateDecode',
+        ...imageStreamFlags(chosen.image.filters),
         width: chosen.image.width,
         height: chosen.image.height,
         objectNumber: chosen.image.objectNumber,
@@ -390,6 +410,7 @@ export async function photoAtLocation(
       start: chosen.start,
       end: chosen.end,
       flate: chosen.flate,
+      ascii85: chosen.ascii85,
       width: chosen.width,
       height: chosen.height,
     });
@@ -627,6 +648,7 @@ interface RawCandidate {
   start: number;
   end: number;
   flate: boolean;
+  ascii85?: boolean;
   pageAreaShare: number;
   placementsOnPage: number;
   /** See `PdfMediaPlacement.drawn`. Null where the spaces cannot be compared. */
@@ -679,7 +701,7 @@ async function discoverCandidates(
     for (const slice of page.contents) {
       const raw = bytes.slice(slice.start, slice.end);
       try {
-        content += new TextDecoder('latin1').decode(slice.flate ? await inflate(raw) : raw);
+        content += new TextDecoder('latin1').decode(await unwrapAndInflate(raw, slice));
       } catch {
         /* an unreadable content stream simply contributes nothing */
       }
@@ -726,7 +748,7 @@ async function discoverCandidates(
         height: candidate.image.height,
         start: candidate.image.start,
         end: candidate.image.end,
-        flate: candidate.image.filters[0] === 'FlateDecode',
+        ...imageStreamFlags(candidate.image.filters),
         pageAreaShare: candidate.pageAreaShare,
         placementsOnPage: candidate.placements,
       });
@@ -791,12 +813,21 @@ async function discoverCandidates(
  */
 export async function pictureFromStream(
   bytes: Uint8Array,
-  stream: { start: number; end: number; flate: boolean; width: number; height: number },
+  stream: {
+    start: number; end: number; flate: boolean; width: number; height: number;
+    /** The stream is ASCII85 text in front of its own encoding. */
+    ascii85?: boolean;
+  },
 ): Promise<{
   bytes: Uint8Array; contentType: string;
   sourceSha256: string; storedSha256: string; transformation: string | null;
 } | null> {
-  const raw = bytes.slice(stream.start, stream.end);
+  let raw: Uint8Array = bytes.slice(stream.start, stream.end);
+  if (stream.ascii85) {
+    const unwrapped = decodeAscii85(raw);
+    if (!unwrapped) return null;
+    raw = unwrapped;
+  }
   const asset = stream.flate ? await inflate(raw).catch(() => null) : raw;
   if (!asset) return null;
 
