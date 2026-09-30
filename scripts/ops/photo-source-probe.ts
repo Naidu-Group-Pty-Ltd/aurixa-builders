@@ -42,6 +42,7 @@ import { designOfRecordOrRow } from '../../supabase/functions/_shared/builderSto
 import { indexPdfObjects, readPdfPage } from '../../supabase/functions/_shared/builderStock/pdfPageImages.pure.ts';
 import { pictureFromStream, selectPdfPropertyPrimary } from '../../supabase/functions/_shared/builderStock/pdfSourcePhoto.ts';
 import { readPdfPageTextResult } from '../../supabase/functions/_shared/builderStock/pdfText.ts';
+import { decodeAscii85, imageStreamFlags } from '../../supabase/functions/_shared/builderStock/pdfAscii85.pure.ts';
 import { sniffImageContentType } from '../../supabase/functions/_shared/builderStock/sourceAssets.pure.ts';
 
 /*
@@ -206,8 +207,12 @@ async function analysePdf(entry: DriveEntry, who: Identity[], row: Record<string
       const parms = /\/DecodeParms\s*(<<[^>]{0,80}>>|\d+\s+\d+\s+R)/.exec(header)?.[1]?.replace(/\s+/g, ' ') ?? '—';
       let decoded = 'no';
       try {
+        const flags = imageStreamFlags(image.filters);
+        const raw = bytes.slice(image.start, image.end);
+        const un = flags.ascii85 ? decodeAscii85(raw) : raw;
+        say(`          ascii85 layer: ${flags.ascii85 ? (un ? `ok, ${un.length} bytes, head ${[...un.slice(0, 4)].map((b) => b.toString(16)).join(' ')}` : `FAILED; tail ${JSON.stringify(new TextDecoder('latin1').decode(raw.slice(-12)))}`) : 'none'}`);
         const picture = await pictureFromStream(bytes, {
-          start: image.start, end: image.end, flate: image.filters[0] === 'FlateDecode',
+          start: image.start, end: image.end, ...flags,
           width: image.width, height: image.height,
         });
         decoded = picture ? `yes ${picture.contentType} ${(picture.bytes.length / 1024).toFixed(0)} KB` : 'no';
