@@ -462,10 +462,31 @@ describe('the worker’s front door', () => {
    * that exactly ONE lane is asked for per request and that its name carries
    * nothing but the number.
    */
+  it('answers an empty document at the door with 413, and asks no lane', async () => {
+    const names: string[] = [];
+    const response = await call('/v1/elect', {
+      method: 'POST',
+      // As it arrives over the wire: no body, and the length the client stated.
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        'content-length': '0',
+        [ELECTION_CONTEXT_HEADER]: encodeElectionContext(CONTEXT),
+      },
+    }, {
+      PDF_ELECTION: {
+        idFromName: (name: string) => { names.push(name); return name; },
+        get: () => ({ fetch: async () => new Response('{}', { status: 200 }) }),
+      } as never,
+    });
+    expect(response.status).toBe(413);
+    expect(names).toHaveLength(0);
+  });
+
   it('routes an election to exactly one lane, named only by its number', async () => {
     const names: string[] = [];
     await call('/v1/elect', {
       method: 'POST',
+      body: new Uint8Array([0x25]),
       headers: {
         authorization: `Bearer ${TOKEN}`,
         [ELECTION_CONTEXT_HEADER]: encodeElectionContext(CONTEXT),
@@ -490,6 +511,7 @@ describe('the worker’s front door', () => {
       const names: string[] = [];
       await call('/v1/elect', {
         method: 'POST',
+        body: new Uint8Array([0x25]),
         headers: {
           authorization: `Bearer ${TOKEN}`,
           [ELECTION_CONTEXT_HEADER]: encodeElectionContext(context),
