@@ -607,7 +607,8 @@ try {
              (SELECT last_message_at FROM public.builder_agency_conversations WHERE id = ${id(conversationId)}) AS touched`))[0]);
     const before = await counts();
     for (let i = 0; i < 3; i += 1) await portal({ operation: 'list_new_agency_messages', since: firsts.builder.json.cursor }, builderCookie);
-    record('5: reading it writes nothing', (await counts()) === before);
+    const after = await counts();
+    record('5: reading it writes nothing', after === before, after === before ? '' : `before ${before} after ${after}`);
 
     // The cleanup audit's real-conversation check, run against THIS proof's
     // disposable conversation, which holds nothing but proof data. Every
@@ -716,7 +717,7 @@ try {
     // 6c. The same for a Command Centre staff member reading builder messages:
     // the page in view (the pop-up), then two hidden tabs.
     await runAwayFromTheTab({
-      label: '6c Command Centre', origin: CC_ORIGIN, path: '/dashboard', foreground: true,
+      label: '6c Command Centre', origin: CC_ORIGIN, fallbackOrigin: 'https://npc-property-dashbord.lovable.app', path: '/dashboard', foreground: true,
       cookie: { name: '__Host-session_token', value: owner.token, domain: `${CC_REF}.supabase.co`,
         path: '/', secure: true, httpOnly: true, sameSite: 'None' },
       // The Command Centre names the builder as its connection does; the proof asks only that it is a builder message.
@@ -762,8 +763,13 @@ try {
  * second, the notification opening the conversation, and nothing raised again.
  * With `foreground`, first the page in view: the pop-up and no notification.
  */
-async function runAwayFromTheTab({ label, origin, path, cookie, title, send, expectPath, foreground = false }) {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 860 } });
+async function runAwayFromTheTab({ label, origin, fallbackOrigin = null, path, cookie, title, send, expectPath, foreground = false }) {
+  // Full Chromium in its new headless mode: the headless shell the other steps
+  // use carries no desktop notifications, and a proof of them needs a browser that has them.
+  const { chromium } = await import('playwright');
+  const full = await chromium.launch({ channel: 'chromium' }).catch(() => null);
+  console.log(`  note  ${label}: ${full ? 'full Chromium (new headless)' : 'the default headless browser'}`);
+  const context = await (full ?? browser).newContext({ viewport: { width: 1280, height: 860 } });
   await context.grantPermissions(['notifications'], { origin });
   await context.addCookies([cookie]);
   await context.addInitScript(() => {
@@ -799,8 +805,19 @@ async function runAwayFromTheTab({ label, origin, path, cookie, title, send, exp
   const errors = [];
   for (const tab of tabs) tab.on('pageerror', (e) => errors.push(String(e?.message ?? e).slice(0, 120)));
   try {
-    for (const tab of tabs) await tab.goto(`${origin}${path}`, { waitUntil: 'networkidle', timeout: 60_000 }).catch(() => {});
-    const challenged = await tabs[0].evaluate(() => document.title === 'Just a moment...').catch(() => false);
+    let at = origin;
+    for (const tab of tabs) await tab.goto(`${at}${path}`, { waitUntil: 'networkidle', timeout: 60_000 }).catch(() => {});
+    let challenged = await tabs[0].evaluate(() => document.title === 'Just a moment...').catch(() => false);
+    if (challenged && fallbackOrigin) {
+      // The custom domain sits behind a bot challenge; the same published build answers on its platform origin.
+      console.log(`  note  ${label}: ${new URL(origin).host} answered a bot challenge; using ${new URL(fallbackOrigin).host}, the same build`);
+      at = fallbackOrigin;
+      await context.grantPermissions(['notifications'], { origin: fallbackOrigin });
+      for (const tab of tabs) await tab.goto(`${at}${path}`, { waitUntil: 'networkidle', timeout: 60_000 }).catch(() => {});
+      challenged = await tabs[0].evaluate(() => document.title === 'Just a moment...').catch(() => false);
+    }
+    const permission = await tabs[0].evaluate(() => (window.Notification ? Notification.permission : 'absent')).catch(() => 'unknown');
+    console.log(`  note  ${label}: the page reads notification permission as "${permission}"`);
     if (!record(`${label}: both tabs open signed in`, !challenged && tabs.every((t) => new URL(t.url()).pathname !== '/login'),
       challenged ? 'the origin answered a bot challenge' : tabs.map((t) => new URL(t.url()).pathname).join(', '))) return;
     await tabs[0].waitForTimeout(8_000); // the first read takes the cursor
@@ -888,6 +905,7 @@ async function runAwayFromTheTab({ label, origin, path, cookie, title, send, exp
     record(`${label}: no uncaught error in either tab`, errors.length === 0, errors.slice(0, 2).join(' | '));
   } finally {
     await context.close().catch(() => {});
+    if (full) await full.close().catch(() => {});
   }
 }
 
