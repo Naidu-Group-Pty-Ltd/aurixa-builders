@@ -390,6 +390,16 @@ import {
  * public form is a zip nothing here could read. Every negative banked at 27
  * for any of those shapes was the reader's failing, not the builder's.
  *
+ * 29 READS A DISPLAY HOME'S COVER BY ITS DESIGN. Measured 30 September 2026 on
+ * a Mairandi display home listed as "Deanside VIC · Mira 22 Display Home": its
+ * Dropbox folder was read to the end on the worker and its one brochure found,
+ * whose first page reads "Mira 22 — 6 Elodina Street". The listing states no
+ * street, so the every-token rule refused the cover the folder had just chosen.
+ * Where the folder attributed the document by design and estate and the
+ * listing designates no lot, a first page stating the whole design and no lot
+ * of its own is the cover (`displayHomeCoverStated`). The negative banked at 28
+ * was the reader's failing, not the builder's.
+ *
  * This is the bump doing precisely the job it exists for: `negativeProvenance`
  * compares the stored version against this one, so raising it reopens every
  * banked negative for a reader that can now find what the old one could not.

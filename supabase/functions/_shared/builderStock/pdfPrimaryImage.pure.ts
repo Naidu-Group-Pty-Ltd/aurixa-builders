@@ -638,6 +638,37 @@ function pageStatesIdentity(
     .some(states);
 }
 
+/**
+ * A DISPLAY HOME'S COVER, where the folder already chose the document.
+ *
+ * A display home is listed by its design and its estate and carries no lot:
+ * "Deanside VIC · Mira 22 Display Home". The builder's own brochure for it
+ * leads with the design and the display's street address — "Mira 22 — 6
+ * Elodina Street" — which the listing never states, so the ordinary rule
+ * (every label token on the page) refused the one document the builder filed
+ * for it. MEASURED 30 SEPTEMBER 2026 on a Mairandi display home whose folder
+ * was read to the end and whose sole package was this brochure.
+ *
+ * Asked ONLY where the folder structure has already attributed the document to
+ * this property by its design AND its estate (`recoverFromDropboxFolder`), and
+ * only for a label that designates no lot or unit — a listing that names a lot
+ * is judged by the lot, as always. The page must state the whole design, and
+ * must not designate a lot of its own, because a lot on a display brochure is a
+ * different house built to the same design.
+ */
+export function displayHomeCoverStated(
+  pageText: string,
+  label: string,
+  design: string | null | undefined,
+): boolean {
+  if (lotDesignations(label).length) return false;
+  const designWords = tokenise(String(design ?? ''));
+  if (!designWords.length || !designWords.some((word) => /[a-z]/.test(word))) return false;
+  if (lotDesignations(pageText).length) return false;
+  const haystack = ` ${tokenise(pageText).join(' ')} `;
+  return designWords.every((word) => haystack.includes(` ${word} `));
+}
+
 /** The package facts a page states, in the order they are defined above. */
 export function packageFactsOn(pageText: string): string[] {
   const text = String(pageText ?? '');

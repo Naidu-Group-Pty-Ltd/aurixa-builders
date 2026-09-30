@@ -194,3 +194,29 @@ describe('a unit pack the builder’s folder tied to this property', () => {
     expect(roles[0].role).not.toBe('primary_property');
   });
 });
+
+describe('a display home the builder filed under its design and estate', () => {
+  const LABEL = 'Deanside VIC · Mira 22 Display Home';
+  it('is its cover when the page states the whole design and no lot', async () => {
+    const { displayHomeCoverStated } = await import(
+      '../../../supabase/functions/_shared/builderStock/pdfPrimaryImage.pure');
+    expect(displayHomeCoverStated('Mira 22 — 6 Elodina Street · Monarch', LABEL, 'Mira 22')).toBe(true);
+  });
+  it('is not, for another design, a page naming a lot, a listing with a lot, or no design at all', async () => {
+    const { displayHomeCoverStated } = await import(
+      '../../../supabase/functions/_shared/builderStock/pdfPrimaryImage.pure');
+    expect(displayHomeCoverStated('Mira 25 — 6 Elodina Street', LABEL, 'Mira 22')).toBe(false);
+    expect(displayHomeCoverStated('Lot 419 · Mira 22 facade', LABEL, 'Mira 22')).toBe(false);
+    expect(displayHomeCoverStated('Mira 22', 'Lot 12 Deanside VIC · Mira 22', 'Mira 22')).toBe(false);
+    expect(displayHomeCoverStated('Mira 22', LABEL, null)).toBe(false);
+    expect(displayHomeCoverStated('22 Main Street', LABEL, '22')).toBe(false);
+  });
+  it('is asked only where the folder attributed the document, and only after the ordinary rule', async () => {
+    const { readFileSync } = await import('node:fs');
+    const source = readFileSync(
+      'supabase/functions/_shared/builderStock/pdfElection.ts', 'utf8');
+    const rule = source.slice(source.indexOf("identifiedBy === 'folder_structure'"));
+    expect(rule.indexOf('!findPropertyCoverPages(')).toBeLessThan(rule.indexOf('displayHomeCoverStated('));
+    expect(rule.indexOf('displayHomeCoverStated(')).toBeLessThan(rule.indexOf('? 1 : null'));
+  });
+});
