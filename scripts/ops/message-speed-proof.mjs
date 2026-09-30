@@ -698,6 +698,33 @@ try {
     measure('6: written in the Command Centre → shown in the open thread', `${liveAfterS.toFixed(1)} s`);
     record('6: no uncaught error on the page', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | '));
     await context.close();
+
+    // 6b. The builder is somewhere else: two portal tabs, both hidden.
+    // Permission is granted as a person granting it would (the browser's own
+    // prompt is not what is under test), and the Notification constructor is
+    // wrapped so the proof can COUNT what the page raised and press it.
+    await runAwayFromTheTab({
+      label: '6b portal', origin: ORIGIN, path: '/builder/dashboard',
+      cookie: { name: '__Host-builder_session_token', value: builderCookie.split('=')[1], url: ORIGIN,
+        secure: true, httpOnly: true, sameSite: 'Lax' },
+      title: `New message from ${agencyName}`,
+      send: async (body) => commandCentre('send_builder_message', { conversation_id: conversationId,
+        client_message_id: randomUUID(), body }, owner.token),
+      expectPath: (url) => url.pathname === '/builder/messages' && url.searchParams.get('thread') === conversationId,
+    });
+
+    // 6c. The same for a Command Centre staff member reading builder messages:
+    // the page in view (the pop-up), then two hidden tabs.
+    await runAwayFromTheTab({
+      label: '6c Command Centre', origin: CC_ORIGIN, path: '/dashboard', foreground: true,
+      cookie: { name: '__Host-session_token', value: owner.token, domain: `${CC_REF}.supabase.co`,
+        path: '/', secure: true, httpOnly: true, sameSite: 'None' },
+      // The Command Centre names the builder as its connection does; the proof asks only that it is a builder message.
+      title: /new messages? from/i,
+      send: async (body) => portal({ operation: 'send_agency_message', conversation_id: conversationId,
+        client_message_id: randomUUID(), body }, builderCookie),
+      expectPath: (url) => url.pathname.includes(conversationId) || url.search.includes(conversationId),
+    });
   }
 } catch (error) {
   record('the proof ran to the end', false, String(error?.message ?? error).slice(0, 300));
@@ -725,6 +752,142 @@ try {
       JSON.stringify({ ...leftNetwork, ...leftCc }));
   } catch (error) {
     record('7: cleanup ran', false, String(error?.message ?? error).slice(0, 300));
+  }
+}
+
+/**
+ * Two tabs of one person, away from both, and a message arrives: one desktop
+ * notification (not one per tab), a count on each tab's title, no pop-up while
+ * nobody is looking, the pop-up in the FIRST tab they come back to and not the
+ * second, the notification opening the conversation, and nothing raised again.
+ * With `foreground`, first the page in view: the pop-up and no notification.
+ */
+async function runAwayFromTheTab({ label, origin, path, cookie, title, send, expectPath, foreground = false }) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 860 } });
+  await context.grantPermissions(['notifications'], { origin });
+  await context.addCookies([cookie]);
+  await context.addInitScript(() => {
+    let hidden = false;
+    Object.defineProperty(Document.prototype, 'visibilityState', { configurable: true, get: () => (hidden ? 'hidden' : 'visible') });
+    Object.defineProperty(Document.prototype, 'hidden', { configurable: true, get: () => hidden });
+    Document.prototype.hasFocus = function hasFocus() { return !hidden; };
+    window.__setHidden = (next) => {
+      hidden = next;
+      document.dispatchEvent(new Event('visibilitychange'));
+      if (!next) window.dispatchEvent(new Event('focus'));
+    };
+    window.__notes = [];
+    const Real = window.Notification;
+    class CountedNotification {
+      constructor(heading, options = {}) {
+        this.title = heading; this.onclick = null; this.onclose = null;
+        window.__notes.push({ heading, tag: options.tag ?? null, url: options.data?.url ?? null });
+        window.__lastNote = this;
+      }
+      close() {}
+      static get permission() { return Real ? Real.permission : 'denied'; }
+      static requestPermission(...args) { return Real.requestPermission(...args); }
+    }
+    window.Notification = CountedNotification;
+    if (window.ServiceWorkerRegistration) {
+      ServiceWorkerRegistration.prototype.showNotification = async function showNotification(heading, options = {}) {
+        window.__notes.push({ heading, tag: options.tag ?? null, url: options.data?.url ?? null, worker: true });
+      };
+    }
+  });
+  const tabs = [await context.newPage(), await context.newPage()];
+  const errors = [];
+  for (const tab of tabs) tab.on('pageerror', (e) => errors.push(String(e?.message ?? e).slice(0, 120)));
+  try {
+    for (const tab of tabs) await tab.goto(`${origin}${path}`, { waitUntil: 'networkidle', timeout: 60_000 }).catch(() => {});
+    const challenged = await tabs[0].evaluate(() => document.title === 'Just a moment...').catch(() => false);
+    if (!record(`${label}: both tabs open signed in`, !challenged && tabs.every((t) => new URL(t.url()).pathname !== '/login'),
+      challenged ? 'the origin answered a bot challenge' : tabs.map((t) => new URL(t.url()).pathname).join(', '))) return;
+    await tabs[0].waitForTimeout(8_000); // the first read takes the cursor
+    const notes = async () => (await Promise.all(tabs.map((t) => t.evaluate(() => window.__notes.length).catch(() => 0))))
+      .reduce((a, b) => a + b, 0);
+    const toasts = (tab) => tab.locator('[data-sonner-toast]').filter({ hasText: title }).count();
+
+    if (foreground) {
+      // Case E: the page in view — the pop-up, and no desktop notification.
+      await tabs[1].evaluate(() => window.__setHidden(true));
+      const body = `smoke-rollout message-speed ${RUN} ${label} in view`;
+      await send(body);
+      const shown = await tabs[0].locator('[data-sonner-toast]').filter({ hasText: title }).first()
+        .waitFor({ timeout: 45_000 }).then(() => true).catch(() => false);
+      await tabs[0].screenshot({ path: `${OUT}/${label.replace(/\W+/g, '-')}-in-view.png` });
+      record(`${label}: in view, "${'New message from <builder>'}" pops up`, shown);
+      record(`${label}: in view, no desktop notification is raised over it`, (await tabs[0].evaluate(() => window.__notes.length)) === 0);
+      const close = tabs[0].locator('[data-sonner-toast] button[aria-label="Close toast"]').first();
+      if (await close.count()) {
+        await close.click().catch(() => {});
+        const gone = await tabs[0].locator('[data-sonner-toast]').filter({ hasText: title }).first()
+          .waitFor({ state: 'detached', timeout: 10_000 }).then(() => true).catch(() => false);
+        record(`${label}: the close button puts the pop-up away`, gone);
+      } else {
+        record(`${label}: the pop-up has a close button`, false, 'no close button found');
+      }
+      await tabs[0].waitForTimeout(35_000); // let the hidden tab's slower check pass this message too
+      await tabs[1].evaluate(() => window.__setHidden(false));
+      await tabs[1].waitForTimeout(6_000);
+      await tabs[1].evaluate(() => window.__setHidden(true));
+      for (const tab of tabs) await tab.evaluate(() => { window.__notes.length = 0; });
+    }
+
+    // Cases B/C/D (F/G): both tabs hidden.
+    for (const tab of tabs) await tab.evaluate(() => window.__setHidden(true));
+    const baseTitles = await Promise.all(tabs.map((t) => t.title()));
+    const body = `smoke-rollout message-speed ${RUN} ${label} away`;
+    const sentAt = Date.now();
+    await send(body);
+    const raised = await waitFor(`${label} notification`, async () => ({ done: (await notes()) >= 1 }), 90_000, 2_000);
+    record(`${label}: with both tabs hidden, the check keeps running and a desktop notification is raised`, raised.done,
+      raised.done ? `${((Date.now() - sentAt) / 1000).toFixed(0)} s after it was written` : 'none within 90 s');
+    await tabs[0].waitForTimeout(40_000); // a full background cycle for the second tab
+    const total = await notes();
+    record(`${label}: ONE desktop notification for the message, not one per tab`, total === 1, `${total} raised across 2 tabs`);
+    const titles = await Promise.all(tabs.map((t) => t.title()));
+    record(`${label}: the tab title carries the unread count`, titles.some((t) => /^\(\d+\)/.test(t)),
+      titles.map((t) => t.slice(0, 4)).join(' / '));
+    record(`${label}: no pop-up is drawn while nobody is looking`,
+      (await Promise.all(tabs.map(toasts))).every((n) => n === 0));
+
+    // Coming back: the first tab shows what was missed, the second does not repeat it.
+    await tabs[0].bringToFront();
+    await tabs[0].evaluate(() => window.__setHidden(false));
+    const back = await tabs[0].locator('[data-sonner-toast]').filter({ hasText: title }).first()
+      .waitFor({ timeout: 15_000 }).then(() => true).catch(() => false);
+    await tabs[0].screenshot({ path: `${OUT}/${label.replace(/\W+/g, '-')}-returned.png` });
+    record(`${label}: returning to a tab shows the missed pop-up`, back);
+    await tabs[0].evaluate(() => window.__setHidden(true));
+    await tabs[1].bringToFront();
+    await tabs[1].evaluate(() => window.__setHidden(false));
+    await tabs[1].waitForTimeout(6_000);
+    record(`${label}: the second tab does not show it again`, (await toasts(tabs[1])) === 0);
+    const cleared = await tabs[1].title();
+    record(`${label}: the count leaves the title once the tab is in view`, !/^\(\d+\)/.test(cleared) || baseTitles.includes(cleared),
+      cleared.slice(0, 4));
+
+    // The notification opens the conversation.
+    const owner = await Promise.all(tabs.map((t) => t.evaluate(() => window.__notes.length)));
+    const ownerTab = tabs[owner.findIndex((n) => n > 0)] ?? tabs[0];
+    const target = await ownerTab.evaluate(() => {
+      const note = window.__notes[window.__notes.length - 1];
+      if (note?.url) return note.url;
+      window.__lastNote?.onclick?.();
+      return null;
+    });
+    if (target) await ownerTab.evaluate((url) => { window.location.assign(url); }, target);
+    await ownerTab.waitForTimeout(6_000);
+    record(`${label}: the notification opens that conversation`, expectPath(new URL(ownerTab.url())), new URL(ownerTab.url()).pathname);
+
+    // Nothing is raised again for what was already announced.
+    for (const tab of tabs) await tab.evaluate(() => window.__setHidden(true));
+    await tabs[0].waitForTimeout(40_000);
+    record(`${label}: nothing is raised again for a message already announced`, (await notes()) === total, `${await notes()} total`);
+    record(`${label}: no uncaught error in either tab`, errors.length === 0, errors.slice(0, 2).join(' | '));
+  } finally {
+    await context.close().catch(() => {});
   }
 }
 
