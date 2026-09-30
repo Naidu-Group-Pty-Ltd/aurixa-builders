@@ -26,7 +26,7 @@
  */
 import {
   DRIVE_FOLDER_MIME, type DriveEntry, driveFolderId, isNonFacadeImageName, isPackageImage,
-  lotAndDesignFrom, normaliseDriveName, parseDriveFolderListing, carriesDesignation,
+  designTokenFrom, lotAndDesignFrom, normaliseDriveName, parseDriveFolderListing, carriesDesignation,
 } from '../../supabase/functions/_shared/builderStock/drivePackage.pure.ts';
 import {
   classifyBranch, rowSourceBranchCandidates, sharedLinkFileUrl,
@@ -40,7 +40,9 @@ import {
 } from '../../supabase/functions/_shared/builderStock/normalise.pure.ts';
 import { designOfRecordOrRow } from '../../supabase/functions/_shared/builderStock/builderSuppliedImage.pure.ts';
 import { electFromPdfBytes } from '../../supabase/functions/_shared/builderStock/pdfElection.ts';
-import { coverIdentityRefusal } from '../../supabase/functions/_shared/builderStock/pdfPrimaryImage.pure.ts';
+import { coverIdentityRefusal, displayHomeCoverStated } from '../../supabase/functions/_shared/builderStock/pdfPrimaryImage.pure.ts';
+import { listFieldsAfterAddress } from '../../supabase/functions/_shared/builderStockAddress.pure.ts';
+import { scanStoredZip } from '../../supabase/functions/_shared/builderStock/zipStream.pure.ts';
 import { indexPdfObjects, readPdfPage } from '../../supabase/functions/_shared/builderStock/pdfPageImages.pure.ts';
 import { pictureFromStream, selectPdfPropertyPrimary } from '../../supabase/functions/_shared/builderStock/pdfSourcePhoto.ts';
 import { readPdfPageTextResult } from '../../supabase/functions/_shared/builderStock/pdfText.ts';
@@ -397,6 +399,45 @@ for (const [url, linked] of byUrl) {
         const two = await plainGet(pathUrl2.toString(), 30 * 1024 * 1024);
         say(`  same, without the zip's top folder: HTTP ${two.status}, ${two.type}, ${(two.bytes.length / 1024).toFixed(0)} KB, sniffed ${sniffImageContentType(two.bytes) ?? 'not an image'}`);
       }
+      // The display-home brochures, read as the folder reader would hand them to the election.
+      {
+        const scan = await scanStoredZip((async function* () { yield got.bytes; })(), {
+          want: (name) => /display home/i.test(name) && /\.pdf$/i.test(name),
+          maxEntryBytes: 16 * 1024 * 1024, maxKeptBytes: 64 * 1024 * 1024, maxTotalBytes: 1024 * 1024 * 1024,
+        });
+        for (const row of linked) {
+          const record = (row.source_row ?? {}) as Record<string, unknown>;
+          const label = stockRecordLabel(record as never);
+          const design = lotAndDesignFrom(label).design ?? designOfRecordOrRow(record) ?? designTokenFrom(listFieldsAfterAddress(label)[0]);
+          say(`  row ${String(row.id).slice(0, 8)}: label (masked) "${mask(label, who)}", design (masked) "${design ? mask(design, who) : '—'}"`);
+        }
+        for (const entry of scan.entries.filter((e) => e.data)) {
+          const pages = await readPdfPageTextResult(entry.data!);
+          const first = pages.ok ? pages.pages[0] ?? '' : '';
+          const lotWords = (first.match(/\b(lot|unit)\s*\d{1,5}\b/gi) ?? []).length;
+          say(`    brochure ${mask(entry.name.split('/').pop() ?? '', who)}: pages ${pages.ok ? pages.pages.length : 'unread'}, page-1 lot/unit designations ${lotWords}`);
+          say(`      page-1 words (masked): ${mask(first.slice(0, 400), who)}`);
+          // The SHAPE of the first words, never the words: a = ASCII letter, 9 = digit,
+          // anything else as its code point, so a spelling the tokenizer drops is visible.
+          const shape = (word: string) => [...word].map((ch) => (/[a-z]/i.test(ch) ? 'a' : /[0-9]/.test(ch) ? '9'
+            : `<U+${ch.codePointAt(0)!.toString(16).padStart(4, '0')}>`)).join('');
+          say(`      page-1 first 40 chars, shape: ${shape(first.slice(0, 40))}`);
+          const tokens = first.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ');
+          say(`      page-1 ASCII tokens hold the design words: ${tokens.includes('mira')}/${tokens.includes('22')}, token count ${tokens.length}`);
+          for (const row of linked) {
+            const record = (row.source_row ?? {}) as Record<string, unknown>;
+            const label = stockRecordLabel(record as never);
+            const design = lotAndDesignFrom(label).design ?? designOfRecordOrRow(record) ?? designTokenFrom(listFieldsAfterAddress(label)[0]);
+            say(`      for ${String(row.id).slice(0, 8)}: displayHomeCoverStated=${displayHomeCoverStated(first, label, design)} coverIdentityRefusal=${coverIdentityRefusal(first, label, stockIdentityHints(record as never)) ?? 'none'}`);
+            const outcome = await electFromPdfBytes(entry.data!, readPdfPageTextResult, {
+              label, identifiedBy: 'folder_structure', design, identityHints: stockIdentityHints(record as never),
+              documentName: 'brochure.pdf', url: 'https://example.invalid/brochure.pdf',
+            } as never);
+            say(`        design given: ${design ? design.split(' ').map((w) => (/^\d+$/.test(w) ? '#' : '<w>')).join(' ') : 'none'}; ${outcome.status === 'recovered' ? `recovered page ${(outcome as { image?: { provenance?: { page?: number } } }).image?.provenance?.page}` : ''}`);
+            say(`        in-process election: ${outcome.status}${'detail' in outcome && outcome.detail ? ` — ${mask(String(outcome.detail).slice(0, 160), who)}` : ''}`);
+          }
+        }
+      }
       const entries = zipEntries(got.bytes);
       console.log(`  zip holds ${entries.length} entr(ies):`);
       for (const entry of entries) {
@@ -412,6 +453,7 @@ for (const [url, linked] of byUrl) {
     const label = stockRecordLabel(record as never);
     const started = Date.now();
     const cpuBefore = cpuMs();
+    const readFirstPages: string[] = [];
     let verdict: string;
     try {
       const outcome = await recoverPackageImage({
@@ -421,13 +463,32 @@ for (const [url, linked] of byUrl) {
         buildingSqm: Number(row.building_size_sqm) || null,
         design: designOfRecordOrRow(record),
         linkSharedWithOtherRows: linked.length > 1,
-      }, { fetchPackage: productionFetch, cache: new DriveListingCache(productionFetch) });
+      }, {
+        fetchPackage: productionFetch,
+        cache: new DriveListingCache(productionFetch),
+        // Production's own reader, wrapped so the election runs here rather than
+        // on the worker, and so the first page of every document read is kept.
+        readPageTexts: async (bytes: Uint8Array) => {
+          const read = await readPdfPageTextResult(bytes);
+          if (!read.ok) throw new Error(`unreadable: ${read.reason}`);
+          readFirstPages.push(read.pages[0] ?? '');
+          return read.pages;
+        },
+      });
+      const fieldDesign = designTokenFrom(listFieldsAfterAddress(label)[0]);
+      for (const page of readFirstPages) {
+        const tokens = page.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ');
+        const designWords = String(fieldDesign ?? '').split(' ').filter(Boolean);
+        say(`    document read: page-1 holds every design word ${designWords.every((w) => tokens.includes(w))}, `
+          + `lot/unit designations ${(page.match(/\b(lot|unit)\s*\d{1,5}\b/gi) ?? []).length}, `
+          + `displayHomeCoverStated ${displayHomeCoverStated(page, label, fieldDesign)}`);
+      }
       const won = outcome.status === 'recovered_photograph'
         ? ` — ${outcome.photograph.contentType}, ${(outcome.photograph.bytes.length / 1024).toFixed(0)} KB, sniffed ${sniffImageContentType(outcome.photograph.bytes) ?? 'NOT AN IMAGE'}, from a folder ${outcome.photograph.folderPath.length} deep`
         : outcome.status === 'recovered'
           ? ` — ${outcome.image.contentType}, ${(outcome.image.bytes.length / 1024).toFixed(0)} KB`
           : '';
-      verdict = `${outcome.status}${won}${'detail' in outcome && outcome.detail ? ` — ${String(outcome.detail).slice(0, 140)}` : ''}`;
+      verdict = `${outcome.status}${won}${'detail' in outcome && outcome.detail ? ` — ${mask(String(outcome.detail).slice(0, 140), who)}` : ''}`;
     } catch (error) {
       verdict = `threw — ${String((error as Error)?.message ?? error).slice(0, 140)}`;
     }

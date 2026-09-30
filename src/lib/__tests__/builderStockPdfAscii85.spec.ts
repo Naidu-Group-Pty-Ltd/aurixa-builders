@@ -219,4 +219,20 @@ describe('a display home the builder filed under its design and estate', () => {
     expect(rule.indexOf('!findPropertyCoverPages(')).toBeLessThan(rule.indexOf('displayHomeCoverStated('));
     expect(rule.indexOf('displayHomeCoverStated(')).toBeLessThan(rule.indexOf('? 1 : null'));
   });
+  it('is elected by the role gate too, not only nominated — and never without the design', async () => {
+    const m = await import('../../../supabase/functions/_shared/builderStock/pdfPrimaryImage.pure');
+    const PAGE_1 = 'Mira 22\n6 Elodina Street,\nDeanside VIC';
+    const PAGE_2 = 'Floor plan Mira 22 living 22.4 squares';
+    const media = [{ page: 1, name: null, placementsOnPage: 1, pagesDrawnOn: 1, pageAreaShare: 0.6 }];
+    const base = {
+      label: LABEL, pageTexts: [PAGE_1, PAGE_2], pageOrderAuthoritative: true, media,
+      identityHints: ['Monarch Estate Deanside VIC'], structuralCoverPage: 1,
+    };
+    expect(m.coverIdentityRefusal(PAGE_1, LABEL, base.identityHints)).not.toBeNull();
+    expect(m.assignPdfMediaRoles({ ...base, design: 'mira 22' })[0].role).toBe('primary_property');
+    expect(m.assignPdfMediaRoles({ ...base, design: null })[0].role).not.toBe('primary_property');
+    expect(m.assignPdfMediaRoles({ ...base, design: 'mira 25' })[0].role).not.toBe('primary_property');
+    expect(m.assignPdfMediaRoles({ ...base, design: 'mira 22', structuralCoverPage: null })[0].role)
+      .not.toBe('primary_property');
+  });
 });

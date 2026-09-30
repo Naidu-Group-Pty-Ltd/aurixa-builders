@@ -1258,7 +1258,14 @@ export function assignPdfMediaRoles(input: {
       || pageStatesIdentity(
         (input.pageTexts ?? [])[(input.structuralCoverPage as number) - 1] ?? '',
         String(input.label ?? ''), input.identityHints ?? [],
-        input.soleProperty === true, input.confirmedLots ?? []))
+        input.soleProperty === true, input.confirmedLots ?? [])
+      // A display home's cover states its design and a street the listing
+      // never names — the same rule `pdfElection` nominated the page on, asked
+      // again here, because a nomination this gate did not share was dropped
+      // in silence (30 September 2026, the last Mairandi display home).
+      || displayHomeCoverStated(
+        (input.pageTexts ?? [])[(input.structuralCoverPage as number) - 1] ?? '',
+        String(input.label ?? ''), input.design))
     ? {
       page: input.structuralCoverPage as number,
       identity: String(input.label ?? ''),

@@ -149,6 +149,25 @@ export default {
      * sharding on, so each takes a lane at random, which keeps a folder read
      * from always queueing behind the same brochure.
      */
+    /*
+     * AN EMPTY BODY IS ANSWERED HERE, NOT IN A LANE. Measured twice on 30
+     * September 2026: the live canary's empty election came back 500 instead
+     * of the lane's own 413, and passed on re-run — forwarding a request with
+     * no body into a Durable Object is the one step that differed. There is
+     * nothing to queue for an empty document, so it never reaches one. Only
+     * where the context is one the lane would have accepted, so a refusal of
+     * the context still reads as the context's (400) exactly as before; a
+     * folder read carries no body by design and is not asked.
+     */
+    const emptyBody = request.body === null || request.headers.get('content-length') === '0';
+    if (emptyBody && url.pathname === SANITIZE_PATH) {
+      return json({ error: 'bad_picture', bytes: 0 }, 413);
+    }
+    if (emptyBody && !heavyWork
+      && decodeElectionContext(request.headers.get(ELECTION_CONTEXT_HEADER))) {
+      return json({ error: 'bad_document', bytes: 0 }, 413);
+    }
+
     const shardKey = heavyWork
       ? crypto.randomUUID()
       : electionShardKey(decodeElectionContext(request.headers.get(ELECTION_CONTEXT_HEADER)));
