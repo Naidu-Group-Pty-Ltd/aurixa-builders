@@ -390,6 +390,13 @@ import {
  * public form is a zip nothing here could read. Every negative banked at 27
  * for any of those shapes was the reader's failing, not the builder's.
  *
+ * 30 — AND THE ROLE GATE READS IT THE SAME WAY. 29 taught the election to
+ * nominate a display home's first page as its cover, and `assignPdfMediaRoles`
+ * then re-checked that page with the every-token rule alone and dropped the
+ * nomination in silence, so the property banked the same refusal at 29.
+ * Measured on the real brochure through production's own path: refused at 29,
+ * recovered at 30.
+ *
  * 29 READS A DISPLAY HOME'S COVER BY ITS DESIGN. Measured 30 September 2026 on
  * a Mairandi display home listed as "Deanside VIC · Mira 22 Display Home": its
  * Dropbox folder was read to the end on the worker and its one brochure found,

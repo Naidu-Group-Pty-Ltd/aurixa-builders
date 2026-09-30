@@ -297,8 +297,8 @@ describe('publication requires 100% builder-source photo coverage', () => {
 });
 
 describe('the versions that reopen the wrongly-retired branches', () => {
-  it('provenance 29 (ASCII85 pictures, units, Dropbox folders, display-home covers) and runtime 5 (heavy work on the worker)', () => {
-    expect(PROVENANCE_VERSION).toBe(29);
+  it('provenance 30 (ASCII85 pictures, units, Dropbox folders, display-home covers) and runtime 5 (heavy work on the worker)', () => {
+    expect(PROVENANCE_VERSION).toBe(30);
     expect(RUNTIME_VERSION).toBe(5);
     const migration = read(MIGRATION);
     expect(migration).toContain('set_builder_stock_source_images_target(25)');
