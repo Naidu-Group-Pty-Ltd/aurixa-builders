@@ -287,12 +287,14 @@ describe('a brochure that names a different property says so', () => {
   it('names the mismatch in the list-level warning rather than the contents', () => {
     draw([lot1037([mismatch])]);
     const text = pageText();
-    expect(text).toContain('do not match');
+    // The banner's words, since 30 September 2026's shortening: it names the
+    // mismatch, which is what `builderStockPhotoAttention.pure.ts` pins.
+    expect(text).toContain('shows a different property');
     expect(
       text,
       'the banner still describes the document’s CONTENTS when the problem '
       + 'is which document was linked',
-    ).not.toContain('name no photograph of the property');
+    ).not.toMatch(/name no photograph of the property|don\u2019t include a photo/);
   });
 });
 

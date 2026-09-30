@@ -83,7 +83,17 @@ export type StockImageProgress =
    */
   | 'source_unavailable'
   /** Finished, the documents were read, and none of them names a picture. */
-  | 'none_found';
+  | 'none_found'
+  /**
+   * Finished, and the row links something — but nothing this pipeline can
+   * read a photograph out of: a Dropbox FOLDER, a portal page.
+   *
+   * NOT `no_document`, which tells the builder their row attaches nothing.
+   * Measured 30 September 2026, three display homes on the live Notion list
+   * each link a Dropbox folder and were told exactly that — false, and it
+   * sends the builder looking for a missing link that is sitting in the cell.
+   */
+  | 'unsupported_link';
 
 export interface StockImageProgressInput {
   /** Whether the card has a picture to draw. */
@@ -107,6 +117,8 @@ export interface StockImageProgressInput {
   /** How many could not be reached at all — a 404, a sign-in wall, not a
    *  document. Counted apart because only this one is the builder's to fix. */
   unreachableDocuments?: number;
+  /** Links the row carries that are not a kind this pipeline can open. */
+  unsupportedLinks?: number;
 }
 
 /** What this property's imagery honestly amounts to right now. */
@@ -127,6 +139,8 @@ export function stockImageProgress(input: StockImageProgressInput): StockImagePr
   const unprocessed = Number(input.unprocessedDocuments ?? 0);
   const unreachable = Number(input.unreachableDocuments ?? 0);
   if (stage === FAILED_WORK_STAGE) {
+    // Nothing readable was ever linked: the fix is the builder's link, not us.
+    if (input.sourceDocuments <= 0 && Number(input.unsupportedLinks ?? 0) > 0) return 'unsupported_link';
     /*
      * AND WHOSE TERMINAL FAILURE IT IS, BECAUSE THE TWO ASK OPPOSITE THINGS.
      *
@@ -153,7 +167,9 @@ export function stockImageProgress(input: StockImageProgressInput): StockImagePr
     return 'attention';
   }
   if (stage && stage !== SETTLED_WORK_STAGE) return 'working';
-  if (input.sourceDocuments <= 0) return 'no_document';
+  if (input.sourceDocuments <= 0) {
+    return Number(input.unsupportedLinks ?? 0) > 0 ? 'unsupported_link' : 'no_document';
+  }
   /*
    * A DOCUMENT WE NEVER READ IS NOT A DOCUMENT THAT SAID NOTHING, and this is
    * the one line that keeps those two apart on screen. Checked before
@@ -190,6 +206,7 @@ export const STOCK_IMAGE_PROGRESS_LABEL: Record<StockImageProgress, string> = {
   unreadable: 'Picture not available yet',
   source_unavailable: 'A linked document could not be opened',
   none_found: 'No picture in the supplied documents',
+  unsupported_link: 'This link can\u2019t be read for a photo',
 };
 
 /**
@@ -223,6 +240,7 @@ export const STOCK_IMAGE_PROGRESS_BADGE: Record<StockImageProgress, string> = {
   source_unavailable: 'Link unavailable',
   // Still a finding about the documents, because here one was reached.
   none_found: 'No picture found',
+  unsupported_link: 'Link not readable',
 };
 
 export const STOCK_IMAGE_PROGRESS_DETAIL: Record<StockImageProgress, string> = {
@@ -250,6 +268,9 @@ export const STOCK_IMAGE_PROGRESS_DETAIL: Record<StockImageProgress, string> = {
   none_found: 'Every document on this row was read and none of them presents a '
     + "photograph of this property. Add a picture with “Add picture”, or link a "
     + 'brochure that shows the house.',
+  unsupported_link: 'This row links a folder or page photos can\u2019t be read from '
+    + '(a Dropbox folder, for example). Link the brochure or photo file itself, '
+    + 'or add a picture with \u201cAdd picture\u201d.',
 };
 
 /** How many properties on a page are still being worked. */

@@ -11,7 +11,7 @@
  * would reject.
  */
 import { addressWithoutLeadingDesignation } from '../../supabase/functions/_shared/builderStock/normalise.pure';
-import { parseBuilderAddressLine } from '../../supabase/functions/_shared/builderStockAddress.pure';
+import { parseBuilderAddressLine, splitAddressFields } from '../../supabase/functions/_shared/builderStockAddress.pure';
 /*
  * The five figures a builder may state, and the rules for each, imported
  * rather than restated — what the dialog asks for and what the server accepts
@@ -296,6 +296,8 @@ export interface BuilderStockItem {
    */
   source_documents_unprocessed?: number;
   source_documents_unreachable?: number;
+  /** Links on the row that are not a kind a photograph can be read from. */
+  source_links_unsupported?: number;
   /**
    * What the documents we DID read said about themselves, where they named no
    * picture for this property.
@@ -516,22 +518,24 @@ export const STOCK_SELECTION_STATUS_LABELS: Record<StockSelectionStatus, string>
 export const CARD_PICTURE_ASPECT = 16 / 9;
 
 /**
- * HOW MUCH MAY BE CROPPED DEPENDS ON WHICH WAY THE CROP RUNS.
+ * HOW MUCH OF A BUILDER'S PICTURE A CARD MAY CUT AWAY: ALMOST NOTHING.
  *
- * This is the rule, and it is about what a facade photograph IS rather than
- * about a percentage fitted to one upload. A picture TALLER than the frame is
- * cropped top and bottom, and on a facade render that is sky and foreground
- * planting — verified by eye on the three worst-case live images, where a
- * 43% crop removed nothing but sky and shrubs and improved the composition.
- * A picture WIDER than the frame is cropped left and right, which is where a
- * house extends, and a page crop of a brochure banner can put the building
- * anywhere along it.
+ * This allowed half a picture's height and a fifth of its width, on the
+ * reading that a facade render loses only sky and planting top and bottom.
+ * The owner's instruction of 30 September 2026 overrules it — a card shows the
+ * property as the builder supplied it, and does not re-frame the picture.
+ * Measured that day on the live Notion list, a 2500×2800 render lost 49.8% of
+ * its height to fill the frame, and a 2481×1208 page crop 13.4% of its width,
+ * in the Command Centre and the Builder Portal alike.
  *
- * So the vertical allowance is generous and the horizontal one is tight. Past
- * either, the picture is contained whole rather than cut.
+ * So a picture fills the frame only where it is already the frame's shape to
+ * within 3% — the 16:9 renders builders' software emits, and the 3556×2000
+ * that is 16:9 to the eye — and every other picture is shown whole on its own
+ * blurred ground (`StockPicture`), which is what replaced the grey bands that
+ * once made showing a picture whole look broken.
  */
-export const CARD_PICTURE_MAX_VERTICAL_CROP = 0.5;
-export const CARD_PICTURE_MAX_HORIZONTAL_CROP = 0.2;
+export const CARD_PICTURE_MAX_VERTICAL_CROP = 0.03;
+export const CARD_PICTURE_MAX_HORIZONTAL_CROP = 0.03;
 
 export type CardPictureFit = 'cover' | 'contain';
 
@@ -773,8 +777,22 @@ export function stockItemTitle(item: Pick<BuilderStockItem,
     : '';
   const place = street || (leading ? (parsed.estate ?? '') : '');
 
-  const body = place || address
-    || item.development_name || item.project_name || item.external_reference || '';
+  /*
+   * A LIST THAT SEPARATES ITS FIELDS WITH A DOT — `Lot 52 Tweed Heads ·
+   * Bravo 217 · Best Price` — states everything a card needs in fields the
+   * card already draws: the lot leads, the design follows, and the place is
+   * the locality line underneath. What remains of its address field is that
+   * suburb again, and what follows the design is the builder's marketing tag,
+   * so neither is the body — only a street or an estate the address field
+   * named is. Measured 30 September 2026 on all 41 rows of the live Notion
+   * list, whose cards read `Lot 52, Tweed Heads · Bravo 217 · Best Price` over
+   * a locality of the same words, in the Command Centre and here alike.
+   */
+  const listed = splitAddressFields(item.address_line).annotations.length > 0;
+  const body = listed
+    ? place
+    : (place || address
+      || item.development_name || item.project_name || item.external_reference || '');
 
   /*
    * The house, where the line named one. Two packages on one lot are two
@@ -805,10 +823,13 @@ export function stockItemTitle(item: Pick<BuilderStockItem,
       ? (homeSizeLabel(item.building_size_sqm)
         ?? homeSizeLabel(sizeFromConfiguration(annotation)) ?? '')
       : (body.includes(annotation) ? '' : annotation);
-  const titled = suffix ? `${body} · ${suffix}` : body;
+  // Never ` · design` with nothing before the dot.
+  const titled = suffix ? (body ? `${body} · ${suffix}` : suffix) : body;
 
-  if (prefix && titled) return `${prefix}, ${titled}`;
-  return prefix || titled || 'Unnamed property';
+  if (prefix && titled) return listed && !body ? `${prefix} · ${titled}` : `${prefix}, ${titled}`;
+  return prefix || titled
+    || (listed ? (address || item.development_name || item.project_name || item.external_reference || '') : '')
+    || 'Unnamed property';
 }
 
 export function stockItemLocality(item: Pick<BuilderStockItem,

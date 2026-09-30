@@ -24,7 +24,7 @@ import {
   statedPrice, stockMatchKeys, stockRecordLabel, storedRowDevelopmentUnitKey,
   type NormalisedStockRecord,
 } from './normalise.pure.ts';
-import { parseBuilderAddressLine } from '../builderStockAddress.pure.ts';
+import { parseBuilderAddressLine, postcodeStatedBesidePlace } from '../builderStockAddress.pure.ts';
 import { stockImageUpsertKey } from './stockImageUpsertKey.pure.ts';
 import {
   recordStage, type ImportStageLedger,
@@ -413,9 +413,15 @@ function writablePatch(
    * identity guard the anchor gets.
    */
   const place = parseBuilderAddressLine(record.address_line);
-  set('suburb', record.suburb ?? place.suburb);
-  set('state', record.state ?? coerceState(place.state));
-  set('postcode', record.postcode ?? coercePostcode(place.postcode));
+  const suburb = record.suburb ?? place.suburb;
+  const state = record.state ?? coerceState(place.state);
+  set('suburb', suburb);
+  set('state', state);
+  // The row's estate, where it names this suburb with its postcode, is the
+  // builder stating the postcode the title left out — see
+  // `postcodeStatedBesidePlace`, which refuses anything less certain.
+  set('postcode', record.postcode ?? coercePostcode(place.postcode)
+    ?? postcodeStatedBesidePlace(record.development_name, { suburb, state }));
   set('lot_number', record.lot_number);
   set('unit_number', record.unit_number);
   set('bedrooms', record.bedrooms);

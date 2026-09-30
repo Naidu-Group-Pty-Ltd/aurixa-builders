@@ -28,11 +28,12 @@
 import {
   driveDownloadUrl, driveFileId, driveFolderId, driveFolderUrl, driveRenditionUrl,
   isGoogleDriveHost, isNonFacadeImageName,
-  lotAndDesignFrom, parseDriveFolderListing, selectLotFolder, selectPackageDocument,
+  designTokenFrom, lotAndDesignFrom, parseDriveFolderListing, selectLotFolder, selectPackageDocument,
   selectNamedDocument, selectPropertyPhotograph, streetAddressFrom,
   type ScopedEntry,
   DRIVE_FOLDER_MIME, type DriveEntry,
 } from './drivePackage.pure.ts';
+import { listFieldsAfterAddress } from '../builderStockAddress.pure.ts';
 import { type PdfPhotoProvenance } from './pdfSourcePhoto.ts';
 import { runElection } from './pdfElectionClient.ts';
 import { classifyBranch, sharedLinkFileUrl } from './sourceBranches.pure.ts';
@@ -330,6 +331,22 @@ async function recoverPackageImageInner(
    * before this the design was simply absent for every such row.
    */
   const design = labelParts.design ?? (String(input.design ?? '').trim() || null);
+  /*
+   * THE DESIGN A LIST WRITES IN A FIELD OF ITS OWN, AS A TIE-BREAKER ONLY.
+   *
+   * MEASURED 30 SEPTEMBER 2026. The live Notion list titles its rows `Lot
+   * 60415 Beveridge VIC · Esme 13` — no bracket, no design column — so the
+   * design above was null on every row. Two lots there sell two designs each
+   * from one shared folder, and with the lot as the only key both packages in
+   * each folder named the property: four rows, two folders, no image.
+   *
+   * Consulted ONLY where the lot alone left no single document, and never in
+   * place of it: `selectPackageDocument` REQUIRES a design it is given, so
+   * handing it this one up front would refuse a folder that works today — one
+   * package naming the lot and not the design. Retried this way it can only
+   * turn a refusal into a selection, never one selection into another.
+   */
+  const fieldDesign = design ? null : designTokenFrom(listFieldsAfterAddress(input.label)[0]);
 
   /*
    * How a linked IMAGE file is treated everywhere below. The row's own cell
@@ -436,10 +453,18 @@ async function recoverPackageImageInner(
    * lot, this design, and of a kind that can be a package. Two candidates is
    * still the source declining to say, and the answer is still no image.
    */
-  let document = selectPackageDocument(entries, { lot, design })
-    ?? (lotFolderId
-      ? null
-      : selectPackageDocument(await subtreeEntries(cache, root), { lot, design }));
+  const selectPackage = async (key: string | null) =>
+    selectPackageDocument(entries, { lot, design: key })
+      ?? (lotFolderId
+        ? null
+        : selectPackageDocument(await subtreeEntries(cache, root), { lot, design: key }));
+  let document = await selectPackage(design);
+  // The design the row names in its own field, where the lot alone could not decide.
+  let chosenDesign = design;
+  if (!document && fieldDesign) {
+    document = await selectPackage(fieldDesign);
+    if (document) chosenDesign = fieldDesign;
+  }
 
   /*
    * THE REST OF WHAT THE BUILDER ACTUALLY SENT.
@@ -463,6 +488,10 @@ async function recoverPackageImageInner(
   if (!document) {
     const scope = lotFolderId ? entries : await subtreeEntries(cache, root);
     document = selectNamedDocument(scope, identity, input.buildingSqm);
+    if (!document && fieldDesign) {
+      document = selectNamedDocument(scope, { ...identity, design: fieldDesign }, input.buildingSqm);
+      if (document) chosenDesign = fieldDesign;
+    }
     if (!document) {
       photograph = selectPropertyPhotograph(await scopedSubtree(cache, root), identity);
     }
@@ -483,7 +512,7 @@ async function recoverPackageImageInner(
 
   return await extractFromDocument(
     fetchPackage, readPageTexts, driveDownloadUrl(document.id), document.name, input.label,
-    'folder_structure', design, input.identityHints);
+    'folder_structure', chosenDesign, input.identityHints);
 }
 
 /**
