@@ -26,7 +26,16 @@
  * it — a removal an import has since revived and something else re-archived is
  * not the builder's standing decision, and is left to the ordinary rule.
  *
- * Pure: no IO. The importer reads the log and hands it in.
+ * DELETING THE STOCK LIST ENDS THE DECISION. A builder who deletes a list and
+ * adds it again is starting that list over, and expects every property in it
+ * back — Mairandi did exactly that on 30 September and got 19 of 41. So a
+ * removal made BEFORE the builder deleted the list the row belonged to no
+ * longer counts: the row is left to the ordinary rule. A removal made after
+ * the list was deleted (impossible today, but not by construction) still
+ * stands.
+ *
+ * Pure: no IO. The importer reads the log and the deleted lists and hands
+ * them in.
  */
 
 export interface RemovalCandidate {
@@ -34,6 +43,8 @@ export interface RemovalCandidate {
   lifecycle_status: string | null;
   /** When an import last matched or created this row. */
   last_seen_at?: string | null;
+  /** The stock list that supplied this row. */
+  upload_id?: string | null;
 }
 
 export interface RemovalLogEntry {
@@ -59,6 +70,8 @@ const time = (value: string | null | undefined): number => {
 export function builderRemovedIds(
   rows: readonly RemovalCandidate[],
   log: readonly RemovalLogEntry[],
+  /** Stock list id → when the builder deleted it. */
+  deletedLists: ReadonlyMap<string, string | null> = new Map(),
 ): Set<string> {
   const latestRemoval = new Map<string, number>();
   for (const entry of log) {
@@ -73,6 +86,8 @@ export function builderRemovedIds(
     if (row.lifecycle_status !== 'archived') continue;
     const removedAt = latestRemoval.get(row.id);
     if (removedAt === undefined) continue;
+    const listDeletedAt = row.upload_id ? time(deletedLists.get(String(row.upload_id))) : Number.NaN;
+    if (Number.isFinite(listDeletedAt) && listDeletedAt >= removedAt) continue;
     const seenAt = time(row.last_seen_at);
     if (!Number.isFinite(seenAt) || removedAt >= seenAt) removed.add(row.id);
   }

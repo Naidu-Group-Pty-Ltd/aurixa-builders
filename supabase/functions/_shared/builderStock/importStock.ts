@@ -801,8 +801,20 @@ export async function importStockRecords(
   if (removalLog.failed) {
     throw new Error('The properties you removed could not be read, so nothing was imported.');
   }
+  /* Lists the builder deleted: a removal made before its list was deleted is over. */
+  const deletedListRows = await readAllRows<{ id: string; deleted_at: string | null }>(
+    () => db
+      .from('builder_stock_uploads')
+      .select('id, deleted_at')
+      .eq('organisation_id', input.organisationId)
+      .not('deleted_at', 'is', null)
+      .order('id', { ascending: true }));
+  if (deletedListRows.failed) {
+    throw new Error('The properties you removed could not be read, so nothing was imported.');
+  }
+  const deletedLists = new Map(deletedListRows.rows.map((row) => [String(row.id), row.deleted_at]));
   const builderRemoved = builderRemovedIds(
-    (existingRows ?? []) as ExistingItem[], removalLog.rows);
+    (existingRows ?? []) as ExistingItem[], removalLog.rows, deletedLists);
   /* Where a removed property is found again, by the keys a live one is. */
   const removedByAnchor = new Map<string, AnchoredProperty>();
   const removedByReference = new Set<string>();

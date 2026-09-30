@@ -85,7 +85,7 @@ function placeTheLineStates(line) {
 }
 
 const itemsOfUpload = (orgId) => net('items', `
-  SELECT i.id, i.lot_number, i.unit_number, i.address_line, i.suburb, i.state, i.postcode,
+  SELECT i.id, i.lot_number, i.unit_number, i.address_line, i.suburb, i.state, i.postcode, i.price, i.bedrooms, i.building_size_sqm,
          i.development_name, i.source_row->>'postcode' AS stated_postcode,
          i.source_row->>'source_anchor' AS anchor, i.source_row->>'house_design' AS design,
          i.lifecycle_status, i.image_work_stage, i.primary_image_id,
@@ -130,12 +130,22 @@ try {
     record(`${label}: it read properties`, rows.length > 0,
       `${rows.length} read (detected ${upload.records_detected ?? '?'}, imported ${upload.records_imported ?? '?'})`);
 
-    // 3. One property per source row.
+    // 3. One property per source row. A Notion row names itself (its page id);
+    // a spreadsheet row does not, so there the property's own identity is the key.
     const anchors = rows.map((row) => row.anchor).filter(Boolean);
-    const repeated = anchors.filter((anchor, index) => anchors.indexOf(anchor) !== index);
-    record(`${label}: no source row is held twice, and every property names its row`,
-      repeated.length === 0 && anchors.length === rows.length,
-      `${rows.length} properties, ${new Set(anchors).size} distinct rows${repeated.length ? `, ${repeated.length} repeated` : ''}`);
+    if (anchors.length) {
+      const repeated = anchors.filter((anchor, index) => anchors.indexOf(anchor) !== index);
+      record(`${label}: no source row is held twice, and every property names its row`,
+        repeated.length === 0 && anchors.length === rows.length,
+        `${rows.length} properties, ${new Set(anchors).size} distinct rows${repeated.length ? `, ${repeated.length} repeated` : ''}`);
+    } else {
+      const keyOf = (row) => [row.lot_number ?? '', row.unit_number ?? '', row.address_line ?? '', row.design ?? '',
+        row.price ?? '', row.bedrooms ?? '', row.building_size_sqm ?? ''].map((v) => String(v).trim().toLowerCase()).join('|');
+      const keys = rows.map(keyOf);
+      const twice = keys.filter((key, index) => keys.indexOf(key) !== index);
+      record(`${label}: no property is held twice (rows carry no source-row id, so by identity)`, twice.length === 0,
+        `${rows.length} properties, ${new Set(keys).size} distinct${twice.length ? `, ${twice.length} repeated` : ''}`);
+    }
 
     // 4. A place, and the place the line states.
     const noPlace = rows.filter((row) => !String(row.suburb ?? '').trim());
@@ -174,8 +184,11 @@ try {
       byLot.set(lot, [...(byLot.get(lot) ?? []), row]);
     }
     const shared = [...byLot.entries()].filter(([, list]) => list.length > 1);
-    const collapsed = shared.filter(([, list]) => new Set(list.map((row) => String(row.address_line ?? ''))).size < list.length);
-    record(`${label}: packages sharing a lot stay separate properties`, collapsed.length === 0,
+    // Packages on one lot are different houses: each keeps its own design (or,
+    // where the list names none, its own line), so none has overwritten another.
+    const identityOf = (row) => String(row.design ?? '').trim().toLowerCase() || String(row.address_line ?? '').trim().toLowerCase();
+    const collapsed = shared.filter(([, list]) => new Set(list.map(identityOf)).size < list.length);
+    record(`${label}: packages sharing a lot stay separate properties, each its own design`, collapsed.length === 0,
       shared.length
         ? `${shared.length} lot(s) carry ${shared.reduce((n, [, list]) => n + list.length, 0)} packages${collapsed.length ? `; collapsed: ${collapsed.map(([lot]) => `Lot ${lot}`).join(', ')}` : ''}`
         : 'no lot carries two packages in this list');
@@ -189,7 +202,10 @@ try {
     const withPhoto = rows.filter((row) => row.primary_image_id && row.photo_ready);
     const stages = rows.reduce((acc, row) => ({ ...acc, [row.image_work_stage ?? 'none']: (acc[row.image_work_stage ?? 'none'] ?? 0) + 1 }), {});
     record(`${label}: the image settler finished every property`, Boolean(images.done),
-      `${Math.round((images.ms ?? 0) / 1000)} s; stages ${JSON.stringify(stages)}`);
+      `${Math.round((images.ms ?? 0) / 1000)} s; stages ${JSON.stringify(stages)}`
+        + `${images.done ? '' : `; not finished: ${rows.filter((row) => !FINISHED.includes(String(row.image_work_stage ?? ''))).map(lotOf).join(', ')}`}`);
+    const failedPictures = rows.filter((row) => row.image_work_stage === 'failed');
+    if (failedPictures.length) console.log(`  note  ${label}: no photograph could be taken for ${failedPictures.map(lotOf).join(', ')}`);
     record(`${label}: properties with their photograph on the card`, withPhoto.length > 0,
       `${withPhoto.length} of ${rows.length}`, { required: false });
     const live = rows.filter((row) => row.lifecycle_status === 'active').length;
