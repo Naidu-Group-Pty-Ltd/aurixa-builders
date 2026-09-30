@@ -137,3 +137,18 @@ describe('the padding and tenure a builder puts in a pack name', () => {
     expect(selectPackageDocument(twoPlain, { lot: '113', design: null, dualKey: false })).toBeNull();
   });
 });
+
+describe('a cover that pads its unit number', () => {
+  it('reads "UNIT 09" as the property the row calls "Unit 9", and only that one', async () => {
+    const { coverIdentityRefusal } = await import(
+      '../../../supabase/functions/_shared/builderStock/pdfPrimaryImage.pure'
+    );
+    const label = 'Unit 9 Thornton NSW · Industrial';
+    const hints = ['Thornton Industrial'];
+    const page = (unit: string) => `THORNTON INDUSTRIAL UNIT ${unit} 5 KESTREL AVE THORNTON NSW 2322`;
+    expect(coverIdentityRefusal(page('09'), label, hints)).toBeNull();
+    expect(coverIdentityRefusal(page('9'), label, hints)).toBeNull();
+    expect(coverIdentityRefusal(page('19'), label, hints)).not.toBeNull();
+    expect(coverIdentityRefusal(page('90'), label, hints)).not.toBeNull();
+  });
+});
