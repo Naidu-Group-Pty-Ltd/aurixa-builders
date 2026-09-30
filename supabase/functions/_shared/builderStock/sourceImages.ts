@@ -379,6 +379,17 @@ import {
  * filed here: a worker still on 26 must not be able to answer a settler on
  * 27. See `WireElectionContext.provenanceVersion`.
  *
+ * 28 READS A PICTURE WRAPPED IN ASCII85, A UNIT AS IT READS A LOT, AND A
+ * DROPBOX SHARED FOLDER. Measured 30 September 2026 on the live Mairandi list:
+ * twenty-two properties whose builder had linked the photograph. Nine brochures
+ * draw their cover as `[/ASCII85Decode /DCTDecode]`, which the reader took to
+ * be the picture itself and so decoded nothing; ten industrial units are filed
+ * by "Unit 09", not by lot, and were refused before their folder was opened;
+ * two packs for one lot were told apart by nothing, although the row said
+ * which was dual-key; and three display homes link a Dropbox folder, whose only
+ * public form is a zip nothing here could read. Every negative banked at 27
+ * for any of those shapes was the reader's failing, not the builder's.
+ *
  * This is the bump doing precisely the job it exists for: `negativeProvenance`
  * compares the stored version against this one, so raising it reopens every
  * banked negative for a reader that can now find what the old one could not.
