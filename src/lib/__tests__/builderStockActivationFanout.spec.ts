@@ -53,12 +53,14 @@ describe('the fan-out is wired into the convergence path itself', () => {
     expect(sql).toMatch(/ON CONFLICT \(source_announcement_id, builder_user_id\)/);
   });
 
-  it('the notification speaks the entity kind the Dashboard has always watched', () => {
+  it('the notification speaks the entity kind the portal-wide pop-up watches', () => {
     const sql = read(MIGRATION);
     expect(sql).toContain("'stock_selection', v_title, v_body");
-    // The Dashboard's own constant, cross-pinned so neither side can drift.
-    const dashboard = read('src/pages/builder/BuilderDashboard.tsx');
-    expect(dashboard).toContain("const STOCK_SELECTION_ENTITY_KIND = 'stock_selection';");
+    // The pop-up's own constant, cross-pinned so neither side can drift. It
+    // lived on the Dashboard until 30 Sep 2026 and pops on every page now.
+    const popups = read('src/lib/activationPopups.pure.ts');
+    expect(popups).toContain("export const STOCK_SELECTION_ENTITY_KIND = 'stock_selection';");
+    expect(read('src/pages/builder/BuilderDashboard.tsx')).not.toContain('STOCK_SELECTION_ENTITY_KIND');
     expect(sql).toContain("'stock_selection', v_a.id, v_a.id");
   });
 

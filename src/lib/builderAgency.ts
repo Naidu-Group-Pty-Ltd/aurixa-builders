@@ -18,6 +18,7 @@ import type {
   ActivatedPropertyFacts,
   ActivationStatus,
 } from '../../supabase/functions/_shared/builderStock/activatedProperties.pure';
+import { stockItemSuburb } from './builderStock';
 
 import type {
   AgencyDeliveryState,
@@ -229,7 +230,7 @@ export function activatedPropertyTitle(property: ActivatedPropertyFacts | null):
 
 export function activatedPropertyLocality(property: ActivatedPropertyFacts | null): string {
   if (!property) return '';
-  return [property.development_name, property.suburb, property.state, property.postcode]
+  return [property.development_name, stockItemSuburb(property.suburb), property.state, property.postcode]
     .filter((part): part is string => !!part && part.trim().length > 0)
     .join(' · ');
 }

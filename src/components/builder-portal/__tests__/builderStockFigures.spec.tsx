@@ -300,8 +300,8 @@ describe('a form nine rows tall still reaches its Save button', () => {
     draw(<BuilderStockFiguresButton item={item()} />);
     open();
     const dialog = screen.getByRole('dialog');
-    // The default above 640px is `sm:overflow-visible`; declaring an overflow
-    // withholds it, so the 85dvh ceiling scrolls instead of spilling.
+    // The 85dvh ceiling scrolls instead of spilling, and never carries the
+    // old default that told a bounded box not to clip.
     expect(dialog.className).toContain('overflow-y-auto');
     expect(dialog.className).not.toContain('sm:overflow-visible');
   });

@@ -165,7 +165,9 @@ export default function BuilderProjects() {
                                 projectId={project.id}
                                 item={project.property}
                                 alt=""
-                                aspectClassName="aspect-[4/3]"
+                                // The frame `cardPictureFit` measures against: a 16:9
+                                // render in a 4:3 box lost a quarter of its width.
+                                aspectClassName="aspect-[16/9]"
                                 className="w-16 shrink-0 overflow-hidden rounded-md border border-border/60 sm:w-24"
                                 emptyLabel="No photo"
                               />

@@ -33,6 +33,7 @@
  * first may retire a property, because only the first is true.
  */
 import { describe, expect, it } from 'vitest';
+import { heldPropertiesNote, photoAttentionCopy } from '../builderStockPhotoAttention.pure';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -243,7 +244,7 @@ describe('the builder can reach the properties that are holding their list', () 
     const page = readCode('src/pages/builder/BuilderStockList.tsx');
     expect(page).toContain('useBuilderStockHeldItems');
     expect(page).toContain('heldWithoutPhoto');
-    expect(page).toContain('waiting to go live');
+    expect(page).toContain('heldPropertiesHeading(heldWithoutPhoto.length)');
     // The sentence that told a builder the rest of their list was fine while
     // five properties held all 47 of them invisible.
     expect(page).not.toContain('The rest of your list is unaffected');
@@ -266,18 +267,15 @@ describe('the builder can reach the properties that are holding their list', () 
      */
     const page = readCode('src/pages/builder/BuilderStockList.tsx');
     expect(page).toContain('const listIsLive = progressRecord?.published === true');
-    for (const claim of [
-      'The rest of your list is already on the marketplace',
-      'The rest of your list is live',
-    ]) {
-      const at = page.indexOf(claim);
-      expect(at).toBeGreaterThan(-1);
-      // Each one sits inside a `listIsLive ? … : …`, so the alternative the
-      // page draws when the list is NOT live is right there beside it.
-      const guardAt = page.lastIndexOf('listIsLive', at);
-      expect(guardAt).toBeGreaterThan(-1);
-      expect(at - guardAt).toBeLessThan(400);
-    }
+    // The page's copy is composed in one module, and only from `listIsLive`.
+    expect(page).toContain('listIsLive,\n  });');
+    expect(page).toContain('heldPropertiesNote(heldWithoutPhoto.length, listIsLive,');
+    expect(page).not.toMatch(/'The rest of your list is/);
+    const counts = { failed: 5, needingUs: 0, needingBuilder: 5, mismatched: 0 };
+    expect(photoAttentionCopy({ ...counts, listIsLive: true }).body).toContain('The rest of your list is live');
+    expect(photoAttentionCopy({ ...counts, listIsLive: false }).body).not.toContain('is live');
+    expect(photoAttentionCopy({ ...counts, listIsLive: false }).body).toContain('Your list goes live once');
+    expect(heldPropertiesNote(5, false, false)).not.toContain('is live');
   });
 
   it('a published upload that still owes a photograph keeps its banner', () => {

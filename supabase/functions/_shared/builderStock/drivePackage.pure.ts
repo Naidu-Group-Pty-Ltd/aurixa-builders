@@ -178,13 +178,26 @@ export function lotAndDesignFrom(label: string): { lot: string | null; design: s
   const lot = /(?:^|[^a-z0-9])lot\s*([0-9]{1,6}[a-z]?)\b/i.exec(text)?.[1] ?? null;
 
   const bracketed = /\[([^\]]{1,60})\]/.exec(text)?.[1] ?? '';
-  const design = /([a-z][a-z' -]{2,24}\s+\d{2,4})/i.exec(withoutTenureWording(bracketed))?.[1]
-    ?? null;
 
   return {
     lot: lot ? lot.toLowerCase() : null,
-    design: design ? normaliseDriveName(design) : null,
+    design: designTokenFrom(bracketed),
   };
+}
+
+/**
+ * The design a piece of a label names — `Stradbroke 180`, `Esme 13` — as the
+ * token a Drive filename is compared against, or null.
+ *
+ * `lotAndDesignFrom` reads it from the bracket; a list that writes its design
+ * in a field of its own (`Lot 60415 Beveridge VIC · Esme 13`) hands the field
+ * here instead. One rule for both, so the two can never disagree about what a
+ * design looks like.
+ */
+export function designTokenFrom(text: string | null | undefined): string | null {
+  const design = /([a-z][a-z' -]{2,24}\s+\d{2,4})/i.exec(withoutTenureWording(String(text ?? '')))?.[1]
+    ?? null;
+  return design ? normaliseDriveName(design) : null;
 }
 
 /**

@@ -75,6 +75,9 @@ import {
 import {
   RETRYABLE_UPLOAD_ERROR_CODES,
 } from '../../../supabase/functions/_shared/builderStock/assistedReaderFailure.pure';
+import {
+  heldPropertiesHeading, heldPropertiesNote, photoAttentionCopy,
+} from '@/lib/builderStockPhotoAttention.pure';
 import './BuilderStockList.css';
 
 /**
@@ -209,6 +212,7 @@ export default function BuilderStockList() {
     sourceDocuments: item.source_documents ?? 0,
     unprocessedDocuments: item.source_documents_unprocessed ?? 0,
     unreachableDocuments: item.source_documents_unreachable ?? 0,
+    unsupportedLinks: item.source_links_unsupported ?? 0,
     workStage: item.image_work_stage,
   })));
   /*
@@ -287,13 +291,14 @@ export default function BuilderStockList() {
    * is `stockImageProgress`'s answer for a row read end to end, so the two
    * are counted apart and the banner says the one that is true.
    */
-  const heldNeedingBuilder = heldWithoutPhoto.filter((item) => stockImageProgress({
+  const heldNeedingBuilder = heldWithoutPhoto.map((item) => stockImageProgress({
     hasImage: !!item.primary_image_id,
     sourceDocuments: item.source_documents ?? 0,
     unprocessedDocuments: item.source_documents_unprocessed ?? 0,
     unreachableDocuments: item.source_documents_unreachable ?? 0,
+    unsupportedLinks: item.source_links_unsupported ?? 0,
     workStage: item.image_work_stage,
-  }) === 'none_found').length;
+  })).filter((state) => state === 'none_found' || state === 'unsupported_link').length;
   const heldNeedingUs = Math.max(0, photosFailed - heldNeedingBuilder);
   /*
    * AND HOW MANY OF THOSE ARE THE WRONG FILE RATHER THAN A FILE WITH NO
@@ -309,6 +314,14 @@ export default function BuilderStockList() {
    */
   const heldMismatched = heldWithoutPhoto.filter(
     (item) => hasDocumentIdentityMismatch(item.source_document_notes)).length;
+  const photoAttention = photoAttentionCopy({
+    failed: photosFailed,
+    needingUs: heldNeedingUs,
+    needingBuilder: heldNeedingBuilder,
+    mismatched: heldMismatched,
+    listIsLive,
+  });
+  const heldNote = heldPropertiesNote(heldWithoutPhoto.length, listIsLive, photosFailed > 0);
   const uploads = uploadsQuery.data?.records ?? [];
   const selections = selectionsQuery.data?.records ?? [];
 
@@ -931,16 +944,10 @@ export default function BuilderStockList() {
                       : 'Bringing in your stock list'}
                 </p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  {workingImages > 0
-                    ? 'Their photos are being read from your stock list now. '
-                    : null}
                   {arrivingUploads > 0
-                    ? 'A stock list is still being processed, so more properties '
-                      + 'will appear here as it finishes. '
+                    ? 'More properties will appear as your list finishes. '
                     : null}
-                  This runs on its own and finishes without you — the list
-                  updates as each one lands, so there is no need to upload the
-                  file again.
+                  This runs on its own — no need to upload again.
                 </p>
               </div>
             </div>
@@ -971,43 +978,15 @@ export default function BuilderStockList() {
                 className="mt-0.5 h-4 w-4 shrink-0 text-destructive"
                 aria-hidden
               />
+              {/*
+                SHORT, AND STILL TRUE. Whose failure it is, whether a brochure
+                is another property's, and whether the rest of the list is live
+                all survive the cut — see `builderStockPhotoAttention.pure.ts`,
+                which holds the words and the reasons each clause exists.
+              */}
               <div className="min-w-0 text-sm">
-                <p className="font-medium">
-                  {photosFailed === 1
-                    ? 'One property’s photo needs attention'
-                    : `${photosFailed} properties’ photos need attention`}
-                </p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  {heldNeedingUs > 0 ? (
-                    heldNeedingBuilder > 0
-                      ? `${heldNeedingUs === 1 ? 'One' : heldNeedingUs} could not be read from the stock list and our team has been alerted. `
-                      : 'Their photos could not be read from the stock list and our team has been alerted. '
-                  ) : null}
-                  {heldNeedingBuilder > 0 ? (
-                    heldMismatched > 0
-                      /*
-                        WHERE ONE OF THEM IS THE WRONG FILE, THE LINE SAYS SO.
-                        `heldMismatched` is the server's classification, so
-                        this cannot claim a mismatch the pipeline did not find
-                        — and where every held property is one, it says only
-                        that rather than adding a contents claim that is false
-                        of all of them.
-                      */
-                      ? (heldMismatched >= heldNeedingBuilder
-                        ? `${heldNeedingBuilder === 1 ? 'Its brochure was' : 'Their brochures were'} read in full and ${heldNeedingBuilder === 1 ? 'carries' : 'carry'} property details that do not match ${heldNeedingBuilder === 1 ? 'the listing' : 'their listings'} — each one below shows what its brochure says. `
-                        : `${heldNeedingBuilder} were read in full: ${heldMismatched === 1 ? 'one links a brochure whose' : `${heldMismatched} link brochures whose`} property details do not match ${heldMismatched === 1 ? 'its listing' : 'their listings'}, and the rest name no photograph of the property — each one below says what its documents contained. `)
-                      : heldNeedingUs > 0
-                        ? `${heldNeedingBuilder === 1 ? 'The other was' : `The other ${heldNeedingBuilder} were`} read in full and the documents name no photograph of that property — those are yours to correct, and each one says what its documents contained. `
-                        : `${heldNeedingBuilder === 1 ? 'Its documents were' : 'Their documents were'} read in full and name no photograph of the property — each one below says what its documents contained. `
-                  ) : null}
-                  {listIsLive
-                    ? 'The rest of your list is already on the marketplace. '
-                      + 'These are the only ones not on it — adding a picture '
-                      + 'to each one below puts it there too.'
-                    : 'A stock list goes live once every property in it has a '
-                      + 'photo, so these are holding the rest of the list back — '
-                      + 'adding a picture to each one below releases it.'}
-                </p>
+                <p className="font-medium">{photoAttention.title}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">{photoAttention.body}</p>
               </div>
             </div>
           ) : null}
@@ -1033,19 +1012,11 @@ export default function BuilderStockList() {
                 id="builder-stock-held-heading"
                 className="text-sm font-medium"
               >
-                {heldWithoutPhoto.length === 1
-                  ? 'One property is waiting to go live'
-                  : `${heldWithoutPhoto.length} properties are waiting to go live`}
+                {heldPropertiesHeading(heldWithoutPhoto.length)}
               </h3>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                {listIsLive
-                  ? 'The rest of your list is live. These are the properties '
-                    + 'still without a photo, so they are the only ones not on '
-                    + 'the marketplace — add a picture to each and it joins them.'
-                  : 'Your stock list publishes in one go, once every property in '
-                    + 'it has a photo. These are the ones still without one — add '
-                    + 'a picture to each and the whole list goes live.'}
-              </p>
+              {heldNote ? (
+                <p className="mt-0.5 text-xs text-muted-foreground">{heldNote}</p>
+              ) : null}
               <ul className="bd-plate-list builder-stock-list-plates mt-3">
                 {heldWithoutPhoto.map((item) => (
                   <StockPlate
@@ -1820,6 +1791,7 @@ function ImageSources({
      */
     unprocessedDocuments: item.source_documents_unprocessed ?? 0,
     unreachableDocuments: item.source_documents_unreachable ?? 0,
+    unsupportedLinks: item.source_links_unsupported ?? 0,
     workStage: item.image_work_stage,
   });
   const working = progress === 'working';

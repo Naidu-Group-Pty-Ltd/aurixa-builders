@@ -889,6 +889,13 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
         'No supplied image could be identified for these properties, so their cards '
         + 'will show no photograph.');
     }
+    // A removal is the builder's decision; the list still naming the property
+    // does not undo it, and the summary says why the count is short.
+    if (outcome.keptRemoved > 0) {
+      warnings.push(outcome.keptRemoved === 1
+        ? '1 property you removed is still in this list and was left out.'
+        : `${outcome.keptRemoved} properties you removed are still in this list and were left out.`);
+    }
 
     /*
      * START THE IMAGE WORK NOW — the import is the moment work exists, and a

@@ -114,6 +114,25 @@ export function declaresOwnMaxHeight(className?: string): boolean {
  * Only an UNPREFIXED `overflow-*` counts, for the same reason as width: a
  * caller writing `sm:overflow-hidden` alone conflicts with the default on the
  * same modifier, so the merge already resolves it correctly.
+ *
+ * ## What honouring the caller did NOT fix
+ *
+ * A call site that states no overflow at all got `sm:overflow-visible` beside
+ * `sm:max-h-[85dvh]` — a bounded box told not to clip. Content past the bound
+ * paints straight through the bottom border with no scrollbar on either axis,
+ * which is the same unreachable footer the paragraph above describes, arrived
+ * at from the other direction. The Command Centre's clone audit of 19 Sep 2026
+ * reported five of them as five unrelated defects and fixed it there; this
+ * portal carried the same default until 30 Sep 2026.
+ *
+ * The desktop default is now `sm:overflow-y-auto`, which is what the mobile
+ * bottom sheet has always done (`max-h-[92dvh] overflow-y-auto`) — so the two
+ * breakpoints agree instead of disagreeing. A dialog whose content fits
+ * renders identically, because `auto` draws no scrollbar it does not need;
+ * only the dialogs that were already painting outside themselves change, and
+ * they change into something reachable. Every overlay primitive in this
+ * codebase (`select`, `popover`, `dropdown-menu`, `tooltip`) renders through a
+ * Portal, so nothing legitimately drawn outside the box is clipped by it.
  */
 export function declaresOwnOverflow(className?: string): boolean {
   if (!className) return false;
@@ -145,7 +164,7 @@ const DialogContent = React.forwardRef<
           // height and 99 for an overflow, and none of the three arrived.
           !declaresOwnWidth(className) && "sm:max-w-lg",
           !declaresOwnMaxHeight(className) && "sm:max-h-[85dvh]",
-          !declaresOwnOverflow(className) && "sm:overflow-visible",
+          !declaresOwnOverflow(className) && "sm:overflow-y-auto",
           "sm:data-[state=closed]:zoom-out-95 sm:data-[state=open]:zoom-in-95 sm:data-[state=closed]:slide-out-to-left-1/2 sm:data-[state=closed]:slide-out-to-top-[48%] sm:data-[state=open]:slide-in-from-left-1/2 sm:data-[state=open]:slide-in-from-top-[48%]",
         ],
         className

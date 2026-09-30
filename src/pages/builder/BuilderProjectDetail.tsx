@@ -23,7 +23,7 @@ import { useAcknowledgeStockSelection } from '@/lib/builderStockQueries';
 import {
   formatCollaborationTime, formatRelativeTime, type BuilderStockActivation,
 } from '@/lib/builderCollaboration';
-import { describeManualStats, type BuilderStockItem } from '@/lib/builderStock';
+import { describeManualStats, stockItemSuburb, type BuilderStockItem } from '@/lib/builderStock';
 import { PropertyDocumentsList, ProjectPropertyPicture } from '@/components/builder-portal/ProjectProperty';
 import { ProjectPartiesPanel } from '@/components/builder-portal/ProjectParties';
 import type {
@@ -58,7 +58,7 @@ function PropertyInformationCard({
   activation: BuilderStockActivation | null;
   documents: PropertyDocumentLink[];
 }) {
-  const location = [item.suburb, item.state, item.postcode]
+  const location = [stockItemSuburb(item.suburb), item.state, item.postcode]
     .map((part) => (part ?? '').trim()).filter(Boolean).join(' ');
   const specs = [
     formatMeasure(item.bedrooms) ? `${formatMeasure(item.bedrooms)} bed` : null,

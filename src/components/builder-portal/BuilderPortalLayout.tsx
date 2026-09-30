@@ -29,6 +29,7 @@ import { BuilderOrganisationSwitcher } from './BuilderOrganisationSwitcher';
 import { BuilderOnboardingTour } from './BuilderOnboardingTour';
 import { NewerBuildBanner } from './NewerBuildBanner';
 import { AgencyMessagePopups } from './AgencyMessagePopups';
+import { BuilderActivationPopups } from './BuilderActivationPopups';
 import { BUILDER_TOUR_EVENT } from './BuilderOnboardingTour';
 import { usePartnerWorkspaceEnabled } from '@/lib/aml/usePartnerWorkspaceFlags';
 
@@ -287,6 +288,7 @@ export function BuilderPortalLayout() {
     <div className="builder-portal-theme flex min-h-screen flex-col">
       <BuilderOnboardingTour />
       <AgencyMessagePopups />
+      <BuilderActivationPopups />
 
       <a
         href="#main-content"
@@ -296,8 +298,11 @@ export function BuilderPortalLayout() {
       </a>
 
       <div className="relative z-10 flex flex-1">
-        {/* ── Desktop sidebar ── */}
-        <aside className="builder-portal-sidebar hidden w-72 shrink-0 flex-col border-r md:flex">
+        {/* ── Desktop sidebar ──
+            Sticky, one screen tall: it holds the navigation AND the
+            notification bell, and on a long page (the Stock List) both used
+            to scroll away with the content. The nav scrolls inside it. */}
+        <aside className="builder-portal-sidebar hidden w-72 shrink-0 flex-col border-r md:sticky md:top-0 md:flex md:h-screen md:self-start">
           <div className="flex items-center justify-between gap-3 p-6 pb-4">
             <Link to="/builder" className="min-w-0 flex-1 rounded-xl focus-visible:outline-none">
               <BrandLockup

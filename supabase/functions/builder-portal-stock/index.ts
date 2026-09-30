@@ -83,7 +83,7 @@ import {
   importFailureColumns, importOutcomeColumns,
 } from '../_shared/builderStock/recordImportOutcome.ts';
 import {
-  isTraversableBranch, rowSourceBranches, unmappedWithRecoveredLinks,
+  isTraversableBranch, rowSourceBranchCandidates, rowSourceBranches, unmappedWithRecoveredLinks,
 } from '../_shared/builderStock/sourceBranches.pure.ts';
 import {
   designOfStoredRow, isBuilderSuppliedPath, propertyImageStoragePath,
@@ -2898,6 +2898,12 @@ async function decorateItems(
    * document the pipeline would not read, or none where it would find five.
    */
   const documentsByItem = new Map<string, number>();
+  /*
+   * AND THE LINKS IT CARRIES THAT NOTHING HERE CAN OPEN — a Dropbox folder, a
+   * portal page. Counted apart so a row linking one is not told it links
+   * nothing at all (`unsupported_link` in `imageProgress.pure.ts`).
+   */
+  const unsupportedByItem = new Map<string, number>();
   const unreadByItem = new Map<string, { unprocessed: number; unreachable: number }>();
   const documentProvenanceByItem = new Map<string, unknown>();
   /*
@@ -2924,6 +2930,10 @@ async function decorateItems(
     documentsByItem.set(
       String(row.id),
       rowSourceBranches(unmapped).filter(isTraversableBranch).length,
+    );
+    unsupportedByItem.set(
+      String(row.id),
+      rowSourceBranchCandidates(unmapped).filter((branch) => !isTraversableBranch(branch)).length,
     );
     const storedProvenance = (row as { source_provenance_result?: unknown })
       ?.source_provenance_result ?? null;
@@ -3024,6 +3034,7 @@ async function decorateItems(
       unreadByItem.get(String(item.id))?.unprocessed ?? 0,
     source_documents_unreachable:
       unreadByItem.get(String(item.id))?.unreachable ?? 0,
+    source_links_unsupported: unsupportedByItem.get(String(item.id)) ?? 0,
     /*
      * AND WHAT THE DOCUMENTS WE DID READ ACTUALLY SAID.
      *

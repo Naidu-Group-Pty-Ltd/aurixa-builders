@@ -28,10 +28,10 @@ import {
  * decision. `cardPictureFit` separates them, on measurements taken over the
  * 94 properties live on 11 September 2026 — 66 carry a 16:9 render, the modal
  * shape by a factor of six, because that is what the builders' rendering
- * software emits. The vertical crop allowance is generous (checked by eye
- * against the three worst live images, where a 43% crop removed nothing but
- * sky and shrubs); the horizontal allowance is tight, because the sides are
- * where a house extends and where a brochure banner puts the building.
+ * software emits. Those fill the frame. Since 30 September 2026 nothing else
+ * does: the owner's rule is that a card shows the property as the builder
+ * supplied it, so any other shape is shown whole on the ground below rather
+ * than cut to fit — see `CARD_PICTURE_MAX_VERTICAL_CROP`.
  *
  * ## Four rules
  *
@@ -121,9 +121,18 @@ export function StockPicture({
       setSignedUrl(image.external_url);
       return () => { alive = false; };
     }
-    void resolveUrl(image.id).then((url) => {
-      if (alive) setSignedUrl(url);
-    });
+    /*
+     * A URL that could not be minted is a picture that cannot be shown, and
+     * says so. It used to leave the spinner turning for ever where the answer
+     * was null, and to reject unhandled where the lookup threw.
+     */
+    resolveUrl(image.id)
+      .then((url) => {
+        if (!alive) return;
+        if (url) setSignedUrl(url);
+        else setBroken(true);
+      })
+      .catch(() => { if (alive) setBroken(true); });
     return () => { alive = false; };
   }, [image, resolveUrl]);
 

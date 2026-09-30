@@ -16,6 +16,16 @@ export const TEAM_CONVERSATION_POLL_MS = AGENCY_CONVERSATION_POLL_MS;
 export const UNREAD_COUNTS_POLL_MS = 30_000;
 
 /**
+ * The notifications themselves — the bell's list, and what the portal-wide
+ * activation pop-up reads. The list used to load once per page: the count on
+ * the bell rose while the list under it still said "You're all caught up",
+ * and an activation popped only when the Dashboard happened to be opened. It
+ * keeps asking while the tab is hidden too, because an activation must reach
+ * a builder who is in another tab.
+ */
+export const NOTIFICATIONS_POLL_MS = UNREAD_COUNTS_POLL_MS;
+
+/**
  * The Activated Properties list: the Command Centre delivers an activation
  * within seconds, so an open Agencies page shows it within one tick.
  */

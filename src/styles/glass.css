@@ -490,7 +490,12 @@
   .luxury-menubar-content,
   .luxury-navigation-menu-content,
   .luxury-command-panel,
-  .luxury-toast {
+  .luxury-toast,
+  /* Sonner draws its own toast with `[data-sonner-toast][data-styled=true]`
+     — two attributes, which outrank one class — so without this selector
+     every Sonner pop-up drew in Sonner's stock white or black and none of the
+     material above reached it. */
+  [data-sonner-toast][data-styled="true"].luxury-toast {
     border: 1px solid var(--glass-stroke-strong);
     background-image: var(--glass-sheen);
     background-color: var(--glass-fill-raised);
@@ -498,6 +503,14 @@
       saturate(var(--glass-saturate));
     backdrop-filter: blur(var(--glass-blur-lg)) saturate(var(--glass-saturate));
     box-shadow: var(--glass-shadow-lg), var(--glass-inner);
+  }
+
+  /* Sonner sets the secondary line to a fixed grey of its own in each theme,
+     at the same weight as the utility that asks for the token, and its
+     stylesheet is appended last — so the token loses. Read the palette's own
+     muted ink instead, in both themes. */
+  [data-sonner-toast][data-styled="true"].luxury-toast [data-description] {
+    color: hsl(var(--muted-foreground));
   }
 
   /* Radix renders arbitrary popper content through a shared wrapper.

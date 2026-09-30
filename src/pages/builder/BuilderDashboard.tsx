@@ -1,4 +1,3 @@
-import { useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import {
   AlertTriangle, ArrowRight, Building2, History, Loader2, RefreshCw, ShieldCheck, UserRound,
@@ -9,11 +8,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { cn } from '@/lib/utils';
 import { smartCapitalize } from '@/lib/nameUtils';
 import { accessRoleLabel } from '@/lib/builderAccessTerms';
-import { useToast } from '@/hooks/use-toast';
 import { useBuilderPortalAuth } from '@/hooks/useBuilderPortalAuth';
-import {
-  useBuilderActivity, useBuilderNotifications, useBuilderWorkspaceSummary,
-} from '@/lib/builderQueries';
+import { useBuilderActivity, useBuilderWorkspaceSummary } from '@/lib/builderQueries';
 import {
   ACTIVITY_ENTITY_LABELS, ACTOR_TYPE_LABELS, activityActionLabel, formatWorkspaceTime,
 } from '@/lib/builderWorkspace';
@@ -46,25 +42,6 @@ import { isWithdrawnBuilderPath } from '@/lib/builderHiddenSections.pure';
 const formatTimestamp = (value: string | null) =>
   value ? new Date(value).toLocaleString('en-AU') : 'This is your first sign-in';
 
-/**
- * The `entity_kind` `builder-stock-marketplace` writes when a Command Centre
- * adviser selects one of this builder's uploaded properties — the notification
- * titled "A property from your stock list has been selected". It is the only
- * kind this dashboard pops up; every other notification behaves exactly as it
- * did.
- */
-const STOCK_SELECTION_ENTITY_KIND = 'stock_selection';
-
-/**
- * Ids already popped, held at module scope so a refetch of the shared
- * notifications query — or leaving the dashboard and coming back — cannot show
- * the same one twice.
- *
- * Nothing here writes: the notification is not marked read, so the bell, its
- * dropdown and the unread count are untouched and the entry stays where it is.
- */
-const poppedStockSelectionIds = new Set<string>();
-
 export default function BuilderDashboard() {
   const { user, activeOrganisation, organisations, previousSeenAt, permissions } =
     useBuilderPortalAuth();
@@ -74,43 +51,9 @@ export default function BuilderDashboard() {
   const summary = summaryQuery.data;
   const activity = (activityQuery.data || []).slice(0, 8);
 
-  /**
-   * Pop the stock-selection notification on the dashboard as well as in the
-   * bell. The source is the notification list the bell itself reads — same hook,
-   * same query key, so this adds no fetch and invents no second notification.
-   * Oldest first, because the toast viewport shows one at a time and the most
-   * recent should be the one left standing.
-   */
-  const { toast } = useToast();
-  const notificationsQuery = useBuilderNotifications();
-  const notifications = notificationsQuery.data;
-
-  useEffect(() => {
-    if (!notifications?.length) return;
-    for (const item of [...notifications].reverse()) {
-      if (item.entity_kind !== STOCK_SELECTION_ENTITY_KIND) continue;
-      // Read in the bell already: nothing to announce.
-      if (item.read_at) continue;
-      if (poppedStockSelectionIds.has(item.id)) continue;
-      poppedStockSelectionIds.add(item.id);
-      // The resolved context beats the stored sentence: property first,
-      // contact second, nothing to re-read twice.
-      const activation = item.activation;
-      toast({
-        title: item.title,
-        description: activation
-          ? [
-            activation.property_label,
-            [activation.contact_name, activation.contact_email]
-              .filter(Boolean).length
-              ? `Contact ${[activation.contact_name, activation.contact_email]
-                .filter(Boolean).join(' · ')}`
-              : null,
-          ].filter(Boolean).join(' — ') || undefined
-          : item.body ?? undefined,
-      });
-    }
-  }, [notifications, toast]);
+  // An activation ("Property activated by <agency>") used to pop up here and
+  // nowhere else. It pops on every page now — `BuilderActivationPopups`, in
+  // the portal layout.
 
   const grantedCount = Object.values(permissions).filter(
     (entry) => entry.view || entry.edit || entry.delete,

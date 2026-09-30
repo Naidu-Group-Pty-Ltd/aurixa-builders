@@ -407,7 +407,11 @@ describe('the versions that reopen the wrongly-retired branches', () => {
     const page = read('src/pages/builder/BuilderStockList.tsx');
     expect(page).toContain('Processing property photos');
     expect(page).toContain('of ${photosTotal} ready');
-    expect(page).toContain('photos need attention');
+    // The failure line's words live in one module now, drawn from the page's
+    // own counts; the page may not compose its own.
+    expect(page).toContain('photoAttentionCopy({');
+    expect(page).toContain('{photoAttention.title}');
+    expect(read('src/lib/builderStockPhotoAttention.pure.ts')).toContain("'properties need'");
     expect(page).toContain('unprocessedDocuments: item.source_documents_unprocessed');
   });
 });

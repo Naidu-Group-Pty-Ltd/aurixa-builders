@@ -220,10 +220,10 @@ function BuilderStockFiguresDialog({
     <Dialog open onOpenChange={(next) => { if (!next) onClose(); }}>
       {/*
         `overflow-y-auto`: with the address above the figures this form is nine
-        rows tall, and the default above 640px is `sm:overflow-visible` inside
-        an 85dvh ceiling — on a short laptop window the Save button would be
-        painted below the screen with no way to scroll to it. Declaring an
-        overflow withholds that default (`declaresOwnOverflow`).
+        rows tall, and on a short laptop window the Save button sits below an
+        85dvh ceiling. The dialog default scrolls now too; this form states it
+        anyway, because it was the default that once painted the button below
+        the screen with no way to scroll to it (`declaresOwnOverflow`).
       */}
       <DialogContent className="builder-stock-list-dialog sm:max-w-lg overflow-y-auto">
         {/*

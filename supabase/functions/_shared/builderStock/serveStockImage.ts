@@ -35,7 +35,20 @@
  * bearer credential with a lifetime — the same rule the Compliance Passport's
  * portrait answers to — so it is minted for the request that asked and expires
  * on its own.
+ *
+ * AND IT SIGNS THE SAME BYTES THE MARKETPLACE SHOWS. The network's image door
+ * (`builder-network-stock-image`) serves a clean or cleared original, and the
+ * repaired derivative where the original carries a laid-over graphic; this
+ * used to sign the original every time. Measured 30 September 2026, Lot 208
+ * Donnybrook showed its original — marketing overlay and all — on the
+ * builder's own card, under alt text calling it "the picture shown on the
+ * marketplace", while every Command Centre drew the repaired copy. One rule,
+ * the door's, so the two can no longer show one property two ways. An image
+ * with no derivative is served as it was, because the builder must still see
+ * a picture the marketplace would not show.
  */
+import { isMarketplaceEligible } from './marketplaceEligibility.pure.ts';
+import { servableClearanceFor, servableDerivativeFor } from './sanitizedDerivative.pure.ts';
 
 /** How long a minted URL lives. One place; two spellings is how two ends drift. */
 export const STOCK_IMAGE_URL_TTL_SECONDS = 300;
@@ -65,7 +78,7 @@ export async function serveStockImage(
 
   const { data: image } = await db
     .from('builder_stock_item_images')
-    .select('id, storage_bucket, storage_path, external_url, organisation_id')
+    .select('id, storage_bucket, storage_path, external_url, organisation_id, source_detail')
     .eq('id', imageId)
     /*
      * THE TENANT FILTER, and it is not a convenience. An image id is a uuid the
@@ -87,9 +100,10 @@ export async function serveStockImage(
 
   const ttl = Number.isFinite(args.ttlSeconds)
     ? Number(args.ttlSeconds) : STOCK_IMAGE_URL_TTL_SECONDS;
+  const derivative = marketplaceDerivativeOf(image.source_detail);
   const { data: signed, error } = await db.storage
-    .from(image.storage_bucket || args.bucket || DEFAULT_STOCK_IMAGE_BUCKET)
-    .createSignedUrl(image.storage_path, ttl);
+    .from(derivative?.storage_bucket || image.storage_bucket || args.bucket || DEFAULT_STOCK_IMAGE_BUCKET)
+    .createSignedUrl(derivative?.storage_path || image.storage_path, ttl);
 
   if (error || !signed?.signedUrl) {
     return {
@@ -98,4 +112,19 @@ export async function serveStockImage(
     };
   }
   return { ok: true, url: String(signed.signedUrl), external: false, expiresIn: ttl };
+}
+
+/**
+ * The derivative the network's image door would serve in place of this
+ * original, or null where it serves the original itself. The door's rule,
+ * verbatim: a clean or cleared original wins, and a derivative is served only
+ * where it is the provable picture.
+ */
+export function marketplaceDerivativeOf(
+  sourceDetail: unknown,
+): { storage_path: string; storage_bucket?: string | null } | null {
+  const detail = (sourceDetail ?? null) as Record<string, unknown> | null;
+  if (isMarketplaceEligible(detail) || servableClearanceFor(detail)) return null;
+  const derivative = servableDerivativeFor(detail);
+  return derivative?.storage_path ? derivative : null;
 }

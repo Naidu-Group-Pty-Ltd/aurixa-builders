@@ -190,6 +190,91 @@ function stripTrailingAnnotations(line: string, out: ParsedBuilderAddress): stri
 }
 
 /**
+ * A LIST THAT SEPARATES ITS OWN FIELDS WITH A DOT.
+ *
+ * Measured 30 September 2026: every one of the 41 rows on the live Notion
+ * stock list is titled `<address> · <design> [· <tag>]` —
+ *
+ *   Lot 52 Tweed Heads · Bravo 217 · Best Price
+ *   Lot 60941 Kalkallo VIC · 3 Bed
+ *   Unit 19 Thornton NSW · Industrial
+ *
+ * — and no rule above knew the dot, so everything after the state became the
+ * suburb: the network stored `Tweed Heads · Bravo 217 · Best Price` as a
+ * suburb on 41 of 41 rows, a card printed it as the locality, and the
+ * geocoder was asked for a place that does not exist.
+ *
+ * Only a dot with space on both sides and outside any bracket is a separator.
+ * The older titles on the same list wrote one INSIDE their annotation —
+ * `… Kalkallo VIC 3064 [3 Bed · 140 m²]` — and splitting there would cut the
+ * annotation in half.
+ *
+ * The address is the FIRST field, which is where every measured list puts it
+ * — unless that field neither opens with a lot or unit nor names a state, and
+ * a later one opens with a lot or unit (`Bravo 217 · Lot 52 Tweed Heads`).
+ * Nothing weaker moves it: a design number is four digits as often as a
+ * postcode is (`Tweed Heads · Aura 1780`), a tag can read `Act Now`, and the
+ * street types are no signal either, since a tag reading `Best View` or
+ * `Close to Station` would qualify. So the state is matched in capitals only.
+ */
+function splitListFields(line: string): { address: string; annotations: string[] } {
+  const fields: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === '[' || char === '(') depth += 1;
+    else if ((char === ']' || char === ')') && depth > 0) depth -= 1;
+    else if (depth === 0 && (char === '·' || char === '•')
+      && /\s/.test(line[index - 1] ?? '') && /\s/.test(line[index + 1] ?? '')) {
+      fields.push(line.slice(start, index));
+      start = index + 1;
+    }
+  }
+  fields.push(line.slice(start));
+
+  const named = fields.map((field) => tidy(field)).filter((field): field is string => Boolean(field));
+  if (named.length < 2) return { address: line, annotations: [] };
+
+  const opensWithLot = (field: string) => /^(lot|unit)\s*\.?\s*[0-9]/i.test(field);
+  const namesState = (field: string) => /\b(NSW|VIC|QLD|WA|SA|TAS|ACT|NT)\b/.test(field);
+  const at = opensWithLot(named[0]) || namesState(named[0])
+    ? 0
+    : Math.max(0, named.findIndex(opensWithLot));
+  return {
+    address: named[at],
+    annotations: named.filter((_, index) => index !== at),
+  };
+}
+
+/**
+ * The fields a list wrote after the address — the design first, then any tags
+ * — in its own order. Empty where the line has no separator.
+ *
+ * For the Drive matcher, which needs the design as a TIE-BREAKER between two
+ * packages filed for one lot and must not re-implement where a field ends.
+ */
+export function listFieldsAfterAddress(line: string | null | undefined): string[] {
+  const text = tidy(line);
+  return text ? splitListFields(text).annotations : [];
+}
+
+/**
+ * A line as a list that separates its fields with a dot wrote it: the address
+ * field, and the design and tags after it. `annotations` is empty where the
+ * line has no separator, and `address` is then the whole line.
+ *
+ * For the card title, which must not print the tags a second time or the
+ * locality twice — see `stockItemTitle` in both portals.
+ */
+export function splitAddressFields(
+  line: string | null | undefined,
+): { address: string; annotations: string[] } {
+  const text = tidy(line);
+  return text ? splitListFields(text) : { address: '', annotations: [] };
+}
+
+/**
  * Pull a free-text builder line apart.
  *
  * Everything is optional and nothing is guessed: a segment that cannot be
@@ -209,8 +294,15 @@ export function parseBuilderAddressLine(line: string | null | undefined): Parsed
 
   const out: ParsedBuilderAddress = { ...empty };
 
+  // 0. The list's own fields: the address, then the design and any tags.
+  const fields = splitListFields(rest);
+  rest = fields.address;
+
   // 1. The trailing annotations.
   rest = stripTrailingAnnotations(rest, out);
+  // A design written in a bracket on the address itself is the more specific
+  // statement; the first field after the address is the design otherwise.
+  out.designName ??= fields.annotations[0] ?? null;
 
   // 2. The leading lot or unit designation.
   const lot = rest.match(/^lot\s*\.?\s*([0-9]+[a-z]?)\s*[-–:,]?\s*/i);
@@ -339,6 +431,47 @@ export function parseBuilderAddressLine(line: string | null | undefined): Parsed
 
   out.suburb = tidy(out.suburb);
   return out;
+}
+
+/**
+ * THE POSTCODE A ROW STATES BESIDE ITS SUBURB, IN ANOTHER OF ITS OWN FIELDS.
+ *
+ * The live Notion list titles its rows without one — `Lot 60941 Kalkallo VIC ·
+ * 3 Bed` — while the same row's estate reads `Cloverton Estate Kalkallo VIC
+ * 3064 - Stocklands`. That is the builder's own statement about the same place,
+ * one column along, and a card that prints `Kalkallo VIC` without it is
+ * leaving out something the source said.
+ *
+ * Taken only where the text names THIS suburb immediately before the state
+ * and postcode, in THIS state, and carries no other four-digit number. A suburb
+ * merely mentioned is not enough: `Tweed Heads` sits inside `Tweed Heads South
+ * NSW 2486`, and 2486 is not Tweed Heads' postcode. Anything less certain
+ * answers null, and the column stays empty rather than wrong.
+ */
+export function postcodeStatedBesidePlace(
+  text: string | null | undefined,
+  place: { suburb?: string | null; state?: string | null },
+): string | null {
+  const source = tidy(text);
+  const suburb = tidy(place.suburb);
+  const state = tidy(place.state)?.toUpperCase() ?? null;
+  if (!source || !suburb || !state || !AU_STATE.test(state)) return null;
+
+  const numbers = new Set(Array.from(source.matchAll(/(?<!\d)\d{4}(?!\d)/g), (match) => match[0]));
+  if (numbers.size !== 1) return null;
+
+  const name = suburb.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+  const states = 'NSW|VIC|QLD|WA|SA|TAS|ACT|NT';
+  const pattern = new RegExp(
+    `(?:^|[^a-z])${name}\\s*,?\\s*(?:(${states})\\s*,?\\s*(\\d{4})(?!\\d)|(\\d{4})\\s*,?\\s*(${states})\\b)`,
+    'i',
+  );
+  const match = source.match(pattern);
+  if (!match) return null;
+  const namedState = (match[1] ?? match[4] ?? '').toUpperCase();
+  const postcode = match[2] ?? match[3] ?? null;
+  // The text names the same place in another state: nothing safe to take.
+  return namedState === state ? postcode : null;
 }
 
 /**
