@@ -25,6 +25,7 @@
  * listing. Descent is bounded and downward only: no id is constructed or
  * followed outside the tree the row pointed at.
  */
+import { heavyWorkRoute, recoverDropboxFolderOnWorker } from './heavyWorkClient.ts';
 import {
   driveDownloadUrl, driveFileId, driveFolderId, driveFolderUrl, driveRenditionUrl,
   isGoogleDriveHost, isNonFacadeImageName,
@@ -414,7 +415,7 @@ async function recoverPackageImageInner(
      * and saying so remains a finding rather than an error.
      */
     if (isDropboxFolderLink(input.packageUrl)) {
-      return await recoverFromDropboxFolder({
+      const folder = {
         url: input.packageUrl,
         label: input.label,
         lot,
@@ -424,7 +425,25 @@ async function recoverPackageImageInner(
         identityHints: input.identityHints ?? [],
         confirmedLots: input.confirmedLots,
         buildingSqm: input.buildingSqm,
-      }, {
+      };
+      /*
+       * READ WHERE THERE IS CPU FOR IT. Streaming the whole folder is more than
+       * an edge isolate can spend beside the rest of its claim — measured, four
+       * CPU kills in five minutes on one display home — so a deployment with
+       * the PDF worker has the worker read it, with this same function. See
+       * `heavyWorkWire.pure.ts`. An injected stream is a test's folder and is
+       * always read here.
+       */
+      const worker = deps.streamFolder ? null : heavyWorkRoute();
+      if (worker) {
+        return await recoverDropboxFolderOnWorker({
+          ...folder,
+          identityHints: [...folder.identityHints],
+          confirmedLots: folder.confirmedLots ? [...folder.confirmedLots] : null,
+          buildingSqm: folder.buildingSqm ?? null,
+        }, worker);
+      }
+      return await recoverFromDropboxFolder(folder, {
         stream: deps.streamFolder ?? defaultFolderStream,
         fetchPackage,
         readPageTexts,
@@ -695,7 +714,7 @@ const mimeOfName = (name: string) =>
  *   declining to say which property they belong to: nothing is taken.
  *   An aerial, a site plan or a logo is not a facade however it is filed.
  */
-async function recoverFromDropboxFolder(
+export async function recoverFromDropboxFolder(
   input: {
     url: string;
     label: string;

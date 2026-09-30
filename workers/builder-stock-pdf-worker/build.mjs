@@ -65,6 +65,15 @@ const result = await build({
   conditions: ['worker', 'browser', 'import', 'default'],
   external: ['cloudflare:workers'],
   plugins: [{
+    // See `src/noVendorFetch.ts`: the worker calls no vendor, so the edge's
+    // metering module (and the Supabase client it imports) never ships here.
+    name: 'no-vendor-fetch',
+    setup(b) {
+      b.onResolve({ filter: /(^|\/)meteredFetch\.ts$/ }, () => ({
+        path: resolve(here, 'src/noVendorFetch.ts'),
+      }));
+    },
+  }, {
     name: 'alias-remote-unpdf',
     setup(b) {
       b.onResolve({ filter: /^https:\/\/esm\.sh\/unpdf@/ }, () => b.resolve('unpdf', {

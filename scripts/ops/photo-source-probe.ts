@@ -45,6 +45,8 @@ import { indexPdfObjects, readPdfPage } from '../../supabase/functions/_shared/b
 import { pictureFromStream, selectPdfPropertyPrimary } from '../../supabase/functions/_shared/builderStock/pdfSourcePhoto.ts';
 import { readPdfPageTextResult } from '../../supabase/functions/_shared/builderStock/pdfText.ts';
 import { decodeAscii85, imageStreamFlags } from '../../supabase/functions/_shared/builderStock/pdfAscii85.pure.ts';
+import { sanitizeSourceImage } from '../../supabase/functions/_shared/builderStock/sanitizeImage.ts';
+import { cpuUsage } from 'node:process';
 import { sniffImageContentType } from '../../supabase/functions/_shared/builderStock/sourceAssets.pure.ts';
 
 /*
@@ -60,6 +62,9 @@ console.log = (...args: unknown[]) => {
   if (typeof args[0] === 'string' && args[0].startsWith('[builderStock]')) return;
   say(...args);
 };
+
+/** CPU spent by this process, in milliseconds — the resource the edge runtime meters. */
+const cpuMs = () => { const u = cpuUsage(); return Math.round((u.user + u.system) / 1000); };
 
 const PROJECT_REF = Deno.env.get('PROJECT_REF') || 'htfluofznhxeumblwbww';
 const ACCESS_TOKEN = Deno.env.get('SUPABASE_ACCESS_TOKEN') || '';
@@ -406,6 +411,7 @@ for (const [url, linked] of byUrl) {
     const record = (row.source_row ?? {}) as Record<string, unknown>;
     const label = stockRecordLabel(record as never);
     const started = Date.now();
+    const cpuBefore = cpuMs();
     let verdict: string;
     try {
       const outcome = await recoverPackageImage({
@@ -425,6 +431,39 @@ for (const [url, linked] of byUrl) {
     } catch (error) {
       verdict = `threw — ${String((error as Error)?.message ?? error).slice(0, 140)}`;
     }
-    console.log(`  production for ${String(row.id).slice(0, 8)}: ${verdict} (${Date.now() - started} ms)`);
+    console.log(`  production for ${String(row.id).slice(0, 8)}: ${verdict} (${Date.now() - started} ms wall, ${cpuMs() - cpuBefore} ms CPU)`);
+  }
+}
+
+/*
+ * THE REPAIR, ON THE STORED PICTURE. For each named row with a stored builder
+ * picture awaiting a repair, run the production repair (deterministic route
+ * only, as nothing here holds a model key) and say what it concludes and what
+ * it cost. Prints no picture and no name: a verdict, a share, and timings.
+ */
+{
+  const keys = await fetch(`https://api.supabase.com/v1/projects/${PROJECT_REF}/api-keys?reveal=true`, {
+    headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+  });
+  const list = await keys.json() as Array<{ name?: string; api_key?: string }>;
+  const service = list.find((k) => k.name === 'service_role')?.api_key ?? '';
+  const images = await sql(`select id, stock_item_id, storage_bucket, storage_path from builder_stock_item_images
+    where stock_item_id in (${ids.map((id) => `'${id}'`).join(',')})
+      and storage_path is not null
+      and source_detail->>'marketplace_eligibility_state' is distinct from 'eligible'`);
+  say(`\n== repair on the stored picture: ${images.length} row(s)`);
+  for (const image of images) {
+    const got = await fetch(`https://${PROJECT_REF}.supabase.co/storage/v1/object/${image.storage_bucket || 'builder-stock-images'}/${String(image.storage_path).split('/').map(encodeURIComponent).join('/')}`, {
+      headers: { Authorization: `Bearer ${service}`, apikey: service },
+    });
+    if (!got.ok) { say(`  ${String(image.id).slice(0, 8)}: download HTTP ${got.status}`); continue; }
+    const bytes = new Uint8Array(await got.arrayBuffer());
+    const wall = Date.now();
+    const cpu = cpuMs();
+    const result = await sanitizeSourceImage(bytes, { allowGenerative: false });
+    const tail = result.ok
+      ? `REPAIRED — ${result.transformation}, share ${result.repairedShare.toFixed(4)}, regions ${result.regionsRemoved}, verdict ${result.verdict}, png ${(result.bytes.length / 1048576).toFixed(1)} MB`
+      : `${result.reason}${result.operational ? ' (operational)' : ''}${result.clearance ? ' CLEARED' : ''} — ${String(result.detail).slice(0, 120)}${result.clearanceRefusal ? ` / refusal ${result.clearanceRefusal}` : ''}`;
+    say(`  ${String(image.id).slice(0, 8)} (item ${String(image.stock_item_id).slice(0, 8)}), ${(bytes.length / 1024).toFixed(0)} KB: ${tail} (${Date.now() - wall} ms wall, ${cpuMs() - cpu} ms CPU)`);
   }
 }

@@ -319,6 +319,31 @@ export async function settleClaimedItem(
       settlement.nextStage = (sanitization.incomplete && answered > 0)
         ? 'sanitization'
         : NEXT_STAGE.sanitization;
+      /*
+       * A REPAIR STILL STANDING IS NOT "NOTHING TO REPAIR" — 30 September 2026.
+       *
+       * Ten Mairandi units each held their own facade with a 2.6% builder
+       * badge. The repair started, the runtime ended the isolate on CPU, and
+       * the claim it left kept every later sweep off the row for its cooldown.
+       * Each of those sweeps answered nothing, so the rule above sent the
+       * property to `fallback`, which read the convicted picture as "not a
+       * photograph of this property" and stamped it terminally failed —
+       * minutes before the repair would have been retried.
+       *
+       * So a sweep that answered nothing while a repair is still owed keeps
+       * the property here as a COUNTED failure: bounded backoff, and the
+       * watchdog's terminal stage (a person paged) if it never lands. The
+       * no-worker stall the rule above was written for still ends — just on
+       * the watchdog's clock instead of at once, and never by blaming the
+       * builder's photograph.
+       */
+      if (answered === 0 && (sanitization.deferred ?? 0) > 0) {
+        settlement.nextStage = 'sanitization';
+        settlement.failed = true;
+        settlement.progressed = false;
+        settlement.error = 'a repair of this property\'s photograph is still owed '
+          + '(an attempt is standing on it); retried after its cooldown';
+      }
     } else if (stage === 'fallback') {
       /*
        * THE LAST RUNG IS NO LONGER A LADDER — the invariant of 2026-09-15.
