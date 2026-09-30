@@ -209,10 +209,13 @@ function stripTrailingAnnotations(line: string, out: ParsedBuilderAddress): stri
  * `… Kalkallo VIC 3064 [3 Bed · 140 m²]` — and splitting there would cut the
  * annotation in half.
  *
- * The address is the first field that says it is one — a leading lot or unit,
- * a state or a postcode — and otherwise the first field, which is where every
- * measured list puts it. The street types are deliberately not a signal: a
- * tag reading `Best View` or `Close to Station` would qualify.
+ * The address is the FIRST field, which is where every measured list puts it
+ * — unless that field neither opens with a lot or unit nor names a state, and
+ * a later one opens with a lot or unit (`Bravo 217 · Lot 52 Tweed Heads`).
+ * Nothing weaker moves it: a design number is four digits as often as a
+ * postcode is (`Tweed Heads · Aura 1780`), a tag can read `Act Now`, and the
+ * street types are no signal either, since a tag reading `Best View` or
+ * `Close to Station` would qualify. So the state is matched in capitals only.
  */
 function splitListFields(line: string): { address: string; annotations: string[] } {
   const fields: string[] = [];
@@ -233,9 +236,11 @@ function splitListFields(line: string): { address: string; annotations: string[]
   const named = fields.map((field) => tidy(field)).filter((field): field is string => Boolean(field));
   if (named.length < 2) return { address: line, annotations: [] };
 
-  const saysAddress = (field: string) => /^(lot|unit)\s*\.?\s*[0-9]/i.test(field)
-    || AU_STATE.test(field) || /\b\d{4}\b/.test(field);
-  const at = Math.max(0, named.findIndex(saysAddress));
+  const opensWithLot = (field: string) => /^(lot|unit)\s*\.?\s*[0-9]/i.test(field);
+  const namesState = (field: string) => /\b(NSW|VIC|QLD|WA|SA|TAS|ACT|NT)\b/.test(field);
+  const at = opensWithLot(named[0]) || namesState(named[0])
+    ? 0
+    : Math.max(0, named.findIndex(opensWithLot));
   return {
     address: named[at],
     annotations: named.filter((_, index) => index !== at),

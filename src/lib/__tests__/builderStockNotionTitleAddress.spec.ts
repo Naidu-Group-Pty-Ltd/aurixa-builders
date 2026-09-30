@@ -73,6 +73,19 @@ describe('a Notion title that separates its fields with a dot', () => {
     });
   });
 
+  it('never takes a design or a tag for the address on a weaker signal', () => {
+    // A four-digit design number is not a postcode, and `Act Now` is not the ACT.
+    expect(parseBuilderAddressLine('Tweed Heads · Aura 1780')).toMatchObject({
+      suburb: 'Tweed Heads', designName: 'Aura 1780',
+    });
+    expect(parseBuilderAddressLine('Tweed Heads · Bravo 217 · Act Now')).toMatchObject({
+      suburb: 'Tweed Heads', designName: 'Bravo 217',
+    });
+    expect(parseBuilderAddressLine('Aura 1780 · Lot 5 Clyde VIC')).toMatchObject({
+      lotNumber: '5', suburb: 'Clyde', state: 'VIC', designName: 'Aura 1780',
+    });
+  });
+
   it('reads a bullet the same way, and a dot with no space around it as text', () => {
     expect(parseBuilderAddressLine('Lot 7 Clyde VIC • Aura 19')).toMatchObject({
       lotNumber: '7', suburb: 'Clyde', state: 'VIC', designName: 'Aura 19',
