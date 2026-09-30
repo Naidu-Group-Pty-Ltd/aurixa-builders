@@ -77,9 +77,10 @@ describe('a repair still owed is not a property with no photograph', () => {
       .toMatch(/if \(attemptedRecently\(detail\)\) \{\s*outcome\.deferred = \(outcome\.deferred \?\? 0\) \+ 1;/);
   });
 
-  it('keeps the property on sanitization as a counted failure rather than routing it on', () => {
+  it('keeps the property on sanitization — standing or faulted — as a counted failure rather than routing it on', () => {
     const source = read(`${SHARED}/settleItemImages.ts`);
-    const rule = source.slice(source.indexOf('if (answered === 0 && (sanitization.deferred'));
+    const rule = source.slice(source.indexOf('const owed = (sanitization.deferred ?? 0) + sanitization.unresolved;'));
+    expect(rule).toMatch(/if \(answered === 0 && owed > 0\) \{/);
     expect(rule).toMatch(/settlement\.nextStage = 'sanitization';/);
     expect(rule).toMatch(/settlement\.failed = true;/);
   });
