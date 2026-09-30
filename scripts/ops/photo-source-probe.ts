@@ -453,6 +453,7 @@ for (const [url, linked] of byUrl) {
     const label = stockRecordLabel(record as never);
     const started = Date.now();
     const cpuBefore = cpuMs();
+    const readFirstPages: string[] = [];
     let verdict: string;
     try {
       const outcome = await recoverPackageImage({
@@ -462,13 +463,32 @@ for (const [url, linked] of byUrl) {
         buildingSqm: Number(row.building_size_sqm) || null,
         design: designOfRecordOrRow(record),
         linkSharedWithOtherRows: linked.length > 1,
-      }, { fetchPackage: productionFetch, cache: new DriveListingCache(productionFetch) });
+      }, {
+        fetchPackage: productionFetch,
+        cache: new DriveListingCache(productionFetch),
+        // Production's own reader, wrapped so the election runs here rather than
+        // on the worker, and so the first page of every document read is kept.
+        readPageTexts: async (bytes: Uint8Array) => {
+          const read = await readPdfPageTextResult(bytes);
+          if (!read.ok) throw new Error(`unreadable: ${read.reason}`);
+          readFirstPages.push(read.pages[0] ?? '');
+          return read.pages;
+        },
+      });
+      const fieldDesign = designTokenFrom(listFieldsAfterAddress(label)[0]);
+      for (const page of readFirstPages) {
+        const tokens = page.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ');
+        const designWords = String(fieldDesign ?? '').split(' ').filter(Boolean);
+        say(`    document read: page-1 holds every design word ${designWords.every((w) => tokens.includes(w))}, `
+          + `lot/unit designations ${(page.match(/\b(lot|unit)\s*\d{1,5}\b/gi) ?? []).length}, `
+          + `displayHomeCoverStated ${displayHomeCoverStated(page, label, fieldDesign)}`);
+      }
       const won = outcome.status === 'recovered_photograph'
         ? ` — ${outcome.photograph.contentType}, ${(outcome.photograph.bytes.length / 1024).toFixed(0)} KB, sniffed ${sniffImageContentType(outcome.photograph.bytes) ?? 'NOT AN IMAGE'}, from a folder ${outcome.photograph.folderPath.length} deep`
         : outcome.status === 'recovered'
           ? ` — ${outcome.image.contentType}, ${(outcome.image.bytes.length / 1024).toFixed(0)} KB`
           : '';
-      verdict = `${outcome.status}${won}${'detail' in outcome && outcome.detail ? ` — ${String(outcome.detail).slice(0, 140)}` : ''}`;
+      verdict = `${outcome.status}${won}${'detail' in outcome && outcome.detail ? ` — ${mask(String(outcome.detail).slice(0, 140), who)}` : ''}`;
     } catch (error) {
       verdict = `threw — ${String((error as Error)?.message ?? error).slice(0, 140)}`;
     }
