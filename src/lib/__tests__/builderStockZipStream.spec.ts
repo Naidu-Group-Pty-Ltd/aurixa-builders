@@ -63,7 +63,7 @@ describe('scanStoredZip', () => {
     { name: 'lot 6/big.pdf', data: new Uint8Array(2 * 1024 * 1024), descriptor: true },
   ]);
 
-  for (const size of [1, 7, 64, 4096, zip.length]) {
+  for (const size of [97, 1024, 4096, zip.length]) {
     it(`finds every entry and keeps only what was asked for (chunks of ${size})`, async () => {
       const scan = await scanStoredZip(chunked(zip, size), options((n) => n.startsWith('lot 5/') || n.endsWith('tricky.bin') || n.endsWith('big.pdf')));
       expect(scan.ok).toBe(true);
@@ -86,6 +86,21 @@ describe('scanStoredZip', () => {
       expect(byName.get('lot 6/big.pdf')!.size).toBe(2 * 1024 * 1024);
     });
   }
+
+  it('survives a descriptor split across chunks at every byte boundary (one byte at a time)', async () => {
+    const small = build([
+      { name: 'lot 5/' },
+      { name: 'lot 5/facade.jpg', data: photo, descriptor: true },
+      { name: 'lot 5/tricky.bin', data: tricky, descriptor: true },
+      { name: 'lot 6/other.jpg', data: photo, descriptor: true, zip64: true },
+    ]);
+    const scan = await scanStoredZip(chunked(small, 1), options((n) => n.startsWith('lot 5/')));
+    expect(scan.ok).toBe(true);
+    const byName = new Map(scan.entries.map((e) => [e.name, e]));
+    expect([...byName.get('lot 5/facade.jpg')!.data!]).toEqual([...photo]);
+    expect([...byName.get('lot 5/tricky.bin')!.data!]).toEqual([...tricky]);
+    expect(byName.get('lot 6/other.jpg')!.size).toBe(photo.length);
+  });
 
   it('says so when it is not a zip, is cut short, or is too big', async () => {
     const notZip = await scanStoredZip(chunked(text('<html>a page</html>'), 5), options(() => true));
