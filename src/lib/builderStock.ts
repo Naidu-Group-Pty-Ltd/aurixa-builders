@@ -832,9 +832,25 @@ export function stockItemTitle(item: Pick<BuilderStockItem,
     || 'Unnamed property';
 }
 
+/**
+ * The suburb, as a place.
+ *
+ * A Notion list titles each row `<address> · <design> [· <tag>]`, and until
+ * 30 Sep 2026 the network stored everything after the address as the suburb —
+ * `Tweed Heads · Bravo 217 · Best Price` on every row of the live list, and on
+ * every Command Centre that mirrors it. The importer reads the list's own
+ * fields now and a "Read again" corrects the rows; this is the read-path half,
+ * so a card never prints the tail meanwhile, nor from any row that carries one
+ * later. No suburb contains a spaced dot, so the first field is the place.
+ */
+export function stockItemSuburb(suburb: string | null | undefined): string | null {
+  const place = (suburb ?? '').split(/\s+[\u00b7\u2022]\s+/)[0].trim();
+  return place || null;
+}
+
 export function stockItemLocality(item: Pick<BuilderStockItem,
   'suburb' | 'state' | 'postcode'>): string {
-  return [item.suburb, item.state, item.postcode].filter(Boolean).join(' ');
+  return [stockItemSuburb(item.suburb), item.state, item.postcode].filter(Boolean).join(' ');
 }
 
 /**
@@ -1103,7 +1119,7 @@ export function describeManualStats(item: BuilderStockItem): ManualStatsReading 
    * nothing, and a suburb with no street (a lot on a road not yet numbered)
    * is a real, usable address.
    */
-  const suburb = (item.suburb ?? '').trim();
+  const suburb = stockItemSuburb(item.suburb) ?? '';
   const addressMissing = suburb === '';
   const addressStated = statedLocationFields(item as unknown as Record<string, unknown>).length > 0;
   const missingLabels = [...(addressMissing ? ['address'] : []), ...missing.map(labelOf)];

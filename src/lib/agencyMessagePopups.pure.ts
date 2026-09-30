@@ -50,6 +50,65 @@ export function agencyMessagePopup(message: NewAgencyMessage): AgencyMessagePopu
 export const AGENCY_MESSAGE_POPUP_POLL_MS = 5_000;
 
 /**
+ * How often a portal nobody is looking at — another tab, another window,
+ * minimised — still asks. It used to ask nothing at all, so an agency that
+ * wrote while the builder was elsewhere reached them only when they came
+ * back. Slower than a visible tab, because the browser throttles a hidden
+ * tab's timers anyway; quick enough that the desktop notification and the
+ * count on the tab arrive within half a minute.
+ */
+export const AGENCY_MESSAGE_BACKGROUND_POLL_MS = 30_000;
+
+/** What one conversation received in one check, oldest first. */
+export interface AgencyConversationArrival {
+  conversationId: string;
+  messages: NewAgencyMessage[];
+  latest: NewAgencyMessage;
+}
+
+const arrivedAt = (message: NewAgencyMessage) => String(message.received_at ?? '');
+const byArrival = (a: NewAgencyMessage, b: NewAgencyMessage) =>
+  (arrivedAt(a) < arrivedAt(b) ? -1 : arrivedAt(a) > arrivedAt(b) ? 1 : 0);
+
+/**
+ * One entry per conversation, in the order their latest message arrived: a
+ * conversation that received three messages is told once, as three — not as
+ * three pop-ups stacked over each other.
+ */
+export function groupAgencyMessages(messages: readonly NewAgencyMessage[]): AgencyConversationArrival[] {
+  const byConversation = new Map<string, NewAgencyMessage[]>();
+  for (const message of messages) {
+    byConversation.set(message.conversation_id, [...(byConversation.get(message.conversation_id) ?? []), message]);
+  }
+  return [...byConversation.entries()]
+    .map(([conversationId, list]) => {
+      const ordered = [...list].sort(byArrival);
+      return { conversationId, messages: ordered, latest: ordered[ordered.length - 1] };
+    })
+    .sort((a, b) => byArrival(a.latest, b.latest));
+}
+
+/**
+ * The pop-up for everything one conversation received. Its id is the
+ * conversation's, so a later message replaces the pop-up rather than stacking
+ * a second one under it.
+ */
+export function agencyConversationPopup(messages: readonly NewAgencyMessage[]): AgencyMessagePopup {
+  const latest = messages[messages.length - 1];
+  const popup = agencyMessagePopup(latest);
+  if (messages.length <= 1) return { ...popup, id: latest.conversation_id };
+  const agency = latest.agency_name?.trim() || 'an agency';
+  return { ...popup, id: latest.conversation_id, title: `${messages.length} new messages from ${agency}` };
+}
+
+/**
+ * The keys the once-per-person ledger records a conversation under: one for
+ * the desktop notification, one for the pop-up shown on coming back.
+ */
+export const agencyAlertKey = (conversationId: string) => `agency-message:${conversationId}`;
+export const agencyCatchUpKey = (conversationId: string) => `agency-message-shown:${conversationId}`;
+
+/**
  * Whether the reader is already looking at the conversation a message arrived
  * in. Then the thread re-reads itself at once and no popup is raised over it.
  */

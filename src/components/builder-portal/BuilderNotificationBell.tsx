@@ -24,7 +24,7 @@ import type { BuilderNotification } from '@/lib/builderCollaboration';
  * badge renders only when the server reports one above zero.
  *
  * There is no realtime bridge here, because the Builder Portal has none. The
- * list refreshes on the same cadence its own query already defines.
+ * list polls (`NOTIFICATIONS_POLL_MS`), and is read again when the bell opens.
  */
 export function BuilderNotificationBell() {
   const navigate = useNavigate();
@@ -61,8 +61,18 @@ export function BuilderNotificationBell() {
     );
   };
 
+  // Opening the bell reads the list again, so what it shows is never older
+  // than the count on its badge.
+  const onOpenChange = (next: boolean) => {
+    setOpen(next);
+    if (next) {
+      void query.refetch();
+      void countsQuery.refetch();
+    }
+  };
+
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
         <Button
           variant="ghost"

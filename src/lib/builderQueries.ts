@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { invokeBuilderFunction } from '@/lib/builderPortal';
-import { TEAM_CONVERSATION_POLL_MS, UNREAD_COUNTS_POLL_MS, pollUnlessGone } from '@/lib/builderPolling.pure';
+import {
+  NOTIFICATIONS_POLL_MS, TEAM_CONVERSATION_POLL_MS, UNREAD_COUNTS_POLL_MS, pollUnlessGone,
+} from '@/lib/builderPolling.pure';
 import type { PropertyDocumentLink } from '../../supabase/functions/_shared/builderStock/propertyDocuments.pure';
 import type {
   BuilderProject, BuilderProjectParty, BuilderProjectStatusHistoryEntry,
@@ -763,6 +765,10 @@ export function useBuilderNotifications() {
     queryFn: async ({ signal }) => ((await invoke('builder-portal-collaboration', {
       operation: 'list_notifications',
     }, signal)) as { records: BuilderNotification[] }).records,
+    // See builderPolling.pure.ts: the bell's list, and the activation pop-up
+    // that reaches a builder on any page — or in another tab.
+    refetchInterval: (query) => pollUnlessGone(query.state, NOTIFICATIONS_POLL_MS),
+    refetchIntervalInBackground: true,
     retry: retryBuilderQuery,
   });
 }

@@ -4,7 +4,7 @@ import path from 'node:path';
 import {
   parseBuilderAddressLine, postcodeStatedBesidePlace,
 } from '../../../supabase/functions/_shared/builderStockAddress.pure';
-import { stockItemTitle, stockItemLocality } from '../builderStock';
+import { stockItemTitle, stockItemLocality, stockItemSuburb } from '../builderStock';
 
 /**
  * MEASURED 30 SEPTEMBER 2026. Every row on the live Notion stock list (upload
@@ -128,6 +128,23 @@ describe('the card a Notion row draws', () => {
   it('prints a locality that is a place', () => {
     const parsed = parseBuilderAddressLine(row.address_line);
     expect(stockItemLocality({ suburb: parsed.suburb, state: 'NSW', postcode: null })).toBe('Tweed Heads NSW');
+  });
+
+  it('prints a place from a row the old parse stored, before any re-read corrects it', () => {
+    // Verbatim from the 19 live rows on 30 Sep 2026.
+    expect(stockItemLocality({ suburb: 'Tweed Heads · Bravo 217 · Best Price', state: 'NSW', postcode: null }))
+      .toBe('Tweed Heads NSW');
+    expect(stockItemLocality({ suburb: 'Kalkallo · 3 Bed', state: 'VIC', postcode: null })).toBe('Kalkallo VIC');
+    expect(stockItemSuburb('Clyde North · Suri 28 Display Home')).toBe('Clyde North');
+    expect(stockItemSuburb('Redbank Plains • Chester 242 Dual-Key')).toBe('Redbank Plains');
+  });
+
+  it('leaves every real suburb exactly as stored', () => {
+    for (const suburb of ['Tweed Heads South', 'ARMSTRONG CREEK', 'Wyndhamvale', 'Clyde·North']) {
+      expect(stockItemSuburb(suburb)).toBe(suburb);
+    }
+    expect(stockItemSuburb(null)).toBeNull();
+    expect(stockItemSuburb('   ')).toBeNull();
   });
 });
 

@@ -16,6 +16,7 @@ import {
   EMAIL_DIGEST_LABELS, LANDING_PAGE_LABELS,
   type BuilderDateFormat, type BuilderEmailDigest, type BuilderLandingPage,
 } from '@/lib/builderWorkspace';
+import { DesktopAlertsSetting } from './DesktopAlertsSetting';
 
 /**
  * One Builder user's own preferences.
@@ -167,6 +168,8 @@ export function BuilderPreferencesCard() {
                 </div>
               ))}
             </div>
+
+            <DesktopAlertsSetting />
 
             <div className="flex justify-end">
               <Button onClick={() => void save()} disabled={mutation.isPending}>
