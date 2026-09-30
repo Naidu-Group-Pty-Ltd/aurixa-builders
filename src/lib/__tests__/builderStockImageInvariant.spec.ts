@@ -297,9 +297,9 @@ describe('publication requires 100% builder-source photo coverage', () => {
 });
 
 describe('the versions that reopen the wrongly-retired branches', () => {
-  it('provenance 28 (ASCII85 pictures, units, Dropbox folders) and runtime 4 (bounded fallback, honest listings)', () => {
+  it('provenance 28 (ASCII85 pictures, units, Dropbox folders) and runtime 5 (heavy work on the worker)', () => {
     expect(PROVENANCE_VERSION).toBe(28);
-    expect(RUNTIME_VERSION).toBe(4);
+    expect(RUNTIME_VERSION).toBe(5);
     const migration = read(MIGRATION);
     expect(migration).toContain('set_builder_stock_source_images_target(25)');
     expect(migration).toContain('image_runtime_version');

@@ -134,4 +134,16 @@
  * of this number is entirely forward: the NEXT upload carrying a heavy
  * brochure is the one it saves, and every one after it.
  */
-export const RUNTIME_VERSION = 4;
+/**
+ * 5 — the overlay repair and the Dropbox folder read leave the Edge Function.
+ *
+ * MEASURED 30 SEPTEMBER 2026. A Dropbox shared folder can only be read as one
+ * 237 MB zip, and reading it inside a settler claim was CPU-killed four times
+ * in five minutes on each of three display homes — which is exactly the kill
+ * limit, so every one of those branches was retired at `attempts: 4` as a
+ * failure OURS. Both jobs now run on `builder-stock-pdf-worker` (see
+ * `heavyWorkWire.pure.ts`), so the boundary that decides whether a folder can
+ * be opened at all has moved: a runtime number, not a provenance one. Raising
+ * it re-asks those three branches and nothing a document actually answered.
+ */
+export const RUNTIME_VERSION = 5;
