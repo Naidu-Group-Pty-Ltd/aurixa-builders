@@ -39,6 +39,7 @@ import {
   stockIdentityHints, stockRecordLabel,
 } from '../../supabase/functions/_shared/builderStock/normalise.pure.ts';
 import { designOfRecordOrRow } from '../../supabase/functions/_shared/builderStock/builderSuppliedImage.pure.ts';
+import { coverIdentityRefusal } from '../../supabase/functions/_shared/builderStock/pdfPrimaryImage.pure.ts';
 import { indexPdfObjects, readPdfPage } from '../../supabase/functions/_shared/builderStock/pdfPageImages.pure.ts';
 import { pictureFromStream, selectPdfPropertyPrimary } from '../../supabase/functions/_shared/builderStock/pdfSourcePhoto.ts';
 import { readPdfPageTextResult } from '../../supabase/functions/_shared/builderStock/pdfText.ts';
@@ -225,6 +226,12 @@ async function analysePdf(entry: DriveEntry, who: Identity[], row: Record<string
     const record = (row.source_row ?? {}) as Record<string, unknown>;
     const texts = await readPdfPageTextResult(bytes);
     say(`      text: ${texts.ok ? `${texts.pages.length} page(s), page-1 chars ${texts.pages[0]?.length ?? 0}` : `failed ${texts.reason}`}`);
+    if (texts.ok) {
+      const label = stockRecordLabel(record as never);
+      say(`      page-1 words (masked): ${mask(texts.pages[0] ?? '', who).slice(0, 400)}`);
+      say(`      label (masked): ${mask(label, who)}`);
+      say(`      cover identity refusal on page 1: ${coverIdentityRefusal(texts.pages[0] ?? '', label, stockIdentityHints(record as never)) ?? 'none — the page states this property'}`);
+    }
     const selection = await selectPdfPropertyPrimary(bytes, {
       label: stockRecordLabel(record as never),
       pageTexts: texts.ok ? texts.pages : [],
