@@ -26,7 +26,7 @@
  */
 import {
   DRIVE_FOLDER_MIME, type DriveEntry, driveFolderId, isNonFacadeImageName, isPackageImage,
-  lotAndDesignFrom, normaliseDriveName, parseDriveFolderListing,
+  lotAndDesignFrom, normaliseDriveName, parseDriveFolderListing, carriesDesignation,
 } from '../../supabase/functions/_shared/builderStock/drivePackage.pure.ts';
 import {
   classifyBranch, rowSourceBranchCandidates, sharedLinkFileUrl,
@@ -319,8 +319,8 @@ for (const [url, linked] of byUrl) {
     try { await gather(folderId, 0); } catch { /* reported above */ }
     const named = pdfs.filter((entry) => {
       const clean = ` ${normaliseDriveName(entry.name)} `;
-      return who.some((id) => (id.lot && clean.includes(` lot ${id.lot} `)) || (id.unit && clean.includes(` unit ${id.unit} `)));
-    }).slice(0, 4);
+      return who.some((id) => (id.lot && carriesDesignation(clean.trim(), 'lot', id.lot)) || (id.unit && carriesDesignation(clean.trim(), 'unit', id.unit)));
+    }).slice(0, 3);
     for (const entry of named) await analysePdf(entry, who, linked[0]);
   } else if (host.endsWith('dropbox.com')) {
     const file = sharedLinkFileUrl(url);

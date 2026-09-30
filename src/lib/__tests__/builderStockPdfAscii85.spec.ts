@@ -97,3 +97,43 @@ describe('a property the builder calls a unit, not a lot', () => {
     expect(selectLotFolder([{ id: 'f', name: 'Unit 9', mimeType: 'application/vnd.google-apps.folder' }], '9')).toBeNull();
   });
 });
+
+describe('the padding and tenure a builder puts in a pack name', () => {
+  it('reads "Unit 09" as unit 9, and never unit 19 as unit 9', async () => {
+    const { carriesDesignation, selectPackageDocument } = await import(
+      '../../../supabase/functions/_shared/builderStock/drivePackage.pure'
+    );
+    expect(carriesDesignation('thornton unit 09 industrial pack', 'unit', '9')).toBe(true);
+    expect(carriesDesignation('thornton unit 9 industrial pack', 'unit', '09')).toBe(true);
+    expect(carriesDesignation('thornton unit 19 industrial pack', 'unit', '9')).toBe(false);
+    expect(carriesDesignation('thornton unit 90 industrial pack', 'unit', '9')).toBe(false);
+    // Lots stay exact.
+    expect(carriesDesignation('lot 05 foo', 'lot', '5')).toBe(false);
+    const pdf = 'application/pdf';
+    const entries = [
+      { id: 'a', name: 'Thornton Unit 09 Industrial Pack.pdf', mimeType: pdf },
+      { id: 'b', name: 'Thornton Unit 19 Industrial Pack.pdf', mimeType: pdf },
+    ];
+    expect(selectPackageDocument(entries, { lot: '9', design: null, word: 'unit' })?.id).toBe('a');
+  });
+
+  it('tells two packs of one lot apart by the dual-key the row states', async () => {
+    const { selectPackageDocument, dualKeyStated } = await import(
+      '../../../supabase/functions/_shared/builderStock/drivePackage.pure'
+    );
+    const pdf = 'application/pdf';
+    const entries = [
+      { id: 'plain', name: 'Lot 113 Millfield 180 Pack.pdf', mimeType: pdf },
+      { id: 'dual', name: 'Lot 113 Millfield Dual Key Pack.pdf', mimeType: pdf },
+    ];
+    expect(dualKeyStated('Lot 113 Millfield NSW · 210 Dual-Key')).toBe(true);
+    expect(dualKeyStated('Lot 113 Millfield NSW · 180')).toBe(false);
+    expect(selectPackageDocument(entries, { lot: '113', design: null, dualKey: true })?.id).toBe('dual');
+    expect(selectPackageDocument(entries, { lot: '113', design: null, dualKey: false })?.id).toBe('plain');
+    // Without the row's statement the folder still declines, as it always did.
+    expect(selectPackageDocument(entries, { lot: '113', design: null })).toBeNull();
+    // Two that agree is still the source declining to say.
+    const twoPlain = [entries[0], { id: 'plain2', name: 'Lot 113 Millfield 200 Pack.pdf', mimeType: pdf }];
+    expect(selectPackageDocument(twoPlain, { lot: '113', design: null, dualKey: false })).toBeNull();
+  });
+});

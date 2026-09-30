@@ -28,7 +28,7 @@
 import {
   driveDownloadUrl, driveFileId, driveFolderId, driveFolderUrl, driveRenditionUrl,
   isGoogleDriveHost, isNonFacadeImageName,
-  designTokenFrom, lotAndDesignFrom, unitFrom, parseDriveFolderListing, selectLotFolder, selectPackageDocument,
+  designTokenFrom, lotAndDesignFrom, unitFrom, dualKeyStated, parseDriveFolderListing, selectLotFolder, selectPackageDocument,
   selectNamedDocument, selectPropertyPhotograph, streetAddressFrom,
   type ScopedEntry,
   DRIVE_FOLDER_MIME, type DriveEntry,
@@ -461,10 +461,10 @@ async function recoverPackageImageInner(
    * still the source declining to say, and the answer is still no image.
    */
   const selectPackage = async (key: string | null) =>
-    selectPackageDocument(entries, { lot, design: key, word })
+    selectPackageDocument(entries, { lot, design: key, word, dualKey: dualKeyStated(input.label) })
       ?? (lotFolderId
         ? null
-        : selectPackageDocument(await subtreeEntries(cache, root), { lot, design: key, word }));
+        : selectPackageDocument(await subtreeEntries(cache, root), { lot, design: key, word, dualKey: dualKeyStated(input.label) }));
   let document = await selectPackage(design);
   // The design the row names in its own field, where the lot alone could not decide.
   let chosenDesign = design;
