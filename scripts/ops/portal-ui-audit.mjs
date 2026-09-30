@@ -302,7 +302,11 @@ try {
         const confirm = page.getByRole('button', { name: /^Remove property$/ });
         const dialog = await confirm.count();
         if (dialog) await page.getByRole('button', { name: /^Cancel$/ }).first().click().catch(() => {});
-        record(`S: ${label} — the remove confirmation opens and cancels without removing`, dialog > 0);
+        // A modal hides the rest of the page from every query until it has
+        // finished closing, so what follows is only measured once it is gone.
+        const closed = await dialogsClosed(page);
+        record(`S: ${label} — the remove confirmation opens and cancels without removing`, dialog > 0 && closed,
+          closed ? '' : 'the confirmation did not close');
       } else {
         record(`S: ${label} — Remove is offered to a role with delete rights`, false, 'not found');
       }
@@ -322,7 +326,9 @@ try {
         const opened = await page.getByRole('tab', { name: /Add from URL/i }).count();
         await page.getByRole('tab', { name: /Add from URL/i }).click().catch(() => {});
         await page.keyboard.press('Escape').catch(() => {});
-        record(`S: ${label} — the Add stock list dialog opens with its two ways in`, opened > 0);
+        const closed = await dialogsClosed(page);
+        record(`S: ${label} — the Add stock list dialog opens with its two ways in, and closes`, opened > 0 && closed,
+          closed ? '' : 'the dialog did not close on Escape');
       } else {
         record(`S: ${label} — Add stock list is offered with edit rights`, false, 'not found');
       }
@@ -496,4 +502,10 @@ try {
     record('cleanup: completed', false, String(error?.message ?? error).slice(0, 300));
   }
   finish('portal-ui-audit', { run: RUN });
+}
+
+/** Wait until no modal is open (they animate out); false if one stays. */
+async function dialogsClosed(page) {
+  return page.locator('[role="dialog"], [role="alertdialog"]').first()
+    .waitFor({ state: 'detached', timeout: 8_000 }).then(() => true).catch(() => false);
 }
