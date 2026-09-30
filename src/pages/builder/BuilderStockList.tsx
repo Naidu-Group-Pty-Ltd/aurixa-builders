@@ -164,13 +164,25 @@ export default function BuilderStockList() {
   const uploadsQuery = useBuilderStockUploads(1);
   const selectionsQuery = useBuilderStockSelections(1);
   const arrivingUploads = countArrivingUploads(uploadsQuery.data?.records ?? []);
+  /*
+   * THE PHOTO PROGRESS IS READ FIRST, because it is what says a list is still
+   * coming. A new stock list is held off the marketplace — and so off this
+   * list, which reads live properties — until its photographs are ready, and
+   * then goes live in one cutover. Until this reading drove the list, nothing
+   * re-read the page at that cutover and a builder had to reload to see their
+   * own upload (30 September 2026).
+   */
+  const imageProgressQuery = useBuilderStockImageProgress();
+  const progressRecords = imageProgressQuery.data?.records ?? [];
+  const uploadStillWorking = progressRecords.some((record) => Number(record.working) > 0
+    || (!record.published && Number(record.total) > 0));
   const itemsQuery = useBuilderStockItems({
     search: debounced.trim(),
     availability: availability === 'all' ? '' : availability,
     uploadId: uploadFilter === 'all' ? '' : uploadFilter,
     page,
     pageSize: 25,
-  }, { pollWhileArriving: arrivingUploads > 0 });
+  }, { pollWhileArriving: arrivingUploads > 0 || uploadStillWorking });
 
   const setAvailabilityMutation = useSetBuilderStockAvailability();
   const acknowledge = useAcknowledgeStockSelection();
@@ -223,8 +235,6 @@ export default function BuilderStockList() {
    * whenever it exists, so a builder watching a 44-property list sees
    * "12 of 44" rather than a page-local number.
    */
-  const imageProgressQuery = useBuilderStockImageProgress();
-  const progressRecords = imageProgressQuery.data?.records ?? [];
   /*
    * PUBLISHED IS NOT THE SAME AS FINISHED, and keying on it was about to
    * hide the very thing this banner exists for.
@@ -334,7 +344,33 @@ export default function BuilderStockList() {
     void itemsQuery.refetch();
     void uploadsQuery.refetch();
     void selectionsQuery.refetch();
-  }, [itemsQuery, uploadsQuery, selectionsQuery]);
+    /*
+     * AND THE PHOTO PROGRESS. It polls itself only while its own last answer
+     * shows an upload in progress, so a page that read it before this upload
+     * existed held "nothing in progress" for ever — no banner, no properties
+     * waiting to go live, and no polling of the list — until a reload.
+     */
+    void imageProgressQuery.refetch();
+  }, [itemsQuery, uploadsQuery, selectionsQuery, imageProgressQuery]);
+
+  /*
+   * THE CUTOVER IS SHOWN WHEN IT HAPPENS. When an upload goes live, or another
+   * of its photographs lands, the list is re-read at once rather than on its
+   * next poll — and re-read at all where nothing on the page was polling.
+   */
+  const progressSignature = progressRecords
+    .map((record) => `${record.upload_id}:${record.published ? 1 : 0}:${Number(record.photos_ready ?? 0)}`)
+    .join('|');
+  const lastProgressSignature = useRef<string | null>(null);
+  useEffect(() => {
+    if (lastProgressSignature.current !== null
+      && lastProgressSignature.current !== progressSignature) {
+      void itemsQuery.refetch();
+      void uploadsQuery.refetch();
+    }
+    lastProgressSignature.current = progressSignature;
+    // Re-reads follow the signature alone; the queries are stable handles.
+  }, [progressSignature]);
 
   const reportImport = useCallback((result: StockUploadOutcome) => {
     /*
@@ -410,8 +446,10 @@ export default function BuilderStockList() {
         : failure.message,
       variant: duplicate || undetermined ? 'default' : 'destructive',
     });
-    void uploadsQuery.refetch();
-  }, [toast, uploadsQuery]);
+    // An import that did not report back may well have run: read everything,
+    // so what it brought in appears without a reload.
+    refreshAll();
+  }, [toast, refreshAll]);
 
   /**
    * Re-read one source and attach the imagery it supplied.

@@ -337,12 +337,21 @@ export async function settleClaimedItem(
        * the watchdog's clock instead of at once, and never by blaming the
        * builder's photograph.
        */
-      if (answered === 0 && (sanitization.deferred ?? 0) > 0) {
+      /*
+       * AND A REPAIR THAT FAULTED IN THIS PASS IS THE SAME DEBT. Measured the
+       * same evening in another organisation: the repair ran, the worker
+       * answered with a fault rather than a verdict, `unresolved` counted it,
+       * `deferred` did not — so the property went to `fallback` and was
+       * stamped as holding no photograph, over its own photograph. Neither a
+       * standing attempt nor a failed one is an answer about the picture.
+       */
+      const owed = (sanitization.deferred ?? 0) + sanitization.unresolved;
+      if (answered === 0 && owed > 0) {
         settlement.nextStage = 'sanitization';
         settlement.failed = true;
         settlement.progressed = false;
         settlement.error = 'a repair of this property\'s photograph is still owed '
-          + '(an attempt is standing on it); retried after its cooldown';
+          + '(an attempt is standing on it, or the last one faulted); retried after its cooldown';
       }
     } else if (stage === 'fallback') {
       /*

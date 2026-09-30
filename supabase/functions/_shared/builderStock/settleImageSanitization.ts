@@ -565,6 +565,17 @@ export async function settleImageSanitization(
        * a refusal would park it until the next version bump.
        */
       if (result.operational) {
+        /*
+         * SAID, because it was not: on 30 September a repair that ran on the
+         * worker came back operational and nothing anywhere recorded why. The
+         * detail is the repair's own sentence about the fault, never a name.
+         */
+        console.warn('[builderStock] overlay repair could not be performed', {
+          image_id: row.id,
+          phase: 'image_sanitization',
+          reason: result.reason,
+          detail: String(result.detail ?? '').slice(0, 200),
+        });
         noteOperationalFailure();
         return;
       }
