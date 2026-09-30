@@ -30,6 +30,16 @@ import {
 } from '../../../supabase/functions/_shared/builderStock/pdfElectionBoundary.pure.ts';
 import { electFromPdfBytes } from '../../../supabase/functions/_shared/builderStock/pdfElection.ts';
 import { readPdfPageTextResult } from '../../../supabase/functions/_shared/builderStock/pdfText.ts';
+import { sanitizeSourceImage } from '../../../supabase/functions/_shared/builderStock/sanitizeImage.ts';
+import { recoverFromDropboxFolder } from '../../../supabase/functions/_shared/builderStock/packageImages.ts';
+import {
+  isDropboxFolderLink, sharedLinkFileUrl,
+} from '../../../supabase/functions/_shared/builderStock/sourceBranches.pure.ts';
+import {
+  FOLDER_PATH, HEAVY_WORK_TIMEOUT_MS, MAX_SANITIZE_BYTES, SANITIZE_PATH,
+  WORK_CONTEXT_HEADER, WORK_OUTCOME_HEADER, decodeWorkDocument, encodeWorkDocument,
+  isDropboxFetchHost, readFolderWorkContext, readSanitizeWorkContext,
+} from '../../../supabase/functions/_shared/builderStock/heavyWorkWire.pure.ts';
 import { readBrochureFigureEvidence } from '../../../supabase/functions/_shared/builderStock/brochureFigures.ts';
 
 /*
@@ -90,6 +100,9 @@ export class PdfElection extends DurableObject {
   }
 
   override async fetch(request: Request): Promise<Response> {
+    const path = new URL(request.url).pathname;
+    if (path === SANITIZE_PATH) return await this.sanitize(request);
+    if (path === FOLDER_PATH) return await this.folder(request);
     /*
      * NEVER GUESSED. An election run against the wrong property's label puts
      * another house on a client's card. `decodeElectionContext` refuses
@@ -180,5 +193,120 @@ export class PdfElection extends DurableObject {
         detail: 'detail' in outcome ? outcome.detail : undefined,
       });
     });
+  }
+
+  /*
+   * THE OVERLAY REPAIR, deterministic route only. No model key lives here and
+   * none is wanted: where the arithmetic's own gates refuse, the edge asks the
+   * model itself, exactly as before. The answer is the shared repair's, as it
+   * stands — this method only moves it onto the wire.
+   */
+  async sanitize(request: Request): Promise<Response> {
+    const context = readSanitizeWorkContext(
+      decodeWorkDocument(request.headers.get(WORK_CONTEXT_HEADER)));
+    if (!context) return json({ error: 'bad_context' }, 400);
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    if (!bytes.length || bytes.length > MAX_SANITIZE_BYTES) {
+      return json({ error: 'bad_picture', bytes: bytes.length }, 413);
+    }
+    return await this.queue(async () => {
+      const result = await sanitizeSourceImage(bytes, {
+        allowGenerative: false,
+        ...(context.repairRegion ? { repairRegion: context.repairRegion } : {}),
+      });
+      const meta: Record<string, unknown> = { ...result };
+      let body: Uint8Array | null = null;
+      if (result.ok) {
+        delete meta.bytes;
+        body = result.bytes;
+      } else if (result.rejected) {
+        meta.rejected = { width: result.rejected.width, height: result.rejected.height };
+        body = result.rejected.bytes;
+      }
+      return new Response(body as unknown as BodyInit, {
+        status: 200,
+        headers: {
+          'content-type': 'application/octet-stream',
+          [WORK_OUTCOME_HEADER]: encodeWorkDocument(meta),
+        },
+      });
+    });
+  }
+
+  /*
+   * A DROPBOX SHARED FOLDER, read by the shared `recoverFromDropboxFolder`.
+   *
+   * Three things are this file's and nothing else is. The stream: an HTTPS
+   * fetch that follows redirects by hand and refuses any hop off Dropbox's own
+   * hosts. The fetcher: refused outright, because the only document this
+   * reading may open is one it found inside the zip. And the page reader: the
+   * shared one, wrapped, so an election found here runs in this object rather
+   * than calling back out to the worker it is already in.
+   */
+  async folder(request: Request): Promise<Response> {
+    const context = readFolderWorkContext(
+      decodeWorkDocument(request.headers.get(WORK_CONTEXT_HEADER)));
+    if (!context || !isDropboxFolderLink(context.url)) return json({ error: 'bad_context' }, 400);
+    return await this.queue(async () => {
+      const outcome = await recoverFromDropboxFolder(context, {
+        stream: (url: string) => dropboxStream(url),
+        fetchPackage: async () => {
+          throw new Error('this reading opens only what the folder holds');
+        },
+        readPageTexts: (bytes: Uint8Array) => readPdfPageTextResult(bytes),
+      });
+      const meta: Record<string, unknown> = { ...outcome };
+      let body: Uint8Array | null = null;
+      if (outcome.status === 'recovered') {
+        const { bytes, ...rest } = outcome.image;
+        meta.image = rest;
+        body = bytes;
+      } else if (outcome.status === 'recovered_photograph') {
+        const { bytes, ...rest } = outcome.photograph;
+        meta.photograph = rest;
+        body = bytes;
+      }
+      return new Response(body as unknown as BodyInit, {
+        status: 200,
+        headers: {
+          'content-type': 'application/octet-stream',
+          [WORK_OUTCOME_HEADER]: encodeWorkDocument(meta),
+        },
+      });
+    });
+  }
+}
+
+/** The folder's zip, as it arrives, from Dropbox's own hosts and nowhere else. */
+async function* dropboxStream(startUrl: string): AsyncGenerator<Uint8Array> {
+  let current = sharedLinkFileUrl(startUrl);
+  let response: Response | null = null;
+  const signal = AbortSignal.timeout(HEAVY_WORK_TIMEOUT_MS);
+  for (let hop = 0; hop <= 5; hop++) {
+    if (!isDropboxFetchHost(current)) throw new Error('that link leaves Dropbox');
+    response = await fetch(current, {
+      redirect: 'manual', signal,
+      headers: { 'User-Agent': 'NPC-BuilderStock/1.0', Accept: '*/*' },
+    });
+    const location = response.headers.get('location');
+    if (response.status >= 300 && response.status < 400 && location) {
+      try { await response.body?.cancel(); } catch { /* nothing held */ }
+      current = new URL(location, current).toString();
+      response = null;
+      continue;
+    }
+    break;
+  }
+  if (!response) throw new Error('that link redirected too many times');
+  if (!response.ok || !response.body) throw new Error(`that folder answered HTTP ${response.status}`);
+  const reader = response.body.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      if (value?.length) yield value;
+    }
+  } finally {
+    try { reader.releaseLock(); } catch { /* released */ }
   }
 }

@@ -61,6 +61,7 @@
  */
 import { STOCK_IMAGE_BUCKET } from './fileTypes.pure.ts';
 import { sanitizeSourceImage } from './sanitizeImage.ts';
+import { sanitizeWithCapacity } from './heavyWorkClient.ts';
 import { STRICT_TYPE_READING } from './marketingOverlay.pure.ts';
 import { sha256Hex } from './rasterPng.ts';
 import {
@@ -96,6 +97,15 @@ export interface SanitizationSettlement {
   unresolved: number;
   /** True when the budget, the page ceiling or the repair cap ran out. */
   incomplete: boolean;
+  /**
+   * Rows still owed a repair that this run did not attempt because an attempt
+   * is already standing on them — one in flight, or one whose isolate the
+   * runtime ended (its claim outlives it for the cooldown). NOT an answer and
+   * not a refusal: the picture is still owed a look. Measured 30 September
+   * 2026 — reading this as "nothing to repair" sent ten properties whose
+   * photograph was mid-repair to the terminal stage.
+   */
+  deferred?: number;
 }
 
 /** May the caller record this upload as sanitized at the current version? */
@@ -221,9 +231,14 @@ export async function settleImageSanitization(
 ): Promise<SanitizationSettlement> {
   const outcome: SanitizationSettlement = {
     scanned: 0, outstanding: 0, repaired: 0, refused: 0, cleared: 0,
-    unresolved: 0, incomplete: false,
+    unresolved: 0, incomplete: false, deferred: 0,
   };
-  const sanitize = options.sanitize ?? sanitizeSourceImage;
+  /*
+   * The worker where this deployment has one — a full-size repair is more CPU
+   * than the edge allows (2.8 s measured on a 3 MP facade against 2.0 s) — and
+   * this isolate otherwise. See `heavyWorkClient.ts`.
+   */
+  const sanitize = options.sanitize ?? sanitizeWithCapacity;
   const budget = options.budget ?? newRepairBudget();
 
   /**
@@ -874,7 +889,10 @@ export async function settleImageSanitization(
        * allowance reaches one we have not tried. It stays outstanding, so the
        * completeness test below keeps the sweep unsettled.
        */
-      if (attemptedRecently(detail)) continue;
+      if (attemptedRecently(detail)) {
+        outcome.deferred = (outcome.deferred ?? 0) + 1;
+        continue;
+      }
 
       consider(row, detail, region);
     }

@@ -39,6 +39,7 @@
  */
 import { STOCK_IMAGE_BUCKET } from './fileTypes.pure.ts';
 import { sanitizeSourceImage } from './sanitizeImage.ts';
+import { sanitizeWithCapacity } from './heavyWorkClient.ts';
 import { sha256Hex } from './rasterPng.ts';
 import { storedOriginalSha } from './sanitizedDerivative.pure.ts';
 import {
@@ -232,7 +233,7 @@ export async function previewSanitization(
    * the post-repair validation runs inside it too. Nothing about the repair is
    * special-cased for a preview — that is the point of a preview.
    */
-  const sanitize = deps.sanitize ?? sanitizeSourceImage;
+  const sanitize = deps.sanitize ?? sanitizeWithCapacity;
   const result = await sanitize(bytes, { repairRegion: permitted });
 
   const after = await meteredCallsSince(db, startedAt);

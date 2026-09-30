@@ -549,6 +549,108 @@ if (!urlArg) {
     mixed.status === 400, `status ${mixed.status}`);
 }
 
+// ---- the two heavy jobs: the overlay repair and the Dropbox folder read ----
+{
+  const { deflateSync } = await import('node:zlib');
+  /** A plain RGB PNG — a smooth sky-to-lawn gradient, nothing laid over it. */
+  const png = (width, height) => {
+    const crcTable = Array.from({ length: 256 }, (_, n) => {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      return c >>> 0;
+    });
+    const crc = (buf) => {
+      let c = 0xffffffff;
+      for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
+      return (c ^ 0xffffffff) >>> 0;
+    };
+    const chunk = (type, data) => {
+      const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+      const td = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+      const c = Buffer.alloc(4); c.writeUInt32BE(crc(td));
+      return Buffer.concat([len, td, c]);
+    };
+    const raw = Buffer.alloc((width * 3 + 1) * height);
+    for (let y = 0; y < height; y++) {
+      raw[y * (width * 3 + 1)] = 0;
+      for (let x = 0; x < width; x++) {
+        const at = y * (width * 3 + 1) + 1 + x * 3;
+        const t = y / height;
+        raw[at] = Math.round(110 + 40 * t); raw[at + 1] = Math.round(160 + 20 * t); raw[at + 2] = Math.round(220 - 120 * t);
+      }
+    }
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4);
+    ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+    return new Uint8Array(Buffer.concat([
+      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0)),
+    ]));
+  };
+  const work = (value) => Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
+  const outcome = (res) => {
+    try {
+      return JSON.parse(Buffer.from(res.headers.get('x-work-outcome') ?? '', 'base64url').toString('utf8'));
+    } catch { return null; }
+  };
+  const picture = png(640, 480);
+
+  const clean = await call('/v1/sanitize', {
+    method: 'POST', body: picture,
+    headers: { ...auth, 'content-type': 'application/octet-stream', 'x-work-context': work({}) },
+  });
+  const cleanOutcome = outcome(clean);
+  check('a repair answers 200', clean.status === 200, `status ${clean.status}`);
+  check('a clean picture is read, not faulted — the repair ran inside the bundle',
+    cleanOutcome && cleanOutcome.ok === false && !cleanOutcome.operational,
+    JSON.stringify(cleanOutcome)?.slice(0, 200));
+
+  const region = await call('/v1/sanitize', {
+    method: 'POST', body: picture,
+    headers: {
+      ...auth, 'content-type': 'application/octet-stream',
+      'x-work-context': work({ repairRegion: { left: 0.4, top: 0.4, right: 0.5, bottom: 0.46 } }),
+    },
+  });
+  const regionOutcome = outcome(region);
+  const regionBody = new Uint8Array(await region.arrayBuffer());
+  check('a recorded region is rebuilt and the picture comes back as the body',
+    region.status === 200 && regionOutcome?.ok === true && regionBody.length > 0
+      && regionBody[0] === 0x89 && regionBody[1] === 0x50,
+    `${region.status} ${JSON.stringify(regionOutcome)?.slice(0, 200)} body ${regionBody.length}`);
+  check('the repair never names a model — the worker holds no key',
+    regionOutcome?.model === null || regionOutcome?.model === undefined, String(regionOutcome?.model));
+
+  const badRegion = await call('/v1/sanitize', {
+    method: 'POST', body: picture,
+    headers: { ...auth, 'content-type': 'application/octet-stream', 'x-work-context': work({ repairRegion: { left: 2 } }) },
+  });
+  check('a malformed region is refused 400, never read as none', badRegion.status === 400, `status ${badRegion.status}`);
+
+  const empty = await call('/v1/sanitize', {
+    method: 'POST', body: new Uint8Array(0),
+    headers: { ...auth, 'content-type': 'application/octet-stream', 'x-work-context': work({}) },
+  });
+  check('an empty picture is refused 413', empty.status === 413, `status ${empty.status}`);
+
+  const anonymous = await call('/v1/folder', { method: 'POST', headers: { 'x-work-context': work({}) } });
+  check('a folder read without the token is refused 401', anonymous.status === 401, `status ${anonymous.status}`);
+
+  const folderContext = {
+    url: 'https://www.dropbox.com/scl/fo/abc123/xyz?rlkey=k&dl=0', label: 'Lot 1 Example Street',
+    lot: '1', word: 'lot', design: null, fieldDesign: null, identityHints: [], confirmedLots: null, buildingSqm: null,
+  };
+  const offHost = await call('/v1/folder', {
+    method: 'POST',
+    headers: { ...auth, 'x-work-context': work({ ...folderContext, url: 'https://example.com/scl/fo/abc/x' }) },
+  });
+  check('a folder anywhere but Dropbox is refused 400', offHost.status === 400, `status ${offHost.status}`);
+  const malformed = await call('/v1/folder', {
+    method: 'POST', headers: { ...auth, 'x-work-context': work({ ...folderContext, word: 'parcel' }) },
+  });
+  check('a malformed folder context is refused 400', malformed.status === 400, `status ${malformed.status}`);
+}
+
 const failed = checks.filter((c) => !c.ok);
 console.log(`\n${checks.length - failed.length}/${checks.length} checks passed`);
 if (failed.length) {

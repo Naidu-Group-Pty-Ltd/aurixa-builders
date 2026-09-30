@@ -33,6 +33,9 @@ import {
 import {
   ELECTION_CONTEXT_HEADER, PDF_ELECTION_PROTOCOL, decodeElectionContext,
 } from '../../../supabase/functions/_shared/builderStock/pdfElectionBoundary.pure.ts';
+import {
+  FOLDER_PATH, SANITIZE_PATH,
+} from '../../../supabase/functions/_shared/builderStock/heavyWorkWire.pure.ts';
 import { PROVENANCE_VERSION } from '../../../supabase/functions/_shared/builderStock/provenanceVersion.pure.ts';
 
 export { PdfElection };
@@ -107,7 +110,16 @@ export default {
      * without a token turns this worker into a map of itself; an anonymous
      * caller learns only that it is a worker and that it wants a token.
      */
-    if (url.pathname !== '/v1/elect' || request.method !== 'POST') {
+    /*
+     * THE TWO HEAVY JOBS BESIDE THE ELECTION — the overlay repair and the
+     * Dropbox folder read. Same token, same lanes, same one-at-a-time queue;
+     * see `heavyWorkWire.pure.ts` for why they moved here. A lane is chosen at
+     * random: neither carries a label worth sharding on, and spreading them is
+     * what keeps a folder read from queueing behind a brochure.
+     */
+    const heavyWork = (url.pathname === SANITIZE_PATH || url.pathname === FOLDER_PATH)
+      && request.method === 'POST';
+    if (!heavyWork && (url.pathname !== '/v1/elect' || request.method !== 'POST')) {
       return json({ error: 'not_found' }, 404);
     }
 
@@ -130,8 +142,17 @@ export default {
      * — see `laneForShardKey` for why routing holds no opinion about
      * validity.
      */
-    const context = decodeElectionContext(request.headers.get(ELECTION_CONTEXT_HEADER));
-    const lane = electionLaneName(laneForShardKey(electionShardKey(context)));
+    /*
+     * THE TWO HEAVY JOBS BESIDE THE ELECTION — the overlay repair and the
+     * Dropbox folder read — take the same token, lanes and one-at-a-time
+     * queue; see `heavyWorkWire.pure.ts`. Neither carries a label worth
+     * sharding on, so each takes a lane at random, which keeps a folder read
+     * from always queueing behind the same brochure.
+     */
+    const shardKey = heavyWork
+      ? crypto.randomUUID()
+      : electionShardKey(decodeElectionContext(request.headers.get(ELECTION_CONTEXT_HEADER)));
+    const lane = electionLaneName(laneForShardKey(shardKey));
     const stub = env.PDF_ELECTION.get(env.PDF_ELECTION.idFromName(lane));
     return await stub.fetch(request);
   },
