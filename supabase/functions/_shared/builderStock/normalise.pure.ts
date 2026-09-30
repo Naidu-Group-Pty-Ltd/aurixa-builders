@@ -385,7 +385,21 @@ alias('availability_status',
 alias('expected_completion',
   'completion', 'expected completion', 'completion date', 'est completion',
   'estimated completion', 'titles', 'titled', 'handover', 'handover date',
-  'settlement', 'ready date');
+  'settlement', 'ready date',
+  /*
+   * WHEN THE LAND TITLES, AS THE LISTS ACTUALLY HEAD IT. Measured 30 September
+   * 2026 (network audit): "Registration", "Title Date", "Est. Title Date",
+   * "Land Registration" and "Settlement Date" mapped to nothing, so 1,078 of
+   * 1,081 rows carrying one — all 19 live Notion rows among them — showed no
+   * completion at all. Bare "Title" is deliberately NOT here: a Notion
+   * database may call its row-name column that, and the address would land in
+   * this field.
+   */
+  'registration', 'land registration', 'registration date', 'est registration',
+  'estimated registration', 'expected registration', 'title date', 'titles date',
+  'est title date', 'estimated title date', 'expected title date', 'title release',
+  'titles expected', 'expected titles', 'titles due', 'settlement date',
+  'est settlement', 'estimated settlement');
 
 alias('description',
   'description', 'notes', 'comments', 'details', 'features', 'inclusions',
@@ -632,8 +646,14 @@ const PROPERTY_TYPES: Array<[RegExp, StockPropertyType]> = [
   [/apartment|unit\b|flat|residence/i, 'apartment'],
   [/duplex|dual\s*occ/i, 'duplex'],
   [/terrace/i, 'terrace'],
-  [/land\s*only|vacant\s*land|^land$|allotment/i, 'land'],
-  [/house|home|detached/i, 'house'],
+  [/land\s*only|vacant\s*land|titled\s*land|^land$|allotment/i, 'land'],
+  /*
+   * WHOLE WORDS. "Warehouse" contains "house", and an industrial unit read
+   * as a house is a false statement on a card (network audit, 30 September
+   * 2026). A dual-key home is deliberately not a duplex: one title with a
+   * second dwelling is a different product, and `other` does not mislead.
+   */
+  [/\bhouses?\b|\bhomes?\b|\bdetached\b/i, 'house'],
 ];
 
 export function coercePropertyType(value: unknown): StockPropertyType | null {
@@ -645,14 +665,28 @@ export function coercePropertyType(value: unknown): StockPropertyType | null {
   return 'other';
 }
 
+/*
+ * NEGATION FIRST, AND WORDS RATHER THAN LETTERS.
+ *
+ * These were unanchored substrings, so the word inside a negation decided it:
+ * "Not Sold" read as sold, and "Unreleased", "Not yet released", "Inactive"
+ * and "Not current" read as AVAILABLE — a lot the builder has not released,
+ * offered for sale. "Completed" read as settled, where a builder means the
+ * BUILD is complete ("Completed - Available" is a finished home for sale).
+ * And "Hold", "ONH" and "Contract Signed" read as nothing at all. Measured by
+ * running the live sheets' status words through this table, 30 September
+ * 2026 (network audit).
+ */
 const AVAILABILITY: Array<[RegExp, StockAvailability]> = [
-  [/under\s*offer|on\s*hold|holding|held/i, 'on_hold'],
-  [/reserved|deposit\s*(taken|paid)|eoi/i, 'reserved'],
-  [/exchanged|contracted|under\s*contract|conditional/i, 'contracted'],
-  [/settled|completed/i, 'settled'],
-  [/sold|unavailable|not\s*available/i, 'sold'],
-  [/withdrawn|removed|off\s*market|cancelled/i, 'withdrawn'],
-  [/available|active|for\s*sale|released|open|current|in\s*stock|yes/i, 'available'],
+  [/\bnot\s*(?:yet\s*)?sold\b|\bunsold\b/i, 'available'],
+  [/\bun-?\s*released\b|\bnot\s*(?:yet\s*)?released\b|\bpre-?\s*release\b|\binactive\b|\bnot\s*(?:currently\s*)?(?:active|current)\b/i, 'on_hold'],
+  [/under\s*offer|on\s*hold|\bholding\b|\b(?:with)?held\b|\bhold\b|\bonh\b/i, 'on_hold'],
+  [/reserved|deposit\s*(?:taken|paid)|\beoi\b/i, 'reserved'],
+  [/exchanged|contracted|under\s*contract|contract\s*signed|conditional/i, 'contracted'],
+  [/\bsettled\b/i, 'settled'],
+  [/\bsold\b|unavailable|not\s*available/i, 'sold'],
+  [/withdrawn|\bremoved\b|off\s*market|cancell?ed/i, 'withdrawn'],
+  [/available|\bactive\b|for\s*sale|\breleased\b|\bopen\b|\bcurrent\b|in\s*stock|\byes\b/i, 'available'],
 ];
 
 /**

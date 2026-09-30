@@ -584,10 +584,33 @@ export function attachRowHyperlinks(input: {
  * this pipeline can open. Anything else answers null rather than being passed
  * downstream to fail later with a worse message.
  */
+/**
+ * A relationship target as the workbook's XML wrote it, unescaped.
+ *
+ * MEASURED 30 SEPTEMBER 2026 (network audit): 39 rows and 26 image assets
+ * carried `…?id=1&amp;usp=sharing` — the escaped form of the `&` the builder
+ * pasted — and a URL with `&amp;` in its query asks for a parameter called
+ * `amp;usp`. A real URL never contains a literal entity (a literal `&` in a
+ * value is `%26`), so decoding cannot change one that was right.
+ */
+function unescapeXmlEntities(value: string): string {
+  return value.replace(/&(?:amp|lt|gt|quot|apos|#(\d+)|#x([0-9a-f]+));/gi, (entity, dec, hex) => {
+    if (dec) return String.fromCodePoint(Number(dec));
+    if (hex) return String.fromCodePoint(parseInt(hex, 16));
+    switch (entity.toLowerCase()) {
+      case '&amp;': return '&';
+      case '&lt;': return '<';
+      case '&gt;': return '>';
+      case '&quot;': return '"';
+      default: return "'";
+    }
+  });
+}
+
 export function hyperlinkTargetOf(cell: {
   link?: string | null; formula?: string | null;
 }): string | null {
-  const relationship = typeof cell.link === 'string' ? cell.link.trim() : '';
+  const relationship = typeof cell.link === 'string' ? unescapeXmlEntities(cell.link.trim()) : '';
   if (relationship && /^https?:\/\//i.test(relationship)) return relationship;
 
   const formula = typeof cell.formula === 'string' ? cell.formula : '';

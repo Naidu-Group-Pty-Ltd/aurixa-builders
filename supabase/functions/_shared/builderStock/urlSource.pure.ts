@@ -98,6 +98,26 @@ export function normaliseStockSourceUrl(raw: unknown): NormalisedSourceUrl | Rej
   // Credentials in the URL are never forwarded and never stored.
   url.username = '';
   url.password = '';
+  /*
+   * A GOOGLE SHEETS TAB IS NAMED IN THE FRAGMENT, AND THE FRAGMENT IS DROPPED.
+   *
+   * `…/edit#gid=1140012797` is how a browser's address bar names the tab on
+   * screen, and clearing the hash below threw the tab away — so linking a
+   * list's second tab imported its first (measured 30 September 2026: the
+   * Havenwood tab of the live master sheet read as the 70-row master). The
+   * reader downstream already accepts a gid in the query, so the fragment's
+   * is carried there first. Where both are present the fragment wins: the
+   * query is whatever the link was first shared as, the fragment is the tab
+   * the builder was looking at when they copied it.
+   */
+  const fragmentGid = url.hash
+    ? new URLSearchParams(url.hash.replace(/^#/, '')).get('gid')
+    : null;
+  if (fragmentGid && /^\d+$/.test(fragmentGid)
+    && url.hostname.toLowerCase() === 'docs.google.com'
+    && url.pathname.includes('/spreadsheets/')) {
+    url.searchParams.set('gid', fragmentGid);
+  }
   url.hash = '';
 
   const host = url.hostname.toLowerCase().replace(/\.$/, '');

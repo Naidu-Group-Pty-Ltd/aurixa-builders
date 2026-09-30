@@ -25,6 +25,7 @@ import {
   type NormalisedStockRecord,
 } from './normalise.pure.ts';
 import { parseBuilderAddressLine, postcodeStatedBesidePlace } from '../builderStockAddress.pure.ts';
+import { BUILDER_REMOVED_ACTION, builderRemovedIds } from './builderRemoved.pure.ts';
 import { stockImageUpsertKey } from './stockImageUpsertKey.pure.ts';
 import {
   recordStage, type ImportStageLedger,
@@ -139,6 +140,11 @@ export interface ImportOutcome {
    * Marketplace while every picture is derived again from scratch.
    */
   inheritedImagery: number;
+  /**
+   * Rows that named a property the BUILDER removed, left out rather than
+   * revived or inserted again. See `builderRemoved.pure.ts`.
+   */
+  keptRemoved: number;
 }
 
 interface ExistingItem {
@@ -171,6 +177,8 @@ interface ExistingItem {
    * hand one to the row a re-import creates for the same property.
    */
   primary_image_id: string | null;
+  /** When an import last matched or created this row. See `builderRemoved.pure.ts`. */
+  last_seen_at?: string | null;
   /** `source_row->>source_anchor`, projected under this alias. */
   source_anchor: string | null;
   /**
@@ -242,7 +250,7 @@ const ownLotKey = ownRowKey;
 
 const EXISTING_ITEM_SELECT = 'id, external_reference, development_name, project_name, '
   + 'unit_number, lot_number, address_line, suburb, building_size_sqm, '
-  + 'lifecycle_status, upload_id, primary_image_id, '
+  + 'lifecycle_status, upload_id, primary_image_id, last_seen_at, '
   + 'source_anchor:source_row->>source_anchor, '
   + 'house_design:source_row->>house_design, document_figures';
 
@@ -637,6 +645,7 @@ export async function importStockRecords(
     deferred: 0,
     replacesUploadIds: [],
     inheritedImagery: 0,
+    keptRemoved: 0,
   };
 
   /**
@@ -773,6 +782,32 @@ export async function importStockRecords(
     throw new Error(`Existing stock could not be read: ${existingError.message ?? 'unknown'}`);
   }
 
+  /*
+   * THE PROPERTIES THE BUILDER REMOVED, which no import may bring back.
+   *
+   * Read for the same reason and with the same rule as the rows above: a log
+   * that could not be read is not a builder who removed nothing, and treating
+   * it as one is exactly how a removed property returns to sale.
+   */
+  const removalLog = await readAllRows<{ entity_id: string | null; created_at: string | null }>(
+    () => db
+      .from('builder_portal_activity_log')
+      .select('entity_id, created_at')
+      .eq('organisation_id', input.organisationId)
+      .eq('action', BUILDER_REMOVED_ACTION)
+      .eq('entity_type', 'stock_item')
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true }));
+  if (removalLog.failed) {
+    throw new Error('The properties you removed could not be read, so nothing was imported.');
+  }
+  const builderRemoved = builderRemovedIds(
+    (existingRows ?? []) as ExistingItem[], removalLog.rows);
+  /* Where a removed property is found again, by the keys a live one is. */
+  const removedByAnchor = new Map<string, AnchoredProperty>();
+  const removedByReference = new Set<string>();
+  const removedByDevelopmentUnit = new Set<string>();
+
   const byReference = new Map<string, string>();
   const byDevelopmentUnit = new Map<string, string>();
   /**
@@ -866,6 +901,14 @@ export async function importStockRecords(
    * removes it, so two records naming one lot cannot both write to it.
    */
   const byOwnLot = new Map<string, OwnAnchoredProperty>();
+  /*
+   * AND BY LOT AND DESIGN, where a row states one. MEASURED 30 SEPTEMBER 2026
+   * (network audit): the live Wollert sheet sells lot 1730 three ways and six
+   * other lots two ways, and a re-read found its row by the lot alone — so
+   * whichever design's record came first claimed the lot's row and wrote its
+   * price and plan over another design's. Consulted before the lot alone.
+   */
+  const byOwnLotDesign = new Map<string, OwnAnchoredProperty>();
   const claimedOwnLots = new Set<string>();
   /**
    * ARCHIVED rows that still hold a photograph, indexed by anchor.
@@ -888,6 +931,24 @@ export async function importStockRecords(
   /** Item id -> what its own brochure stated. See `writablePatch`. */
   const documentFiguresBefore = new Map<string, unknown>();
   for (const item of (existingRows ?? []) as ExistingItem[]) {
+    if (builderRemoved.has(item.id)) {
+      /*
+       * A REMOVED PROPERTY IS NO MATCH FOR ANYTHING. Indexed apart, so a record
+       * that names it is recognised and left out, and so it can never be the
+       * row a reference or a development-and-lot key resolves to — the keys
+       * those two maps hold are last-write-wins, and a removed row written last
+       * would otherwise shadow the live one.
+       */
+      const removedReference = referenceKey(item);
+      if (removedReference) removedByReference.add(removedReference);
+      const removedDevelopmentUnit = developmentUnitKey(item);
+      if (removedDevelopmentUnit) removedByDevelopmentUnit.add(removedDevelopmentUnit);
+      const removedAnchor = item.source_anchor?.trim();
+      if (removedAnchor) {
+        removedByAnchor.set(removedAnchor, { id: item.id, identity: stockPropertyIdentity(item) });
+      }
+      continue;
+    }
     if (item.document_figures) documentFiguresBefore.set(item.id, item.document_figures);
     const reference = referenceKey(item);
     if (reference) byReference.set(reference, item.id);
@@ -946,16 +1007,24 @@ export async function importStockRecords(
     if (item.lifecycle_status === 'archived') continue;
     const lot = ownLotKey(item);
     if (!lot) continue;
+    const itemIdentity = stockPropertyIdentity(item);
+    const entry = {
+      id: item.id,
+      identity: itemIdentity,
+      lifecycle: item.lifecycle_status ?? null,
+      fields: item,
+    };
     const held = byOwnLot.get(lot);
     const outranks = !held
       || (item.lifecycle_status === 'active' && held.lifecycle !== 'active');
-    if (outranks) {
-      byOwnLot.set(lot, {
-        id: item.id,
-        identity: stockPropertyIdentity(item),
-        lifecycle: item.lifecycle_status ?? null,
-        fields: item,
-      });
+    if (outranks) byOwnLot.set(lot, entry);
+    if (itemIdentity.design) {
+      const designed = `${lot}#${itemIdentity.design}`;
+      const heldDesigned = byOwnLotDesign.get(designed);
+      if (!heldDesigned
+        || (item.lifecycle_status === 'active' && heldDesigned.lifecycle !== 'active')) {
+        byOwnLotDesign.set(designed, entry);
+      }
     }
   }
 
@@ -1053,9 +1122,21 @@ export async function importStockRecords(
        * and only a document whose rows share one anchor reaches this rung.
        */
       const lotKey = ownLotKey(record as unknown as ExistingItem);
-      const ownLotRow = !ownAnchorTaken && lotKey && !claimedOwnLots.has(lotKey)
+      const designedKey = lotKey && identity.design ? `${lotKey}#${identity.design}` : null;
+      const designedRow = !ownAnchorTaken && designedKey && !claimedOwnLots.has(designedKey)
+        ? byOwnLotDesign.get(designedKey)
+        : undefined;
+      const lotOnlyRow = !ownAnchorTaken && !designedRow && lotKey && !claimedOwnLots.has(lotKey)
         ? byOwnLot.get(lotKey)
         : undefined;
+      /*
+       * A row on this lot stating a DIFFERENT design is the lot's other
+       * package, never this one — both sides named their house, and they
+       * named different houses. A row stating no design keeps the old rule.
+       */
+      const otherPackage = Boolean(lotOnlyRow && identity.design
+        && lotOnlyRow.identity.design && lotOnlyRow.identity.design !== identity.design);
+      const ownLotRow = designedRow ?? (otherPackage ? undefined : lotOnlyRow);
       /*
        * The SAME guard the anchor rung answers to, asked of the fields rather
        * than of the collapsed identity: a row whose lot matches but which is
@@ -1066,7 +1147,10 @@ export async function importStockRecords(
         // A key that stands on no lot names a unit or a street, and two
         // streets of one name in two suburbs are two properties.
         && (ownRowKeyHasLot(lotKey as string) || !suburbsDisagree(ownLotRow!.fields, record));
-      if (ownLotTaken) claimedOwnLots.add(lotKey as string);
+      if (ownLotTaken) {
+        claimedOwnLots.add(lotKey as string);
+        if (designedRow && designedKey) claimedOwnLots.add(designedKey);
+      }
 
       const existingId = (ownAnchorTaken ? ownAnchored!.id : undefined)
         ?? (ownLotTaken ? ownLotRow!.id : undefined)
@@ -1075,6 +1159,29 @@ export async function importStockRecords(
         ?? (keys.developmentUnit
           ? byDevelopmentUnit.get(developmentUnitMatchKey(keys.developmentUnit))
           : undefined);
+
+      /*
+       * AND A ROW THAT NAMES A PROPERTY THE BUILDER REMOVED IS LEFT OUT.
+       *
+       * Only where nothing live matched: a property the builder removed and
+       * then re-supplied under a live row is that live row. Found by the same
+       * three keys, with the anchor answering to the same identity guard — a
+       * source row re-used for a different property is that property, and it
+       * imports as one.
+       */
+      if (!existingId) {
+        const removedAnchored = keys.anchor ? removedByAnchor.get(keys.anchor) : undefined;
+        const namesRemoved = (removedAnchored
+            && !identityDifferences(removedAnchored.identity, identity).length)
+          || (keys.reference ? removedByReference.has(keys.reference) : false)
+          || (keys.developmentUnit
+            ? removedByDevelopmentUnit.has(developmentUnitMatchKey(keys.developmentUnit))
+            : false);
+        if (namesRemoved) {
+          outcome.keptRemoved += 1;
+          continue;
+        }
+      }
 
       /*
        * The row's supplier BEFORE this import. Where it is this same upload,
