@@ -44,6 +44,23 @@ describe('builderRemovedIds', () => {
     expect(removed.has('revived-since')).toBe(false);
   });
 
+  it('lets a removal go once the builder deleted the list it came from', () => {
+    // Mairandi, 30 Sep: deleted the list at 14:20 and added the same link — all 41 back.
+    const fromList = [
+      { id: 'removed', lifecycle_status: 'archived', last_seen_at: '2026-09-29T08:03:49Z', upload_id: 'old-list' },
+      { id: 'kept', lifecycle_status: 'archived', last_seen_at: '2026-09-29T08:03:49Z', upload_id: 'live-list' },
+    ];
+    const removals = [
+      { entity_id: 'removed', created_at: '2026-09-29T08:13:54Z' },
+      { entity_id: 'kept', created_at: '2026-09-29T08:13:54Z' },
+    ];
+    const deleted = new Map([['old-list', '2026-09-30T14:20:17Z']]);
+    expect([...builderRemovedIds(fromList, removals, deleted)]).toEqual(['kept']);
+    // A removal made after its list was deleted still stands.
+    const later = new Map([['old-list', '2026-09-29T08:00:00Z']]);
+    expect([...builderRemovedIds(fromList, removals, later)].sort()).toEqual(['kept', 'removed']);
+  });
+
   it('names the action the Stock List’s Remove writes', () => {
     const fn = read('supabase/functions/builder-portal-stock/index.ts');
     const archive = fn.slice(fn.indexOf("if (operation === 'archive_stock_item')"));
