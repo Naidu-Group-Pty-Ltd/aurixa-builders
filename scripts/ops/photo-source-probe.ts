@@ -26,7 +26,7 @@
  */
 import {
   DRIVE_FOLDER_MIME, type DriveEntry, driveFolderId, isNonFacadeImageName, isPackageImage,
-  lotAndDesignFrom, normaliseDriveName, parseDriveFolderListing, carriesDesignation,
+  designTokenFrom, lotAndDesignFrom, normaliseDriveName, parseDriveFolderListing, carriesDesignation,
 } from '../../supabase/functions/_shared/builderStock/drivePackage.pure.ts';
 import {
   classifyBranch, rowSourceBranchCandidates, sharedLinkFileUrl,
@@ -41,6 +41,7 @@ import {
 import { designOfRecordOrRow } from '../../supabase/functions/_shared/builderStock/builderSuppliedImage.pure.ts';
 import { electFromPdfBytes } from '../../supabase/functions/_shared/builderStock/pdfElection.ts';
 import { coverIdentityRefusal, displayHomeCoverStated } from '../../supabase/functions/_shared/builderStock/pdfPrimaryImage.pure.ts';
+import { listFieldsAfterAddress } from '../../supabase/functions/_shared/builderStockAddress.pure.ts';
 import { scanStoredZip } from '../../supabase/functions/_shared/builderStock/zipStream.pure.ts';
 import { indexPdfObjects, readPdfPage } from '../../supabase/functions/_shared/builderStock/pdfPageImages.pure.ts';
 import { pictureFromStream, selectPdfPropertyPrimary } from '../../supabase/functions/_shared/builderStock/pdfSourcePhoto.ts';
@@ -407,7 +408,7 @@ for (const [url, linked] of byUrl) {
         for (const row of linked) {
           const record = (row.source_row ?? {}) as Record<string, unknown>;
           const label = stockRecordLabel(record as never);
-          const design = designOfRecordOrRow(record) ?? lotAndDesignFrom(label).design;
+          const design = lotAndDesignFrom(label).design ?? designOfRecordOrRow(record) ?? designTokenFrom(listFieldsAfterAddress(label)[0]);
           say(`  row ${String(row.id).slice(0, 8)}: label (masked) "${mask(label, who)}", design (masked) "${design ? mask(design, who) : '—'}"`);
         }
         for (const entry of scan.entries.filter((e) => e.data)) {
@@ -419,12 +420,13 @@ for (const [url, linked] of byUrl) {
           for (const row of linked) {
             const record = (row.source_row ?? {}) as Record<string, unknown>;
             const label = stockRecordLabel(record as never);
-            const design = designOfRecordOrRow(record) ?? lotAndDesignFrom(label).design;
+            const design = lotAndDesignFrom(label).design ?? designOfRecordOrRow(record) ?? designTokenFrom(listFieldsAfterAddress(label)[0]);
             say(`      for ${String(row.id).slice(0, 8)}: displayHomeCoverStated=${displayHomeCoverStated(first, label, design)} coverIdentityRefusal=${coverIdentityRefusal(first, label, stockIdentityHints(record as never)) ?? 'none'}`);
             const outcome = await electFromPdfBytes(entry.data!, readPdfPageTextResult, {
               label, identifiedBy: 'folder_structure', design, identityHints: stockIdentityHints(record as never),
               documentName: 'brochure.pdf', url: 'https://example.invalid/brochure.pdf',
             } as never);
+            say(`        design given: ${design ? design.split(' ').map((w) => (/^\d+$/.test(w) ? '#' : '<w>')).join(' ') : 'none'}; ${outcome.status === 'recovered' ? `recovered page ${(outcome as { image?: { provenance?: { page?: number } } }).image?.provenance?.page}` : ''}`);
             say(`        in-process election: ${outcome.status}${'detail' in outcome && outcome.detail ? ` — ${mask(String(outcome.detail).slice(0, 160), who)}` : ''}`);
           }
         }
