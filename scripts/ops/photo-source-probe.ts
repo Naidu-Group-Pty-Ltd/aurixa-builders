@@ -288,6 +288,8 @@ for (const [url, linked] of byUrl) {
       let full: Awaited<ReturnType<typeof embeddedView>> = [];
       try { full = await embeddedView(id); } catch { /* */ }
       console.log(`  ${'  '.repeat(depth)}[folder ${path || 'root'}] production listing ${listing.length}${err ? ` (ERROR ${err})` : ''}; embedded view lists ${full.length}`);
+      const unitNumbers = listing.flatMap((e) => [...normaliseDriveName(e.name).matchAll(/\bunit (\d+[a-z]?)\b/g)].map((m) => m[1]));
+      if (unitNumbers.length) console.log(`  ${'  '.repeat(depth)}  unit numbers named in this folder: ${[...new Set(unitNumbers)].sort((a, b) => Number(a) - Number(b)).join(', ')}`);
       for (const entry of listing) {
         const isFolder = entry.mimeType === DRIVE_FOLDER_MIME;
         const flags = [
