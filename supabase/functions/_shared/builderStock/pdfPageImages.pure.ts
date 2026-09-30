@@ -66,6 +66,8 @@ export interface PdfForm {
   start: number;
   end: number;
   flate: boolean;
+  /** ASCII85 text in front of the stream's own encoding. */
+  ascii85?: boolean;
   /** `/Matrix`, which maps the form's space into the space that draws it. */
   matrix: Matrix;
   /** What the form's OWN resources name. Scoped: names may collide with the
@@ -109,7 +111,7 @@ export interface PdfFirstPage {
   /** Form XObjects the page draws. Their contents are read by the caller. */
   forms: PdfForm[];
   /** Content stream slices, in order. The caller inflates what needs it. */
-  contents: Array<{ start: number; end: number; flate: boolean }>;
+  contents: Array<{ start: number; end: number; flate: boolean; ascii85?: boolean }>;
   /** Visible widget annotations, each an appearance the page also shows. */
   widgets: PdfWidget[];
 }
@@ -482,11 +484,13 @@ function declaredStreamLength(header: string): number | null {
 function streamSlice(
   object: PdfObject,
   bytes: Uint8Array,
-): { start: number; end: number; flate: boolean } | null {
+): { start: number; end: number; flate: boolean; ascii85?: boolean } | null {
   const streamMatch = /stream\r?\n/.exec(object.header);
   if (!streamMatch) return null;
   const start = object.start + streamMatch.index + streamMatch[0].length;
   const flate = /\/FlateDecode\b/.test(object.header);
+  // `/Filter [/ASCII85Decode /FlateDecode]`: text in front of the stream's own encoding.
+  const ascii85 = /\/Filter\s*\[?\s*\/ASCII85Decode\b/.test(object.header);
 
   const window = Math.max(start, object.end - 64);
   const tail = decoder.decode(bytes.subarray(window, object.end));
@@ -496,14 +500,14 @@ function streamSlice(
   const declared = declaredStreamLength(object.header);
   if (declared !== null) {
     const end = start + declared;
-    if (end > start && end <= marker && marker - end <= 2) return { start, end, flate };
+    if (end > start && end <= marker && marker - end <= 2) return { start, end, flate, ...(ascii85 ? { ascii85 } : {}) };
   }
 
   let end = marker;
   while (end > start && (bytes[end - 1] === 0x0a || bytes[end - 1] === 0x0d)) end -= 1;
   if (end <= start) return null;
 
-  return { start, end, flate };
+  return { start, end, flate, ...(ascii85 ? { ascii85 } : {}) };
 }
 
 const COMPONENTS_BY_COLOUR_SPACE: Record<string, number> = {
@@ -586,7 +590,7 @@ export function readPdfPage(
 
   const scope = readScope(page.header, bytes, objects, 0);
 
-  const contents: Array<{ start: number; end: number; flate: boolean }> = [];
+  const contents: Array<{ start: number; end: number; flate: boolean; ascii85?: boolean }> = [];
   const contentsRef = /\/Contents\s+(\d{1,7})\s+\d{1,5}\s+R/.exec(page.header);
   const contentsArray = /\/Contents\s*\[([\s\S]{0,2000}?)\]/.exec(page.header);
   const numbers: number[] = [];
@@ -698,6 +702,7 @@ function readWidgets(
         start: slice.start,
         end: slice.end,
         flate: slice.flate,
+        ...(slice.ascii85 ? { ascii85: true } : {}),
         matrix: matrix.every(Number.isFinite) ? matrix : [...IDENTITY] as Matrix,
         images: inner.images,
         forms: inner.forms,
@@ -803,6 +808,7 @@ function readScope(
         start: slice.start,
         end: slice.end,
         flate: slice.flate,
+        ...(slice.ascii85 ? { ascii85: true } : {}),
         matrix: matrix.every(Number.isFinite) ? matrix : [...IDENTITY] as Matrix,
         images: inner.images,
         forms: inner.forms,
