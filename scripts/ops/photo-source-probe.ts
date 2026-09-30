@@ -39,6 +39,7 @@ import {
   stockIdentityHints, stockRecordLabel,
 } from '../../supabase/functions/_shared/builderStock/normalise.pure.ts';
 import { designOfRecordOrRow } from '../../supabase/functions/_shared/builderStock/builderSuppliedImage.pure.ts';
+import { electFromPdfBytes } from '../../supabase/functions/_shared/builderStock/pdfElection.ts';
 import { coverIdentityRefusal } from '../../supabase/functions/_shared/builderStock/pdfPrimaryImage.pure.ts';
 import { indexPdfObjects, readPdfPage } from '../../supabase/functions/_shared/builderStock/pdfPageImages.pure.ts';
 import { pictureFromStream, selectPdfPropertyPrimary } from '../../supabase/functions/_shared/builderStock/pdfSourcePhoto.ts';
@@ -239,6 +240,16 @@ async function analysePdf(entry: DriveEntry, who: Identity[], row: Record<string
       identityHints: stockIdentityHints(record as never),
     });
     say(`      in-process election: coverPages=[${selection.coverPages.join(',')}] assets=${selection.assets.length} primary=${selection.primary ? 'YES' : 'no'} pageOrder=${selection.pageOrderAuthoritative} streamsUnread=${selection.objectStreamsUnread}`);
+    // The production election itself, as a folder-tied document (what the settler runs).
+    const won = await electFromPdfBytes(bytes, readPdfPageTextResult, {
+      label: stockRecordLabel(record as never),
+      identifiedBy: 'folder_structure',
+      design: null,
+      identityHints: stockIdentityHints(record as never),
+      documentName: 'probe.pdf',
+      url: 'https://example.invalid/probe',
+    } as never);
+    say(`      PRODUCTION ELECTION (folder-tied): ${won.status}${won.status === 'recovered' ? ` — ${won.image.contentType}, ${(won.image.bytes.length / 1024).toFixed(0)} KB, page ${won.image.provenance.page}` : ''}${'detail' in won && won.detail ? ` — ${String(won.detail).slice(0, 140)}` : ''}`);
   } catch (error) {
     say(`      in-process election threw: ${String((error as Error)?.message ?? error).slice(0, 120)}`);
   }
