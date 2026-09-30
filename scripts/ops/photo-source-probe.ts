@@ -417,6 +417,13 @@ for (const [url, linked] of byUrl) {
           const lotWords = (first.match(/\b(lot|unit)\s*\d{1,5}\b/gi) ?? []).length;
           say(`    brochure ${mask(entry.name.split('/').pop() ?? '', who)}: pages ${pages.ok ? pages.pages.length : 'unread'}, page-1 lot/unit designations ${lotWords}`);
           say(`      page-1 words (masked): ${mask(first.slice(0, 400), who)}`);
+          // The SHAPE of the first words, never the words: a = ASCII letter, 9 = digit,
+          // anything else as its code point, so a spelling the tokenizer drops is visible.
+          const shape = (word: string) => [...word].map((ch) => (/[a-z]/i.test(ch) ? 'a' : /[0-9]/.test(ch) ? '9'
+            : `<U+${ch.codePointAt(0)!.toString(16).padStart(4, '0')}>`)).join('');
+          say(`      page-1 first 40 chars, shape: ${shape(first.slice(0, 40))}`);
+          const tokens = first.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ');
+          say(`      page-1 ASCII tokens hold the design words: ${tokens.includes('mira')}/${tokens.includes('22')}, token count ${tokens.length}`);
           for (const row of linked) {
             const record = (row.source_row ?? {}) as Record<string, unknown>;
             const label = stockRecordLabel(record as never);
