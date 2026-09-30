@@ -39,6 +39,24 @@ import {
   stockIdentityHints, stockRecordLabel,
 } from '../../supabase/functions/_shared/builderStock/normalise.pure.ts';
 import { designOfRecordOrRow } from '../../supabase/functions/_shared/builderStock/builderSuppliedImage.pure.ts';
+import { indexPdfObjects, readPdfPage } from '../../supabase/functions/_shared/builderStock/pdfPageImages.pure.ts';
+import { pictureFromStream, selectPdfPropertyPrimary } from '../../supabase/functions/_shared/builderStock/pdfSourcePhoto.ts';
+import { readPdfPageTextResult } from '../../supabase/functions/_shared/builderStock/pdfText.ts';
+import { sniffImageContentType } from '../../supabase/functions/_shared/builderStock/sourceAssets.pure.ts';
+
+/*
+ * The pipeline's own diagnostics name documents; this log is public. Anything
+ * the pipeline writes to the console while the probe runs is dropped.
+ */
+const quiet = () => {};
+console.info = quiet;
+console.warn = quiet;
+console.error = quiet;
+const say = console.log.bind(console);
+console.log = (...args: unknown[]) => {
+  if (typeof args[0] === 'string' && args[0].startsWith('[builderStock]')) return;
+  say(...args);
+};
 
 const PROJECT_REF = Deno.env.get('PROJECT_REF') || 'htfluofznhxeumblwbww';
 const ACCESS_TOKEN = Deno.env.get('SUPABASE_ACCESS_TOKEN') || '';
@@ -161,6 +179,59 @@ async function embeddedView(folderId: string): Promise<Array<{ id: string; name:
   return out;
 }
 
+/** How a document's first pages encode their pictures, and what the election makes of it. */
+async function analysePdf(entry: DriveEntry, who: Identity[], row: Record<string, unknown>) {
+  let bytes: Uint8Array;
+  try {
+    bytes = (await productionFetch(`https://drive.google.com/uc?export=download&id=${encodeURIComponent(entry.id)}`)).bytes;
+  } catch (error) {
+    say(`    PDF ${mask(entry.name, who)}: download failed (${String((error as Error)?.message ?? error).slice(0, 80)})`);
+    return;
+  }
+  say(`    PDF ${mask(entry.name, who)}: ${(bytes.length / 1048576).toFixed(2)} MB, starts ${new TextDecoder('latin1').decode(bytes.slice(0, 8)).replace(/[^ -~]/g, '?')}`);
+  let objects: Map<number, { header: string }>;
+  try { objects = indexPdfObjects(bytes) as unknown as Map<number, { header: string }>; } catch (error) {
+    say(`      index failed: ${String((error as Error)?.message ?? error).slice(0, 100)}`);
+    return;
+  }
+  say(`      objects ${objects.size}`);
+  for (let page = 0; page < 3; page++) {
+    const read = readPdfPage(bytes, page);
+    if (!read) { say(`      page ${page + 1}: not readable`); continue; }
+    say(`      page ${page + 1}: ${Math.round(read.width)}x${Math.round(read.height)}pt, ${read.images.length} image(s), ${read.forms.length} form(s)`);
+    const images = [...read.images, ...read.forms.flatMap((form) => (form as unknown as { images?: typeof read.images }).images ?? [])];
+    for (const image of images.slice(0, 8)) {
+      const header = objects.get(image.objectNumber)?.header ?? '';
+      const cs = /\/ColorSpace\s*(\/\w+|\[[^\]]{0,40}\]|\d+\s+\d+\s+R)/.exec(header)?.[1] ?? '—';
+      const parms = /\/DecodeParms\s*(<<[^>]{0,80}>>|\d+\s+\d+\s+R)/.exec(header)?.[1]?.replace(/\s+/g, ' ') ?? '—';
+      let decoded = 'no';
+      try {
+        const picture = await pictureFromStream(bytes, {
+          start: image.start, end: image.end, flate: image.filters[0] === 'FlateDecode',
+          width: image.width, height: image.height,
+        });
+        decoded = picture ? `yes ${picture.contentType} ${(picture.bytes.length / 1024).toFixed(0)} KB` : 'no';
+      } catch (error) { decoded = `threw ${String((error as Error)?.message ?? error).slice(0, 60)}`; }
+      const raw = bytes.slice(image.start, Math.min(image.end, image.start + 16));
+      say(`        img obj ${image.objectNumber}: ${image.width}x${image.height} filters=[${image.filters.join(',')}] comps=${image.components ?? '?'} bpc=${image.bitsPerComponent} cs=${cs} parms=${parms} smask=${/\/SMask\b/.test(header) ? 'yes' : 'no'} stream=${((image.end - image.start) / 1024).toFixed(0)} KB rawSniff=${sniffImageContentType(raw.length >= 12 ? bytes.slice(image.start, image.start + 64) : raw) ?? '—'} → decoded ${decoded}`);
+    }
+  }
+  try {
+    const record = (row.source_row ?? {}) as Record<string, unknown>;
+    const texts = await readPdfPageTextResult(bytes);
+    say(`      text: ${texts.ok ? `${texts.pages.length} page(s), page-1 chars ${texts.pages[0]?.length ?? 0}` : `failed ${texts.reason}`}`);
+    const selection = await selectPdfPropertyPrimary(bytes, {
+      label: stockRecordLabel(record as never),
+      pageTexts: texts.ok ? texts.pages : [],
+      design: designOfRecordOrRow(record),
+      identityHints: stockIdentityHints(record as never),
+    });
+    say(`      in-process election: coverPages=[${selection.coverPages.join(',')}] assets=${selection.assets.length} primary=${selection.primary ? 'YES' : 'no'} pageOrder=${selection.pageOrderAuthoritative} streamsUnread=${selection.objectStreamsUnread}`);
+  } catch (error) {
+    say(`      in-process election threw: ${String((error as Error)?.message ?? error).slice(0, 120)}`);
+  }
+}
+
 const rows = await sql(`
   SELECT id::text, upload_id::text, lot_number, unit_number, suburb, development_name, address_line,
          building_size_sqm, image_work_stage, image_work_last_result, source_row
@@ -228,12 +299,66 @@ for (const [url, linked] of byUrl) {
       }
     };
     await walk(folderId, 0, '');
+
+    // Every PDF in the linked folder (depth 1) that names a probed row's lot or unit: how its pictures are encoded.
+    const pdfs: DriveEntry[] = [];
+    const gather = async (id: string, depth: number) => {
+      const { bytes } = await productionFetch(`https://drive.google.com/drive/folders/${encodeURIComponent(id)}`);
+      for (const entry of parseDriveFolderListing(new TextDecoder().decode(bytes))) {
+        if (entry.mimeType === DRIVE_FOLDER_MIME && depth < 1) await gather(entry.id, depth + 1);
+        if (entry.mimeType === 'application/pdf') pdfs.push(entry);
+      }
+    };
+    try { await gather(folderId, 0); } catch { /* reported above */ }
+    const named = pdfs.filter((entry) => {
+      const clean = ` ${normaliseDriveName(entry.name)} `;
+      return who.some((id) => (id.lot && clean.includes(` lot ${id.lot} `)) || (id.unit && clean.includes(` unit ${id.unit} `)));
+    }).slice(0, 4);
+    for (const entry of named) await analysePdf(entry, who, linked[0]);
   } else if (host.endsWith('dropbox.com')) {
     const file = sharedLinkFileUrl(url);
     const got = await plainGet(file);
     const pk = got.bytes[0] === 0x50 && got.bytes[1] === 0x4b;
     console.log(`  dl=1 answers HTTP ${got.status}, ${got.type}, ${(got.bytes.length / 1048576).toFixed(1)} MB in ${got.ms} ms from ${got.host}${pk ? ' — a ZIP' : ''}`);
     if (pk) {
+      // Local headers: can a zip this size be streamed entry by entry?
+      const view = new DataView(got.bytes.buffer);
+      const methods = new Map<string, number>();
+      let at = 0;
+      for (let n = 0; n < 12 && view.getUint32(at, true) === 0x04034b50; n++) {
+        const flags = view.getUint16(at + 6, true);
+        const method = view.getUint16(at + 8, true);
+        const csize = view.getUint32(at + 18, true);
+        const nl = view.getUint16(at + 26, true);
+        const xl = view.getUint16(at + 28, true);
+        const key = `method ${method}, descriptor ${(flags & 8) ? 'yes' : 'no'}, size-in-header ${csize > 0 ? 'yes' : 'no'}`;
+        methods.set(key, (methods.get(key) ?? 0) + 1);
+        if (flags & 8) break;
+        at += 30 + nl + xl + csize;
+      }
+      say(`  first local headers: ${[...methods].map(([k, v]) => `${v}× ${k}`).join('; ')}`);
+      // The folder page itself: does it carry the listing?
+      const page = await plainGet(url.replace(/([?&])dl=1/, '$1dl=0'), 8 * 1024 * 1024);
+      const html = new TextDecoder().decode(page.bytes);
+      const names = zipEntries(got.bytes).map((e) => e.name.split('/').filter(Boolean).pop() ?? '').filter(Boolean);
+      const seen = names.filter((n) => html.includes(n)).length;
+      say(`  folder page (dl=0): HTTP ${page.status}, ${(page.bytes.length / 1024).toFixed(0)} KB, names of zip entries visible in it: ${seen} of ${names.length}`);
+      // A file inside the shared folder, addressed by path under the link.
+      const image = zipEntries(got.bytes).find((e) => /\.(jpe?g|png)$/i.test(e.name));
+      if (image) {
+        const base = new URL(url);
+        const pathUrl = new URL(base.toString());
+        pathUrl.pathname = `${base.pathname.replace(/\/$/, '')}/${image.name.split('/').map(encodeURIComponent).join('/')}`;
+        pathUrl.searchParams.set('dl', '1');
+        const one = await plainGet(pathUrl.toString(), 30 * 1024 * 1024);
+        say(`  one image by path under the link: HTTP ${one.status}, ${one.type}, ${(one.bytes.length / 1024).toFixed(0)} KB, sniffed ${sniffImageContentType(one.bytes) ?? 'not an image'}`);
+        const bare = image.name.split('/').filter(Boolean);
+        const pathUrl2 = new URL(base.toString());
+        pathUrl2.pathname = `${base.pathname.replace(/\/$/, '')}/${bare.slice(1).map(encodeURIComponent).join('/')}`;
+        pathUrl2.searchParams.set('dl', '1');
+        const two = await plainGet(pathUrl2.toString(), 30 * 1024 * 1024);
+        say(`  same, without the zip's top folder: HTTP ${two.status}, ${two.type}, ${(two.bytes.length / 1024).toFixed(0)} KB, sniffed ${sniffImageContentType(two.bytes) ?? 'not an image'}`);
+      }
       const entries = zipEntries(got.bytes);
       console.log(`  zip holds ${entries.length} entr(ies):`);
       for (const entry of entries) {
