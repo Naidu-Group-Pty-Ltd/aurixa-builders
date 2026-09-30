@@ -398,7 +398,12 @@ for (const [url, linked] of byUrl) {
         design: designOfRecordOrRow(record),
         linkSharedWithOtherRows: linked.length > 1,
       }, { fetchPackage: productionFetch, cache: new DriveListingCache(productionFetch) });
-      verdict = `${outcome.status}${'detail' in outcome && outcome.detail ? ` — ${String(outcome.detail).slice(0, 140)}` : ''}`;
+      const won = outcome.status === 'recovered_photograph'
+        ? ` — ${outcome.photograph.contentType}, ${(outcome.photograph.bytes.length / 1024).toFixed(0)} KB, sniffed ${sniffImageContentType(outcome.photograph.bytes) ?? 'NOT AN IMAGE'}, from a folder ${outcome.photograph.folderPath.length} deep`
+        : outcome.status === 'recovered'
+          ? ` — ${outcome.image.contentType}, ${(outcome.image.bytes.length / 1024).toFixed(0)} KB`
+          : '';
+      verdict = `${outcome.status}${won}${'detail' in outcome && outcome.detail ? ` — ${String(outcome.detail).slice(0, 140)}` : ''}`;
     } catch (error) {
       verdict = `threw — ${String((error as Error)?.message ?? error).slice(0, 140)}`;
     }

@@ -103,3 +103,73 @@ describe('scanStoredZip', () => {
     expect(scan).toMatchObject({ ok: false, reason: 'unsupported' });
   });
 });
+
+describe('a Dropbox shared folder, read through the package reader', () => {
+  const FOLDER = 'https://www.dropbox.com/scl/fo/abc123/AAkey?rlkey=k&st=s&dl=0';
+  const jpeg = (seed: number) => new Uint8Array(4000).map((_, i) => (i < 3 ? [0xff, 0xd8, 0xff][i] : (i * seed + 3) & 255));
+
+  async function recover(label: string, hints: string[], parts: Parameters<typeof build>[0]) {
+    const { recoverPackageImage } = await import('../../../supabase/functions/_shared/builderStock/packageImages');
+    const zip = build(parts);
+    return await recoverPackageImage(
+      { packageUrl: FOLDER, label, identityHints: hints, linkSharedWithOtherRows: false },
+      { streamFolder: () => chunked(zip, 1500) });
+  }
+
+  const folder = [
+    { name: 'Lot 1639 Foo Street Sunbury Redstone/' },
+    { name: 'Lot 1639 Foo Street Sunbury Redstone/Facade 01.jpg', data: jpeg(7), descriptor: true },
+    { name: 'Lot 1639 Foo Street Sunbury Redstone/Aerial Photo.jpg', data: jpeg(9), descriptor: true },
+    { name: 'Lot 1640 Bar Street Sunbury Redstone/' },
+    { name: 'Lot 1640 Bar Street Sunbury Redstone/Facade 01.jpg', data: jpeg(11), descriptor: true },
+    { name: 'Lot 16390 Baz Street Sunbury Redstone/Facade 01.jpg', data: jpeg(13), descriptor: true },
+  ];
+
+  it('takes the facade filed under the lot, and never another lot’s', async () => {
+    const outcome = await recover('Lot 1639 Sunbury VIC · Alba 28 Display Home', ['Redstone Estate Sunbury VIC'], folder);
+    expect(outcome.status).toBe('recovered_photograph');
+    if (outcome.status !== 'recovered_photograph') return;
+    expect([...outcome.photograph.bytes]).toEqual([...jpeg(7)]);
+    expect(outcome.photograph.contentType).toBe('image/jpeg');
+    expect(outcome.photograph.fileName).toBe('Facade 01.jpg');
+    expect(outcome.photograph.folderPath).toEqual(['Lot 1639 Foo Street Sunbury Redstone']);
+    expect(outcome.photograph.role.evidenceLevel).toBe(3);
+  });
+
+  it('declines when two folders name the property, rather than choosing', async () => {
+    const outcome = await recover('Lot 1639 Sunbury VIC · Alba 28', [], [
+      ...folder,
+      { name: 'Lot 1639 Another Estate Sunbury/Facade.jpg', data: jpeg(5), descriptor: true },
+    ]);
+    expect(outcome.status).toBe('not_identified');
+  });
+
+  it('never takes a picture that calls itself an aerial or a plan', async () => {
+    const outcome = await recover('Lot 1639 Sunbury VIC · Alba 28', [], [
+      { name: 'Lot 1639 Foo Street/Aerial Photo.jpg', data: jpeg(3), descriptor: true },
+      { name: 'Lot 1639 Foo Street/Site Plan.png', data: jpeg(4), descriptor: true },
+    ]);
+    expect(outcome.status).toBe('not_identified');
+  });
+
+  it('finds a display home with no lot by its design AND its estate together', async () => {
+    const parts = [
+      { name: 'Lot 4522 Mira 22 Monarch Estate Deanside/Facade.jpg', data: jpeg(17), descriptor: true },
+      { name: 'Lot 4600 Mira 22 Other Estate Truganina/Facade.jpg', data: jpeg(19), descriptor: true },
+    ];
+    const outcome = await recover('Deanside VIC · Mira 22 Display Home', ['Monarch Estate Deanside VIC'], parts);
+    expect(outcome.status).toBe('recovered_photograph');
+    if (outcome.status === 'recovered_photograph') expect([...outcome.photograph.bytes]).toEqual([...jpeg(17)]);
+    // The design alone, with no estate to corroborate it, names nothing.
+    const alone = await recover('Deanside VIC · Mira 22 Display Home', [], parts);
+    expect(alone.status).toBe('not_identified');
+  });
+
+  it('says a page that is not a zip is not a folder we can read', async () => {
+    const { recoverPackageImage } = await import('../../../supabase/functions/_shared/builderStock/packageImages');
+    const outcome = await recoverPackageImage(
+      { packageUrl: FOLDER, label: 'Lot 1 X VIC', linkSharedWithOtherRows: false },
+      { streamFolder: () => chunked(text('<html>a viewer</html>'), 8) });
+    expect(outcome.status).toBe('not_identified');
+  });
+});

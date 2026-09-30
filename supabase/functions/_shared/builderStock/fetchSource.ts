@@ -490,6 +490,102 @@ async function fetchOrdinaryUrl(startUrl: string): Promise<FetchedSource> {
 }
 
 /**
+ * A public download read as a STREAM, under exactly the guard `fetchStockSource`
+ * uses: the destination and every redirect hop go through `assertPublicUrl`, no
+ * credential is sent, and a redirect is followed only to a public address.
+ *
+ * It exists for ONE caller: a Dropbox shared folder, whose only public form is
+ * a zip of the whole folder (237 MB for the Mairandi list) — too big for
+ * `fetchStockSource`'s 25 MB ceiling and never wanted whole. The chunks are
+ * handed on as they arrive; nothing here accumulates them. The cap is on
+ * total bytes read, and the deadline is the caller's.
+ */
+export async function* streamPublicDownload(
+  startUrl: string,
+  options: { deadline?: number; maxBytes?: number } = {},
+): AsyncGenerator<Uint8Array> {
+  const deadline = options.deadline ?? (Date.now() + 60_000);
+  const maxBytes = options.maxBytes ?? 512 * 1024 * 1024;
+
+  let current: URL;
+  try {
+    current = await assertPublicUrl(sharedLinkFileUrl(startUrl), resolveDns);
+  } catch (error) {
+    throw refusal(error);
+  }
+
+  let response: Response | null = null;
+  const controller = new AbortController();
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    if (Date.now() >= deadline) {
+      throw new SourceFetchError('source_timeout', 'That address took too long to respond.');
+    }
+    const timer = setTimeout(() => controller.abort(), Math.max(1000, deadline - Date.now()));
+    try {
+      response = await fetch(current.toString(), {
+        redirect: 'manual',
+        signal: controller.signal,
+        headers: { 'User-Agent': 'NPC-BuilderStock/1.0', Accept: '*/*' },
+      });
+    } catch (error) {
+      clearTimeout(timer);
+      const aborted = (error as { name?: string })?.name === 'AbortError';
+      throw new SourceFetchError(
+        aborted ? 'source_timeout' : 'source_unreachable',
+        aborted ? 'That address took too long to respond.' : 'That address could not be reached.',
+      );
+    }
+    clearTimeout(timer);
+
+    const location = response.headers.get('location');
+    if (response.status >= 300 && response.status < 400 && location) {
+      try {
+        current = await assertPublicUrl(new URL(location, current).toString(), resolveDns);
+      } catch (error) {
+        throw refusal(error);
+      }
+      try { await response.body?.cancel(); } catch { /* nothing to release */ }
+      response = null;
+      continue;
+    }
+    break;
+  }
+  if (!response) {
+    throw new SourceFetchError('source_too_many_redirects', 'That address redirected too many times.');
+  }
+  if (response.status === 401 || response.status === 403) {
+    throw new SourceFetchError('source_forbidden', 'That folder is not publicly accessible.');
+  }
+  if (response.status === 404 || response.status === 410) {
+    throw new SourceFetchError('source_not_found', 'Nothing was found at that address.');
+  }
+  if (!response.ok || !response.body) {
+    throw new SourceFetchError('source_error_status', 'That address returned an error.');
+  }
+
+  const reader = response.body.getReader();
+  let total = 0;
+  try {
+    for (;;) {
+      if (Date.now() >= deadline) {
+        throw new SourceFetchError('source_timeout', 'That address took too long to respond.');
+      }
+      const { done, value } = await reader.read();
+      if (done) return;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        throw new SourceFetchError('source_too_large', 'That folder is larger than can be read.');
+      }
+      yield value;
+    }
+  } finally {
+    try { await reader.cancel(); } catch { /* the stream is already done */ }
+    controller.abort();
+  }
+}
+
+/**
  * POST a JSON body to a public endpoint and read a JSON answer, under exactly
  * the same guard, timeouts and size ceiling as `fetchStockSource`.
  *

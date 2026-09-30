@@ -28,15 +28,16 @@
 import {
   driveDownloadUrl, driveFileId, driveFolderId, driveFolderUrl, driveRenditionUrl,
   isGoogleDriveHost, isNonFacadeImageName,
-  designTokenFrom, lotAndDesignFrom, unitFrom, dualKeyStated, parseDriveFolderListing, selectLotFolder, selectPackageDocument,
-  selectNamedDocument, selectPropertyPhotograph, streetAddressFrom,
+  designTokenFrom, driveDocumentKind, namesThisProperty, normaliseDriveName, lotAndDesignFrom, unitFrom, dualKeyStated, parseDriveFolderListing, selectLotFolder, selectPackageDocument,
+  selectNamedDocument, selectPropertyPhotograph, streetAddressFrom, isPackageImage,
   type ScopedEntry,
   DRIVE_FOLDER_MIME, type DriveEntry,
 } from './drivePackage.pure.ts';
 import { listFieldsAfterAddress } from '../builderStockAddress.pure.ts';
 import { type PdfPhotoProvenance } from './pdfSourcePhoto.ts';
 import { runElection } from './pdfElectionClient.ts';
-import { classifyBranch, sharedLinkFileUrl } from './sourceBranches.pure.ts';
+import { classifyBranch, isDropboxFolderLink, sharedLinkFileUrl } from './sourceBranches.pure.ts';
+import { scanStoredZip, type ZipEntry } from './zipStream.pure.ts';
 import { readPdfPageTextResult } from './pdfText.ts';
 import { MAX_SOURCE_IMAGE_BYTES, sniffImageContentType } from './sourceAssets.pure.ts';
 import { PRIMARY_ROLE, type SourceImageRoleAssignment } from './sourceImageRole.pure.ts';
@@ -303,6 +304,12 @@ async function recoverPackageImageInner(
      * cannot reach, and a rule nothing can exercise is a rule that drifts.
      */
     readPageTexts?: (bytes: Uint8Array) => Promise<string[]>;
+    /**
+     * How a Dropbox shared folder's zip is streamed. Injected for the reason the
+     * fetcher is: a test hands over a zip it built, and production imports the
+     * guarded downloader lazily.
+     */
+    streamFolder?: (url: string) => AsyncIterable<Uint8Array>;
   } = {},
 ): Promise<PackageOutcome> {
   const fetchPackage = deps.fetchPackage ?? guardedFetch;
@@ -406,6 +413,23 @@ async function recoverPackageImageInner(
      * no listing this pipeline can parse is still not a source we can read,
      * and saying so remains a finding rather than an error.
      */
+    if (isDropboxFolderLink(input.packageUrl)) {
+      return await recoverFromDropboxFolder({
+        url: input.packageUrl,
+        label: input.label,
+        lot,
+        word,
+        design,
+        fieldDesign,
+        identityHints: input.identityHints ?? [],
+        confirmedLots: input.confirmedLots,
+        buildingSqm: input.buildingSqm,
+      }, {
+        stream: deps.streamFolder ?? defaultFolderStream,
+        fetchPackage,
+        readPageTexts,
+      });
+    }
     if (classifyBranch(input.packageUrl) === 'document') {
       return await extractFromDocument(
         fetchPackage, readPageTexts, sharedLinkFileUrl(input.packageUrl),
@@ -630,6 +654,208 @@ async function findLotFolder(
  * a link and a brochure uploaded through the portal cannot disagree about
  * which picture is the property.
  */
+
+/** The production folder stream, imported lazily so this module stays testable. */
+const defaultFolderStream = (url: string): AsyncIterable<Uint8Array> => ({
+  async *[Symbol.asyncIterator]() {
+    const { streamPublicDownload } = await import('./fetchSource.ts');
+    yield* streamPublicDownload(url, { deadline: Date.now() + 60_000 });
+  },
+});
+
+/** The most one kept picture or document may be, and all of them together. */
+const DROPBOX_KEEP_ENTRY_BYTES = 12 * 1024 * 1024;
+const DROPBOX_KEEP_TOTAL_BYTES = 48 * 1024 * 1024;
+/** A folder larger than this is not read. Mairandi's measured 237 MB. */
+const DROPBOX_MAX_FOLDER_BYTES = 512 * 1024 * 1024;
+
+const MIME_BY_EXTENSION: Record<string, string> = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', pdf: 'application/pdf',
+};
+const mimeOfName = (name: string) =>
+  MIME_BY_EXTENSION[/\.([a-z0-9]{2,5})$/i.exec(name)?.[1]?.toLowerCase() ?? ''] ?? 'application/octet-stream';
+
+/**
+ * A DROPBOX SHARED FOLDER, READ THE ONE WAY IT CAN BE.
+ *
+ * MEASURED 30 SEPTEMBER 2026, three Mairandi display homes. The folder's page
+ * is a script-rendered shell, a path under the link answers the same shell and
+ * the host ignores `Range`; what it hands over is the whole folder as one zip,
+ * 237 MB of stored entries in 3.5 to 7 seconds. `scanStoredZip` reads it as it
+ * arrives and keeps only entries filed under a folder (or named) for this
+ * property — the same attribution a Drive folder gives, judged on the same
+ * words (`namesThisProperty`: the exact lot, unit or street number; "Unit 9"
+ * is never "Unit 19").
+ *
+ * WHAT IT TAKES, IN ORDER, AND WHAT IT REFUSES:
+ *   1  a photograph the builder filed under the property (a `facade` picture
+ *      in the lot's folder), exactly as it stands;
+ *   2  otherwise the property's one package document, read like any other.
+ *   Kept entries spanning MORE THAN ONE top-level folder are the source
+ *   declining to say which property they belong to: nothing is taken.
+ *   An aerial, a site plan or a logo is not a facade however it is filed.
+ */
+async function recoverFromDropboxFolder(
+  input: {
+    url: string;
+    label: string;
+    lot: string | null;
+    word: 'lot' | 'unit';
+    design: string | null;
+    fieldDesign: string | null;
+    identityHints: readonly string[];
+    confirmedLots?: readonly string[] | null;
+    buildingSqm?: number | null;
+  },
+  deps: {
+    stream: (url: string) => AsyncIterable<Uint8Array>;
+    fetchPackage: PackageFetcher;
+    readPageTexts: (bytes: Uint8Array) => Promise<
+      { ok: true; pages: string[] } | { ok: false; reason: string }>;
+  },
+): Promise<PackageOutcome> {
+  const street = streetAddressFrom(input.label);
+  const identity = { lot: input.lot, street, word: input.word };
+  const displayDesign = input.design ?? input.fieldDesign;
+  const hintWords = input.identityHints
+    .flatMap((hint) => normaliseDriveName(hint).split(' '))
+    .filter((word) => word.length >= 5 && !['estate', 'homes', 'ridge', 'rise'].includes(word));
+
+  if (!input.lot && !street && !(displayDesign && hintWords.length)) {
+    return { status: 'not_identified', detail: 'This property does not name a lot or unit to look for.' };
+  }
+
+  /*
+   * A ROW WITH NO LOT (a display home) IS FOUND BY ITS DESIGN AND ITS ESTATE
+   * TOGETHER — never by the design alone, because one design is sold in many
+   * estates.
+   */
+  const namesIt = (name: string): boolean => {
+    if (namesThisProperty(name, identity)) return true;
+    // `street` is deliberately not consulted here: "Mira 22 Display Home" reads
+    // as a street number and name, and a row with no lot is exactly the row
+    // whose design line does that.
+    if (input.lot || !displayDesign) return false;
+    const clean = ` ${normaliseDriveName(name)} `;
+    return clean.includes(` ${displayDesign} `) && hintWords.some((word) => clean.includes(` ${word} `));
+  };
+  const wanted = (path: string): boolean => {
+    const segments = path.split('/').filter(Boolean);
+    if (!segments.some(namesIt)) return false;
+    return mimeOfName(segments[segments.length - 1]) !== 'application/octet-stream';
+  };
+
+  let scan;
+  try {
+    scan = await scanStoredZip(deps.stream(input.url), {
+      want: wanted,
+      maxEntryBytes: DROPBOX_KEEP_ENTRY_BYTES,
+      maxKeptBytes: DROPBOX_KEEP_TOTAL_BYTES,
+      maxTotalBytes: DROPBOX_MAX_FOLDER_BYTES,
+    });
+  } catch (error) {
+    return {
+      status: 'unreachable',
+      detail: `That Dropbox folder could not be downloaded (${
+        String((error as { safeMessage?: string })?.safeMessage
+          ?? (error as { message?: string })?.message ?? error).slice(0, 100)}).`,
+    };
+  }
+  if (!scan.ok) {
+    return scan.reason === 'not_a_zip'
+      ? { status: 'not_identified', detail: 'That Dropbox link did not answer with a folder we can read.' }
+      : {
+        status: 'unreachable',
+        detail: `That Dropbox folder could not be read to the end (${scan.reason.replace('_', ' ')}).`,
+      };
+  }
+
+  const inside = scan.entries.filter((entry) => !entry.isDirectory && wanted(entry.name));
+  const topFolders = new Set(inside.map((entry) => {
+    const segments = entry.name.split('/').filter(Boolean);
+    return segments.length > 1 ? segments[0] : '';
+  }));
+  if (topFolders.size > 1) {
+    return {
+      status: 'not_identified',
+      detail: 'More than one folder in that Dropbox link names this property.',
+    };
+  }
+  const tooLarge = inside.filter((entry) => entry.tooLarge);
+  const kept = inside.filter((entry): entry is ZipEntry & { data: Uint8Array } => !!entry.data);
+  const asScoped = (entry: ZipEntry & { data: Uint8Array }) => {
+    const segments = entry.name.split('/').filter(Boolean);
+    const name = segments[segments.length - 1];
+    return {
+      zip: entry,
+      scoped: { entry: { id: entry.name, name, mimeType: mimeOfName(name) }, path: segments.slice(0, -1) } as ScopedEntry,
+    };
+  };
+  const candidates = kept.map(asScoped);
+
+  // 1 — a photograph filed under the property.
+  const photos = candidates
+    .filter(({ scoped }) => isPackageImage(scoped.entry)
+      && !isNonFacadeImageName(scoped.entry.name)
+      && !scoped.path.some((folder) => isNonFacadeImageName(folder)))
+    .sort((a, b) => a.scoped.entry.name.localeCompare(b.scoped.entry.name)
+      || a.scoped.entry.id.localeCompare(b.scoped.entry.id));
+  if (photos.length) {
+    const { zip, scoped } = photos[0];
+    const where = [...scoped.path, scoped.entry.name].join('/');
+    return {
+      status: 'recovered_photograph',
+      photograph: {
+        bytes: zip.data,
+        contentType: scoped.entry.mimeType,
+        reference: `dropbox folder: ${where}`,
+        fileName: scoped.entry.name,
+        fileUrl: input.url,
+        folderPath: scoped.path,
+        role: {
+          role: PRIMARY_ROLE,
+          evidenceLevel: 3,
+          evidence: where,
+          reason: 'The builder filed this photograph in a folder naming this property.',
+        },
+      },
+    };
+  }
+
+  // 2 — the property's one package document.
+  const documents = candidates.filter(({ scoped }) =>
+    scoped.entry.mimeType === 'application/pdf'
+    && driveDocumentKind(scoped.entry.name) === 'package_candidate'
+    && !scoped.path.some((folder) => driveDocumentKind(folder) !== 'package_candidate'));
+  if (documents.length === 1) {
+    const { zip, scoped } = documents[0];
+    const sentinel = `${input.url}#zip=${encodeURIComponent(zip.name)}`;
+    const fromZip: PackageFetcher = async (address) =>
+      address === sentinel ? { bytes: zip.data, finalUrl: sentinel } : await deps.fetchPackage(address);
+    return await extractFromDocument(
+      fromZip, deps.readPageTexts, sentinel, scoped.entry.name, input.label,
+      'folder_structure', displayDesign, input.identityHints,
+      undefined, input.confirmedLots);
+  }
+
+  if (tooLarge.length && !kept.length) {
+    return {
+      status: 'unreachable',
+      detail: 'This property\'s files in that Dropbox folder are larger than one attempt may read.',
+    };
+  }
+  if (documents.length > 1) {
+    return {
+      status: 'not_identified',
+      detail: 'That Dropbox folder holds more than one package for this property.',
+    };
+  }
+  return {
+    status: 'not_identified',
+    detail: 'That Dropbox folder holds no photograph or package filed under this property.',
+  };
+}
+
 /**
  * Take a photograph the builder filed under this property, exactly as it is.
  *

@@ -8,8 +8,9 @@ import {
 
 /**
  * MEASURED 30 SEPTEMBER 2026. Three display homes on the live Notion list link
- * one Dropbox FOLDER in their "Complete Package Pack" column. Nothing here can
- * read a photograph out of a Dropbox folder, so the row counts no readable
+ * one Dropbox FOLDER in their "Complete Package Pack" column. (That folder is
+ * read now — see `zipStream` — but a portal page still cannot be, and the row
+ * then counts no readable
  * document — and the chip said "No brochure on this row", with the detail
  * "This stock list attaches no brochure or plan to this property". False: the
  * link is in the cell.
@@ -18,9 +19,21 @@ const DROPBOX_FOLDER = 'https://www.dropbox.com/scl/fo/mfz4my954d5dbaeyryde6/AEG
 
 describe('a row that links something photos cannot be read from', () => {
   it('is counted as an unsupported link, not as no link', () => {
-    const branches = rowSourceBranchCandidates({ 'Complete Package Pack': DROPBOX_FOLDER });
+    const branches = rowSourceBranchCandidates({ 'Complete Package Pack': 'https://portal.example.com/listing/123' });
     expect(branches).toHaveLength(1);
     expect(branches.filter((branch) => !isTraversableBranch(branch))).toHaveLength(1);
+  });
+
+  it('no longer counts a Dropbox FOLDER as one: its zip is read as a stream', () => {
+    for (const link of [DROPBOX_FOLDER, 'https://www.dropbox.com/sh/abc123def/AAxyz?dl=0']) {
+      const branches = rowSourceBranchCandidates({ 'Complete Package Pack': link });
+      expect(branches).toHaveLength(1);
+      expect(branches[0].kind).toBe('dropbox_folder');
+      expect(isTraversableBranch(branches[0])).toBe(true);
+    }
+    // A Dropbox FILE link is still a document link, not a folder.
+    expect(rowSourceBranchCandidates({ a: 'https://www.dropbox.com/scl/fi/abc/Lot-9.pdf?rlkey=x&dl=0' })[0].kind)
+      .toBe('document');
   });
 
   it('says the link cannot be read, and never that the row attaches nothing', () => {
@@ -29,7 +42,7 @@ describe('a row that links something photos cannot be read from', () => {
     });
     expect(state).toBe('unsupported_link');
     expect(STOCK_IMAGE_PROGRESS_BADGE[state]).toBe('Link not readable');
-    expect(STOCK_IMAGE_PROGRESS_DETAIL[state]).toMatch(/Dropbox folder/);
+    expect(STOCK_IMAGE_PROGRESS_DETAIL[state]).toMatch(/web page or a portal/);
     expect(STOCK_IMAGE_PROGRESS_DETAIL[state]).not.toMatch(/attaches no/);
     expect(STOCK_IMAGE_PROGRESS_LABEL[state]).toBeTruthy();
   });

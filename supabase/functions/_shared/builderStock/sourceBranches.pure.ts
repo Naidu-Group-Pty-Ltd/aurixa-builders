@@ -86,6 +86,11 @@ export type BranchKind =
   | 'drive_file'
   /** A Drive folder: a listing to choose from. */
   | 'drive_folder'
+  /**
+   * A Dropbox shared FOLDER. Its only public form is a zip of the whole folder,
+   * read as a stream — see `zipStream.pure.ts`.
+   */
+  | 'dropbox_folder'
   /** A document this pipeline can open — PDF, DOCX, XLSX and the rest. */
   | 'document'
   /** Reachable, but nothing here can take a photograph out of it. */
@@ -107,6 +112,21 @@ export interface RowSourceBranch {
 const IMAGE_EXTENSION = /\.(jpe?g|png|webp|gif|bmp|tiff?|avif|heic)(?:[?#]|$)/i;
 const DOCUMENT_EXTENSION = /\.(pdf|docx?|xlsx?|pptx?|odt|ods|odp|rtf)(?:[?#]|$)/i;
 
+/**
+ * A Dropbox shared-folder link: `dropbox.com/scl/fo/<id>/<key>?rlkey=…`, or the
+ * older `dropbox.com/sh/<id>/<key>`. A file link is `/scl/fi/…` or `/s/…` and is
+ * a document like any other.
+ */
+export function isDropboxFolderLink(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl);
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+    return host === 'dropbox.com' && /^\/(?:scl\/fo|sh)\/[^/]+/.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
 /** What kind of source a URL is, before anything has been fetched. */
 export function classifyBranch(url: string): BranchKind {
   let parsed: URL;
@@ -118,6 +138,7 @@ export function classifyBranch(url: string): BranchKind {
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return 'unsupported';
 
   if (driveFolderId(url)) return 'drive_folder';
+  if (isDropboxFolderLink(url)) return 'dropbox_folder';
   if (driveFileId(url)) return 'drive_file';
   if (IMAGE_EXTENSION.test(parsed.pathname)) return 'direct_image';
   if (DOCUMENT_EXTENSION.test(parsed.pathname)) return 'document';
