@@ -123,11 +123,13 @@ try {
   // same on both sides — so the two portals draw the same frame. Compared as
   // digests of jsonb text (which Postgres renders canonically); no plan or
   // picture is printed.
-  const heroDigest = `md5(jsonb_build_object(
+  // jsonb_strip_nulls on both sides: the composer sends the plan with its
+  // null keys removed, and the readers treat a missing key as null.
+  const heroDigest = `md5(jsonb_strip_nulls(jsonb_build_object(
       'hero', source_detail->'marketplace_hero',
       'stored', source_detail->'stored_sha256',
       'measured', source_detail->'marketplace_measured_sha256',
-      'derivative', source_detail->'sanitized_derivative'->'derivative_sha256')::text)`;
+      'derivative', source_detail->'sanitized_derivative'->'derivative_sha256'))::text)`;
   const primaryIds = live.map((row) => row.primary_image_id).filter(Boolean).map(String);
   if (primaryIds.length) {
     const inList = primaryIds.map((value) => id(value)).join(', ');
