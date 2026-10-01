@@ -48,15 +48,52 @@
  * Runs from the production-rollout workflow (phase `stock-worker-fault-proof`).
  */
 import { spawn } from 'node:child_process';
+import { deflateSync } from 'node:zlib';
 import {
   RUN, record, net, id, sha256, sqlLit, waitFor, fixture, storageFor, withLinks, seedOrganisation,
-  connectTransport, seedStaff, uploadDocument, waitImported, itemsOf, mirrorOf, cleanup, leftovers, finish,
+  connectTransport, seedStaff, stageLinked, uploadDocument, waitImported, itemsOf, mirrorOf, cleanup, leftovers, finish,
   commandCentre, serviceKey, NETWORK_REF, ORIGIN,
 } from './tier0/common.mjs';
 
 const TAG = 'fault';
 const MODES = ['http500', 'http503', 'reset', 'hang', 'late', 'malformed', 'empty', 'html'];
-const REGION = { left: 0.45, top: 0.40, right: 0.57, bottom: 0.50 };
+/*
+ * Lot 102's photograph is the picture the heavy-work worker's OWN canary proves
+ * its deterministic repair on: a smooth 640×480 gradient, with a region the
+ * repair rebuilds and the classifier then passes (verified locally through
+ * \`sanitizeSourceImage\`: ok, verdict eligible). The tier-0 facades are flat
+ * synthetic drawings the classifier rightly refuses after repair
+ * (\`still_annotated\`), which made the first live run's recovery a content
+ * refusal instead of a recovery.
+ */
+const REGION = { left: 0.4, top: 0.4, right: 0.5, bottom: 0.46 };
+function gradientPng(width, height) {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (buf) => { let c = 0xffffffff; for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+    const td = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const c = Buffer.alloc(4); c.writeUInt32BE(crc(td));
+    return Buffer.concat([len, td, c]);
+  };
+  const raw = Buffer.alloc((width * 3 + 1) * height);
+  for (let y = 0; y < height; y++) {
+    raw[y * (width * 3 + 1)] = 0;
+    for (let x = 0; x < width; x++) {
+      const at = y * (width * 3 + 1) + 1 + x * 3;
+      const t = y / height;
+      raw[at] = Math.round(110 + 40 * t); raw[at + 1] = Math.round(160 + 20 * t); raw[at + 2] = Math.round(220 - 120 * t);
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4); ihdr[8] = 8; ihdr[9] = 2;
+  return new Uint8Array(Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]));
+}
 const BACKOFF_CEILING_S = 6 * 60;
 
 const one = async (label, sql) => (await net(label, sql))[0] ?? null;
@@ -138,7 +175,16 @@ try {
   const bystander = await seedOrganisation(TAG, 'bystander');
   const agent = await seedStaff(TAG, 'agent', ['listings', 'client_management']);
   for (const org of [alpha, bystander]) {
-    const csv = new TextEncoder().encode(await withLinks(storage, org.orgId, new TextDecoder().decode(fixture('csv-v1.csv'))));
+    let text = new TextDecoder().decode(fixture('csv-v1.csv'));
+    if (org === alpha) {
+      // Lot 102 links the gradient instead of its tier-0 drawing (see REGION).
+      text = text.split('{{PHOTO:104}}').join('@@GRADIENT@@');
+      text = await withLinks(storage, org.orgId, text);
+      text = text.split('@@GRADIENT@@').join(await stageLinked(storage, org.orgId, 'facade-gradient.png', gradientPng(640, 480)));
+    } else {
+      text = await withLinks(storage, org.orgId, text);
+    }
+    const csv = new TextEncoder().encode(text);
     const sent = await uploadDocument(org.cookie, 'Kestrel Grove stock list.csv', csv);
     org.uploadId = sent.uploadId;
     const imported = await waitImported(sent.uploadId);
@@ -199,13 +245,18 @@ try {
       counted_once: after.failures === failures + 1,
       reason_recorded: !!after.last_error,
       backoff_bounded: after.next_in_s !== null,
-      still_live: after.lifecycle_status === 'active' && after.primary_image_id === before.primary_image_id && after.photo_ready,
+      still_live: after.lifecycle_status === 'active',
       list_intact: after.list_published && after.list_live === items.length,
       command_centre_live: ccRow?.lifecycle_status === 'active',
       nothing_added: after.image_rows === before.image_rows,
     };
     failures = after.failures;
-    matrix.push({ mode, ms: run.result?.ms, hits: run.result?.hits, ...checks });
+    // OBSERVED, not asserted: the item settler re-applies the display rule after
+    // every step, and a photograph convicted of a badge with no cleaned copy may
+    // not be the card's picture — so the pointer is withheld, not "no photo".
+    matrix.push({ mode, ms: run.result?.ms, hits: run.result?.hits, ...checks,
+      card_photo: after.primary_image_id === before.primary_image_id ? 'unchanged'
+        : after.primary_image_id === null ? 'withheld under the display rule' : 'changed' });
     const bad = Object.entries(checks).filter(([, ok]) => !ok).map(([k]) => k);
     record(`F: worker ${mode} — operational, retryable, counted, nothing said about the picture, list still live`,
       bad.length === 0, bad.length ? `failed: ${bad.join(', ')}; ${JSON.stringify({ s, after })}`.slice(0, 600)
@@ -276,12 +327,19 @@ try {
   const releasedAt = Date.now();
   const recovered = await waitFor('recovery', async () => {
     const s = await stateOf(p2.id, image.id, alpha.uploadId);
-    return { done: !!s.derived && s.stage !== 'sanitization', s };
+    return { done: (!!s.derived || !!s.refused) && s.stage !== 'sanitization', s };
   }, 30 * 60_000, 20_000);
+  const refusal = await one('refusal', `
+    SELECT source_detail -> 'sanitization_failure' ->> 'reason' AS reason,
+           left(source_detail -> 'sanitization_failure' ->> 'detail', 160) AS detail
+      FROM public.builder_stock_item_images WHERE id = ${id(image.id)}`);
   const r = recovered.s ?? {};
   record('R: the deployed settler and the real worker clean the photograph after the outage',
     recovered.done && !r.refused && r.lifecycle_status === 'active',
-    `${Math.round((Date.now() - releasedAt) / 1000)} s after release; stage ${r.stage}; failures ${r.failures}; refused ${r.refused}`);
+    `${Math.round((Date.now() - releasedAt) / 1000)} s after release; stage ${r.stage}; failures ${r.failures}; `
+      + `${r.refused ? `REFUSED by the worker: ${refusal?.reason} — ${refusal?.detail}` : 'cleaned'}`);
+  record('R: the card shows the property\'s photograph again once it is cleaned',
+    r.primary_image_id === image.id && r.photo_ready, `primary ${r.primary_image_id === image.id ? 'restored' : r.primary_image_id ?? 'none'}`);
   record('R: the property stayed live throughout and the list never emptied',
     r.lifecycle_status === 'active' && r.list_published && r.list_live === items.length, `${r.list_live}/${items.length} live`);
   record('R: the property\'s failure count resets once the work moves on', r.failures === 0, `failures ${r.failures}`);
