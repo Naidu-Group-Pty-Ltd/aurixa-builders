@@ -24,7 +24,7 @@
  */
 import { isDisplayableSourceImage, servedObjectOf, heroPlanOfImage, chooseDisplayableImage } from './primaryImage.ts';
 import {
-  HERO_ATTEMPT_KEY, HERO_PLAN_VERSION, heroOriginalFingerprint,
+  HERO_ATTEMPT_KEY, HERO_PLAN_KEY, HERO_PLAN_VERSION, HERO_RESCUE_VERSION, heroOriginalFingerprint,
   type HeroMode, type HeroPlan, type HeroServedObject,
 } from './marketplaceHero.pure.ts';
 import { planHeroWithCapacity } from './heavyWorkClient.ts';
@@ -59,18 +59,35 @@ export interface HeroAttempt {
   operational: boolean;
 }
 
+/**
+ * `stale` is a plan of an OLDER planner version that still validates: the
+ * card goes on drawing it — a version bump never blanks a card — and the
+ * sweep re-plans it exactly as it would an `owed` picture.
+ */
 export type HeroStanding =
-  | 'planned' | 'owed' | 'cooling_down' | 'exhausted' | 'no_fingerprint';
+  | 'planned' | 'stale' | 'owed' | 'cooling_down' | 'exhausted' | 'no_fingerprint';
 
 /** Where one picture stands, from its row alone. Pure. */
 export function heroStanding(image: HeroImageRow, now: number): HeroStanding {
-  if (heroPlanOfImage(image)) return 'planned';
+  const plan = heroPlanOfImage(image);
+  if (plan && plan.version >= HERO_PLAN_VERSION) return 'planned';
   const served = servedObjectOf(image);
   if (!served.sha256) return 'no_fingerprint';
+  const due: HeroStanding = plan ? 'stale' : 'owed';
   const attempt = readAttempt(image.source_detail, served.object, served.sha256);
-  if (!attempt) return 'owed';
+  if (!attempt) return due;
   if (attempt.count >= HERO_MAX_ATTEMPTS) return 'exhausted';
-  return now - Date.parse(attempt.at) < HERO_RETRY_AFTER_MS ? 'cooling_down' : 'owed';
+  return now - Date.parse(attempt.at) < HERO_RETRY_AFTER_MS ? 'cooling_down' : due;
+}
+
+/** What a replaced plan drew, kept beside its successor — geometry only. */
+export function previousSummary(plan: HeroPlan | null) {
+  if (!plan) return null;
+  return {
+    version: plan.version, mode: plan.mode,
+    reason: plan.fitReason ?? plan.reasons?.[plan.reasons.length - 1] ?? '',
+    source: plan.source, usable: plan.usable, focal: plan.focal ?? null, crop: plan.crop,
+  };
 }
 
 /** The attempt record, only where it is about these bytes at this version. */
@@ -210,7 +227,7 @@ export async function settleMarketplaceHero(db: any, options: HeroSweepOptions =
   const outcome: HeroSweepOutcome = {
     examined: 0, planned: 0, byMode: { original: 0, crop: 0, fit: 0 },
     failed: 0, operationalFailures: 0, lostRace: 0,
-    standing: { planned: 0, owed: 0, cooling_down: 0, exhausted: 0, no_fingerprint: 0 },
+    standing: { planned: 0, stale: 0, owed: 0, cooling_down: 0, exhausted: 0, no_fingerprint: 0 },
     tieBreakWouldChange: 0, stoppedForTime: false,
   };
   const groups = await readHeroCandidates(db, options);
@@ -219,7 +236,7 @@ export async function settleMarketplaceHero(db: any, options: HeroSweepOptions =
     for (const image of images) {
       const standing = heroStanding(image, now);
       outcome.standing[standing] += 1;
-      if (standing === 'owed') owed.push(image);
+      if (standing === 'owed' || standing === 'stale') owed.push(image);
     }
     const chosen = chooseDisplayableImage(images as never[]) as HeroImageRow | null;
     if (chosen && item.primary_image_id && chosen.id !== item.primary_image_id) outcome.tieBreakWouldChange += 1;
@@ -244,13 +261,25 @@ export async function settleMarketplaceHero(db: any, options: HeroSweepOptions =
     };
     if (served.ok === false) { await fail(served.reason, served.operational); continue; }
 
-    const answer = await planHeroWithCapacity(served.bytes);
+    const answer = await planHeroWithCapacity(served.bytes, { rescue: HERO_PLAN_VERSION >= HERO_RESCUE_VERSION });
     if (answer.ok === false) {
       await fail(answer.reason === 'worker' ? `worker: ${(answer as { detail?: string }).detail ?? ''}` : answer.reason,
         answer.reason === 'worker');
       continue;
     }
-    const stored = { plan: answer.plan as HeroPlan, object: served.object, sha256: served.sha256, planned_at: new Date().toISOString() };
+    if (answer.plan.version < HERO_PLAN_VERSION) {
+      // A worker still on the older planner (mid-deploy) answered: nothing is
+      // stored, the picture keeps what it draws, and it is asked again.
+      await fail(`worker planned at version ${answer.plan.version}`, true);
+      continue;
+    }
+    // A replaced plan of the same bytes is kept as `previous`, so the change
+    // a re-plan made can be shown and reported without re-deriving it.
+    const prior = heroPlanOfImage(image as never);
+    const stored = {
+      plan: answer.plan as HeroPlan, object: served.object, sha256: served.sha256, planned_at: new Date().toISOString(),
+      ...(prior ? { previous: previousSummary(prior) } : {}),
+    };
     if (await record(db, image, { plan: stored })) {
       outcome.planned += 1;
       outcome.byMode[answer.plan.mode] += 1;
@@ -259,4 +288,37 @@ export async function settleMarketplaceHero(db: any, options: HeroSweepOptions =
     }
   }
   return outcome;
+}
+
+/** The health of the planned pictures, as numbers only (census). */
+export function heroHealth(images: HeroImageRow[], now: number) {
+  const out = {
+    total: images.length, current_version: HERO_PLAN_VERSION,
+    by_version: {} as Record<string, number>, by_mode: { original: 0, crop: 0, fit: 0 } as Record<HeroMode, number>,
+    fit_reasons: {} as Record<string, number>, fits_without_reason: 0,
+    stale: 0, owed: 0, cooling_down: 0, exhausted: 0, missing_fingerprint: 0,
+    failed_attempts: 0, invalidated_by_source: 0,
+  };
+  for (const image of images) {
+    const standing = heroStanding(image, now);
+    if (standing === 'stale') out.stale += 1;
+    if (standing === 'owed') out.owed += 1;
+    if (standing === 'cooling_down') out.cooling_down += 1;
+    if (standing === 'exhausted') out.exhausted += 1;
+    if (standing === 'no_fingerprint') out.missing_fingerprint += 1;
+    const served = servedObjectOf(image as never);
+    if (served.sha256 && readAttempt(image.source_detail, served.object, served.sha256)) out.failed_attempts += 1;
+    const plan = heroPlanOfImage(image as never);
+    const stored = ((image.source_detail ?? {}) as Record<string, unknown>)[HERO_PLAN_KEY];
+    // A plan is kept on the row but the bytes it measured are no longer served.
+    if (!plan && stored && typeof stored === 'object') out.invalidated_by_source += 1;
+    if (!plan) continue;
+    out.by_version[String(plan.version)] = (out.by_version[String(plan.version)] ?? 0) + 1;
+    out.by_mode[plan.mode] += 1;
+    if (plan.mode === 'fit') {
+      if (plan.fitReason) out.fit_reasons[plan.fitReason] = (out.fit_reasons[plan.fitReason] ?? 0) + 1;
+      else out.fits_without_reason += 1;
+    }
+  }
+  return out;
 }

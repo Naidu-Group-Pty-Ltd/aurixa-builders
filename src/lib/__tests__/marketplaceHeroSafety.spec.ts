@@ -15,8 +15,9 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import { encodePng } from '../../../supabase/functions/_shared/builderStock/rasterPng';
 import {
-  HERO_MAX_ATTEMPTS, HERO_RETRY_AFTER_MS, heroStanding, settleMarketplaceHero,
+  HERO_MAX_ATTEMPTS, HERO_RETRY_AFTER_MS, heroHealth, heroStanding, settleMarketplaceHero,
 } from '../../../supabase/functions/_shared/builderStock/settleMarketplaceHero';
+import { heroPlanOfImage } from '../../../supabase/functions/_shared/builderStock/primaryImage';
 import { planHeroFromBytes } from '../../../supabase/functions/_shared/builderStock/heroPlanning';
 import {
   HERO_ATTEMPT_KEY, HERO_PLAN_KEY, HERO_PLAN_VERSION, validateHeroPlan,
@@ -155,22 +156,87 @@ describe('the sweep plans through one guarded call and touches nothing else', ()
     expect(heroStanding(replaced as never, Date.now())).toBe('owed');
   });
 
-  it('a stale plan (older version, or other bytes) is owed again, never drawn', async () => {
+  it('an older version still draws but is re-planned; other bytes are owed and never drawn', async () => {
     const png = await scenePng();
     const fresh = await planHeroFromBytes(png);
     if (!fresh.ok) throw new Error('no plan');
+    const v2 = await planHeroFromBytes(png, { rescue: false });
+    if (!v2.ok) throw new Error('no plan');
+    expect(v2.plan.version).toBe(HERO_PLAN_VERSION - 1);
     const stale = imageRow('a', 'o/a.png', sha(png), {
-      [HERO_PLAN_KEY]: { plan: { ...fresh.plan, version: HERO_PLAN_VERSION - 1 }, object: 'original', sha256: sha(png), planned_at: 'x' },
+      [HERO_PLAN_KEY]: { plan: v2.plan, object: 'original', sha256: sha(png), planned_at: 'x' },
     });
-    expect(heroStanding(stale as never, Date.now())).toBe('owed');
+    expect(heroStanding(stale as never, Date.now())).toBe('stale');
+    expect(heroPlanOfImage(stale as never)).not.toBeNull();
     const otherBytes = imageRow('a', 'o/a.png', 'c'.repeat(64), {
       [HERO_PLAN_KEY]: { plan: fresh.plan, object: 'original', sha256: sha(png), planned_at: 'x' },
     });
     expect(heroStanding(otherBytes as never, Date.now())).toBe('owed');
+    expect(heroPlanOfImage(otherBytes as never)).toBeNull();
     const current = imageRow('a', 'o/a.png', sha(png), {
       [HERO_PLAN_KEY]: { plan: fresh.plan, object: 'original', sha256: sha(png), planned_at: 'x' },
     });
     expect(heroStanding(current as never, Date.now())).toBe('planned');
+  });
+
+  it('re-planning a stale plan stores the new one with the old as `previous`', async () => {
+    const png = await scenePng();
+    const v2 = await planHeroFromBytes(png, { rescue: false });
+    if (!v2.ok) throw new Error('no plan');
+    const { db, rpcCalls } = fakeDb({
+      items: [itemRow('a')],
+      images: [imageRow('a', 'o/a.png', sha(png), {
+        [HERO_PLAN_KEY]: { plan: v2.plan, object: 'original', sha256: sha(png), planned_at: 'x' },
+      })],
+      objects: { 'o/a.png': png },
+    });
+    const outcome = await settleMarketplaceHero(db);
+    expect(outcome.standing.stale).toBe(1);
+    expect(outcome.planned).toBe(1);
+    const written = rpcCalls[0].args.p_plan;
+    expect(written.plan.version).toBe(HERO_PLAN_VERSION);
+    expect(written.previous).toMatchObject({ version: v2.plan.version, mode: v2.plan.mode, crop: v2.plan.crop });
+  });
+
+  it('a worker still on the older planner is not stored as current — it is asked again', async () => {
+    const png = await scenePng();
+    const v2 = await planHeroFromBytes(png, { rescue: false });
+    if (!v2.ok) throw new Error('no plan');
+    vi.stubEnv('BUILDER_STOCK_PDF_WORKER_URL', 'https://worker.invalid');
+    vi.stubEnv('BUILDER_STOCK_PDF_WORKER_TOKEN', 'token');
+    const { encodeWorkDocument, WORK_OUTCOME_HEADER } = await import('../../../supabase/functions/_shared/builderStock/heavyWorkWire.pure');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, {
+      status: 200, headers: { [WORK_OUTCOME_HEADER]: encodeWorkDocument({ ok: true, plan: v2.plan, tile: null }) },
+    })));
+    try {
+      const { db, rpcCalls } = fakeDb({ items: [itemRow('a')], images: [imageRow('a', 'o/a.png', sha(png))], objects: { 'o/a.png': png } });
+      const outcome = await settleMarketplaceHero(db);
+      expect(outcome.planned).toBe(0);
+      expect(rpcCalls).toHaveLength(1);
+      expect(rpcCalls[0].args.p_plan).toBeNull();
+      expect(rpcCalls[0].args.p_attempt.operational).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('health counts versions, modes, reasons, staleness and source changes — numbers only', async () => {
+    const png = await scenePng();
+    const fresh = await planHeroFromBytes(png);
+    const v2 = await planHeroFromBytes(png, { rescue: false });
+    if (!fresh.ok || !v2.ok) throw new Error('no plan');
+    const record = (plan: unknown, bytes = sha(png)) => ({ [HERO_PLAN_KEY]: { plan, object: 'original', sha256: bytes, planned_at: 'x' } });
+    const health = heroHealth([
+      imageRow('a', 'o/a.png', sha(png), record(fresh.plan)),
+      imageRow('b', 'o/b.png', sha(png), record(v2.plan)),
+      imageRow('c', 'o/c.png', 'd'.repeat(64), record(fresh.plan)),
+      imageRow('d', 'o/d.png', sha(png)),
+    ] as never[], Date.now());
+    expect(health).toMatchObject({
+      total: 4, current_version: HERO_PLAN_VERSION, stale: 1, owed: 2, invalidated_by_source: 1, fits_without_reason: 0,
+    });
+    expect(health.by_version[String(HERO_PLAN_VERSION)]).toBe(1);
+    expect(JSON.stringify(health)).not.toMatch(/o\/a\.png|storage|https?:/);
   });
 
   it('archived stock is not planned unless asked', async () => {
