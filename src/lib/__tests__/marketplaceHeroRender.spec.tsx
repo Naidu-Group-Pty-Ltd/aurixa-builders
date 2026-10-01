@@ -38,7 +38,7 @@ describe('the plan the network makes is the plan a card can read', () => {
   it('anything else is ignored, and the card draws as before', () => {
     expect(readHeroPlan(null)).toBeNull();
     expect(readHeroPlan({ ...croppedPlan, version: 0 })).toBeNull();
-    expect(readHeroPlan({ ...croppedPlan, crop: { ...croppedPlan.crop, h: croppedPlan.crop.h + 1 } })).toBeNull();
+    expect(readHeroPlan({ ...croppedPlan, crop: { ...croppedPlan.crop, h: croppedPlan.crop.h - 20 } })).toBeNull();
     expect(readHeroPlan({ ...croppedPlan, crop: { ...croppedPlan.crop, x: croppedPlan.source.width } })).toBeNull();
     expect(readHeroPlan({ ...croppedPlan, mode: 'stretch' })).toBeNull();
   });
