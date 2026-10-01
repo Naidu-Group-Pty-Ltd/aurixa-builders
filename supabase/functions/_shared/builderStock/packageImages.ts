@@ -183,7 +183,11 @@ export type PackageOutcome =
    * and each of those is a place the behaviour of the OTHER failures could
    * change by accident. An added optional field is invisible to all of them.
    */
-  | { status: 'unreachable'; detail: string; reason?: ElectionRefusalReason };
+  | {
+    status: 'unreachable'; detail: string; reason?: ElectionRefusalReason;
+    /** `worker`: OUR transport failed (unreachable, refused, timed out, unreadable answer). */
+    cause?: 'worker';
+  };
 
 /**
  * How long one branch's recovery may run before it is answered for.

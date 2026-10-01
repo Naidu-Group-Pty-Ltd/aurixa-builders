@@ -137,7 +137,11 @@ export async function recoverDropboxFolderOnWorker(
   context: FolderWorkContext,
   route: { endpoint: string; token: string },
 ): Promise<PackageOutcome> {
-  const unreachable = (detail: string): PackageOutcome => ({ status: 'unreachable', detail });
+  // Every refusal built HERE is the worker's transport, never the folder's own
+  // answer (that is relayed below as the worker sent it): ours, so a newer
+  // runtime may re-ask it. See `recordPackageUnreachable`.
+  const unreachable = (detail: string): PackageOutcome =>
+    ({ status: 'unreachable', detail, cause: 'worker' } as PackageOutcome);
   let response: Response;
   try {
     response = await meteredFetch(`${route.endpoint}${FOLDER_PATH}`, {

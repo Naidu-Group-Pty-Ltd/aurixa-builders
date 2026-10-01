@@ -421,7 +421,43 @@ export const COMMAND_CENTRE_PAGE_STATES = [
  * were answered "challenged" (phase `cc-frontend-build`), so the two are told
  * apart here rather than guessed at.
  */
+/**
+ * THE COMMAND CENTRE'S OWN FIRST-PARTY ORIGINS, in the order a page is tried.
+ *
+ * Measured 1 October 2026: the custom domain's Cloudflare bot protection
+ * answers a GitHub runner's Chromium with its challenge (HTTP 403,
+ * `cf-mitigated: challenge`), so every page check behind it measured the
+ * CHALLENGE — three of them passed on it. The same build is published at the
+ * Command Centre's own Lovable origin, which its edge functions name
+ * explicitly in their CORS and CSRF allow-lists (`auth.ts`, `csrfGuard.ts`) and
+ * which `cc-frontend-build` already requires to serve the same build. Opening
+ * the page there changes nothing about who may see what: the session, the
+ * guards and every read are the Command Centre's own, whichever origin drew
+ * the page. Nothing here weakens the custom domain's protection; it is asked
+ * first, and a challenge there is recorded, never hidden.
+ */
+export const CC_FIRST_PARTY_ORIGINS = [...new Set([CC_ORIGIN, 'https://npc-property-dashbord.lovable.app'])];
+
+/** States that mean the page is NOT the product page a staff member should get. */
+const NOT_THE_PAGE_STATES = ['Sign in', 'Something went wrong', 'Permission required',
+  'Not included in your subscription', 'Configuration required', 'Entitlements temporarily unavailable'];
+
 export async function inspectCommandCentrePage(browser, { token, path, viewport, wait = 4_000 }) {
+  const challengedOrigins = [];
+  for (const [index, origin] of CC_FIRST_PARTY_ORIGINS.entries()) {
+    const seen = await inspectAt(browser, origin, { token, path, viewport, wait });
+    const last = index === CC_FIRST_PARTY_ORIGINS.length - 1;
+    if (seen.navigation.challenged && !last) {
+      challengedOrigins.push(origin);
+      await seen.context.close().catch(() => {});
+      continue;
+    }
+    return { ...seen, challengedOrigins };
+  }
+  throw new Error('no Command Centre origin to try');
+}
+
+async function inspectAt(browser, origin, { token, path, viewport, wait }) {
   const context = await browser.newContext({ viewport });
   await context.addCookies([{ name: '__Host-session_token', value: token, domain: `${CC_REF}.supabase.co`,
     path: '/', secure: true, httpOnly: true, sameSite: 'None' }]);
@@ -433,11 +469,12 @@ export async function inspectCommandCentrePage(browser, { token, path, viewport,
     if (m) calls.push(`${m[1]}:${res.status()}`);
   });
   page.on('pageerror', () => errors.push('uncaught script error'));
-  const answer = await page.goto(`${CC_ORIGIN}${path}`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+  const answer = await page.goto(`${origin}${path}`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
     .catch(() => null);
   await page.waitForTimeout(wait);
   const interstitial = await page.evaluate(() => document.title === 'Just a moment...').catch(() => false);
   const navigation = {
+    origin,
     status: answer ? answer.status() : null,
     challenged: (answer?.headers()['cf-mitigated'] ?? '') === 'challenge' || interstitial,
   };
@@ -454,10 +491,58 @@ export async function inspectCommandCentrePage(browser, { token, path, viewport,
       }
     }
     return { states: known.filter((phrase) => text.includes(phrase)), overflow,
-      width: document.documentElement.scrollWidth, widest };
-  }, COMMAND_CENTRE_PAGE_STATES).catch(() => ({ states: [], overflow: false, width: null, widest: null }));
+      width: document.documentElement.scrollWidth, widest, heading: !!document.querySelector('h1') };
+  }, COMMAND_CENTRE_PAGE_STATES).catch(() => ({ states: [], overflow: false, width: null, widest: null, heading: false }));
   const url = new URL(page.url()).pathname;
-  return { page, context, url, calls, errors, navigation, ...drawn };
+  /*
+   * IS THIS THE PRODUCT'S PAGE AT ALL? Every page check is meaningless on
+   * anything else, and three of them used to pass on Cloudflare's challenge.
+   * Not a challenge, not a 4xx/5xx document, not sent to sign in or to an
+   * error or guard page, still at the path asked for, and the app itself
+   * drew a heading and called its own functions.
+   */
+  const notReal = [];
+  if (navigation.challenged) notReal.push('Cloudflare challenge');
+  if (navigation.status === null) notReal.push('no answer to the navigation');
+  else if (navigation.status >= 400) notReal.push(`HTTP ${navigation.status} document`);
+  if (url !== new URL(path, 'https://x').pathname) notReal.push(`redirected to ${url}`);
+  for (const state of NOT_THE_PAGE_STATES) if (drawn.states.includes(state)) notReal.push(`page says "${state}"`);
+  if (!drawn.heading) notReal.push('the app drew no heading');
+  if (!calls.length) notReal.push('the app called none of its functions');
+  if (calls.some((c) => /:5\d\d$/.test(c))) notReal.push(`a function answered 5xx (${calls.filter((c) => /:5\d\d$/.test(c)).join(' ')})`);
+  return { page, context, url, calls, errors, navigation, ...drawn, real: notReal.length === 0, notReal };
+}
+
+/**
+ * The property page read by its STRUCTURE — the facts list, the builder's
+ * sentence, the availability badge, the gallery, the documents, the back link
+ * and the activation button — so a figure is compared as a figure. Only the
+ * caller's own seeded property is ever read this way.
+ */
+export async function readCommandCentreProperty(page) {
+  return page.evaluate(() => {
+    const facts = {};
+    for (const row of document.querySelectorAll('dl > div')) {
+      const dt = row.querySelector('dt'); const dd = row.querySelector('dd');
+      if (dt && dd) facts[dt.textContent.trim()] = dd.textContent.trim();
+    }
+    const title = document.querySelector('h1')?.textContent?.trim() ?? null;
+    const images = [...document.images].filter((img) => img.complete && img.naturalWidth > 64);
+    const lead = images.find((img) => title && img.alt && img.alt.startsWith(title)) ?? null;
+    const button = [...document.querySelectorAll('button')]
+      .find((b) => /Activate builder|Not available/.test(b.textContent ?? '')) ?? null;
+    return {
+      title,
+      header: document.querySelector('header')?.innerText ?? '',
+      text: document.body?.innerText ?? '',
+      facts,
+      lead: lead ? { src: lead.currentSrc || lead.src, width: lead.naturalWidth } : null,
+      pictures: images.length,
+      documents: [...document.querySelectorAll('ul[aria-label="Documents"] a')].map((a) => a.href),
+      back: !!document.querySelector('a[href="/listings?section=builder-stock"]'),
+      activate: button ? { text: button.textContent.trim(), disabled: button.disabled } : null,
+    };
+  });
 }
 
 /**
@@ -766,4 +851,137 @@ export function finish(label, extra = {}) {
   }
   console.log(`VERDICT ${label} ${failed.length ? 'FAIL' : 'PASS'} ${JSON.stringify(extra)}`);
   process.exitCode = failed.length ? 1 : 0;
+}
+
+/**
+ * THE SAME PAGE, OPENED BY CLOUDFLARE'S OWN BROWSER (Browser Run).
+ *
+ * A GitHub runner's Chromium is challenged on BOTH Command Centre origins
+ * (measured 1 October 2026: HTTP 403 `cf-mitigated: challenge` on the custom
+ * domain and on the Lovable origin). Browser Run is a real Chromium on
+ * Cloudflare's network whose every request carries Web Bot Auth signatures —
+ * a SIGNED, self-declared agent that bot protection is designed to recognise —
+ * so it is not a bypass of anything: nothing about either origin's protection
+ * changes, and if they challenge it too this says so.
+ *
+ * It renders `path` with the staff session cookie on the Command Centre's
+ * backend (the same cookie the runner's Chromium is given), runs ONE reader
+ * script inside the page — the same structural read as
+ * `readCommandCentreProperty`, plus the overflow measure and, where asked, the
+ * back link's click — and returns what that script wrote. Credentials come
+ * from the run's environment and are never printed.
+ */
+const BROWSER_RUN_READER = `(() => {
+  const errors = [];
+  addEventListener('error', () => errors.push('uncaught script error'));
+  const STATES = ${JSON.stringify(COMMAND_CENTRE_PAGE_STATES)};
+  const started = Date.now();
+  const read = () => {
+    const text = document.body ? document.body.innerText : '';
+    const facts = {};
+    for (const row of document.querySelectorAll('dl > div')) {
+      const dt = row.querySelector('dt'); const dd = row.querySelector('dd');
+      if (dt && dd) facts[dt.textContent.trim()] = dd.textContent.trim();
+    }
+    const title = document.querySelector('h1') ? document.querySelector('h1').textContent.trim() : null;
+    const images = [...document.images].filter((img) => img.complete && img.naturalWidth > 64);
+    const lead = images.find((img) => title && img.alt && img.alt.startsWith(title)) || null;
+    const button = [...document.querySelectorAll('button')].find((b) => /Activate builder|Not available/.test(b.textContent || '')) || null;
+    return {
+      documentTitle: document.title, path: location.pathname, title,
+      header: document.querySelector('header') ? document.querySelector('header').innerText : '',
+      text, facts, states: STATES.filter((s) => text.includes(s)),
+      lead: lead ? { src: lead.currentSrc || lead.src, width: lead.naturalWidth } : null,
+      pictures: images.length,
+      documents: [...document.querySelectorAll('ul[aria-label="Documents"] a')].map((a) => a.href),
+      back: !!document.querySelector('a[href="/listings?section=builder-stock"]'),
+      activate: button ? { text: button.textContent.trim(), disabled: button.disabled } : null,
+      overflow: document.documentElement.scrollWidth > innerWidth + 1, width: document.documentElement.scrollWidth,
+    };
+  };
+  const settled = (r) => r.title && (Object.keys(r.facts).length > 0 || r.states.length > 0);
+  // Registered on every document: on Cloudflare's interstitial \`tick\` keeps
+  // waiting rather than answering, so a challenge that passes navigates on and
+  // the reader on the NEXT document answers; one that never passes times out
+  // and the Worker reports the title it was left on.
+  const finish = (result) => {
+    const pre = document.createElement('pre');
+    pre.id = '__cc_proof';
+    pre.textContent = JSON.stringify(result);
+    document.documentElement.appendChild(pre);
+  };
+  const tick = () => {
+    if (document.title === 'Just a moment...' && Date.now() - started < 45000) { setTimeout(tick, 500); return; }
+    const r = read();
+    if (!settled(r) && Date.now() - started < 25000) { setTimeout(tick, 500); return; }
+    const back = document.querySelector('a[href="/listings?section=builder-stock"]');
+    if (!window.__CC_PROOF_CLICK_BACK || !back) { finish({ ...r, errors }); return; }
+    back.click();
+    setTimeout(() => {
+      const t = document.body ? document.body.innerText : '';
+      finish({ ...r, errors, afterBack: { path: location.pathname + location.search,
+        states: STATES.filter((s) => t.includes(s)), documentTitle: document.title } });
+    }, 4000);
+  };
+  if (document.readyState === 'loading') addEventListener('DOMContentLoaded', tick); else tick();
+})();`;
+
+export async function readCommandCentrePageViaBrowserRun({ token, path, viewport, clickBack = false, worker = null }) {
+  const account = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+  if (!worker && (!account || !apiToken)) return { available: false, reason: 'Browser Run is not configured for this run' };
+  const tried = [];
+  const cookies = [{ name: '__Host-session_token', value: token, domain: `${CC_REF}.supabase.co`, path: '/',
+    secure: true, httpOnly: true, sameSite: 'None' }];
+  const script = `${clickBack ? 'window.__CC_PROOF_CLICK_BACK = true;' : ''}${BROWSER_RUN_READER}`;
+  const verdict = (origin, read, status, mitigated) => {
+    const notReal = [];
+    if (mitigated === 'challenge' || read.documentTitle === 'Just a moment...') notReal.push('Cloudflare challenge');
+    if (typeof status === 'number' && status >= 400) notReal.push(`HTTP ${status} document`);
+    if (read.path !== new URL(path, 'https://x').pathname) notReal.push(`redirected to ${read.path}`);
+    for (const state of NOT_THE_PAGE_STATES) if (read.states.includes(state)) notReal.push(`page says "${state}"`);
+    if (!read.title) notReal.push('the app drew no heading');
+    return { available: true, origin, tried, read, status, real: notReal.length === 0, notReal };
+  };
+  if (worker) {
+    for (const origin of CC_FIRST_PARTY_ORIGINS) {
+      const answer = await worker.read({ url: `${origin}${path}`, cookies, viewport, script });
+      if (answer.error || !answer.read) { tried.push(`${origin}: ${String(answer.error ?? 'no answer').slice(0, 600)}`); continue; }
+      const seen = verdict(origin, answer.read, answer.status, answer.mitigated);
+      if (seen.real || origin === CC_FIRST_PARTY_ORIGINS[CC_FIRST_PARTY_ORIGINS.length - 1]) return seen;
+      tried.push(`${origin}: ${seen.notReal.join('; ')}`);
+    }
+    return { available: true, origin: null, tried, read: null, real: false, notReal: tried };
+  }
+  for (const origin of CC_FIRST_PARTY_ORIGINS) {
+    const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${account}/browser-rendering/content`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: `${origin}${path}`,
+        viewport,
+        cookies,
+        gotoOptions: { waitUntil: 'networkidle0', timeout: 45_000 },
+        addScriptTag: [{ content: script }],
+        waitForSelector: { selector: '#__cc_proof', timeout: 40_000 },
+      }),
+    }).catch((error) => ({ ok: false, status: 0, text: async () => String(error?.message ?? error) }));
+    const body = await response.text();
+    let json = null;
+    try { json = JSON.parse(body); } catch { /* not JSON */ }
+    if (!response.ok || !json?.success) {
+      const why = json?.errors?.map((e) => `${e.code ?? ''} ${e.message ?? ''}`.trim()).join('; ')
+        || `HTTP ${response.status}`;
+      tried.push(`${origin}: ${why.slice(0, 200)}`);
+      continue;
+    }
+    const html = String(json.result ?? '');
+    const m = /<pre id="__cc_proof">([\s\S]*?)<\/pre>/.exec(html);
+    if (!m) { tried.push(`${origin}: the page rendered without the reader's answer`); continue; }
+    const decoded = m[1].replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+    let read = null;
+    try { read = JSON.parse(decoded); } catch { tried.push(`${origin}: the reader's answer was not readable`); continue; }
+    return verdict(origin, read, null, null);
+  }
+  return { available: true, origin: null, tried, read: null, real: false, notReal: tried };
 }

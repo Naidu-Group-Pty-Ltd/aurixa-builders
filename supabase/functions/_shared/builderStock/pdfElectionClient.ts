@@ -59,6 +59,15 @@ function roleName(role: unknown): string | null {
 
 /** Everything this module can produce on its own. Never `not_identified`. */
 const unreachable = (detail: string): PackageOutcome => ({ status: 'unreachable', detail });
+/**
+ * UNREACHABLE BECAUSE OF US: the worker could not be reached, refused, timed
+ * out, was not configured, or answered something this side cannot read. Kept
+ * apart from a link the SOURCE refuses (a 404, a sign-in wall) because only
+ * this kind is something a newer runtime can fix, so only this kind is stamped
+ * with the runtime when it retires a branch (`recordPackageUnreachable`).
+ */
+const workerUnreachable = (detail: string): PackageOutcome =>
+  ({ status: 'unreachable', detail, cause: 'worker' });
 
 /**
  * THE IN-PROCESS FALLBACK IS GONE, AND SIZE NO LONGER DECIDES ANYTHING HERE.
@@ -218,7 +227,7 @@ async function electOnRoute(
     console.error('[builderStock] pdf election worker unconfigured '
       + '(BUILDER_STOCK_PDF_WORKER_URL / BUILDER_STOCK_PDF_WORKER_TOKEN); '
       + `refusing ${bytes.length} bytes rather than electing in-process`);
-    return unreachable(`${route.detail} Configure BUILDER_STOCK_PDF_WORKER_URL `
+    return workerUnreachable(`${route.detail} Configure BUILDER_STOCK_PDF_WORKER_URL `
       + 'and BUILDER_STOCK_PDF_WORKER_TOKEN so this document can be read.');
   }
   return await electViaWorker(bytes, context, route.endpoint, route.token);
@@ -257,13 +266,13 @@ async function electViaWorker(
       metadata: { purpose: 'package_cover_election' },
     });
   } catch (error) {
-    return unreachable('That document could not be read just now '
+    return workerUnreachable('That document could not be read just now '
       + `(${String(error).slice(0, 120)}).`);
   }
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    return unreachable(`The document reader refused the request (${response.status}) `
+    return workerUnreachable(`The document reader refused the request (${response.status}) `
       + `${body.slice(0, 160)}`);
   }
 
@@ -271,7 +280,7 @@ async function electViaWorker(
   try {
     body = await response.json() as Record<string, unknown>;
   } catch {
-    return unreachable('The document reader returned something that was not a result.');
+    return workerUnreachable('The document reader returned something that was not a result.');
   }
   /*
    * AN ANSWER TO THE QUESTION THIS SIDE ASKED, OR NONE.
@@ -284,7 +293,7 @@ async function electViaWorker(
    * said is theirs. So any other protocol is `unreachable`: a retry.
    */
   if (Number(body.protocol) !== electionProtocolFor(context)) {
-    return unreachable('The document reader answered a protocol this deployment '
+    return workerUnreachable('The document reader answered a protocol this deployment '
       + 'did not ask in.');
   }
 
@@ -340,14 +349,14 @@ async function electViaWorker(
     return { status: body.status, detail };
   }
   if (body.status !== 'recovered') {
-    return unreachable('The document reader returned an outcome this deployment '
+    return workerUnreachable('The document reader returned an outcome this deployment '
       + 'does not recognise.');
   }
 
   const image = body.image as Record<string, unknown> | undefined;
   if (!image || typeof image.bytes !== 'string' || typeof image.contentType !== 'string'
     || typeof image.reference !== 'string' || !image.provenance || !image.role) {
-    return unreachable('The document reader returned a result with no usable image.');
+    return workerUnreachable('The document reader returned a result with no usable image.');
   }
   /*
    * THE ANSWER MUST BE ABOUT THE DOCUMENT WE SENT.
@@ -360,16 +369,16 @@ async function electViaWorker(
    * prevent. A mismatch is operational, like everything else here.
    */
   if (!image.reference.startsWith(`${context.documentName}#page`)) {
-    return unreachable('The document reader answered about a different document.');
+    return workerUnreachable('The document reader answered about a different document.');
   }
   let imageBytes: Uint8Array;
   try {
     imageBytes = base64ToBytes(image.bytes);
   } catch {
-    return unreachable('The elected image could not be decoded from the reader\'s answer.');
+    return workerUnreachable('The elected image could not be decoded from the reader\'s answer.');
   }
   if (!imageBytes.length) {
-    return unreachable('The document reader returned an empty image.');
+    return workerUnreachable('The document reader returned an empty image.');
   }
   return {
     status: 'recovered',

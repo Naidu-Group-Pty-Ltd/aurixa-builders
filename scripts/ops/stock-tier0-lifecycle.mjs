@@ -192,7 +192,8 @@ try {
       const seen = await inspectCommandCentrePage(browser,
         { token: agent.token, path: `/listings/builder-stock/${ids1['101']}`, viewport: { width, height } });
       const ccText = await seen.page.locator('body').innerText().catch(() => '');
-      const ccFacts = ['12 Proofline Way', 'Truganina', '749,900', 'Aspen 25', 'Kestrel Grove', '448', '231.5']
+      // The page rounds an area to the whole square metre: 231.5 m² is drawn as 232 m².
+      const ccFacts = ['12 Proofline Way', 'Truganina', '749,900', 'Aspen 25', 'Kestrel Grove', '448', '232']
         .filter((s) => ccText.includes(s));
       const ccPictures = await seen.page.evaluate(() => [...document.images].filter((img) => img.complete && img.naturalWidth > 64).length);
       // No screenshot of a Command Centre page: this repository is public.
@@ -200,11 +201,14 @@ try {
         ? ' challenged by Cloudflare bot protection' : ''}; states ${JSON.stringify(seen.states)}; calls ${seen.calls.join(' ')}`;
       record(`L2: the Command Centre's property page shows lot 101's facts (${name})`, ccFacts.length === 7,
         `${ccFacts.length}/7: ${ccFacts.join(', ')}; url ${seen.url}; ${Date.now() - t2} ms${why}`);
-      record(`L2: the Command Centre's property page draws the photograph (${name})`, ccPictures >= 1, `${ccPictures} drawn`);
-      record(`L2: the Command Centre's property page fits the ${name} width`, !seen.overflow,
-        seen.overflow ? `wider than the viewport: ${seen.width}px, widest ${JSON.stringify(seen.widest)}` : 'fits');
+      // None of these means anything on a page that is not the product's — three of them used to PASS on
+      // Cloudflare's challenge — so each requires the real page first (`inspectCommandCentrePage`).
+      const notPage = seen.real ? '' : `not the product's page: ${seen.notReal.join('; ')}`;
+      record(`L2: the Command Centre's property page draws the photograph (${name})`, seen.real && ccPictures >= 1, notPage || `${ccPictures} drawn`);
+      record(`L2: the Command Centre's property page fits the ${name} width`, seen.real && !seen.overflow,
+        notPage || (seen.overflow ? `wider than the viewport: ${seen.width}px, widest ${JSON.stringify(seen.widest)}` : 'fits'));
       record(`L2: no script error on the Command Centre's property page (${name})`,
-        seen.errors.length === 0, seen.errors.length ? `${seen.errors.length} uncaught` : '');
+        seen.real && seen.errors.length === 0, notPage || (seen.errors.length ? `${seen.errors.length} uncaught` : ''));
       await seen.context.close();
     }
   }

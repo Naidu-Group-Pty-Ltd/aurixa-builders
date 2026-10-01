@@ -1740,12 +1740,12 @@ export async function repairSourceImagesForUpload(
      * own key and its own budget, because a link that answered cleanly and a
      * package that destroyed the worker are different failures.
      */
-    const bankUnreachable = async () => {
+    const bankUnreachable = async (ours = false) => {
       if (unreachableAttemptsExhausted(branchBefore, question)) {
         const { error: bankError } = await db
           .from('builder_stock_items')
           .update({ source_provenance_result: writeBranchState(
-            negativeBefore.get(itemId), packageUrl, recordPackageUnreachable(question)) })
+            negativeBefore.get(itemId), packageUrl, recordPackageUnreachable(question, undefined, ours)) })
           .eq('id', itemId)
           .eq('organisation_id', input.organisationId);
         // Unrecorded means unadvanced; say so rather than settle on it.
@@ -1898,7 +1898,7 @@ export async function repairSourceImagesForUpload(
        * budget must not move when somebody fixes a comma.
        */
       if (recovered.reason === TEXT_FREE_COVER_NOT_ELECTED) await bankTextFreeCover();
-      else await bankUnreachable();
+      else await bankUnreachable(recovered.cause === 'worker');
       continue;
     }
 

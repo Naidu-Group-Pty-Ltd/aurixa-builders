@@ -424,8 +424,17 @@ export function recordPackageTextFreeCover(
 export function recordPackageUnreachable(
   question: ProvenanceQuestion,
   now: () => Date = () => new Date(),
+  /**
+   * The exhausting answer was OUR worker failing (`cause: 'worker'`), not the
+   * link. Since runtime 5 the folder read and the cover election run on the
+   * worker, so a worker outage answers `unreachable` exactly as a dead link
+   * does — and an unstamped retirement is never re-asked when the runtime that
+   * failed is superseded. Found by the worker fault proof (1 October 2026).
+   * A dead link still carries no stamp, so nothing here becomes a treadmill.
+   */
+  ours = false,
 ) {
-  return recordNoDeterministicImage(
+  const record = recordNoDeterministicImage(
     question,
     `That link could not be read after ${MAX_UNREACHABLE_ATTEMPTS} attempts — `
     + `it answered with no readable document — so no builder image was taken `
@@ -436,6 +445,7 @@ export function recordPackageUnreachable(
     'operational',
     now,
   );
+  return ours ? { ...record, runtime_version: question.runtimeVersion ?? RUNTIME_VERSION } : record;
 }
 
 /**
