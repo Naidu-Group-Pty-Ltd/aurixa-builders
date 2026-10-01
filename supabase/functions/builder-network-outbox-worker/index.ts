@@ -29,10 +29,21 @@ import {
   BuilderNetworkPrivacyViolation,
   assertPayloadCrossesClean,
 } from '../_shared/builderNetworkPrivacy.pure.ts';
+import { deliveryWaves } from '../_shared/builderNetworkDeliveryWaves.pure.ts';
 
 const MAX_BODY_BYTES = 8 * 1024;
 const TERMINAL_ATTEMPTS = 10;
 const DELIVERY_TIMEOUT_MS = 15_000;
+/** Sends in flight at once, across different properties only. */
+const DELIVERY_CONCURRENCY = 8;
+/** Events claimed per round. */
+const CLAIM_BATCH = 50;
+/**
+ * How long one invocation keeps claiming. The cron fires every minute and a
+ * claim is held for ten (`builder_network_claim_outbox`), so this ends with
+ * room for a slow last send (DELIVERY_TIMEOUT_MS) before the next run.
+ */
+const RUN_BUDGET_MS = 35_000;
 
 Deno.serve(async (req) => {
   const json = (payload: unknown, status = 200) => new Response(
@@ -57,12 +68,7 @@ Deno.serve(async (req) => {
     }
 
     const workerId = `outbox-${crypto.randomUUID().slice(0, 8)}`;
-    const { data: events, error: claimError } = await supabase
-      .rpc('builder_network_claim_outbox', { _worker_id: workerId, _limit: 25 });
-    if (claimError) {
-      console.error('[builder-network-outbox-worker] claim failed', claimError);
-      return json({ error: 'claim_failed' }, 500);
-    }
+    const startedAt = Date.now();
 
     const operationalEvent = async (
       name: string,
@@ -96,8 +102,8 @@ Deno.serve(async (req) => {
       }
     };
 
-    let delivered = 0, retried = 0, dead = 0;
-    for (const event of events ?? []) {
+    let delivered = 0, retried = 0, dead = 0, claimed = 0;
+    const deliverOne = async (event: any): Promise<void> => {
       try {
         const { data: connection } = await supabase
           .from('workspace_connections')
@@ -108,14 +114,14 @@ Deno.serve(async (req) => {
         if (!connection || connection.state === 'revoked') {
           await release(event, 'connection_revoked', { dead: true });
           dead++;
-          continue;
+          return;
         }
         if (!connection.inbound_url || !connection.outbound_hmac_secret) {
           // Not yet deliverable is not failure: the transport arrives with
           // configuration, and the queue simply waits.
           await release(event, connection.inbound_url ? 'no_hmac_secret' : 'no_inbound_url');
           retried++;
-          continue;
+          return;
         }
 
         // The contract, at the last gate before the wire.
@@ -175,15 +181,41 @@ Deno.serve(async (req) => {
             forbidden_paths: error.paths.slice(0, 20),
           });
           dead++;
-          continue;
+          return;
         }
         const message = error instanceof Error ? error.message : String(error);
         await release(event, message);
         retried++;
       }
+    };
+
+    // Waves: different properties in parallel, everything else in order.
+    const runEvents = async (events: any[]) => {
+      for (const wave of deliveryWaves(events, DELIVERY_CONCURRENCY)) {
+        await Promise.all(wave.map(deliverOne));
+      }
+    };
+
+    /*
+     * AND IT KEEPS GOING WHILE THERE IS WORK, inside a budget that ends well
+     * before the next minute's run starts. One claim per invocation left a
+     * backlog to drain at the cron's pace however fast the sends were.
+     */
+    while (Date.now() - startedAt < RUN_BUDGET_MS) {
+      const { data: events, error: claimError } = await supabase
+        .rpc('builder_network_claim_outbox', { _worker_id: workerId, _limit: CLAIM_BATCH });
+      if (claimError) {
+        console.error('[builder-network-outbox-worker] claim failed', claimError);
+        if (claimed === 0) return json({ error: 'claim_failed' }, 500);
+        break;
+      }
+      if (!events?.length) break;
+      claimed += events.length;
+      await runEvents(events);
+      if (events.length < CLAIM_BATCH) break;
     }
 
-    return json({ claimed: events?.length ?? 0, delivered, retried, dead });
+    return json({ claimed, delivered, retried, dead });
   } catch (error) {
     console.error('[builder-network-outbox-worker] error', error);
     return json({ error: 'worker_failed' }, 500);

@@ -81,6 +81,10 @@ import {
 import {
   heldPropertiesHeading, heldPropertiesNote, photoAttentionCopy,
 } from '@/lib/builderStockPhotoAttention.pure';
+import {
+  ARRIVING_LIST_BODY, arrivingList, arrivingListTitle, arrivingPlaceholderCount,
+} from '@/lib/builderStockArrival.pure';
+import { Skeleton } from '@/components/ui/skeleton';
 import './BuilderStockList.css';
 
 /**
@@ -177,6 +181,12 @@ export default function BuilderStockList() {
    */
   const imageProgressQuery = useBuilderStockImageProgress();
   const progressRecords = imageProgressQuery.data?.records ?? [];
+  /*
+   * A NEW LIST THAT IS STILL BEING PREPARED, read from the upload itself.
+   * Nothing of it is live yet, so nothing on the list below can say so —
+   * see `builderStockArrival.pure.ts` for the four silent minutes this ends.
+   */
+  const incoming = arrivingList(progressRecords);
   const uploadStillWorking = progressRecords.some((record) => Number(record.working) > 0
     || (!record.published && Number(record.total) > 0));
   const itemsQuery = useBuilderStockItems({
@@ -310,7 +320,15 @@ export default function BuilderStockList() {
    * a property still being worked on is left alone rather than asked for.
    */
   const heldWithoutPhoto = heldItems.filter(
-    (item) => !item.primary_image_id || item.image_work_stage === FAILED_WORK_STAGE);
+    (item) => item.image_work_stage === FAILED_WORK_STAGE
+      || (!item.primary_image_id && stockImageProgress({
+        hasImage: false,
+        sourceDocuments: item.source_documents ?? 0,
+        unprocessedDocuments: item.source_documents_unprocessed ?? 0,
+        unreachableDocuments: item.source_documents_unreachable ?? 0,
+        unsupportedLinks: item.source_links_unsupported ?? 0,
+        workStage: item.image_work_stage,
+      }) !== 'working'));
   /*
    * AND WHOSE FAILURE EACH ONE IS, because the banner below used to say
    * "our team has been alerted" over all of them.
@@ -723,9 +741,11 @@ export default function BuilderStockList() {
         ? 'Could not be read just now'
         : itemsQuery.isLoading
           ? 'Reading…'
-          : workingImages > 0
-            ? `${workingImages} still finding a picture`
-            : 'No imagery outstanding',
+          : incoming
+            ? `${incoming.total} being prepared`
+            : workingImages > 0
+              ? `${workingImages} still finding a picture`
+              : 'No imagery outstanding',
     },
     {
       key: 'uploads',
@@ -983,7 +1003,27 @@ export default function BuilderStockList() {
             each property, so nobody is told to wait on a screen that never
             changes — and nobody has to reload to find out it is done.
           */}
-          {workingImages > 0 || arrivingUploads > 0 ? (
+          {incoming ? (
+            <div
+              role="status"
+              aria-live="polite"
+              className="builder-stock-list-processing mb-5 flex items-start gap-3 rounded-xl border border-border/70 px-4 py-3"
+            >
+              <Loader2
+                className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-muted-foreground motion-reduce:animate-none"
+                aria-hidden
+              />
+              <div className="min-w-0 flex-1 text-sm">
+                <p className="font-medium">{arrivingListTitle(incoming)}</p>
+                <Progress
+                  value={incoming.total ? (incoming.ready / incoming.total) * 100 : 0}
+                  className="mt-2 h-1.5"
+                  aria-label={`${incoming.ready} of ${incoming.total} photos ready`}
+                />
+                <p className="mt-2 text-xs text-muted-foreground">{ARRIVING_LIST_BODY}</p>
+              </div>
+            </div>
+          ) : workingImages > 0 || arrivingUploads > 0 ? (
             <div
               role="status"
               className="builder-stock-list-processing mb-5 flex items-start gap-3 rounded-xl border border-border/70 px-4 py-3"
@@ -1105,6 +1145,20 @@ export default function BuilderStockList() {
             <div className="py-12 text-center text-sm text-destructive">
               {(itemsQuery.error as Error).message}
             </div>
+          ) : !records.length && incoming ? (
+            <ul
+              className="bd-plate-list builder-stock-list-plates"
+              aria-label="Properties being prepared"
+              aria-busy="true"
+            >
+              {Array.from({ length: arrivingPlaceholderCount(incoming) }, (_, index) => (
+                <li key={index} className="space-y-3 rounded-md border border-border/60 p-3">
+                  <Skeleton className="aspect-[16/9] w-full" />
+                  <Skeleton className="h-4 w-3/5" />
+                  <Skeleton className="h-3 w-2/5" />
+                </li>
+              ))}
+            </ul>
           ) : !records.length ? (
             <div className="py-12 text-center">
               <Boxes className="mx-auto h-10 w-10 text-muted-foreground/50" aria-hidden />
