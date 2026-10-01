@@ -23,22 +23,29 @@ export const PROOF_TILE_W = 320;
 export const PROOF_TILE_H = 180;
 const GAP = 8;
 
+export type HeroRaster = { width: number; height: number; pixels: Uint8Array };
 export type HeroPlanningResult =
-  | { ok: true; plan: HeroPlan; tile: { width: number; height: number; pixels: Uint8Array } | null }
+  | { ok: true; plan: HeroPlan; tile: HeroRaster | null; thumbnail?: HeroRaster | null }
   | { ok: false; reason: 'decoder_unsupported' | 'decoder_failed' | 'no_plan'; detail?: string };
 
 export async function planHeroFromBytes(
   bytes: Uint8Array,
-  options: { proof?: boolean } = {},
+  options: { proof?: boolean; rescue?: boolean; thumbnail?: boolean } = {},
 ): Promise<HeroPlanningResult> {
   try {
     const decoded = await decodeThumbnailResult(bytes);
     if (decoded.ok === false) {
       return { ok: false, reason: decoded.reason === 'unsupported' ? 'decoder_unsupported' : 'decoder_failed' };
     }
-    const plan = planHero(decoded.thumbnail);
+    const plan = planHero(decoded.thumbnail, undefined, options.rescue === undefined ? {} : { rescue: options.rescue });
     if (!plan) return { ok: false, reason: 'no_plan' };
-    return { ok: true, plan, tile: options.proof ? drawProofTile(decoded.thumbnail, plan) : null };
+    const t = decoded.thumbnail;
+    return {
+      ok: true, plan, tile: options.proof ? drawProofTile(t, plan) : null,
+      thumbnail: options.thumbnail
+        ? { width: t.width, height: t.height, pixels: t.pixels instanceof Uint8Array ? t.pixels : Uint8Array.from(t.pixels as ArrayLike<number>) }
+        : null,
+    };
   } catch (error) {
     return { ok: false, reason: 'decoder_failed', detail: String((error as Error)?.message ?? error).slice(0, 120) };
   }
@@ -73,7 +80,7 @@ export function drawProofTile(t: Thumb, plan: HeroPlan): { width: number; height
   return { width, height, pixels: out };
 }
 
-function blit(
+export function blit(
   t: Thumb, src: PixelRect, out: Uint8Array, outW: number, dst: PixelRect, fit: 'contain' | 'cover',
 ): { x: number; y: number; scale: number } {
   const scale = fit === 'contain' ? Math.min(dst.w / src.w, dst.h / src.h) : Math.max(dst.w / src.w, dst.h / src.h);
@@ -90,7 +97,7 @@ function blit(
   return { x: ox, y: oy, scale };
 }
 
-function rect(out: Uint8Array, outW: number, r: PixelRect, [cr, cg, cb]: [number, number, number]) {
+export function rect(out: Uint8Array, outW: number, r: PixelRect, [cr, cg, cb]: [number, number, number]) {
   const outH = out.length / 3 / outW;
   const paint = (x: number, y: number) => {
     if (x < 0 || y < 0 || x >= outW || y >= outH) return;
