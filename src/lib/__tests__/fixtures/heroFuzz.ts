@@ -105,3 +105,27 @@ export function impossibleScene(seed: number): SceneOptions {
   const hw = Math.min(W - 8, Math.ceil(maxW * (1.08 + r() * 0.25)));
   return { width: W, height: H, horizon, seed, houses: [{ x: Math.floor((W - hw) / 2), w: hw, roofTop: Math.floor(horizon * 0.3), base: horizon + 6, garage: r() > 0.5 }] };
 }
+
+/**
+ * A plain photograph: one house, no canvas, anywhere in the frame, at any
+ * size — clouds, a pole, flat overcast sky and a dark foreground included.
+ * The test of every rule that could mistake photograph for page, and of the
+ * first pass's own reading of roof and walls.
+ */
+export function plainScene(seed: number): SceneOptions {
+  const r = rng(seed + 20_000);
+  const W = 160 + Math.floor(r() * 240), H = 120 + Math.floor(r() * 280);
+  const horizon = Math.floor(H * (0.3 + r() * 0.5));
+  const hw = Math.max(20, Math.floor(W * (0.1 + r() * 0.8)));
+  const hx = Math.floor(r() * Math.max(1, W - hw));
+  const ht = Math.max(10, Math.floor(horizon * (0.2 + r() * 0.6)));
+  const options: SceneOptions = {
+    width: W, height: H, horizon, seed, lawnGrain: pick(r, [4, 10, 16]),
+    houses: [{ x: hx, w: hw, roofTop: Math.max(2, horizon - ht), base: Math.min(H - 1, horizon + 6), garage: r() > 0.5 }],
+  };
+  if (r() > 0.7) options.clouds = true;
+  if (r() > 0.8) options.pole = Math.floor(r() * W);
+  if (r() > 0.8) options.flatSky = [200, 200, 204];
+  if (r() > 0.7) options.darkGround = Math.floor(H * 0.1);
+  return options;
+}

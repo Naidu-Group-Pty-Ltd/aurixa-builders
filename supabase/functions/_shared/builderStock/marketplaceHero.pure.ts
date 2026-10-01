@@ -513,7 +513,18 @@ function roofTop(a: RegionAnalysis, band: Band, x0: number, x1: number, extend =
     if (!span) break;
     const roofShaped = span[0] >= below[0] - 1 && span[1] <= below[1] + 1;
     const withinCap = band.top - r <= bandHeight;
-    if (withinCap ? (skyOver(r, span) && !roofShaped) : !roofShaped) break;
+    if (withinCap ? (skyOver(r, span) && !roofShaped) : !roofShaped) {
+      // Something solid stands on the roof and is not roof-shaped — cloud, a
+      // canopy, a neighbour's gable — so where the ridge ends is UNKNOWN.
+      // Every uncertainty widens the box: go on while anything solid stands
+      // over the building, and stop only at clear sky. A box too tall costs
+      // a frame (the picture is then shown whole); a box too short cuts the
+      // roof.
+      if (!skyOver(r, span)) {
+        for (let k = r; k >= 0 && spanOf(k); k -= 1) top = k;
+      }
+      break;
+    }
     top = r;
     below = roofShaped ? span : below;
   }
@@ -648,10 +659,12 @@ const RELAXED_DOMINANT_SHARE = 0.8;
 const RELAXED_TOLERANCE = 6;
 const RELAXED_MAX_TRIM_SHARE = 0.3;
 const RELAXED_EDGE_BREAK = 0.6;
-const FRAME_LINE_SHARE = 0.97;
-const FRAME_EDGE = 40;
+const FRAME_LINE_SHARE = 0.9;
+const FRAME_LINE_RUN = 0.85;
+const FRAME_EDGE = 30;
 const FRAME_LINE_REACH = 0.3;
 const FRAME_BEYOND_DOMINANT = 0.75;
+const FRAME_BEYOND_NEUTRAL = 0.6;
 const OPEN_SKY_SHARE = 0.6;
 const AMBIGUOUS_MASS_SHARE = 0.5;
 
@@ -726,7 +739,7 @@ function relaxedCanvasTrim(t: HeroThumbnail, r: PixelRect, side: 'left' | 'right
 
 /**
  * A straight frame line near one edge: a column (or, at the bottom, a row)
- * where a strong edge runs UNBROKEN across 97% of the region — anything that
+ * where a strong edge runs UNBROKEN across 85% of the region (90% in all) — anything that
  * stands on a horizon breaks it — with nothing but one flat colour beyond it. That is a brochure's photo border, a separator
  * above a banner, a panel's edge — not a building, whose corner never runs
  * the full height of its own photograph unbroken by its roof. Returns how
@@ -738,7 +751,7 @@ function frameLineTrim(t: HeroThumbnail, r: PixelRect, side: 'left' | 'right' | 
   const along = vertical ? r.h : r.w;
   const reach = Math.floor(extent * FRAME_LINE_REACH);
   const strongAt = (step: number): boolean => {
-    let on = 0;
+    let on = 0, run = 0, longest = 0;
     for (let j = 1; j < along - 1; j += 1) {
       let g = 0, cross = 0;
       if (side === 'bottom') {
@@ -754,9 +767,13 @@ function frameLineTrim(t: HeroThumbnail, r: PixelRect, side: 'left' | 'right' | 
       }
       // Colour, not brightness: a red banner under a green lawn is the same
       // brightness and an unmistakable edge.
-      if (g >= FRAME_EDGE && g > 1.5 * cross) on += 1;
+      if (g >= FRAME_EDGE && g > 1.5 * cross) { on += 1; run += 1; longest = Math.max(longest, run); } else run = 0;
     }
-    return on / Math.max(1, along - 2) >= FRAME_LINE_SHARE;
+    // UNBROKEN: one continuous run across most of the region (a page's own
+    // margins at its ends are the only gap allowed), and the line nearly
+    // everywhere — anything standing on a horizon breaks both.
+    const n = Math.max(1, along - 2);
+    return on / n >= FRAME_LINE_SHARE && longest / n >= FRAME_LINE_RUN;
   };
   for (let step = 0; step < reach; step += 1) {
     if (!strongAt(step)) continue;
@@ -770,7 +787,11 @@ function frameLineTrim(t: HeroThumbnail, r: PixelRect, side: 'left' | 'right' | 
         : side === 'right' ? regionDominance(t, r.x + r.w - step + 1, r.y, r.x + r.w, r.y + r.h)
           : regionDominance(t, r.x, r.y + r.h - step + 1, r.x + r.w, r.y + r.h);
       const [br, bg, bb] = beyond.median;
-      if (beyond.share < FRAME_BEYOND_DOMINANT || (bg > br + 12 && bg > bb + 12)) return 0;
+      if (bg > br + 12 && bg > bb + 12) return 0;
+      // A neutral page may carry more — type, a logo, a badge — because the
+      // straight, unbroken edge already proves where the photograph stops.
+      const enough = isCanvasColour(beyond.median) ? FRAME_BEYOND_NEUTRAL : FRAME_BEYOND_DOMINANT;
+      if (beyond.share < enough) return 0;
     }
     return last + 1;
   }

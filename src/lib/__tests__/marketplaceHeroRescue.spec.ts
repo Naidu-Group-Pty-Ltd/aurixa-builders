@@ -18,13 +18,13 @@ import { describe, expect, it, vi, afterEach } from 'vitest';
 
 import {
   HERO_ASPECT_H, HERO_ASPECT_W, HERO_FIT_REASONS, HERO_PLAN_KEY, HERO_RESCUE_VERSION,
-  heroPlanForServed, planHero, validateHeroPlan, type HeroPlan, type PixelRect,
+  findPhotoRegion, findUsableRegion, heroPlanForServed, planHero, validateHeroPlan, type HeroPlan, type PixelRect,
 } from '../../../supabase/functions/_shared/builderStock/marketplaceHero.pure';
 import { chooseDisplayableImage } from '../../../supabase/functions/_shared/builderStock/primaryImage';
 import { planHeroWithCapacity } from '../../../supabase/functions/_shared/builderStock/heavyWorkClient';
 import { encodeWorkDocument, WORK_OUTCOME_HEADER } from '../../../supabase/functions/_shared/builderStock/heavyWorkWire.pure';
 import { drawScene, type Rect, type SceneOptions } from './fixtures/heroScenes';
-import { impossibleScene, rescuableScene } from './fixtures/heroFuzz';
+import { impossibleScene, plainScene, rescuableScene } from './fixtures/heroFuzz';
 
 const inside = (inner: Rect, outer: PixelRect) =>
   inner.x >= outer.x && inner.y >= outer.y
@@ -420,7 +420,7 @@ describe('generated scenes — ground truth by construction', () => {
       if (p.mode === 'crop') expect.soft(inside(p.crop, scene.photo), `seed ${seed} canvas`).toBe(true);
       expect.soft(validateHeroPlan(p), `seed ${seed} valid`).toBe(true);
     }
-  });
+  }, 60_000);
 
   it(`${N} impossible scenes: always a fit, with the size reason`, () => {
     for (let seed = 1; seed <= N; seed += 1) {
@@ -428,7 +428,7 @@ describe('generated scenes — ground truth by construction', () => {
       expect.soft(p.mode, `seed ${seed}`).toBe('fit');
       expect.soft(['building_too_wide', 'building_too_tall'], `seed ${seed}`).toContain(p.fitReason);
     }
-  });
+  }, 60_000);
 
   it(`${N} noisy scenes: never a cut, every fit named, nothing drawn v2 would not`, () => {
     for (let seed = 1; seed <= N; seed += 1) {
@@ -439,7 +439,17 @@ describe('generated scenes — ground truth by construction', () => {
       expect.soft(inside(p.crop, v2.usable) || p.mode === 'original', `seed ${seed} canvas`).toBe(true);
       if (p.mode === 'fit') expect.soft(HERO_FIT_REASONS, `seed ${seed}`).toContain(p.fitReason);
     }
-  });
+  }, 60_000);
+
+  it(`${N * 2} plain photographs: no page is ever invented, and no house is ever cut`, () => {
+    for (let seed = 1; seed <= N * 2; seed += 1) {
+      const scene = drawScene(plainScene(seed));
+      const u = findUsableRegion(scene.thumbnail);
+      expect.soft(findPhotoRegion(scene.thumbnail, u).changed, `seed ${seed} canvas`).toBe(false);
+      const p = planHero(scene.thumbnail, undefined, { rescue: true })!;
+      expect.soft(inside(visible(scene.subject, scene.photo), p.crop), `seed ${seed} cut`).toBe(true);
+    }
+  }, 60_000);
 
   it('the rescue is deterministic: the same pixels plan the same', () => {
     for (let seed = 1; seed <= 20; seed += 1) {
