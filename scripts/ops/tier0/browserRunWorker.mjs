@@ -31,8 +31,16 @@ export default {
     const { url, cookies, viewport, script } = await request.json();
     let browser = null;
     try {
+      // ONE browser for the whole proof: join a free session where one is open
+      // (Cloudflare's documented reuse pattern) rather than launching per page —
+      // launches are what the account's Browser Run allowance is counted in.
+      const sessions = await puppeteer.sessions(env.BROWSER).catch(() => []);
+      const free = sessions.find((session) => !session.connectionId);
+      browser = free
+        ? await puppeteer.connect(env.BROWSER, free.sessionId).catch(() => null)
+        : null;
       // A session left idle closes after a minute by default; the page may wait longer.
-      browser = await puppeteer.launch(env.BROWSER, { keep_alive: 180000 });
+      if (!browser) browser = await puppeteer.launch(env.BROWSER, { keep_alive: 180000 });
       const page = await browser.newPage();
       await page.setViewport(viewport);
       if (cookies?.length) await page.setCookie(...cookies);
@@ -49,11 +57,15 @@ export default {
           title: await page.title().catch(() => null), path: new URL(page.url()).pathname, ...first }, { status: 502 });
       }
       const text = await page.$eval('#__cc_proof', (el) => el.textContent);
-      return Response.json({ ...first, finalPath: new URL(page.url()).pathname, read: JSON.parse(text) });
+      const finalPath = new URL(page.url()).pathname;
+      await page.close().catch(() => {});
+      return Response.json({ ...first, finalPath, read: JSON.parse(text) });
     } catch (error) {
       return Response.json({ error: 'the browser could not be used: ' + String(error && error.message || error).slice(0, 300) }, { status: 502 });
     } finally {
-      if (browser) await browser.close().catch(() => {});
+      // Disconnect, never close: the session stays for the proof's next page and
+      // expires on its own once the proof has finished.
+      if (browser) await browser.disconnect().catch(() => {});
     }
   },
 };
