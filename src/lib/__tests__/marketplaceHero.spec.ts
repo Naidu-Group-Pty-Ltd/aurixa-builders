@@ -247,7 +247,7 @@ describe('a stored plan is a claim about exact bytes', () => {
   it('a stale or tampered plan is refused by the same rules the planner obeys', () => {
     const cuts: HeroPlan = { ...base, crop: { ...base.crop, y: base.focal!.y + 10 } };
     const skewed: HeroPlan = { ...base, crop: { ...base.crop, h: base.crop.h - 20 } };
-    const old: HeroPlan = { ...base, version: HERO_PLAN_VERSION - 1 };
+    const old: HeroPlan = { ...base, version: 1 };
     const outside: HeroPlan = { ...base, crop: { ...base.crop, x: base.source.width } };
     for (const bad of [cuts, skewed, old, outside]) {
       expect(validateHeroPlan(bad)).toBe(false);

@@ -26,7 +26,7 @@ import { createCorsHeaders } from '../_shared/auth.ts';
 import { verifyInternal } from '../_shared/auth_v2.ts';
 import { enforceRawBodyLimit } from '../_shared/requestSecurity.ts';
 import {
-  heroStanding, readHeroCandidates, readServedBytes, settleMarketplaceHero, type HeroStanding,
+  heroHealth, heroStanding, readHeroCandidates, readServedBytes, settleMarketplaceHero, type HeroStanding,
 } from '../_shared/builderStock/settleMarketplaceHero.ts';
 import { drawHeroComparisonProof, drawHeroProof } from '../_shared/builderStock/heroProof.ts';
 import { planHeroWithCapacity } from '../_shared/builderStock/heavyWorkClient.ts';
@@ -89,7 +89,7 @@ Deno.serve(async (req: Request) => {
         const key = `${String(item.organisation_id).slice(0, 8)}:${item.lifecycle_status}`;
         const row = rows[key] ??= {
           items: 0, images: 0, primaries_planned: 0,
-          planned: 0, owed: 0, cooling_down: 0, exhausted: 0, no_fingerprint: 0,
+          planned: 0, stale: 0, owed: 0, cooling_down: 0, exhausted: 0, no_fingerprint: 0,
         };
         row.items += 1;
         for (const image of images) {
@@ -101,7 +101,13 @@ Deno.serve(async (req: Request) => {
           }
         }
       }
-      return json({ success: true, operation, version: HERO_PLAN_VERSION, by_organisation: rows, primary_modes: modes });
+      const now2 = Date.now();
+      return json({
+        success: true, operation, version: HERO_PLAN_VERSION, by_organisation: rows, primary_modes: modes,
+        // The cards themselves — the primary of every property — and every candidate picture.
+        health_cards: heroHealth(groups.map(({ images }) => images[0]), now2),
+        health_images: heroHealth(groups.flatMap(({ images }) => images), now2),
+      });
     }
 
     if (operation === 'compare') {

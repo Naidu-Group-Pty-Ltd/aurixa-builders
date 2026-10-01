@@ -109,3 +109,52 @@ platform.
 Archived pictures are planned fresh for the proof and nothing is stored for
 them, so a proof never becomes a partial backfill. `evaluate` does the same
 for aggregate numbers.
+
+## v3 — the fit rescue (1 October 2026)
+
+v2 showed 15 of the 41 live cards whole (`fit`). v3 adds a second pass that
+runs only where the first answers `fit`, or where canvas can be proven inside
+what a crop or an original draws. The first pass is v2, byte for byte; only
+the version stamp moves.
+
+- **A, the photographic region.** Neutral page margins are judged as a
+  region, so type and a logo are allowed. A frame line must be straight and
+  unbroken, with a flat page beyond it. The top is held to v2's strict rule,
+  because an overcast sky looks exactly like a page. A green field is never a
+  banner.
+- **B, the connected facade.** Structure groups are joined into clusters
+  across anything but open sky, at roof height and beside the walls. Poles,
+  fences and foliage are never rivals. A neighbour the frame's edge cuts is
+  background. A rival standing whole with half the building's structure makes
+  the picture ambiguous.
+- **C, the frame**, retried around the building. A rescued crop must be at
+  least 640 source pixels wide.
+
+Every v3 `fit` carries one `fitReason`, and validation enforces it. Plans of
+versions 2 and 3 both draw, so the version bump never blanked a card. A v2
+plan is `stale` until it is re-planned, and the replaced plan is kept as
+`previous`.
+
+**Measured before switching on.** The 41 live cards were planned both ways
+(`compare`, numbers only, nothing stored):
+
+| v2 → v3 | Cards |
+|---|---|
+| original → original | 13 |
+| crop → crop, the same frame | 13 |
+| fit → crop (brochure pages) | 2 |
+| fit → fit, `building_too_tall` (one 4:3 render, 1.3% over) | 10 |
+| fit → fit, `building_too_wide` (panoramas) | 3 |
+
+**A first attempt was worse, and is recorded so it is not repeated.** It let
+the roof climb past the wall band when the roof's edge was uncertain, and it
+followed the walls below the windows. Both were invented for synthetic
+roofs. On real photographs, which are textured almost everywhere, both
+reached the frame's edge and turned six good crops into fits. They are
+removed.
+
+**Known limits of the first pass (v2), kept deliberately.** It can miss a
+roof taller than the window band, and a plain stretch of wall below the
+windows. Lifting either limit is what failed on the live cards. The property
+tests assert that v3 never cuts a house v2 holds whole, not that the first
+pass is perfect.

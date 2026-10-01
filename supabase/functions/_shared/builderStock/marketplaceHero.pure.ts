@@ -50,7 +50,7 @@
  * of an older version that still validates is drawn until it is re-planned,
  * so raising it never blanks a card; it only makes every plan owed again.
  */
-export const HERO_PLAN_VERSION = 2;
+export const HERO_PLAN_VERSION = 3;
 /** The first pass alone (v2): the original planner, kept byte for byte. */
 const HERO_FIRST_PASS_VERSION = 2;
 /** The fit rescue (v3): a second look wherever the first pass answers `fit`. */
