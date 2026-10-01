@@ -62,3 +62,40 @@ describe('a property is sent to the Command Centre once, in its latest state', (
     expect(worker).toContain('assertPayloadCrossesClean(event.payload ?? {})');
   });
 });
+
+describe('it stays that way', () => {
+  const { readdirSync } = require('node:fs') as typeof import('node:fs');
+  const dir = resolve(__dirname, '../../../supabase/migrations');
+  const files = readdirSync(dir).filter((f: string) => f.endsWith('.sql')).sort();
+  const SINCE = '20261001150000';
+
+  it('the newest definition of the enqueue still supersedes the waiting copies', () => {
+    const defining = files.filter((f: string) =>
+      read(`supabase/migrations/${f}`).includes('FUNCTION public.builder_network_enqueue_stock_item('));
+    const latest = read(`supabase/migrations/${defining[defining.length - 1]}`);
+    expect(defining[defining.length - 1] >= SINCE).toBe(true);
+    expect(latest).toContain("SET status = 'superseded'");
+  });
+
+  it('no later migration queues a property by any other route', () => {
+    for (const f of files.filter((name: string) => name > `${SINCE}_`)) {
+      const sql = read(`supabase/migrations/${f}`);
+      if (!sql.includes("'stock.item.upserted'")) continue;
+      expect(sql, `${f} queues stock.item.upserted outside the enqueue`).toContain(
+        'FUNCTION public.builder_network_enqueue_stock_item(');
+      expect(sql).toContain("SET status = 'superseded'");
+    }
+  });
+
+  it('no edge function writes a property event to the outbox itself', () => {
+    const walk = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap((e: any) =>
+      e.isDirectory() ? walk(resolve(d, e.name)) : e.name.endsWith('.ts') ? [resolve(d, e.name)] : []);
+    const offenders = walk(resolve(__dirname, '../../../supabase/functions'))
+      .filter((f: string) => !f.endsWith('builderNetworkDeliveryWaves.pure.ts'))
+      .filter((f: string) => {
+        const code = readFileSync(f, 'utf8');
+        return code.includes("'stock.item.upserted'") && /builder_network_outbox['"]\)\s*\.insert/.test(code);
+      });
+    expect(offenders).toEqual([]);
+  });
+});
