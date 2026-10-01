@@ -236,7 +236,11 @@ interface Subject { box: PixelRect; confidence: HeroConfidence; reasons: string[
  * reason to refuse a frame. Every uncertainty widens the box: a box too large
  * costs a tighter frame, a box too small cuts a house.
  */
-export function findSubject(t: HeroThumbnail, usable: PixelRect): Subject | null {
+export function findSubject(
+  t: HeroThumbnail, usable: PixelRect,
+  /** Optional sink for NUMERIC measurements (profiles, counts) — never pixels. */
+  diag?: Record<string, unknown>,
+): Subject | null {
   const { x: ux, y: uy, w: uw, h: uh } = usable;
   if (uw < 8 || uh < 8) return null;
   const luma = new Float32Array(uw * uh);
@@ -383,6 +387,41 @@ export function findSubject(t: HeroThumbnail, usable: PixelRect): Subject | null
     h: Math.min(uh, (bottom + 1) * bs) - top * bs,
   };
 
+  if (diag) {
+    const rowStruct = new Array(rows).fill(0), rowActive = new Array(rows).fill(0), colStruct = new Array(cols).fill(0);
+    for (let i = 0; i < active.length; i += 1) {
+      const bx = i % cols, by = Math.floor(i / cols);
+      if (active[i]) rowActive[by] += 1;
+      if (structMass[i] > 0) { rowStruct[by] += 1; colStruct[bx] += 1; }
+    }
+    Object.assign(diag, {
+      block: bs, cols, rows, regions: regions.length,
+      top_regions: byStructure.slice(0, 4).map((r) => {
+        const b = boxOf(r.blocks);
+        return { blocks: r.blocks.length, structure_share: totalStructure ? Math.round((r.structure / totalStructure) * 100) / 100 : 0, box: b };
+      }),
+      chosen: chosen.length, row_active: rowActive, row_structure: rowStruct, col_structure: colStruct,
+      // Coarse 0/1 maps of WHERE texture and structure are — no colour, no value.
+      active_map: Array.from({ length: rows }, (_, by) =>
+        Array.from({ length: cols }, (_, bx) => (active[by * cols + bx] ? '1' : '0')).join('')),
+      structure_map: Array.from({ length: rows }, (_, by) =>
+        Array.from({ length: cols }, (_, bx) => (structMass[by * cols + bx] > 0 ? '1' : '0')).join('')),
+      // Per block-row means, rounded: brightness, saturation and blue-dominance
+      // (sky), enough to tell sky and lawn from a building, nothing more.
+      row_tone: Array.from({ length: rows }, (_, by) => {
+        let l = 0, sat = 0, blue = 0, n = 0;
+        for (let y = by * bs; y < Math.min(uh, (by + 1) * bs); y += 2) {
+          for (let x = 0; x < uw; x += 2) {
+            const [r, g, b] = pixelAt(t, ux + x, uy + y);
+            const hi = Math.max(r, g, b), lo = Math.min(r, g, b);
+            l += 0.299 * r + 0.587 * g + 0.114 * b; sat += hi ? (hi - lo) / hi : 0;
+            blue += b > r + 10 && b > g ? 1 : 0; n += 1;
+          }
+        }
+        return [Math.round(l / n), Math.round((sat / n) * 100), Math.round((blue / n) * 100)];
+      }),
+    });
+  }
   const chosenStructure = chosen.reduce((sum, region) => sum + region.structure, 0);
   const areaShare = (box.w * box.h) / (uw * uh);
   let confidence: HeroConfidence = 'low';
@@ -404,7 +443,7 @@ const shapeOff = (w: number, h: number) => Math.abs(w / h - HERO_ASPECT) / HERO_
  * thumbnail; returns null only for one with no pixels to read, which the
  * caller records as a failure and leaves the card as it was.
  */
-export function planHero(t: HeroThumbnail): HeroPlan | null {
+export function planHero(t: HeroThumbnail, diag?: Record<string, unknown>): HeroPlan | null {
   if (!(t.width > 2) || !(t.height > 2) || !(t.sourceWidth > 0) || !(t.sourceHeight > 0)) return null;
   if (!t.pixels || t.pixels.length < t.width * t.height * 3) return null;
 
@@ -417,7 +456,7 @@ export function planHero(t: HeroThumbnail): HeroPlan | null {
   if (trimmed) reasons.push('canvas_trimmed');
   const usable = toSource(u, sx, sy, SW, SH);
 
-  const subject = findSubject(t, u);
+  const subject = findSubject(t, u, diag);
   const focal = subject ? intersect(toSource(subject.box, sx, sy, SW, SH, true), usable) : null;
   const confidence: HeroConfidence = subject?.confidence ?? 'low';
   if (subject) reasons.push(...subject.reasons);
