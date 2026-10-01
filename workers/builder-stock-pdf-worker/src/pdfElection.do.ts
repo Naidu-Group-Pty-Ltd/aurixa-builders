@@ -259,11 +259,14 @@ export class PdfElection extends DurableObject {
       return json({ error: 'bad_picture', bytes: bytes.length }, 413);
     }
     return await this.queue(async () => {
-      const result = await planHeroFromBytes(bytes, { proof: context.proof === true });
+      const result = await planHeroFromBytes(bytes, {
+        proof: context.proof === true, rescue: context.rescue === true, thumbnail: context.thumbnail === true,
+      });
+      const shape = (r: { width: number; height: number } | null | undefined) => (r ? { width: r.width, height: r.height } : null);
       const meta: Record<string, unknown> = result.ok
-        ? { ok: true, plan: result.plan, tile: result.tile ? { width: result.tile.width, height: result.tile.height } : null }
+        ? { ok: true, plan: result.plan, tile: shape(result.tile), thumbnail: shape(result.thumbnail) }
         : { ...result };
-      const body = result.ok && result.tile ? result.tile.pixels : null;
+      const body = result.ok ? (result.tile?.pixels ?? result.thumbnail?.pixels ?? null) : null;
       return new Response(body as unknown as BodyInit, {
         status: 200,
         headers: { 'content-type': 'application/octet-stream', [WORK_OUTCOME_HEADER]: encodeWorkDocument(meta) },

@@ -672,6 +672,35 @@ if (!urlArg) {
     heroProof.status === 200 && proofOutcome?.tile
       && proofBody.length === proofOutcome.tile.width * proofOutcome.tile.height * 3,
     `${heroProof.status} body ${proofBody.length}`);
+  const heroRescue = await call('/v1/hero', {
+    method: 'POST', body: picture,
+    headers: { ...auth, 'content-type': 'application/octet-stream', 'x-work-context': work({ rescue: true }) },
+  });
+  const rescueOutcome = outcome(heroRescue);
+  check('the fit rescue answers a v3 plan, and a v3 fit names its reason',
+    heroRescue.status === 200 && rescueOutcome?.ok === true && rescueOutcome.plan?.version === 3
+      && (rescueOutcome.plan.mode !== 'fit' || typeof rescueOutcome.plan.fitReason === 'string'),
+    `${heroRescue.status} ${JSON.stringify(rescueOutcome)?.slice(0, 200)}`);
+  const heroThumb = await call('/v1/hero', {
+    method: 'POST', body: picture,
+    headers: { ...auth, 'content-type': 'application/octet-stream', 'x-work-context': work({ thumbnail: true, rescue: true }) },
+  });
+  const thumbOutcome = outcome(heroThumb);
+  const thumbBody = new Uint8Array(await heroThumb.arrayBuffer());
+  check('a thumbnail comes back as raw RGB of the size the header states, and no tile',
+    heroThumb.status === 200 && thumbOutcome?.thumbnail && !thumbOutcome.tile
+      && thumbBody.length === thumbOutcome.thumbnail.width * thumbOutcome.thumbnail.height * 3,
+    `${heroThumb.status} body ${thumbBody.length}`);
+  const heroBoth = await call('/v1/hero', {
+    method: 'POST', body: picture,
+    headers: { ...auth, 'content-type': 'application/octet-stream', 'x-work-context': work({ proof: true, thumbnail: true }) },
+  });
+  check('a hero context asking for a tile AND a thumbnail is refused 400', heroBoth.status === 400, `status ${heroBoth.status}`);
+  const heroExtra = await call('/v1/hero', {
+    method: 'POST', body: picture,
+    headers: { ...auth, 'content-type': 'application/octet-stream', 'x-work-context': work({ crop: { x: 0 } }) },
+  });
+  check('a hero context naming anything else is refused 400', heroExtra.status === 400, `status ${heroExtra.status}`);
   const heroBad = await call('/v1/hero', {
     method: 'POST', body: picture,
     headers: { ...auth, 'content-type': 'application/octet-stream', 'x-work-context': work({ proof: 'yes' }) },

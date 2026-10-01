@@ -199,7 +199,7 @@ export type HeroPlanningAnswer = HeroPlanningResult | { ok: false; reason: 'work
 
 export async function planHeroWithCapacity(
   bytes: Uint8Array,
-  options: { proof?: boolean } = {},
+  options: { proof?: boolean; rescue?: boolean; thumbnail?: boolean } = {},
 ): Promise<HeroPlanningAnswer> {
   const route = heavyWorkRoute();
   if (!route) return await planHeroFromBytes(bytes, options);
@@ -212,7 +212,11 @@ export async function planHeroWithCapacity(
       headers: {
         Authorization: `Bearer ${route.token}`,
         'content-type': 'application/octet-stream',
-        [WORK_CONTEXT_HEADER]: encodeWorkDocument(options.proof ? { proof: true } : {}),
+        [WORK_CONTEXT_HEADER]: encodeWorkDocument({
+          ...(options.proof ? { proof: true } : {}),
+          ...(options.rescue ? { rescue: true } : {}),
+          ...(options.thumbnail ? { thumbnail: true } : {}),
+        }),
       },
       body: bytes as unknown as BodyInit,
       signal: AbortSignal.timeout(HEAVY_WORK_TIMEOUT_MS),
@@ -234,11 +238,12 @@ export async function planHeroWithCapacity(
   if (!meta || typeof meta.ok !== 'boolean') return failed('the image worker answered in a shape this deployment does not read');
   if (meta.ok === false) return meta as unknown as HeroPlanningResult;
   if (!validateHeroPlan(meta.plan)) return failed('the image worker answered a plan that does not validate');
-  const tile = meta.tile as { width?: unknown; height?: unknown } | null;
-  const tileOk = tile && typeof tile.width === 'number' && typeof tile.height === 'number'
-    && body.length === tile.width * tile.height * 3;
-  return {
-    ok: true, plan: meta.plan,
-    tile: tileOk ? { width: tile!.width as number, height: tile!.height as number, pixels: body } : null,
+  // The one body is a proof tile or the thumbnail, and says which.
+  const raster = (key: 'tile' | 'thumbnail') => {
+    const shape = meta[key] as { width?: unknown; height?: unknown } | null | undefined;
+    return shape && typeof shape.width === 'number' && typeof shape.height === 'number'
+      && body.length === shape.width * shape.height * 3
+      ? { width: shape.width, height: shape.height, pixels: body } : null;
   };
+  return { ok: true, plan: meta.plan, tile: raster('tile'), thumbnail: raster('thumbnail') };
 }

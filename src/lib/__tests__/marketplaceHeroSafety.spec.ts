@@ -248,10 +248,14 @@ describe('the boundaries that keep presentation presentation', () => {
     expect(sql).toMatch(/'sanitized_derivative',\s+v_img\.source_detail->'sanitized_derivative'/);
   });
 
-  it('the worker route accepts only a proof switch, and plans on the deterministic decoder', () => {
+  it('the worker route accepts only its three switches, and plans on the deterministic decoder', () => {
     expect(readHeroWorkContext({})).toEqual({});
     expect(readHeroWorkContext({ proof: true })).toEqual({ proof: true });
+    expect(readHeroWorkContext({ rescue: true, thumbnail: true })).toEqual({ rescue: true, thumbnail: true });
+    expect(readHeroWorkContext({ rescue: false })).toEqual({});
     expect(readHeroWorkContext({ proof: 'yes' })).toBeNull();
+    expect(readHeroWorkContext({ proof: true, thumbnail: true })).toBeNull();
+    expect(readHeroWorkContext({ crop: { x: 0 } })).toBeNull();
     expect(readHeroWorkContext([])).toBeNull();
     const worker = read('workers/builder-stock-pdf-worker/src/pdfElection.do.ts');
     expect(worker).toMatch(/if \(path === HERO_PATH\) return await this\.hero\(request\)/);

@@ -41,11 +41,29 @@ export interface SceneOptions {
   clouds?: boolean;
   /** A thin dark utility pole standing in the sky at this x (stray vertical structure). */
   pole?: number;
+  /** Trees: a textured canopy on a trunk, standing on the lawn. */
+  trees?: Array<{ x: number; w: number; top: number }>;
+  /** Picket fences: posts and pickets standing on the lawn, `h` tall. */
+  fences?: Array<{ x: number; w: number; h: number }>;
+  /** Which house is THE property; the others are neighbours (default 0). */
+  subject?: number;
+  /** Dark text set into the canvas bands, as a brochure page carries. */
+  canvasText?: boolean;
+  /** A thin frame line drawn around the photograph, inside any canvas. */
+  frameLine?: [number, number, number];
+  /** A marketing strip over the photograph's foot: colour, height, with text. */
+  banner?: { height: number; colour: [number, number, number]; text?: boolean };
+  /** Photographic noise on a dark foreground band at the foot (a real shadow). */
+  darkGround?: number;
+  /** A solid graphic (a logo, a badge) drawn last, wherever it is put. */
+  logo?: { x: number; y: number; w: number; h: number; colour: [number, number, number] };
 }
 export interface Scene {
   thumbnail: { width: number; height: number; pixels: Uint8Array; sourceWidth: number; sourceHeight: number };
   /** Every house's bounds in SOURCE pixels, roof to slab, eaves included. */
   houses: Rect[];
+  /** The property's own bounds (houses[subject]). */
+  subject: Rect;
   /** The photograph inside any canvas, in source pixels. */
   photo: Rect;
   scale: number;
@@ -73,7 +91,8 @@ export function drawScene(options: SceneOptions): Scene {
   const c = options.canvas;
   const photo = {
     x: c?.left ?? 0, y: c?.top ?? 0,
-    w: W - (c?.left ?? 0) - (c?.right ?? 0), h: H - (c?.top ?? 0) - (c?.bottom ?? 0),
+    w: W - (c?.left ?? 0) - (c?.right ?? 0),
+    h: H - (c?.top ?? 0) - (c?.bottom ?? 0) - (options.banner?.height ?? 0),
   };
   const fill = (r: Rect, colour: readonly number[], grain = 0) => {
     for (let y = Math.round(r.y); y < Math.round(r.y + r.h); y += 1) {
@@ -113,6 +132,27 @@ export function drawScene(options: SceneOptions): Scene {
       set(options.pole, y, [40, 38, 36]); set(options.pole + 1, y, [40, 38, 36]);
     }
     for (let x = options.pole - 8; x < options.pole + 10; x += 1) set(x, top + 3, [40, 38, 36]);
+  }
+
+  for (const tree of options.trees ?? []) {
+    const trunkW = Math.max(2, Math.round(tree.w * 0.12));
+    const tx = tree.x + Math.round(tree.w / 2 - trunkW / 2);
+    const canopyBottom = tree.top + Math.round((options.horizon - tree.top) * 0.62);
+    fill({ x: tx, y: canopyBottom - 4, w: trunkW, h: options.horizon + 4 - canopyBottom + 4 }, [92, 66, 44], 6);
+    const cx = tree.x + tree.w / 2, cy = (tree.top + canopyBottom) / 2;
+    const rx = tree.w / 2, ry = (canopyBottom - tree.top) / 2;
+    for (let y = tree.top; y < canopyBottom; y += 1) {
+      for (let x = tree.x; x < tree.x + tree.w; x += 1) {
+        if (((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1) set(x, y, random() < 0.3 ? [28, 60, 30] : [58, 108, 50], 18);
+      }
+    }
+  }
+  for (const fence of options.fences ?? []) {
+    const base = options.horizon + 6;
+    fill({ x: fence.x, y: base - Math.round(fence.h * 0.7), w: fence.w, h: 2 }, [236, 234, 228]);
+    for (let x = fence.x; x < fence.x + fence.w; x += 3) {
+      fill({ x, y: base - fence.h, w: 2, h: fence.h }, [240, 238, 232], 2);
+    }
   }
 
   const houses: Rect[] = [];
@@ -173,16 +213,58 @@ export function drawScene(options: SceneOptions): Scene {
     });
   }
 
+  if (options.darkGround) {
+    for (let y = photo.y + photo.h - options.darkGround; y < photo.y + photo.h; y += 1) {
+      const wave = Math.round(3 * Math.sin(y));
+      for (let x = photo.x; x < photo.x + photo.w; x += 1) {
+        if (y - (photo.y + photo.h - options.darkGround) + wave + Math.round(4 * Math.sin(x / 7)) >= 0) set(x, y, [26, 30, 24], 12);
+      }
+    }
+  }
+  /** Glyph-like dark marks: short strokes in lines, as set type looks small. */
+  const text = (r: Rect, colour: readonly number[]) => {
+    for (let y = r.y + 3; y + 5 < r.y + r.h - 2; y += 9) {
+      for (let x = r.x + 3; x + 3 < r.x + r.w - 3; x += 4) {
+        if (random() < 0.55) fill({ x, y, w: 2, h: 5 }, colour);
+      }
+    }
+  };
+  if (options.banner) {
+    const b = options.banner;
+    const r = { x: photo.x, y: photo.y + photo.h, w: photo.w, h: b.height };
+    fill(r, b.colour);
+    if (b.text) text(r, b.colour[0] + b.colour[1] + b.colour[2] > 380 ? [30, 30, 30] : [250, 250, 250]);
+  }
   if (c) {
     fill({ x: 0, y: 0, w: W, h: c.top ?? 0 }, c.colour);
     fill({ x: 0, y: H - (c.bottom ?? 0), w: W, h: c.bottom ?? 0 }, c.colour);
     fill({ x: 0, y: 0, w: c.left ?? 0, h: H }, c.colour);
     fill({ x: W - (c.right ?? 0), y: 0, w: c.right ?? 0, h: H }, c.colour);
+    if (options.canvasText) {
+      const ink = c.colour[0] > 128 ? [40, 40, 44] : [230, 230, 230];
+      if ((c.left ?? 0) > 10) text({ x: 0, y: 0, w: c.left ?? 0, h: H }, ink);
+      if ((c.right ?? 0) > 10) text({ x: W - (c.right ?? 0), y: 0, w: c.right ?? 0, h: H }, ink);
+      if ((c.bottom ?? 0) > 10) text({ x: 0, y: H - (c.bottom ?? 0), w: W, h: c.bottom ?? 0 }, ink);
+    }
+  }
+  if (options.logo) {
+    const g = options.logo;
+    fill(g, g.colour);
+    fill({ x: g.x + 2, y: g.y + 2, w: Math.max(1, g.w - 4), h: Math.max(1, Math.round(g.h / 3)) }, [250, 250, 250]);
+  }
+  if (options.frameLine) {
+    const l = options.frameLine;
+    const fullH = photo.h + (options.banner?.height ?? 0);
+    fill({ x: photo.x, y: photo.y, w: photo.w, h: 1 }, l);
+    fill({ x: photo.x, y: photo.y + fullH - 1, w: photo.w, h: 1 }, l);
+    fill({ x: photo.x, y: photo.y, w: 1, h: fullH }, l);
+    fill({ x: photo.x + photo.w - 1, y: photo.y, w: 1, h: fullH }, l);
   }
 
   return {
     thumbnail: { width: W, height: H, pixels: px, sourceWidth: W * scale, sourceHeight: H * scale },
     houses,
+    subject: houses[options.subject ?? 0],
     photo: { x: photo.x * scale, y: photo.y * scale, w: photo.w * scale, h: photo.h * scale },
     scale,
   };

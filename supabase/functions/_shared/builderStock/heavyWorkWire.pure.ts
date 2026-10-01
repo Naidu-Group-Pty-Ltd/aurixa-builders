@@ -173,13 +173,24 @@ export function readFolderWorkContext(raw: unknown): FolderWorkContext | null {
   };
 }
 
-/** What a hero request may ask: only whether to draw a proof tile. */
-export interface HeroWorkContext { proof?: boolean }
+/**
+ * What a hero request may ask, and nothing else: a proof tile, the fit rescue
+ * (v3), or the decoded thumbnail itself for a proof composed by the network.
+ * A tile and a thumbnail are both the one body an answer carries, so asking
+ * for both is refused.
+ */
+export interface HeroWorkContext { proof?: boolean; rescue?: boolean; thumbnail?: boolean }
 
 export function readHeroWorkContext(raw: unknown): HeroWorkContext | null {
   if (raw === null || raw === undefined) return {};
   if (typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const proof = (raw as { proof?: unknown }).proof;
-  if (proof !== undefined && typeof proof !== 'boolean') return null;
-  return proof ? { proof: true } : {};
+  const out: HeroWorkContext = {};
+  for (const key of Object.keys(raw as object)) {
+    if (key !== 'proof' && key !== 'rescue' && key !== 'thumbnail') return null;
+    const value = (raw as Record<string, unknown>)[key];
+    if (value !== undefined && typeof value !== 'boolean') return null;
+    if (value) out[key] = true;
+  }
+  if (out.proof && out.thumbnail) return null;
+  return out;
 }

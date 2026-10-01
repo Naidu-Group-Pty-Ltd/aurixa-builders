@@ -15,7 +15,11 @@
  *   plan      (default) plan what is owed, a few pictures a tick
  *   census    where every candidate stands, per organisation and lifecycle
  *   evaluate  plan a slice FRESH and store nothing — aggregate numbers only
- *   proof     the private before/after sheet (`heroProof.ts`)
+ *   compare   per card: the stored plan beside a FRESH v3 plan (store nothing)
+ *             — identifiers, modes, reasons and measures, never a picture
+ *   diagnose  the planner's own numeric measurements for one card
+ *   proof     the private before/after sheet (`heroProof.ts`); with
+ *             `compare: true`, the v2 → v3 sheet of every card that drew `fit`
  */
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0';
 import { createCorsHeaders } from '../_shared/auth.ts';
@@ -24,7 +28,7 @@ import { enforceRawBodyLimit } from '../_shared/requestSecurity.ts';
 import {
   heroStanding, readHeroCandidates, readServedBytes, settleMarketplaceHero, type HeroStanding,
 } from '../_shared/builderStock/settleMarketplaceHero.ts';
-import { drawHeroProof } from '../_shared/builderStock/heroProof.ts';
+import { drawHeroComparisonProof, drawHeroProof } from '../_shared/builderStock/heroProof.ts';
 import { planHeroWithCapacity } from '../_shared/builderStock/heavyWorkClient.ts';
 import { heroPlanOfImage, servedObjectOf } from '../_shared/builderStock/primaryImage.ts';
 import { HERO_PLAN_VERSION, planHero, type HeroPlan } from '../_shared/builderStock/marketplaceHero.pure.ts';
@@ -100,6 +104,40 @@ Deno.serve(async (req: Request) => {
       return json({ success: true, operation, version: HERO_PLAN_VERSION, by_organisation: rows, primary_modes: modes });
     }
 
+    if (operation === 'compare') {
+      const offset = Math.max(0, Number(body.offset ?? 0) || 0);
+      const limit = Math.max(1, Math.min(12, Number(body.limit ?? 8) || 8));
+      const groups = (await readHeroCandidates(supabase, { includeArchived })).slice(offset, offset + limit);
+      const rows: unknown[] = [];
+      for (const { item, images } of groups) {
+        if (Date.now() > deadlineAt) break;
+        const image = images[0];
+        const stored = ((image.source_detail ?? {}) as Record<string, unknown>).marketplace_hero as
+          { plan?: HeroPlan; previous?: { mode?: string; reason?: string; version?: number } } | undefined;
+        const served = await readServedBytes(supabase, image);
+        if (served.ok === false) { rows.push({ item: String(item.id).slice(0, 8), failed: served.reason }); continue; }
+        const answer = await planHeroWithCapacity(served.bytes, { rescue: true });
+        if (answer.ok === false) { rows.push({ item: String(item.id).slice(0, 8), failed: answer.reason }); continue; }
+        const p = answer.plan;
+        const before = stored?.previous ?? (stored?.plan ? {
+          version: stored.plan.version, mode: stored.plan.mode, reason: stored.plan.reasons?.at(-1) ?? '',
+        } : null);
+        rows.push({
+          item: String(item.id).slice(0, 8), object: served.object, before,
+          stored_version: stored?.plan?.version ?? null,
+          after: {
+            version: p.version, mode: p.mode, fit_reason: p.fitReason ?? null, confidence: p.confidence,
+            canvas: p.rescue?.canvasDetected ?? p.measures.trimmed, region_changed: p.rescue?.photoRegionChanged ?? false,
+            box_changed: p.rescue?.boxChanged ?? false, excluded: p.rescue?.excludedGroups ?? 0,
+            trimmed_ends: p.rescue?.trimmedEnds ?? 0, crop_area_pct: Math.round(p.measures.cropAreaShare * 100),
+            property_width_pct: p.focal ? Math.round((p.focal.w / (p.mode === 'fit' ? p.usable.w : p.crop.w)) * 100) : null,
+            reasons: p.reasons,
+          },
+        });
+      }
+      return json({ success: true, operation, offset, limit, stored: false, rows });
+    }
+
     if (operation === 'evaluate') {
       const offset = Math.max(0, Number(body.offset ?? 0) || 0);
       const limit = Math.max(1, Math.min(25, Number(body.limit ?? 12) || 12));
@@ -137,14 +175,26 @@ Deno.serve(async (req: Request) => {
         const decoded = await decodeThumbnailResult(served.bytes);
         if (decoded.ok === false) { rows.push({ failed: decoded.reason }); continue; }
         const diag: Record<string, unknown> = {};
-        const plan = planHero(decoded.thumbnail, diag);
+        const plan = planHero(decoded.thumbnail, diag, body.rescue === true ? { rescue: true } : {});
         rows.push({
           thumb: [decoded.thumbnail.width, decoded.thumbnail.height],
           source: plan?.source, mode: plan?.mode, confidence: plan?.confidence, reasons: plan?.reasons,
-          usable: plan?.usable, focal: plan?.focal, crop: plan?.crop, diag,
+          usable: plan?.usable, focal: plan?.focal, crop: plan?.crop, fit_reason: plan?.fitReason ?? null,
+          rescue: plan?.rescue ?? null, diag,
         });
       }
       return json({ success: true, operation, offset, rows });
+    }
+
+    if (operation === 'proof' && body.compare === true) {
+      const proof = await drawHeroComparisonProof(supabase, {
+        deadlineAt,
+        maxRows: Number(body.max_rows ?? 10) || 10,
+        offset: Math.max(0, Number(body.offset ?? 0) || 0),
+        representatives: Math.max(0, Math.min(6, Number(body.representatives ?? 3) || 0)),
+        stamp: typeof body.stamp === 'string' && /^[0-9A-Za-z-]{1,40}$/.test(body.stamp) ? body.stamp : undefined,
+      });
+      return json({ success: true, operation, compare: true, ...proof });
     }
 
     if (operation === 'proof') {
