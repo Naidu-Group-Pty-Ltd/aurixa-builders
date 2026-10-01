@@ -86,6 +86,7 @@ import { PROVENANCE_VERSION } from '../_shared/builderStock/sourceImages.ts';
 import { enforceStrictPrimaryImages } from '../_shared/builderStock/primaryImage.ts';
 import { storeVerifiedWebImages } from '../_shared/builderStock/webImageStore.ts';
 import { recoverAbandonedFinalisations, settleCompletedUploads } from '../_shared/builderStock/uploadCompletion.ts';
+import { healAndPublishSettledUploads } from '../_shared/builderStock/publicationSweep.ts';
 import {
   claimOneImageWorkItem, completeItemWork, isMissingCapability, publishUploadIfReady,
   readItemWorkPending,
@@ -261,6 +262,14 @@ async function runTickHousekeeping(
   // An import that finished with nobody watching still has to be recorded as
   // finished, on EVERY exit. See `uploadCompletion.ts`.
   await settleCompletedUploads(supabase);
+  /*
+   * AND A LIST WHOSE PROPERTIES HAVE ALL FINISHED IS ASKED TO PUBLISH, on every
+   * exit, because the only other trigger is a property finishing — and a list
+   * held by a list-level gate has none left to finish. See `publicationSweep.ts`.
+   */
+  try {
+    await healAndPublishSettledUploads(supabase);
+  } catch { /* housekeeping never fails a tick */ }
 }
 
 /** Wall clock for one tick, well inside the edge ceiling. */

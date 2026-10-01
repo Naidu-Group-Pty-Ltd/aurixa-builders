@@ -1650,7 +1650,23 @@ export async function importStockRecords(
     });
     const truncated = (input.media ?? []).some((entry) =>
       (entry as { enumeration?: { truncated?: boolean } }).enumeration?.truncated === true);
-    const manifestState = manifest.error || truncated ? 'failed' : 'complete';
+    /*
+     * A WRITE THAT FAILED IS OURS, NOT THE SOURCE'S. Truncation is a fact about
+     * the source — more media than one read may keep — and stays `failed`,
+     * which holds the list. A manifest our own database refused to record
+     * (measured 30 September 2026: a branch kind the CHECK did not yet name)
+     * says nothing about the source, and stamping it `failed` held 41 ready
+     * properties off the marketplace with no way back but a person. It is
+     * `pending` — not yet recorded — and `publicationSweep.ts` writes it again
+     * on the next tick; the manifest is derived from the stored rows alone.
+     */
+    const manifestState = truncated ? 'failed' : manifest.error ? 'pending' : 'complete';
+    if (manifest.error) {
+      console.error('[builderStock] source manifest not recorded; it is written again on the next tick', {
+        phase: 'source_manifest', upload_id: input.uploadId,
+        detail: manifest.error.slice(0, 200),
+      });
+    }
     const { error: manifestStampError } = await db
       .from('builder_stock_uploads')
       .update({ source_manifest_state: manifestState })
@@ -1667,10 +1683,8 @@ export async function importStockRecords(
     if (manifestState === 'failed') {
       outcome.failures.push({
         label: 'stock list imagery',
-        reason: manifest.error
-          ? `the source's assets could not be fully enumerated (${manifest.error.slice(0, 120)})`
-          : 'the source carries more media than one read may keep, so enumeration is '
-            + 'recorded as failed rather than silently truncated',
+        reason: 'the source carries more media than one read may keep, so enumeration is '
+          + 'recorded as failed rather than silently truncated',
       });
       try {
         await db.rpc('record_portal_operational_event', {
