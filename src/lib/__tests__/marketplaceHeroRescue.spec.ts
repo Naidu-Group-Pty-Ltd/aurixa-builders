@@ -489,3 +489,20 @@ describe('through the real decoder — the pictures the production proof uploads
     }
   });
 });
+
+describe('the production proof uploads exactly these pictures', () => {
+  it('every committed proof picture is the generator\'s, byte for byte, with its ground truth', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { createHash } = await import('node:crypto');
+    const { resolve } = await import('node:path');
+    const dir = resolve(__dirname, '../../../scripts/ops/fixtures/hero');
+    const truth = JSON.parse(readFileSync(resolve(dir, 'truth.json'), 'utf8'));
+    for (const [key, c] of Object.entries(HERO_PROOF_CASES)) {
+      const scene = drawScene({ ...c.scene, scale: 1 });
+      const png = await encodePng(scene.thumbnail.pixels, { width: c.scene.width, height: c.scene.height, components: 3 });
+      const digest = createHash('sha256').update(png!).digest('hex');
+      expect(createHash('sha256').update(readFileSync(resolve(dir, `${key}.png`))).digest('hex'), key).toBe(digest);
+      expect(truth[key]).toMatchObject({ sha256: digest, expect: c.expect, subject: scene.subject, photo: scene.photo });
+    }
+  });
+});
