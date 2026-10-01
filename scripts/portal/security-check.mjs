@@ -103,6 +103,10 @@ const EXPECTED_FUNCTIONS = [
     // The figure reader: a cron worker behind verifyInternal exactly like the
     // settler below, writing only document_figures and empty figure columns.
     'builder-stock-figure-reader',
+    // The Marketplace Hero planner: a cron worker behind verifyInternal like
+    // the settler below, writing only two presentation keys of an image's
+    // source_detail through a fingerprint-guarded RPC. Not portal-reachable.
+    'builder-stock-hero-planner',
     // Cron sweep behind verifyInternal; holds a service-role client and
     // crosses organisations, so it is deliberately not a portal-reachable
     // surface. Declared in config.toml and reviewed in SECURITY_REGISTRY.json,

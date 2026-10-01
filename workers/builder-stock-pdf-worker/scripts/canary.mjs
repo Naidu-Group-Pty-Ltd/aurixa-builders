@@ -649,6 +649,41 @@ if (!urlArg) {
     method: 'POST', headers: { ...auth, 'x-work-context': work({ ...folderContext, word: 'parcel' }) },
   });
   check('a malformed folder context is refused 400', malformed.status === 400, `status ${malformed.status}`);
+
+  // ---- the Marketplace Hero plan: presentation, computed inside the bundle ----
+  const hero = await call('/v1/hero', {
+    method: 'POST', body: picture,
+    headers: { ...auth, 'content-type': 'application/octet-stream', 'x-work-context': work({}) },
+  });
+  const heroOutcome = outcome(hero);
+  check('a hero plan answers 200 with a plan in the outcome header',
+    hero.status === 200 && heroOutcome?.ok === true && heroOutcome?.plan?.version === 1,
+    `${hero.status} ${JSON.stringify(heroOutcome)?.slice(0, 200)}`);
+  check('a picture with no building is never cropped — shown whole or within 3%',
+    heroOutcome?.plan?.mode === 'fit' || (heroOutcome?.plan?.measures?.cropAreaShare ?? 0) >= 0.97,
+    JSON.stringify(heroOutcome?.plan?.reasons));
+  const heroProof = await call('/v1/hero', {
+    method: 'POST', body: picture,
+    headers: { ...auth, 'content-type': 'application/octet-stream', 'x-work-context': work({ proof: true }) },
+  });
+  const proofOutcome = outcome(heroProof);
+  const proofBody = new Uint8Array(await heroProof.arrayBuffer());
+  check('a proof tile comes back as raw RGB of the size the header states',
+    heroProof.status === 200 && proofOutcome?.tile
+      && proofBody.length === proofOutcome.tile.width * proofOutcome.tile.height * 3,
+    `${heroProof.status} body ${proofBody.length}`);
+  const heroBad = await call('/v1/hero', {
+    method: 'POST', body: picture,
+    headers: { ...auth, 'content-type': 'application/octet-stream', 'x-work-context': work({ proof: 'yes' }) },
+  });
+  check('a malformed hero context is refused 400', heroBad.status === 400, `status ${heroBad.status}`);
+  const heroEmpty = await call('/v1/hero', {
+    method: 'POST', body: new Uint8Array(0),
+    headers: { ...auth, 'content-type': 'application/octet-stream', 'x-work-context': work({}) },
+  });
+  check('an empty picture is refused 413 by the hero route', heroEmpty.status === 413, `status ${heroEmpty.status}`);
+  const heroAnonymous = await call('/v1/hero', { method: 'POST', body: picture });
+  check('a hero plan without the token is refused 401', heroAnonymous.status === 401, `status ${heroAnonymous.status}`);
 }
 
 const failed = checks.filter((c) => !c.ok);

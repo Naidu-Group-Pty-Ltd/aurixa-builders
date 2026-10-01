@@ -158,6 +158,13 @@
       "reviewed": true,
       "notes": "Reads the figures a live property's own brochure states (the link its photograph came from) where its stock list is silent. Signed internal callers only (verifyInternal) with enforceRawBodyLimit ahead of it; dispatched by its own self-unscheduling pg_cron tick. Holds a service-role client and crosses organisations, so it must not be reachable by a portal session. Writes builder_stock_items.document_figures and fills only EMPTY bedrooms/bathrooms/car_spaces/building_size_sqm/land_size_sqm through record_builder_stock_document_figures; creates, deletes and publishes nothing and touches no price, availability, image, status or linkage. No model is called."
     },
+    "builder-stock-hero-planner": {
+      "verify_jwt": false,
+      "exposure_class": "cron-worker",
+      "owner": "builder-portal-program",
+      "reviewed": true,
+      "notes": "Marketplace Hero Standard: plans how each marketplace card frames its picture (presentation only). Signed internal callers only (verifyInternal) with enforceRawBodyLimit ahead of it; dispatched by its own pg_cron tick (builder-stock-hero-planner-10min). Holds a service-role client and crosses organisations, so it must not be reachable by a portal session. Reads stored pictures and writes ONLY the marketplace_hero / marketplace_hero_attempt keys of builder_stock_item_images.source_detail through record_hero_presentation (one key, one row, fingerprint-guarded); its proof operation writes PNG/JSON under the private _hero-proof/ prefix of builder-stock-images. Creates, deletes and publishes nothing and touches no eligibility, role, primary pointer, price, availability, status or linkage. Answers carry counts and storage paths only. No model is called."
+    },
     "builder-stock-image-settler": {
       "verify_jwt": false,
       "exposure_class": "cron-worker",

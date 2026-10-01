@@ -7,6 +7,9 @@ import {
   type CardPictureFit,
   cardPictureFit,
 } from '@/lib/builderStock';
+import {
+  type HeroPlanView, heroGeometry, heroPlanFitsPicture, readHeroPlan,
+} from '@/lib/marketplaceHero';
 
 /**
  * A STOCK PROPERTY'S PICTURE. ONE TREATMENT, TWO PORTALS.
@@ -57,7 +60,20 @@ import {
  * differs and everything else is shared. Same pattern as
  * `buildCasePassportView(…, audience)`: one implementation, an audience
  * parameter, so the two cannot come to draw the same photograph differently.
+ *
+ * ## The Marketplace Hero Standard (1 October 2026)
+ *
+ * A CARD (`presentation="card"`) draws the plan the network stored for the
+ * exact bytes it signed — a 16:9 frame around the property, or the
+ * photograph shown whole where no frame can hold the house — and computes
+ * nothing of its own (`marketplaceHero.ts`). It supersedes the "show it
+ * whole" rule above for cards ONLY: a detail view or gallery keeps the
+ * picture's own shape, and a card with no plan (or a plan that does not match
+ * the picture that loaded) is drawn exactly as described above.
  */
+/** What a resolver answers: a URL, or a URL and the plan for its bytes. */
+export type StockPictureSource = string | { url: string | null; hero?: unknown } | null;
+
 export interface StockPictureProps {
   /** The picture to draw, or `null` where the property has none. */
   image: BuilderStockImage | null;
@@ -65,7 +81,13 @@ export interface StockPictureProps {
    * How this caller mints a signed URL for a stored image. Called only for
    * an image that HAS a `storage_path`; an external URL is used directly.
    */
-  resolveUrl: (imageId: string) => Promise<string | null>;
+  resolveUrl: (imageId: string) => Promise<StockPictureSource>;
+  /**
+   * `card` draws the Marketplace Hero plan where the door sent one; `detail`
+   * (the default) always shows the picture as supplied. Only card call sites
+   * opt in, so no gallery or detail view can be re-framed by accident.
+   */
+  presentation?: 'card' | 'detail';
   /** Tailwind aspect class for the frame. The measured modal shape is 16:9. */
   aspectClassName?: string;
   /** Extra classes for the frame — a border treatment, a radius, a ring. */
@@ -89,8 +111,11 @@ export function StockPicture({
   overlay,
   emptyAction,
   emptyLabel = 'No picture found',
+  presentation = 'detail',
 }: StockPictureProps) {
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
+  const [hero, setHero] = useState<HeroPlanView | null>(null);
+  const [heroRefused, setHeroRefused] = useState(false);
   const [broken, setBroken] = useState(false);
   const [fit, setFit] = useState<CardPictureFit>('contain');
 
@@ -114,6 +139,8 @@ export function StockPicture({
     let alive = true;
     setBroken(false);
     setSignedUrl(null);
+    setHero(null);
+    setHeroRefused(false);
     setFit('contain');
     if (!image) return () => { alive = false; };
     // Somebody else's server: loaded without a referrer, never signed.
@@ -127,14 +154,18 @@ export function StockPicture({
      * was null, and to reject unhandled where the lookup threw.
      */
     resolveUrl(image.id)
-      .then((url) => {
+      .then((answer) => {
         if (!alive) return;
+        const url = typeof answer === 'string' ? answer : answer?.url ?? null;
         if (url) setSignedUrl(url);
         else setBroken(true);
+        if (presentation === 'card' && answer && typeof answer === 'object') {
+          setHero(readHeroPlan(answer.hero));
+        }
       })
       .catch(() => { if (alive) setBroken(true); });
     return () => { alive = false; };
-  }, [image, resolveUrl]);
+  }, [image, resolveUrl, presentation]);
 
   if (!image) {
     return (
@@ -156,6 +187,52 @@ export function StockPicture({
           <p className="mt-1 text-[11px] text-muted-foreground">{emptyLabel}</p>
           {emptyAction}
         </div>
+      </div>
+    );
+  }
+
+  const planned = presentation === 'card' && hero && !heroRefused && signedUrl && !broken ? hero : null;
+  if (planned) {
+    const geometry = heroGeometry(planned);
+    return (
+      <div
+        data-picture="present"
+        data-hero={planned.mode}
+        className={cn('relative w-full overflow-hidden bg-muted/30', aspectClassName, className)}
+      >
+        <div
+          className="absolute overflow-hidden"
+          style={{
+            left: `${geometry.box.left}%`, top: `${geometry.box.top}%`,
+            width: `${geometry.box.width}%`, height: `${geometry.box.height}%`,
+          }}
+        >
+          <img
+            src={signedUrl ?? undefined}
+            alt={alt}
+            className="absolute max-w-none object-cover"
+            style={{
+              left: `${geometry.image.left}%`, top: `${geometry.image.top}%`,
+              width: `${geometry.image.width}%`, height: `${geometry.image.height}%`,
+            }}
+            loading="lazy"
+            referrerPolicy="no-referrer"
+            ref={(drawn) => {
+              if (drawn?.complete && drawn.naturalWidth
+                && !heroPlanFitsPicture(planned, drawn.naturalWidth, drawn.naturalHeight)) {
+                setHeroRefused(true);
+              }
+            }}
+            onLoad={(event) => {
+              const drawn = event.currentTarget;
+              // Different bytes than the plan was made over: draw as before.
+              if (!heroPlanFitsPicture(planned, drawn.naturalWidth, drawn.naturalHeight)) setHeroRefused(true);
+              measure(drawn);
+            }}
+            onError={() => setBroken(true)}
+          />
+        </div>
+        {overlay}
       </div>
     );
   }

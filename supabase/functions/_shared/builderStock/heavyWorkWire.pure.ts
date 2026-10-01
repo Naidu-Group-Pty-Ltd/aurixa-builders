@@ -34,6 +34,14 @@
 
 export const SANITIZE_PATH = '/v1/sanitize';
 export const FOLDER_PATH = '/v1/folder';
+/**
+ * The Marketplace Hero Standard's plan: the served picture in, its plan out
+ * (`heroPlanning.ts`). Decoding is the expensive half and has killed edge
+ * isolates before, so it runs here beside the repair, on the same token and
+ * lanes. The answer is a plan in the outcome header and, only when a proof
+ * was asked for, a raw RGB tile as the body.
+ */
+export const HERO_PATH = '/v1/hero';
 
 /** The request's small context. */
 export const WORK_CONTEXT_HEADER = 'x-work-context';
@@ -163,4 +171,15 @@ export function readFolderWorkContext(raw: unknown): FolderWorkContext | null {
     url: c.url, label: c.label, lot, word: c.word, design, fieldDesign,
     identityHints: hints as string[], confirmedLots, buildingSqm,
   };
+}
+
+/** What a hero request may ask: only whether to draw a proof tile. */
+export interface HeroWorkContext { proof?: boolean }
+
+export function readHeroWorkContext(raw: unknown): HeroWorkContext | null {
+  if (raw === null || raw === undefined) return {};
+  if (typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const proof = (raw as { proof?: unknown }).proof;
+  if (proof !== undefined && typeof proof !== 'boolean') return null;
+  return proof ? { proof: true } : {};
 }

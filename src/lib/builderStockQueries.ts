@@ -388,11 +388,17 @@ export function useLeaveAgencyConversation(conversationId: string) {
   });
 }
 
-/** A short-lived signed URL for one stored image. */
-export async function builderStockImageUrl(imageId: string): Promise<string | null> {
+/**
+ * A short-lived signed URL for one stored image, and the Marketplace Hero
+ * plan the door validated for exactly those bytes (null where there is none —
+ * the card then draws as before). See `StockPicture`.
+ */
+export async function builderStockImageUrl(
+  imageId: string,
+): Promise<{ url: string | null; hero: unknown } | null> {
   try {
-    const result = await invoke<{ url?: string }>({ operation: 'image_url', image_id: imageId });
-    return result.url ?? null;
+    const result = await invoke<{ url?: string; hero?: unknown }>({ operation: 'image_url', image_id: imageId });
+    return { url: result.url ?? null, hero: result.hero ?? null };
   } catch {
     return null;
   }

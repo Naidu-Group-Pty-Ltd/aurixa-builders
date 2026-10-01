@@ -128,6 +128,7 @@ function ActivatedPropertiesList({ records }: { records: ActivatedProperty[] }) 
             <StockPicture
               image={activationImage(record)}
               resolveUrl={builderStockImageUrl}
+              presentation="card"
               className="rounded-md"
               alt={`${title} — the picture shown on the marketplace`}
               emptyLabel="No picture yet"
