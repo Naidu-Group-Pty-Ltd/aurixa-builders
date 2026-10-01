@@ -29,8 +29,10 @@ export default {
       return new Response('refused', { status: 401 });
     }
     const { url, cookies, viewport, script } = await request.json();
-    const browser = await puppeteer.launch(env.BROWSER);
+    let browser = null;
     try {
+      // A session left idle closes after a minute by default; the page may wait longer.
+      browser = await puppeteer.launch(env.BROWSER, { keep_alive: 180000 });
       const page = await browser.newPage();
       await page.setViewport(viewport);
       if (cookies?.length) await page.setCookie(...cookies);
@@ -41,7 +43,7 @@ export default {
       const first = { status: answer ? answer.status() : null,
         mitigated: answer ? (answer.headers()['cf-mitigated'] || null) : null };
       try {
-        await page.waitForSelector('#__cc_proof', { timeout: 75000 });
+        await page.waitForSelector('#__cc_proof', { timeout: 90000 });
       } catch (error) {
         return Response.json({ error: 'the reader did not answer: ' + String(error && error.message || error).slice(0, 120),
           title: await page.title().catch(() => null), path: new URL(page.url()).pathname, ...first }, { status: 502 });
@@ -49,9 +51,9 @@ export default {
       const text = await page.$eval('#__cc_proof', (el) => el.textContent);
       return Response.json({ ...first, finalPath: new URL(page.url()).pathname, read: JSON.parse(text) });
     } catch (error) {
-      return Response.json({ error: String(error && error.message || error).slice(0, 300) }, { status: 502 });
+      return Response.json({ error: 'the browser could not be used: ' + String(error && error.message || error).slice(0, 300) }, { status: 502 });
     } finally {
-      await browser.close().catch(() => {});
+      if (browser) await browser.close().catch(() => {});
     }
   },
 };

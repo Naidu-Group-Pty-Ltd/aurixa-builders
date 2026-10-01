@@ -911,7 +911,7 @@ const BROWSER_RUN_READER = `(() => {
     document.documentElement.appendChild(pre);
   };
   const tick = () => {
-    if (document.title === 'Just a moment...') { setTimeout(tick, 500); return; }
+    if (document.title === 'Just a moment...' && Date.now() - started < 45000) { setTimeout(tick, 500); return; }
     const r = read();
     if (!settled(r) && Date.now() - started < 25000) { setTimeout(tick, 500); return; }
     const back = document.querySelector('a[href="/listings?section=builder-stock"]');
@@ -946,7 +946,7 @@ export async function readCommandCentrePageViaBrowserRun({ token, path, viewport
   if (worker) {
     for (const origin of CC_FIRST_PARTY_ORIGINS) {
       const answer = await worker.read({ url: `${origin}${path}`, cookies, viewport, script });
-      if (answer.error || !answer.read) { tried.push(`${origin}: ${String(answer.error ?? 'no answer').slice(0, 200)}`); continue; }
+      if (answer.error || !answer.read) { tried.push(`${origin}: ${String(answer.error ?? 'no answer').slice(0, 600)}`); continue; }
       const seen = verdict(origin, answer.read, answer.status, answer.mitigated);
       if (seen.real || origin === CC_FIRST_PARTY_ORIGINS[CC_FIRST_PARTY_ORIGINS.length - 1]) return seen;
       tried.push(`${origin}: ${seen.notReal.join('; ')}`);
