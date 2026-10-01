@@ -22,6 +22,7 @@ import {
   HERO_ATTEMPT_KEY, HERO_PLAN_KEY, HERO_PLAN_VERSION, validateHeroPlan,
 } from '../../../supabase/functions/_shared/builderStock/marketplaceHero.pure';
 import { readHeroWorkContext } from '../../../supabase/functions/_shared/builderStock/heavyWorkWire.pure';
+import { sameValue } from '../../../supabase/functions/_shared/builderStock/heroProof';
 import { drawScene } from './fixtures/heroScenes';
 
 const read = (path: string) => readFileSync(resolve(__dirname, '../../..', path), 'utf8');
@@ -194,6 +195,17 @@ describe('the end-to-end decode agrees with the planner', () => {
     expect(a.plan.mode).toBe('crop');
     expect(a.tile?.width).toBe(648);
     expect(a.tile?.pixels.length).toBe(648 * 180 * 3);
+  });
+
+  it('the proof determinism check ignores key order (a jsonb round trip reorders keys)', async () => {
+    const png = await scenePng();
+    const a = await planHeroFromBytes(png);
+    if (!a.ok) throw new Error('no plan');
+    const reordered = JSON.parse(JSON.stringify(a.plan, Object.keys(a.plan).sort()));
+    const viaJsonb = Object.fromEntries(Object.entries(a.plan).reverse());
+    expect(sameValue(a.plan, viaJsonb)).toBe(true);
+    expect(sameValue(a.plan, { ...a.plan, crop: { ...a.plan.crop, x: a.plan.crop.x + 1 } })).toBe(false);
+    expect(reordered).toBeTruthy();
   });
 
   it('an unreadable picture is an answer, never an exception', async () => {
