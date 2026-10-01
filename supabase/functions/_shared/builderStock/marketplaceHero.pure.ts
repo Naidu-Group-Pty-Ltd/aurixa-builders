@@ -467,13 +467,11 @@ function skyReference(a: RegionAnalysis, bandTop: number): Rgb | null {
  * own height. A sky row, or a row flat across the building (an overcast
  * page), ends it — a roof is neither.
  *
- * v3 — A ROOF TALLER THAN THE WINDOWS. The band is the rows windows and doors
- * occupy, and a pitched roof over a single storey can stand taller than that:
- * the cap then stopped the walk INSIDE the roof and the frame cut its ridge.
- * Where the cap is what stopped it (`extend`), the walk goes on while each row
- * is still ROOF-SHAPED — its textured blocks inside the span of the row below,
- * as a roof narrows to its ridge — and no further. A cloud bank or a tree
- * wider than what it stands on does not continue it.
+ * v3 (the fit rescue's facade only — the first pass is v2, untouched) keeps
+ * that cap and changes two things: sky is judged over the row's OWN span,
+ * because across the whole building a roof narrower than three-fifths of it
+ * reads as sky; and the ridge's own row, mostly the sky over it, is the
+ * roof's last row rather than none of it.
  */
 function roofTop(a: RegionAnalysis, band: Band, x0: number, x1: number, extend = false): number {
   const bandHeight = band.bottom - band.top + 1;
@@ -488,11 +486,9 @@ function roofTop(a: RegionAnalysis, band: Band, x0: number, x1: number, extend =
     }
     return top;
   }
-  // v3. Sky is judged over the row's OWN span — across the whole building,
-  // a roof narrower than three-fifths of it reads as sky — and past the
-  // band's height the row must also be roof-shaped. A block belongs to the
-  // span where it is textured OR plainly not this photograph's sky: a smooth
-  // roof is roof-coloured, and texture alone never sees its interior.
+  // A block belongs to a row's span where it is textured OR plainly not this
+  // photograph's sky: a smooth roof is roof-coloured, and texture alone never
+  // sees its interior.
   const sky = skyReference(a, band.top);
   const solid = (i: number) => a.active[i] === 1 || (!!sky && a.blockBlue[i] < 0.35
     && distance([a.blockMean[i * 3], a.blockMean[i * 3 + 1], a.blockMean[i * 3 + 2]], sky) > 30);
@@ -506,47 +502,22 @@ function roofTop(a: RegionAnalysis, band: Band, x0: number, x1: number, extend =
     for (let c = span[0]; c <= span[1]; c += 1) sum += a.blockBlue[r * a.cols + c];
     return sum / (span[1] - span[0] + 1) >= 0.4 && a.rowS[r] === 0;
   };
+  // Within the band's height only, as v2: past it, real photographs are
+  // textured almost everywhere (canopy, cloud, a neighbour's gable) and a
+  // walk that keeps climbing reaches the frame's edge. Measured on the live
+  // cards, 1 October 2026: every climb past the cap ended at row 0.
   let top = band.top;
-  let below: [number, number] = spanOf(band.top) ?? [x0, x1];
-  for (let r = band.top - 1; r >= 0; r -= 1) {
+  for (let r = band.top - 1; r >= 0 && band.top - r <= bandHeight; r -= 1) {
     const span = spanOf(r);
     if (!span) break;
-    const roofShaped = span[0] >= below[0] - 1 && span[1] <= below[1] + 1;
-    const withinCap = band.top - r <= bandHeight;
-    if (withinCap ? (skyOver(r, span) && !roofShaped) : !roofShaped) {
-      // Something solid stands on the roof and is not roof-shaped — cloud, a
-      // canopy, a neighbour's gable — so where the ridge ends is UNKNOWN.
-      // Every uncertainty widens the box: go on while anything solid stands
-      // over the building, and stop only at clear sky. A box too tall costs
-      // a frame (the picture is then shown whole); a box too short cuts the
-      // roof.
-      if (!skyOver(r, span)) {
-        for (let k = r; k >= 0 && spanOf(k); k -= 1) top = k;
-      }
+    if (skyOver(r, span)) {
+      // The ridge's own row is mostly the sky over it: the roof's last row.
+      top = r;
       break;
     }
     top = r;
-    below = roofShaped ? span : below;
   }
   return top;
-}
-
-/**
- * v3 — WALLS BELOW THE WINDOWS. The band is where windows and doors are
- * densest, and a wall runs on beneath its sills: below the band, rows that
- * still carry structure inside the building's columns (a corner, a door's
- * jamb, a downpipe) are still building, for at most the band's own height.
- */
-function wallFoot(a: RegionAnalysis, band: Band, x0: number, x1: number): number {
-  const bandHeight = band.bottom - band.top + 1;
-  let bottom = band.bottom;
-  for (let r = band.bottom + 1; r < a.rows && r - band.bottom <= bandHeight; r += 1) {
-    let carries = false;
-    for (let c = x0; c <= x1; c += 1) if (a.structMass[r * a.cols + c] > 0) { carries = true; break; }
-    if (!carries) break;
-    bottom = r;
-  }
-  return bottom;
 }
 
 /**
@@ -569,8 +540,6 @@ export function findSubject(
   t: HeroThumbnail, usable: PixelRect,
   /** Optional sink for NUMERIC measurements (profiles, counts) — never pixels. */
   diag?: Record<string, unknown>,
-  /** v3: continue a roof taller than the wall band (`roofTop`). */
-  extendRoof = false,
 ): Subject | null {
   const a = analyseRegion(t, usable);
   if (!a) return null;
@@ -604,9 +573,9 @@ export function findSubject(
   const eaves = Math.max(1, Math.round((sx1 - sx0 + 1) * 0.1));
   const x0 = Math.max(0, sx0 - eaves), x1 = Math.min(cols - 1, sx1 + eaves);
 
-  const top = roofTop(a, band, x0, x1, extendRoof);
+  const top = roofTop(a, band, x0, x1);
   // The bottom: one row under the lowest wall row; what lies below is soft.
-  const bottom = Math.min(rows - 1, (extendRoof ? wallFoot(a, band, x0, x1) : band.bottom) + 1);
+  const bottom = Math.min(rows - 1, band.bottom + 1);
 
   const box: PixelRect = {
     x: ux + x0 * bs,
@@ -997,7 +966,7 @@ export function findFacade(a: RegionAnalysis, diag?: Record<string, unknown>): F
   if (hx0 > x0 || hx1 < x1) return { refused: 'subject_confidence_low' };
 
   const top = roofTop(a, band, hx0, hx1, true);
-  const foot = wallFoot(a, band, x0, x1);
+  const foot = band.bottom;
   if (diag) {
     const rowActive = new Array(rows).fill(0);
     for (let i = 0; i < active.length; i += 1) if (active[i]) rowActive[Math.floor(i / cols)] += 1;
@@ -1228,7 +1197,8 @@ function planFirstPass(t: HeroThumbnail, diag: Record<string, unknown> | undefin
   if (trimmed) reasons.push('canvas_trimmed');
   const usable = toSource(u, sx, sy, SW, SH);
 
-  const subject = findSubject(t, u, diag, version >= HERO_RESCUE_VERSION);
+  // The first pass IS v2, unchanged; only the version it is stamped with moves.
+  const subject = findSubject(t, u, diag);
   const focal = subject ? intersect(toSource(subject.box, sx, sy, SW, SH, true), usable) : null;
   const confidence: HeroConfidence = subject?.confidence ?? 'low';
   if (subject) reasons.push(...subject.reasons);
