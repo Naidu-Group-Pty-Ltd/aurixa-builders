@@ -91,7 +91,7 @@ export async function drawHeroProof(
     const category = proofCategory(answer.plan, object);
     if ((taken[category] ?? 0) >= perCategory) continue;
     taken[category] = (taken[category] ?? 0) + 1;
-    const same = stored ? JSON.stringify(answer.plan) === JSON.stringify(stored) : null;
+    const same = stored ? sameValue(answer.plan, stored) : null;
     if (same === true) outcome.deterministic += 1;
     if (same === false) outcome.nonDeterministic += 1;
     tiles.push({ ...answer.tile, category });
@@ -130,4 +130,23 @@ export async function drawHeroProof(
   if (!up1.error) outcome.sheets.push(sheetPath);
   if (!up2.error) outcome.sheets.push(indexPath);
   return outcome;
+}
+
+/**
+ * Structural equality, independent of key order. A stored plan has been
+ * through Postgres `jsonb`, which keeps object keys in its own order, so a
+ * string comparison would call two identical plans different.
+ */
+export function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b || a === null || b === null || typeof a !== 'object') return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    const other = b as unknown[];
+    return a.length === other.length && a.every((value, i) => sameValue(value, other[i]));
+  }
+  const left = a as Record<string, unknown>, right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  return keys.every((key) => Object.prototype.hasOwnProperty.call(right, key) && sameValue(left[key], right[key]));
 }

@@ -606,7 +606,11 @@ export function validateHeroPlan(value: unknown): value is HeroPlan {
   }
   // A crop is exactly 16:9 and never cuts the building.
   if (!isHeroAspect(plan.crop.w, plan.crop.h)) return false;
-  if (plan.focal !== null) {
+  // A missing focal is the same as a null one: the network's payload composer
+  // strips nulls (jsonb_strip_nulls), so a plan arrives at the Command Centre
+  // without the key. Reading `undefined` as "a focal that fails" would make
+  // one portal refuse a plan the other draws.
+  if (plan.focal !== null && plan.focal !== undefined) {
     if (!isRect(plan.focal) || !inside(plan.focal, plan.crop)) return false;
   }
   return true;

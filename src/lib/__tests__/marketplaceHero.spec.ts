@@ -257,6 +257,31 @@ describe('a stored plan is a claim about exact bytes', () => {
   });
 });
 
+describe('a plan that crossed to the Command Centre is the same plan', () => {
+  // The payload composer applies jsonb_strip_nulls, which removes null keys at
+  // every depth. A plan must validate identically with its nulls removed.
+  const stripNulls = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(stripNulls);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+        .filter(([, v]) => v !== null).map(([k, v]) => [k, stripNulls(v)]));
+    }
+    return value;
+  };
+
+  it.each([
+    ['a crop with no building found (focal null)', planHero(drawScene({ width: 400, height: 230, horizon: 160, houses: [], lawnGrain: 2 }).thumbnail)!],
+    ['a frame shown whole (focal width share null)', plan({ width: 240, height: 400, horizon: 330, houses: [{ x: 30, w: 180, roofTop: 60, base: 340 }] }).plan],
+    ['a crop with a building', plan({ width: 320, height: 400, horizon: 330, houses: [{ x: 70, w: 180, roofTop: 250, base: 340 }] }).plan],
+  ])('%s validates with its nulls stripped', (_name, original) => {
+    expect(validateHeroPlan(original)).toBe(true);
+    const crossed = stripNulls(JSON.parse(JSON.stringify(original)));
+    expect(validateHeroPlan(crossed)).toBe(true);
+    const stored = { [HERO_PLAN_KEY]: { plan: crossed, object: 'original', sha256: 'e'.repeat(64), planned_at: 'x' } };
+    expect(heroPlanForServed(stored, { object: 'original', sha256: 'e'.repeat(64) })).not.toBeNull();
+  });
+});
+
 describe('several candidates — croppability breaks a tie, never evidence', () => {
   const cropPlan = plan({ width: 320, height: 400, horizon: 330,
     houses: [{ x: 70, w: 180, roofTop: 250, base: 340 }] }).plan;
