@@ -852,3 +852,115 @@ export function finish(label, extra = {}) {
   console.log(`VERDICT ${label} ${failed.length ? 'FAIL' : 'PASS'} ${JSON.stringify(extra)}`);
   process.exitCode = failed.length ? 1 : 0;
 }
+
+/**
+ * THE SAME PAGE, OPENED BY CLOUDFLARE'S OWN BROWSER (Browser Run).
+ *
+ * A GitHub runner's Chromium is challenged on BOTH Command Centre origins
+ * (measured 1 October 2026: HTTP 403 `cf-mitigated: challenge` on the custom
+ * domain and on the Lovable origin). Browser Run is a real Chromium on
+ * Cloudflare's network whose every request carries Web Bot Auth signatures —
+ * a SIGNED, self-declared agent that bot protection is designed to recognise —
+ * so it is not a bypass of anything: nothing about either origin's protection
+ * changes, and if they challenge it too this says so.
+ *
+ * It renders `path` with the staff session cookie on the Command Centre's
+ * backend (the same cookie the runner's Chromium is given), runs ONE reader
+ * script inside the page — the same structural read as
+ * `readCommandCentreProperty`, plus the overflow measure and, where asked, the
+ * back link's click — and returns what that script wrote. Credentials come
+ * from the run's environment and are never printed.
+ */
+const BROWSER_RUN_READER = `(() => {
+  const errors = [];
+  addEventListener('error', () => errors.push('uncaught script error'));
+  const STATES = ${JSON.stringify(COMMAND_CENTRE_PAGE_STATES)};
+  const started = Date.now();
+  const read = () => {
+    const text = document.body ? document.body.innerText : '';
+    const facts = {};
+    for (const row of document.querySelectorAll('dl > div')) {
+      const dt = row.querySelector('dt'); const dd = row.querySelector('dd');
+      if (dt && dd) facts[dt.textContent.trim()] = dd.textContent.trim();
+    }
+    const title = document.querySelector('h1') ? document.querySelector('h1').textContent.trim() : null;
+    const images = [...document.images].filter((img) => img.complete && img.naturalWidth > 64);
+    const lead = images.find((img) => title && img.alt && img.alt.startsWith(title)) || null;
+    const button = [...document.querySelectorAll('button')].find((b) => /Activate builder|Not available/.test(b.textContent || '')) || null;
+    return {
+      documentTitle: document.title, path: location.pathname, title,
+      header: document.querySelector('header') ? document.querySelector('header').innerText : '',
+      text, facts, states: STATES.filter((s) => text.includes(s)),
+      lead: lead ? { src: lead.currentSrc || lead.src, width: lead.naturalWidth } : null,
+      pictures: images.length,
+      documents: [...document.querySelectorAll('ul[aria-label="Documents"] a')].map((a) => a.href),
+      back: !!document.querySelector('a[href="/listings?section=builder-stock"]'),
+      activate: button ? { text: button.textContent.trim(), disabled: button.disabled } : null,
+      overflow: document.documentElement.scrollWidth > innerWidth + 1, width: document.documentElement.scrollWidth,
+    };
+  };
+  const settled = (r) => r.title && (Object.keys(r.facts).length > 0 || r.states.length > 0);
+  const finish = (result) => {
+    const pre = document.createElement('pre');
+    pre.id = '__cc_proof';
+    pre.textContent = JSON.stringify(result);
+    document.documentElement.appendChild(pre);
+  };
+  const tick = () => {
+    const r = read();
+    if (!settled(r) && Date.now() - started < 25000) { setTimeout(tick, 500); return; }
+    const back = document.querySelector('a[href="/listings?section=builder-stock"]');
+    if (!window.__CC_PROOF_CLICK_BACK || !back) { finish({ ...r, errors }); return; }
+    back.click();
+    setTimeout(() => {
+      const t = document.body ? document.body.innerText : '';
+      finish({ ...r, errors, afterBack: { path: location.pathname + location.search,
+        states: STATES.filter((s) => t.includes(s)), documentTitle: document.title } });
+    }, 4000);
+  };
+  tick();
+})();`;
+
+export async function readCommandCentrePageViaBrowserRun({ token, path, viewport, clickBack = false }) {
+  const account = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+  if (!account || !apiToken) return { available: false, reason: 'Browser Run is not configured for this run' };
+  const tried = [];
+  for (const origin of CC_FIRST_PARTY_ORIGINS) {
+    const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${account}/browser-rendering/content`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: `${origin}${path}`,
+        viewport,
+        cookies: [{ name: '__Host-session_token', value: token, domain: `${CC_REF}.supabase.co`, path: '/',
+          secure: true, httpOnly: true, sameSite: 'None' }],
+        gotoOptions: { waitUntil: 'networkidle0', timeout: 45_000 },
+        addScriptTag: [{ content: `${clickBack ? 'window.__CC_PROOF_CLICK_BACK = true;' : ''}${BROWSER_RUN_READER}` }],
+        waitForSelector: { selector: '#__cc_proof', timeout: 40_000 },
+      }),
+    }).catch((error) => ({ ok: false, status: 0, text: async () => String(error?.message ?? error) }));
+    const body = await response.text();
+    let json = null;
+    try { json = JSON.parse(body); } catch { /* not JSON */ }
+    if (!response.ok || !json?.success) {
+      const why = json?.errors?.map((e) => `${e.code ?? ''} ${e.message ?? ''}`.trim()).join('; ')
+        || `HTTP ${response.status}`;
+      tried.push(`${origin}: ${why.slice(0, 200)}`);
+      continue;
+    }
+    const html = String(json.result ?? '');
+    const m = /<pre id="__cc_proof">([\s\S]*?)<\/pre>/.exec(html);
+    if (!m) { tried.push(`${origin}: the page rendered without the reader's answer`); continue; }
+    const decoded = m[1].replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+    let read = null;
+    try { read = JSON.parse(decoded); } catch { tried.push(`${origin}: the reader's answer was not readable`); continue; }
+    const notReal = [];
+    if (read.documentTitle === 'Just a moment...') notReal.push('Cloudflare challenge');
+    if (read.path !== new URL(path, 'https://x').pathname) notReal.push(`redirected to ${read.path}`);
+    for (const state of NOT_THE_PAGE_STATES) if (read.states.includes(state)) notReal.push(`page says "${state}"`);
+    if (!read.title) notReal.push('the app drew no heading');
+    return { available: true, origin, tried, read, real: notReal.length === 0, notReal };
+  }
+  return { available: true, origin: null, tried, read: null, real: false, notReal: tried };
+}

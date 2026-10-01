@@ -41,6 +41,7 @@ import {
   RUN, record, net, cc, id, sha256, waitFor, fixture, manifest, storageFor, withLinks, seedOrganisation,
   connectTransport, seedStaff, uploadDocument, waitImported, itemsOf, mirrorOf, differences, cleanup,
   leftovers, finish, commandCentre, CC_FIELDS, NETWORK_REF, inspectCommandCentrePage, readCommandCentreProperty,
+  readCommandCentrePageViaBrowserRun,
 } from './tier0/common.mjs';
 
 const TAG = 'cc-page';
@@ -70,14 +71,49 @@ async function mirrored(orgId) {
   }, 8 * 60_000, 5_000);
 }
 
+/**
+ * Open one property page and read it, by the strongest route that reaches
+ * the product: the runner's own Chromium (custom domain, then the first-party
+ * origin), and only where BOTH challenge it, Cloudflare's signed Browser Run.
+ * Whichever answers, the same real-page verdict gates every check.
+ */
+async function openPage(browser, { token, path, viewport, clickBack }) {
+  const seen = await inspectCommandCentrePage(browser, { token, path, viewport, wait: 6_000 });
+  if (seen.real || !seen.navigation.challenged) {
+    const read = seen.real ? await readCommandCentreProperty(seen.page) : null;
+    let afterBack = null;
+    if (seen.real && clickBack && read?.back) {
+      await seen.page.click('a[href="/listings?section=builder-stock"]').catch(() => {});
+      await seen.page.waitForTimeout(4_000);
+      const landed = new URL(seen.page.url());
+      const text = await seen.page.locator('body').innerText().catch(() => '');
+      afterBack = { path: `${landed.pathname}${landed.search}`,
+        documentTitle: await seen.page.title().catch(() => ''),
+        states: ['Sign in', 'Something went wrong'].filter((t) => text.includes(t)) };
+    }
+    await seen.context.close();
+    return { via: `runner Chromium at ${seen.navigation.origin}`, real: seen.real, notReal: seen.notReal,
+      read: read ? { ...read, overflow: seen.overflow, width: seen.width, errors: seen.errors, afterBack } : null,
+      challenged: seen.challengedOrigins };
+  }
+  const challenged = [...seen.challengedOrigins, seen.navigation.origin];
+  await seen.context.close();
+  const run = await readCommandCentrePageViaBrowserRun({ token, path, viewport, clickBack });
+  if (!run.available) {
+    return { via: 'nothing', real: false, notReal: [`runner Chromium challenged on ${challenged.join(', ')}`, run.reason], read: null, challenged };
+  }
+  return { via: `Cloudflare Browser Run at ${run.origin ?? '—'}`, real: run.real,
+    notReal: run.real ? [] : [`runner Chromium challenged on ${challenged.join(', ')}`, ...run.notReal],
+    read: run.read, challenged };
+}
+
 /** Every check on one page, each FAILED (never passed) when the page is not the product's. */
 async function provePropertyPage(browser, { label, token, item, builderName, viewport, storedSha, expectDocuments }) {
-  const seen = await inspectCommandCentrePage(browser, { token, path: `/listings/builder-stock/${item.id}`, viewport, wait: 6_000 });
-  const where = `${seen.navigation.origin}${seen.challengedOrigins.length ? ` (custom domain challenged: ${seen.challengedOrigins.join(', ')})` : ''}`;
+  const seen = await openPage(browser, { token, path: `/listings/builder-stock/${item.id}`, viewport, clickBack: true });
   const real = record(`P0: ${label} is the Command Centre's own page — not a challenge, error, sign-in or guard page`,
-    seen.real, `${seen.real ? 'real' : seen.notReal.join('; ')}; HTTP ${seen.navigation.status}; via ${where}; calls ${seen.calls.join(' ')}`);
+    seen.real, `${seen.real ? 'real' : seen.notReal.join('; ')}; via ${seen.via}${seen.challenged?.length ? `; challenged: ${seen.challenged.join(', ')}` : ''}`);
   const must = (name, ok, detail) => record(`${name} (${label})`, real && ok, real ? detail : `not the product's page: ${seen.notReal.join('; ')}`);
-  const shown = real ? await readCommandCentreProperty(seen.page) : { facts: {}, text: '', header: '', documents: [] };
+  const shown = seen.read ?? { facts: {}, text: '', header: '', documents: [], errors: [] };
   const f = shown.facts;
 
   const wantFacts = {
@@ -112,31 +148,23 @@ async function provePropertyPage(browser, { label, token, item, builderName, vie
     photoDetail = `${shown.lead.width}px drawn; bytes ${bytes ? (sha256(bytes) === storedSha ? 'equal' : 'differ from') : 'unreadable vs'} the builder's stored photograph`;
   }
   must('P2: the page draws the property\'s own photograph', photoOk, photoDetail);
-  must('P2: the page fits the width without sideways scrolling', !seen.overflow,
-    seen.overflow ? `${seen.width}px, widest ${JSON.stringify(seen.widest)}` : 'fits');
-  must('P2: no script error', seen.errors.length === 0, `${seen.errors.length} uncaught`);
+  must('P2: the page fits the width without sideways scrolling', !shown.overflow,
+    shown.overflow ? `${shown.width}px wide` : 'fits');
+  must('P2: no script error', (shown.errors ?? []).length === 0, `${(shown.errors ?? []).length} uncaught${seen.via.startsWith('Cloudflare') ? ' (counted from when the reader was injected)' : ''}`);
 
   const selectable = SELECTABLE.has(item.availability_status);
   must('P2: the activation button is offered as the availability allows', !!shown.activate
-    && shown.activate.disabled === !selectable, JSON.stringify(shown.activate));
+    && shown.activate.disabled === !selectable, JSON.stringify(shown.activate ?? null));
   if (expectDocuments) {
     const answers = [];
     for (const href of shown.documents) answers.push(await fetch(href, { method: 'GET' }).then((r) => r.status).catch(() => 0));
     must('P2: every document link answers', shown.documents.length >= expectDocuments && answers.every((s) => s === 200),
       `${shown.documents.length} links: ${answers.join(', ') || '—'}`);
   }
-  if (real && shown.back) {
-    await seen.page.click('a[href="/listings?section=builder-stock"]').catch(() => {});
-    await seen.page.waitForTimeout(4_000);
-    const landed = new URL(seen.page.url());
-    const challenged = await seen.page.evaluate(() => document.title === 'Just a moment...').catch(() => false);
-    const text = await seen.page.locator('body').innerText().catch(() => '');
-    must('P2: the back link lands on the marketplace, signed in', landed.pathname === '/listings' && !challenged
-      && !text.includes('Sign in') && !text.includes('Something went wrong'), `${landed.pathname}${landed.search}`);
-  } else {
-    must('P2: the back link lands on the marketplace, signed in', false, 'no back link drawn');
-  }
-  await seen.context.close();
+  const back = shown.afterBack;
+  must('P2: the back link lands on the marketplace, signed in', !!back && back.path.startsWith('/listings')
+    && back.documentTitle !== 'Just a moment...' && !(back.states ?? []).length,
+    back ? `${back.path}${(back.states ?? []).length ? `; ${back.states.join(', ')}` : ''}` : 'no back link drawn');
 }
 
 let storage = null;
@@ -196,16 +224,15 @@ try {
       && (await mirrorOf(alpha.orgId)).find((r) => r.id === lot103.id)?.lifecycle_status !== 'active');
 
   {
-    const seen = await inspectCommandCentrePage(browser, { token: agent.token, path: `/listings/builder-stock/${lot103.id}`,
-      viewport: { width: 1440, height: 900 }, wait: 6_000 });
+    const seen = await openPage(browser, { token: agent.token, path: `/listings/builder-stock/${lot103.id}`,
+      viewport: { width: 1440, height: 900 }, clickBack: false });
     const real = record('P0: lot 103 (removed) is answered by the Command Centre\'s own page', seen.real,
-      `${seen.real ? 'real' : seen.notReal.join('; ')}; via ${seen.navigation.origin}`);
-    const shown = real ? await readCommandCentreProperty(seen.page) : { text: '', facts: {} };
+      `${seen.real ? 'real' : seen.notReal.join('; ')}; via ${seen.via}`);
+    const shown = seen.read ?? { text: '', facts: {} };
     record('P3: the removed property\'s page says it is not available and shows none of its facts',
       real && shown.text.includes('This property is not available') && !shown.text.includes(lot103.address_line)
         && Object.keys(shown.facts).length === 0,
       real ? `${shown.text.includes('This property is not available') ? 'not available' : 'drawn'}; ${Object.keys(shown.facts).length} facts` : seen.notReal.join('; '));
-    await seen.context.close();
   }
   const lot106 = byLot(live2, '106');
   await provePropertyPage(browser, { label: 'lot 106 (new), phone', token: agent.token, item: lot106, builderName,
