@@ -70,6 +70,9 @@ import {
   STOCK_IMAGE_PROGRESS_BADGE, STOCK_IMAGE_PROGRESS_DETAIL, STOCK_IMAGE_PROGRESS_LABEL,
 } from '../../../supabase/functions/_shared/builderStock/imageProgress.pure';
 import {
+  describePublicationBlocker, publicationBlockers, type PublicationReading,
+} from '../../../supabase/functions/_shared/builderStock/publicationBlockers.pure';
+import {
   describeRereadCounts, rereadNaming,
 } from '../../../supabase/functions/_shared/builderStock/sourceReread.pure';
 import {
@@ -279,6 +282,24 @@ export default function BuilderStockList() {
     && (!progressRecord.published || owesAPhotograph(progressRecord))
     ? progressRecord.upload_id
     : null;
+  /*
+   * WHAT IS HOLDING THE LIST, BY NAME. The copy below used to say "goes live
+   * once every property in it has a photo" whatever was holding it, which was
+   * false over 41 photographs held by a list-level gate. Every gate the
+   * database's readiness has is named in `publicationBlockers.pure.ts`.
+   */
+  const listReading: PublicationReading | null = progressRecord && !progressRecord.published
+    ? {
+      total: Number(progressRecord.total ?? 0),
+      photosReady: Number(progressRecord.photos_ready ?? 0),
+      failed: Number(progressRecord.failed ?? 0),
+      working: Number(progressRecord.working ?? 0),
+      manifestState: progressRecord.manifest_state ?? null,
+      pendingAssets: Number(progressRecord.pending_assets ?? 0),
+      published: false,
+    }
+    : null;
+  const listBlockers = listReading ? publicationBlockers(listReading) : [];
   const heldItemsQuery = useBuilderStockHeldItems(heldUploadId);
   const heldItems = heldItemsQuery.data?.records ?? [];
   /*
@@ -1102,16 +1123,18 @@ export default function BuilderStockList() {
               <p className="mt-3 text-sm font-medium">
                 {debounced || availability !== 'all' || uploadFilter !== 'all'
                   ? 'No stock matches those filters'
-                  : heldItems.length
+                  : heldItems.length || listBlockers.length
                     ? 'Nothing is on the marketplace yet'
                     : 'No stock has been uploaded yet'}
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
                 {debounced || availability !== 'all' || uploadFilter !== 'all'
                   ? 'Clear the filters to see everything you have uploaded.'
-                  : heldItems.length
-                    ? 'Your stock list has imported and goes live once every property '
-                      + 'in it has a photo.'
+                  : heldItems.length || listBlockers.length
+                    ? (listBlockers.length
+                      ? listBlockers.map((blocker) => describePublicationBlocker(blocker, listReading!)).join(' ')
+                      : 'Your stock list has imported and goes live once every property '
+                        + 'in it has a photo.')
                     : 'Upload a spreadsheet, CSV, Word document, PDF or photograph of your schedule.'}
               </p>
             </div>

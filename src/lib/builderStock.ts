@@ -990,6 +990,8 @@ export interface BuilderStockImageProgressRecord {
   failure_state: string | null;
   blocked_reason: string | null;
   published: boolean;
+  /** Source files no worker has answered yet; absent on an older deployment. */
+  pending_assets?: number | null;
 }
 
 export function stockImageProvenance(
