@@ -152,3 +152,12 @@ describe('a list still being read cannot replace a live one', () => {
       .not.toMatch(/rpc\('publish_builder_stock_upload'/);
   });
 });
+
+describe('a cutover is confined to its own organisation', () => {
+  it('the archive step filters on the publishing upload\'s organisation', () => {
+    const sql = latestDefinition('publish_builder_stock_upload');
+    const body = sql.slice(sql.search(/FUNCTION public\.publish_builder_stock_upload\(/));
+    const archive = body.slice(body.indexOf("SET lifecycle_status = 'archived'"));
+    expect(archive.slice(0, 400)).toMatch(/AND organisation_id = v_org;/);
+  });
+});
