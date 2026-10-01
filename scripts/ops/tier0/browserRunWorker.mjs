@@ -34,12 +34,20 @@ export default {
       const page = await browser.newPage();
       await page.setViewport(viewport);
       if (cookies?.length) await page.setCookie(...cookies);
-      const answer = await page.goto(url, { waitUntil: 'networkidle0', timeout: 45000 }).catch(() => null);
-      await page.addScriptTag({ content: script });
-      await page.waitForSelector('#__cc_proof', { timeout: 45000 });
+      // On EVERY document, not just the first: a bot challenge that passes
+      // navigates to the real page, and a script added after load would be lost.
+      await page.evaluateOnNewDocument(script);
+      const answer = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => null);
+      const first = { status: answer ? answer.status() : null,
+        mitigated: answer ? (answer.headers()['cf-mitigated'] || null) : null };
+      try {
+        await page.waitForSelector('#__cc_proof', { timeout: 75000 });
+      } catch (error) {
+        return Response.json({ error: 'the reader did not answer: ' + String(error && error.message || error).slice(0, 120),
+          title: await page.title().catch(() => null), path: new URL(page.url()).pathname, ...first }, { status: 502 });
+      }
       const text = await page.$eval('#__cc_proof', (el) => el.textContent);
-      return Response.json({ status: answer ? answer.status() : null,
-        mitigated: answer ? (answer.headers()['cf-mitigated'] || null) : null, read: JSON.parse(text) });
+      return Response.json({ ...first, finalPath: new URL(page.url()).pathname, read: JSON.parse(text) });
     } catch (error) {
       return Response.json({ error: String(error && error.message || error).slice(0, 300) }, { status: 502 });
     } finally {
@@ -103,5 +111,9 @@ export async function readThroughWorker(deployed, { url, cookies, viewport, scri
     body: JSON.stringify({ url, cookies, viewport, script }),
   }).catch((error) => ({ ok: false, status: 0, json: async () => ({ error: String(error?.message ?? error) }) }));
   const body = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
-  return response.ok ? body : { error: body?.error ?? `HTTP ${response.status}` };
+  return response.ok ? body : {
+    error: [body?.error ?? `HTTP ${response.status}`, body?.title ? `title "${body.title}"` : null,
+      body?.path ? `at ${body.path}` : null, body?.status ? `first answer HTTP ${body.status}` : null,
+      body?.mitigated ? `cf-mitigated ${body.mitigated}` : null].filter(Boolean).join('; '),
+  };
 }

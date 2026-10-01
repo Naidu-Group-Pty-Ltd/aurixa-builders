@@ -900,6 +900,10 @@ const BROWSER_RUN_READER = `(() => {
     };
   };
   const settled = (r) => r.title && (Object.keys(r.facts).length > 0 || r.states.length > 0);
+  // Registered on every document: on Cloudflare's interstitial \`tick\` keeps
+  // waiting rather than answering, so a challenge that passes navigates on and
+  // the reader on the NEXT document answers; one that never passes times out
+  // and the Worker reports the title it was left on.
   const finish = (result) => {
     const pre = document.createElement('pre');
     pre.id = '__cc_proof';
@@ -907,6 +911,7 @@ const BROWSER_RUN_READER = `(() => {
     document.documentElement.appendChild(pre);
   };
   const tick = () => {
+    if (document.title === 'Just a moment...') { setTimeout(tick, 500); return; }
     const r = read();
     if (!settled(r) && Date.now() - started < 25000) { setTimeout(tick, 500); return; }
     const back = document.querySelector('a[href="/listings?section=builder-stock"]');
@@ -918,7 +923,7 @@ const BROWSER_RUN_READER = `(() => {
         states: STATES.filter((s) => t.includes(s)), documentTitle: document.title } });
     }, 4000);
   };
-  tick();
+  if (document.readyState === 'loading') addEventListener('DOMContentLoaded', tick); else tick();
 })();`;
 
 export async function readCommandCentrePageViaBrowserRun({ token, path, viewport, clickBack = false, worker = null }) {
