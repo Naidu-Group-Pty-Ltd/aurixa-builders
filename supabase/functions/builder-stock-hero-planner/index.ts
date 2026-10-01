@@ -27,7 +27,8 @@ import {
 import { drawHeroProof } from '../_shared/builderStock/heroProof.ts';
 import { planHeroWithCapacity } from '../_shared/builderStock/heavyWorkClient.ts';
 import { heroPlanOfImage, servedObjectOf } from '../_shared/builderStock/primaryImage.ts';
-import { HERO_PLAN_VERSION, type HeroPlan } from '../_shared/builderStock/marketplaceHero.pure.ts';
+import { HERO_PLAN_VERSION, planHero, type HeroPlan } from '../_shared/builderStock/marketplaceHero.pure.ts';
+import { decodeThumbnailResult } from '../_shared/builderStock/sourceImageRaster.ts';
 
 const corsHeaders = createCorsHeaders();
 const BUDGET_MS = 110_000;
@@ -118,6 +119,32 @@ Deno.serve(async (req: Request) => {
       }
       return json({ success: true, operation, offset, limit, stored: false, failed, derivative,
         stopped_for_time: stoppedForTime, ...summarise(plans) });
+    }
+
+    if (operation === 'diagnose') {
+      // Numbers only — profiles, boxes and counts of the planner's own
+      // measurements, never pixels — for tuning against real pictures without
+      // a single one leaving the platform.
+      const offset = Math.max(0, Number(body.offset ?? 0) || 0);
+      const limit = Math.max(1, Math.min(4, Number(body.limit ?? 2) || 2));
+      const groups = (await readHeroCandidates(supabase, { includeArchived }))
+        .filter(({ item }) => !body.lifecycle || item.lifecycle_status === body.lifecycle)
+        .slice(offset, offset + limit);
+      const rows: unknown[] = [];
+      for (const { images } of groups) {
+        const served = await readServedBytes(supabase, images[0]);
+        if (served.ok === false) { rows.push({ failed: served.reason }); continue; }
+        const decoded = await decodeThumbnailResult(served.bytes);
+        if (decoded.ok === false) { rows.push({ failed: decoded.reason }); continue; }
+        const diag: Record<string, unknown> = {};
+        const plan = planHero(decoded.thumbnail, diag);
+        rows.push({
+          thumb: [decoded.thumbnail.width, decoded.thumbnail.height],
+          source: plan?.source, mode: plan?.mode, confidence: plan?.confidence, reasons: plan?.reasons,
+          usable: plan?.usable, focal: plan?.focal, crop: plan?.crop, diag,
+        });
+      }
+      return json({ success: true, operation, offset, rows });
     }
 
     if (operation === 'proof') {
