@@ -113,9 +113,10 @@ async function stateOf(itemId, imageId, uploadId) {
            extract(epoch FROM (i.image_work_next_attempt_at - now()))::int AS next_in_s,
            public.builder_stock_photo_is_source_ready(i.primary_image_id) AS photo_ready,
            (SELECT count(*) FROM public.builder_stock_item_images x WHERE x.stock_item_id = i.id)::int AS image_rows,
-           im.source_detail ? 'sanitization_failure' AS refused,
-           im.source_detail ? 'sanitized_derivative' AS derived,
-           im.source_detail ? 'sanitization_clearance' AS cleared,
+           -- A record, not a key: a settled repair writes the other two keys as null.
+           jsonb_typeof(im.source_detail -> 'sanitization_failure') = 'object' AS refused,
+           jsonb_typeof(im.source_detail -> 'sanitized_derivative') = 'object' AS derived,
+           jsonb_typeof(im.source_detail -> 'sanitization_clearance') = 'object' AS cleared,
            im.source_detail -> 'sanitization_attempt' ->> 'operational' AS attempt_operational,
            im.source_detail -> 'sanitized_derivative' ->> 'derivative_sha256' AS derivative_sha,
            im.source_detail -> 'sanitized_derivative' ->> 'storage_path' AS derivative_path,
