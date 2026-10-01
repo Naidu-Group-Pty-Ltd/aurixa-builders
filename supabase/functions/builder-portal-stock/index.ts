@@ -31,6 +31,7 @@ import {
   brochureConfirmationViews, withConfirmationChoices,
 } from '../_shared/builderStock/imageProgress.pure.ts';
 import { confirmedLotOf } from '../_shared/builderStock/brochureConfirmation.pure.ts';
+import { askToPublishFinishedImport } from '../_shared/builderStock/publicationSweep.ts';
 import {
   confirmBrochureImage, readListingsWithLots, readStandingConfirmations, undoBrochureImage,
   type StandingConfirmation,
@@ -615,6 +616,9 @@ Deno.serve(async (req) => {
         .update(importOutcomeColumns(result, sourceNotice))
         .eq('id', uploadId).eq('organisation_id', activeOrganisationId)
         .select(STOCK_UPLOAD_SELECT).single();
+      // The import has finished, so publication may now be asked; see
+      // `askToPublishFinishedImport`.
+      await askToPublishFinishedImport(supabase, uploadId);
 
       /*
        * A SHEET THAT GAVE US ITS ROWS AND NOT ITS LINK ADDRESSES MAY BE

@@ -49,6 +49,7 @@ import {
   claimImport, releaseThenContinue, type ImportClaim,
 } from './importClaim.ts';
 import { isAcceptableStockStoragePath } from './fileTypes.pure.ts';
+import { askToPublishFinishedImport } from './publicationSweep.ts';
 import { tradingName } from './organisationName.ts';
 import {
   importFailureColumns, importOutcomeColumns,
@@ -217,6 +218,7 @@ export async function continueStockImport(
     await supabase.from('builder_stock_uploads')
       .update(importOutcomeColumns(result, null))
       .eq('id', uploadId).eq('organisation_id', upload.organisation_id);
+    await askToPublishFinishedImport(supabase, uploadId);
     await told(result);
     return { success: true, state: 'completed', upload_id: uploadId };
   } finally {

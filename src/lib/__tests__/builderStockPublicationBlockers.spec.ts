@@ -109,3 +109,46 @@ describe('a finished list is asked to publish again', () => {
     expect(latestDefinition('builder_stock_image_progress')).toMatch(/AS pending_assets/);
   });
 });
+
+describe('a list still being read cannot replace a live one', () => {
+  const publish = () => {
+    const sql = latestDefinition('publish_builder_stock_upload');
+    return sql.slice(sql.search(/FUNCTION public\.publish_builder_stock_upload\(/));
+  };
+
+  it('publication refuses until the import has finished, before anything moves', () => {
+    const body = publish();
+    const gate = body.indexOf("NOT IN ('enriching', 'complete', 'partially_complete')");
+    expect(gate).toBeGreaterThan(0);
+    expect(body).toMatch(/'import_not_finished'/);
+    for (const step of ['apply_builder_stock_pending_patch', "SET lifecycle_status = 'active'",
+      "SET lifecycle_status = 'archived'"]) {
+      expect(body.indexOf(step), step).toBeGreaterThan(gate);
+    }
+  });
+
+  it('a partially imported list archives nothing', () => {
+    expect(publish()).toMatch(/array_length\(v_replaces, 1\) IS NOT NULL AND v_status <> 'partially_complete'/);
+  });
+
+  it('the sweep offers finished imports only', () => {
+    expect(latestDefinition('builder_stock_uploads_awaiting_publication'))
+      .toMatch(/u\.status IN \('enriching', 'complete', 'partially_complete'\)/);
+  });
+
+  it('every writer of the final status asks to publish after it, and nothing asks mid-read', () => {
+    for (const file of [
+      'supabase/functions/builder-portal-stock/index.ts',
+      'supabase/functions/_shared/builderStock/continueImport.ts',
+      'supabase/functions/_shared/builderStock/settleReaderVersion.ts',
+    ]) {
+      const src = read(file);
+      const write = src.search(/importOutcomeColumns\(|status: result\.uploadStatus/);
+      const ask = src.indexOf('askToPublishFinishedImport(');
+      expect(write, file).toBeGreaterThan(0);
+      expect(ask, file).toBeGreaterThan(write);
+    }
+    expect(read('supabase/functions/_shared/builderStock/runImport.ts'))
+      .not.toMatch(/rpc\('publish_builder_stock_upload'/);
+  });
+});

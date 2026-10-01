@@ -75,6 +75,7 @@
  * than for ever.
  */
 import type { runStockImport } from './runImport.ts';
+import { askToPublishFinishedImport } from './publicationSweep.ts';
 import { isImportContinuation } from './importContinuation.pure.ts';
 import { tradingName } from './organisationName.ts';
 import {
@@ -874,5 +875,6 @@ async function writeImportOutcome(
         : null,
       processing_completed_at: new Date().toISOString(),
     }).eq('id', upload.id).eq('organisation_id', upload.organisation_id);
+    if (writesStatus) await askToPublishFinishedImport(db, upload.id);
   } catch { /* the read landed; the record of it is best-effort */ }
 }
