@@ -36,10 +36,11 @@ import {
   isDropboxFolderLink, sharedLinkFileUrl,
 } from '../../../supabase/functions/_shared/builderStock/sourceBranches.pure.ts';
 import {
-  FOLDER_PATH, HEAVY_WORK_TIMEOUT_MS, MAX_SANITIZE_BYTES, SANITIZE_PATH,
+  FOLDER_PATH, HEAVY_WORK_TIMEOUT_MS, HERO_PATH, MAX_SANITIZE_BYTES, SANITIZE_PATH,
   WORK_CONTEXT_HEADER, WORK_OUTCOME_HEADER, decodeWorkDocument, encodeWorkDocument,
-  isDropboxFetchHost, readFolderWorkContext, readSanitizeWorkContext,
+  isDropboxFetchHost, readFolderWorkContext, readHeroWorkContext, readSanitizeWorkContext,
 } from '../../../supabase/functions/_shared/builderStock/heavyWorkWire.pure.ts';
+import { planHeroFromBytes } from '../../../supabase/functions/_shared/builderStock/heroPlanning.ts';
 import { readBrochureFigureEvidence } from '../../../supabase/functions/_shared/builderStock/brochureFigures.ts';
 
 /*
@@ -103,6 +104,7 @@ export class PdfElection extends DurableObject {
     const path = new URL(request.url).pathname;
     if (path === SANITIZE_PATH) return await this.sanitize(request);
     if (path === FOLDER_PATH) return await this.folder(request);
+    if (path === HERO_PATH) return await this.hero(request);
     /*
      * NEVER GUESSED. An election run against the wrong property's label puts
      * another house on a client's card. `decodeElectionContext` refuses
@@ -243,6 +245,32 @@ export class PdfElection extends DurableObject {
    * shared one, wrapped, so an election found here runs in this object rather
    * than calling back out to the worker it is already in.
    */
+  /*
+   * THE HERO PLAN — presentation only. The served picture in, its framing plan
+   * out (`heroPlanning.ts`), queued like every heavy job so a decode never
+   * runs beside a brochure. Nothing is stored here and nothing is fetched:
+   * the caller sends the bytes and keeps the answer.
+   */
+  async hero(request: Request): Promise<Response> {
+    const context = readHeroWorkContext(decodeWorkDocument(request.headers.get(WORK_CONTEXT_HEADER)));
+    if (!context) return json({ error: 'bad_context' }, 400);
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    if (!bytes.length || bytes.length > MAX_SANITIZE_BYTES) {
+      return json({ error: 'bad_picture', bytes: bytes.length }, 413);
+    }
+    return await this.queue(async () => {
+      const result = await planHeroFromBytes(bytes, { proof: context.proof === true });
+      const meta: Record<string, unknown> = result.ok
+        ? { ok: true, plan: result.plan, tile: result.tile ? { width: result.tile.width, height: result.tile.height } : null }
+        : { ...result };
+      const body = result.ok && result.tile ? result.tile.pixels : null;
+      return new Response(body as unknown as BodyInit, {
+        status: 200,
+        headers: { 'content-type': 'application/octet-stream', [WORK_OUTCOME_HEADER]: encodeWorkDocument(meta) },
+      });
+    });
+  }
+
   async folder(request: Request): Promise<Response> {
     const context = readFolderWorkContext(
       decodeWorkDocument(request.headers.get(WORK_CONTEXT_HEADER)));

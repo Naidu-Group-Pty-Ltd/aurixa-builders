@@ -41,6 +41,10 @@ import {
   storedColumnMaySupplyPrimaryImage,
 } from './columnDeclaration.pure.ts';
 import { PROCESSED_LIFECYCLE } from './stockLifecycle.pure.ts';
+import {
+  heroOriginalFingerprint, heroPlanForServed, heroSuitabilityRank, type HeroPlan,
+  type HeroServedObject,
+} from './marketplaceHero.pure.ts';
 import { readAllRows } from './pagedRead.ts';
 import {
   imageConfirmationStamp, keepStanding, readStandingConfirmations, standingUnderConfirmations,
@@ -152,6 +156,34 @@ export function derivativeToServe(image: DisplayableImage): SanitizedDerivative 
 }
 
 /**
+ * The object a door signs for this image — the builder's original or its
+ * repair — and that object's SHA-256: the fingerprint a stored hero plan must
+ * match. Derived from `derivativeToServe`, the door's own rule, and from
+ * `source_detail` alone, so the network and the Command Centre's mirror (which
+ * holds no network storage path) read the same answer.
+ */
+export function servedObjectOf(
+  image: DisplayableImage,
+): { object: HeroServedObject; sha256: string | null; storage_path: string | null } {
+  const derivative = derivativeToServe(image);
+  if (derivative) {
+    return {
+      object: 'derivative', sha256: derivative.derivative_sha256 ?? null,
+      storage_path: derivative.storage_path ?? null,
+    };
+  }
+  return {
+    object: 'original', sha256: heroOriginalFingerprint(image.source_detail),
+    storage_path: image.storage_path ?? null,
+  };
+}
+
+/** The hero plan a card may draw for this image, or null — draw as before. */
+export function heroPlanOfImage(image: DisplayableImage): HeroPlan | null {
+  return heroPlanForServed(image.source_detail, servedObjectOf(image));
+}
+
+/**
  * The card's image, from a property's images. Null means "show no image".
  *
  * There is normally exactly one candidate, because at most one image per
@@ -197,6 +229,17 @@ export function chooseDisplayableImage<T extends DisplayableImage>(images: T[]):
     (servesCleanOriginal(a) ? 0 : 1) - (servesCleanOriginal(b) ? 0 : 1)
     || comparePrimaryEvidence(
       readStoredEvidenceLevel(a.source_detail), readStoredEvidenceLevel(b.source_detail))
+    /*
+     * THE HERO STANDARD BREAKS A TIE, AND ONLY A TIE. Two candidates that the
+     * three tests above cannot tell apart — the same provenance, the same
+     * clean-or-repaired standing, the same strength of the source's evidence —
+     * are both equally the property's picture, and the one a 16:9 card can
+     * frame safely is the better card. It sits BELOW the evidence on purpose:
+     * a picture the source designated more weakly never wins because it crops
+     * more easily, and a candidate with no plan ranks with one that cannot be
+     * framed, so planning can only ever choose between equals.
+     */
+    || heroSuitabilityRank(heroPlanOfImage(a)) - heroSuitabilityRank(heroPlanOfImage(b))
     || (a.position ?? 0) - (b.position ?? 0)
     || String(a.id).localeCompare(String(b.id)))[0];
 }

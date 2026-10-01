@@ -49,6 +49,7 @@
  */
 import { isMarketplaceEligible } from './marketplaceEligibility.pure.ts';
 import { servableClearanceFor, servableDerivativeFor } from './sanitizedDerivative.pure.ts';
+import { heroOriginalFingerprint, heroPlanForServed, type HeroPlan } from './marketplaceHero.pure.ts';
 
 /** How long a minted URL lives. One place; two spellings is how two ends drift. */
 export const STOCK_IMAGE_URL_TTL_SECONDS = 300;
@@ -57,7 +58,13 @@ export const STOCK_IMAGE_URL_TTL_SECONDS = 300;
 export const DEFAULT_STOCK_IMAGE_BUCKET = 'builder-stock-images';
 
 export type StockImageServed =
-  | { ok: true; url: string; external: boolean; expiresIn: number | null }
+  /**
+   * `hero` is the Marketplace Hero Standard's plan for exactly the object this
+   * URL signs — validated against its SHA-256 here, at the door, so a card
+   * never frames bytes the plan was not made over. Null draws the card as
+   * before. A detail view ignores it and shows the picture whole.
+   */
+  | { ok: true; url: string; external: boolean; expiresIn: number | null; hero: HeroPlan | null }
   /** The image is not this organisation's, or is not there at all. */
   | { ok: false; reason: 'not_found' }
   /** It is ours and storage would not mint a URL for it. */
@@ -92,7 +99,7 @@ export async function serveStockImage(
   if (!image) return { ok: false, reason: 'not_found' };
 
   if (image.external_url && !image.storage_path) {
-    return { ok: true, url: String(image.external_url), external: true, expiresIn: null };
+    return { ok: true, url: String(image.external_url), external: true, expiresIn: null, hero: null };
   }
   if (!image.storage_path) {
     return { ok: false, reason: 'not_prepared', detail: 'no_stored_object' };
@@ -111,7 +118,14 @@ export async function serveStockImage(
       detail: error?.message ? String(error.message) : null,
     };
   }
-  return { ok: true, url: String(signed.signedUrl), external: false, expiresIn: ttl };
+  const hero = derivative
+    ? heroPlanForServed(image.source_detail, {
+      object: 'derivative', sha256: servableDerivativeFor(image.source_detail)?.derivative_sha256 ?? null,
+    })
+    : heroPlanForServed(image.source_detail, {
+      object: 'original', sha256: heroOriginalFingerprint(image.source_detail),
+    });
+  return { ok: true, url: String(signed.signedUrl), external: false, expiresIn: ttl, hero };
 }
 
 /**

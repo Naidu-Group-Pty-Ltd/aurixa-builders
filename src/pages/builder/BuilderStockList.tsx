@@ -2196,6 +2196,7 @@ export function StockPlate({
         <StockPicture
           image={image}
           resolveUrl={builderStockImageUrl}
+          presentation="card"
           className="bd-plate-frame"
           alt={`${title} — the picture shown on the marketplace`}
           emptyLabel="No picture found yet"

@@ -97,6 +97,10 @@ verify_jwt = false
 verify_jwt = false
 [functions.builder-document-processor]
 verify_jwt = false
+[functions.builder-stock-hero-planner]
+verify_jwt = false
+# Signed internal callers only (verifyInternal), dispatched by its own cron
+# tick; plans how each marketplace card frames its picture. Presentation only.
 [functions.builder-stock-image-settler]
 verify_jwt = false
 # Signed internal callers only (verifyInternal), dispatched by its own

@@ -1969,7 +1969,7 @@ Deno.serve(async (req) => {
       }
       return served.external
         ? json({ success: true, url: served.url, external: true })
-        : json({ success: true, url: served.url, expires_in: served.expiresIn });
+        : json({ success: true, url: served.url, expires_in: served.expiresIn, hero: served.hero });
     }
 
     // =====================================================================

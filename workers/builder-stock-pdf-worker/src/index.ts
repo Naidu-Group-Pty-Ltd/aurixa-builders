@@ -34,7 +34,7 @@ import {
   ELECTION_CONTEXT_HEADER, PDF_ELECTION_PROTOCOL, decodeElectionContext,
 } from '../../../supabase/functions/_shared/builderStock/pdfElectionBoundary.pure.ts';
 import {
-  FOLDER_PATH, SANITIZE_PATH,
+  FOLDER_PATH, HERO_PATH, SANITIZE_PATH,
 } from '../../../supabase/functions/_shared/builderStock/heavyWorkWire.pure.ts';
 import { PROVENANCE_VERSION } from '../../../supabase/functions/_shared/builderStock/provenanceVersion.pure.ts';
 
@@ -117,7 +117,8 @@ export default {
      * random: neither carries a label worth sharding on, and spreading them is
      * what keeps a folder read from queueing behind a brochure.
      */
-    const heavyWork = (url.pathname === SANITIZE_PATH || url.pathname === FOLDER_PATH)
+    const heavyWork = (url.pathname === SANITIZE_PATH || url.pathname === FOLDER_PATH
+      || url.pathname === HERO_PATH)
       && request.method === 'POST';
     if (!heavyWork && (url.pathname !== '/v1/elect' || request.method !== 'POST')) {
       return json({ error: 'not_found' }, 404);
@@ -160,7 +161,7 @@ export default {
      * folder read carries no body by design and is not asked.
      */
     const emptyBody = request.body === null || request.headers.get('content-length') === '0';
-    if (emptyBody && url.pathname === SANITIZE_PATH) {
+    if (emptyBody && (url.pathname === SANITIZE_PATH || url.pathname === HERO_PATH)) {
       return json({ error: 'bad_picture', bytes: 0 }, 413);
     }
     if (emptyBody && !heavyWork

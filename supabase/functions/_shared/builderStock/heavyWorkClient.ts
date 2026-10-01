@@ -19,12 +19,14 @@ import { meteredFetch } from '../meteredFetch.ts';
 import { RUNTIME_VERSION } from './runtimeVersion.pure.ts';
 import { electionRoute } from './pdfElectionRoute.pure.ts';
 import {
-  FOLDER_PATH, HEAVY_WORK_TIMEOUT_MS, MAX_SANITIZE_BYTES, SANITIZE_PATH,
+  FOLDER_PATH, HEAVY_WORK_TIMEOUT_MS, HERO_PATH, MAX_SANITIZE_BYTES, SANITIZE_PATH,
   WORK_CONTEXT_HEADER, WORK_OUTCOME_HEADER, decodeWorkDocument, encodeWorkDocument,
   type FolderWorkContext,
 } from './heavyWorkWire.pure.ts';
 import { sanitizeSourceImage, type SanitizeImageOptions, type SanitizeImageResult } from './sanitizeImage.ts';
 import type { PackageOutcome } from './packageImages.ts';
+import { planHeroFromBytes, type HeroPlanningResult } from './heroPlanning.ts';
+import { validateHeroPlan } from './marketplaceHero.pure.ts';
 
 function env(name: string): string {
   try {
@@ -181,4 +183,62 @@ export async function recoverDropboxFolderOnWorker(
     return { ...(meta as object) } as PackageOutcome;
   }
   return unreachable('The folder reader answered in a shape this deployment does not read.');
+}
+
+/**
+ * A HERO PLAN for these bytes — on the heavy-work worker where one is
+ * configured, inline otherwise (local runs and tests). Presentation only:
+ * every failure is an answer, `{ ok: false, operational: true }` for anything
+ * about the worker rather than the picture, and none is ever thrown.
+ *
+ * The worker's plan is re-checked HERE by the same validator the planner
+ * obeys, because a plan is a claim about pixels and this is the boundary a
+ * malformed one would cross into the database.
+ */
+export type HeroPlanningAnswer = HeroPlanningResult | { ok: false; reason: 'worker'; operational: true; detail: string };
+
+export async function planHeroWithCapacity(
+  bytes: Uint8Array,
+  options: { proof?: boolean } = {},
+): Promise<HeroPlanningAnswer> {
+  const route = heavyWorkRoute();
+  if (!route) return await planHeroFromBytes(bytes, options);
+  const failed = (detail: string): HeroPlanningAnswer => ({ ok: false, reason: 'worker', operational: true, detail });
+  if (!bytes.length || bytes.length > MAX_SANITIZE_BYTES) return failed(`picture of ${bytes.length} bytes not sent`);
+  let response: Response;
+  try {
+    response = await meteredFetch(`${route.endpoint}${HERO_PATH}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${route.token}`,
+        'content-type': 'application/octet-stream',
+        [WORK_CONTEXT_HEADER]: encodeWorkDocument(options.proof ? { proof: true } : {}),
+      },
+      body: bytes as unknown as BodyInit,
+      signal: AbortSignal.timeout(HEAVY_WORK_TIMEOUT_MS),
+    });
+  } catch (error) {
+    return failed(`the image worker could not be reached (${String((error as { name?: string })?.name ?? 'error')})`);
+  }
+  if (!response.ok) {
+    try { await response.body?.cancel(); } catch { /* nothing held */ }
+    return failed(`the image worker answered HTTP ${response.status}`);
+  }
+  const meta = decodeWorkDocument(response.headers.get(WORK_OUTCOME_HEADER)) as Record<string, unknown> | null;
+  let body: Uint8Array;
+  try {
+    body = new Uint8Array(await response.arrayBuffer());
+  } catch {
+    return failed('the image worker\'s answer could not be read');
+  }
+  if (!meta || typeof meta.ok !== 'boolean') return failed('the image worker answered in a shape this deployment does not read');
+  if (meta.ok === false) return meta as unknown as HeroPlanningResult;
+  if (!validateHeroPlan(meta.plan)) return failed('the image worker answered a plan that does not validate');
+  const tile = meta.tile as { width?: unknown; height?: unknown } | null;
+  const tileOk = tile && typeof tile.width === 'number' && typeof tile.height === 'number'
+    && body.length === tile.width * tile.height * 3;
+  return {
+    ok: true, plan: meta.plan,
+    tile: tileOk ? { width: tile!.width as number, height: tile!.height as number, pixels: body } : null,
+  };
 }

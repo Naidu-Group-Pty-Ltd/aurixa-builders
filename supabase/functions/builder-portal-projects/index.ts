@@ -635,7 +635,7 @@ Deno.serve(async (req) => {
         return json({ error: served.reason === 'not_found' ? 'Image not found' : 'Image not ready' },
           served.reason === 'not_found' ? 404 : 409);
       }
-      return json({ success: true, url: served.url, expires_in: served.expiresIn });
+      return json({ success: true, url: served.url, expires_in: served.expiresIn, hero: served.hero });
     }
 
     return json({ error: 'Unknown operation' }, 400);
