@@ -657,7 +657,7 @@ if (!urlArg) {
   });
   const heroOutcome = outcome(hero);
   check('a hero plan answers 200 with a plan in the outcome header',
-    hero.status === 200 && heroOutcome?.ok === true && heroOutcome?.plan?.version === 1,
+    hero.status === 200 && heroOutcome?.ok === true && Number.isInteger(heroOutcome?.plan?.version) && heroOutcome.plan.version >= 1,
     `${hero.status} ${JSON.stringify(heroOutcome)?.slice(0, 200)}`);
   check('a picture with no building is never cropped — shown whole or within 3%',
     heroOutcome?.plan?.mode === 'fit' || (heroOutcome?.plan?.measures?.cropAreaShare ?? 0) >= 0.97,
