@@ -119,6 +119,34 @@ try {
   record('the Command Centre names the same photograph for every live property', photoMismatch.length === 0,
     photoMismatch.length ? list(photoMismatch) : `${live.filter((row) => row.primary_image_id).length} photographs, the same on both sides`);
 
+  // 2b. The Marketplace Hero plan, and the fingerprints it is keyed on, are the
+  // same on both sides — so the two portals draw the same frame. Compared as
+  // digests of jsonb text (which Postgres renders canonically); no plan or
+  // picture is printed.
+  const heroDigest = `md5(jsonb_build_object(
+      'hero', source_detail->'marketplace_hero',
+      'stored', source_detail->'stored_sha256',
+      'measured', source_detail->'marketplace_measured_sha256',
+      'derivative', source_detail->'sanitized_derivative'->'derivative_sha256')::text)`;
+  const primaryIds = live.map((row) => row.primary_image_id).filter(Boolean).map(String);
+  if (primaryIds.length) {
+    const inList = primaryIds.map((value) => id(value)).join(', ');
+    const networkHero = await readNetwork('hero', `
+      SELECT id::text AS id, ${heroDigest} AS digest, source_detail ? 'marketplace_hero' AS planned,
+             source_detail->'marketplace_hero'->'plan'->>'mode' AS mode
+        FROM public.builder_stock_item_images WHERE id IN (${inList})`);
+    const mirrorHero = await readMirror('hero', `
+      SELECT id::text AS id, ${heroDigest} AS digest, source_detail ? 'marketplace_hero' AS planned
+        FROM public.builder_network_stock_item_images WHERE id IN (${inList})`);
+    const mirrorDigest = new Map(mirrorHero.map((row) => [String(row.id), row]));
+    const heroMismatch = networkHero.filter((row) => mirrorDigest.get(String(row.id))?.digest !== row.digest);
+    const modes = networkHero.reduce((acc, row) => ({ ...acc, [row.mode ?? 'none']: (acc[row.mode ?? 'none'] ?? 0) + 1 }), {});
+    record('the Command Centre holds the same hero plan as the portal for every live card', heroMismatch.length === 0,
+      heroMismatch.length
+        ? `${heroMismatch.length} differ: ${list(heroMismatch.map((row) => short(row.id)))}`
+        : `${networkHero.length} cards, ${networkHero.filter((row) => row.planned).length} planned (${JSON.stringify(modes)}), identical on both sides`);
+  }
+
   // 3. What the builder removed stays removed, on both sides and by source row.
   const removedIds = new Set(removals.map((row) => String(row.id)));
   const removedRows = network.filter((row) => removedIds.has(String(row.id)));
