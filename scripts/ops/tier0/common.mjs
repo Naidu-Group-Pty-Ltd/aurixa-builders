@@ -421,7 +421,43 @@ export const COMMAND_CENTRE_PAGE_STATES = [
  * were answered "challenged" (phase `cc-frontend-build`), so the two are told
  * apart here rather than guessed at.
  */
+/**
+ * THE COMMAND CENTRE'S OWN FIRST-PARTY ORIGINS, in the order a page is tried.
+ *
+ * Measured 1 October 2026: the custom domain's Cloudflare bot protection
+ * answers a GitHub runner's Chromium with its challenge (HTTP 403,
+ * `cf-mitigated: challenge`), so every page check behind it measured the
+ * CHALLENGE — three of them passed on it. The same build is published at the
+ * Command Centre's own Lovable origin, which its edge functions name
+ * explicitly in their CORS and CSRF allow-lists (`auth.ts`, `csrfGuard.ts`) and
+ * which `cc-frontend-build` already requires to serve the same build. Opening
+ * the page there changes nothing about who may see what: the session, the
+ * guards and every read are the Command Centre's own, whichever origin drew
+ * the page. Nothing here weakens the custom domain's protection; it is asked
+ * first, and a challenge there is recorded, never hidden.
+ */
+export const CC_FIRST_PARTY_ORIGINS = [...new Set([CC_ORIGIN, 'https://npc-property-dashbord.lovable.app'])];
+
+/** States that mean the page is NOT the product page a staff member should get. */
+const NOT_THE_PAGE_STATES = ['Sign in', 'Something went wrong', 'Permission required',
+  'Not included in your subscription', 'Configuration required', 'Entitlements temporarily unavailable'];
+
 export async function inspectCommandCentrePage(browser, { token, path, viewport, wait = 4_000 }) {
+  const challengedOrigins = [];
+  for (const [index, origin] of CC_FIRST_PARTY_ORIGINS.entries()) {
+    const seen = await inspectAt(browser, origin, { token, path, viewport, wait });
+    const last = index === CC_FIRST_PARTY_ORIGINS.length - 1;
+    if (seen.navigation.challenged && !last) {
+      challengedOrigins.push(origin);
+      await seen.context.close().catch(() => {});
+      continue;
+    }
+    return { ...seen, challengedOrigins };
+  }
+  throw new Error('no Command Centre origin to try');
+}
+
+async function inspectAt(browser, origin, { token, path, viewport, wait }) {
   const context = await browser.newContext({ viewport });
   await context.addCookies([{ name: '__Host-session_token', value: token, domain: `${CC_REF}.supabase.co`,
     path: '/', secure: true, httpOnly: true, sameSite: 'None' }]);
@@ -433,11 +469,12 @@ export async function inspectCommandCentrePage(browser, { token, path, viewport,
     if (m) calls.push(`${m[1]}:${res.status()}`);
   });
   page.on('pageerror', () => errors.push('uncaught script error'));
-  const answer = await page.goto(`${CC_ORIGIN}${path}`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+  const answer = await page.goto(`${origin}${path}`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
     .catch(() => null);
   await page.waitForTimeout(wait);
   const interstitial = await page.evaluate(() => document.title === 'Just a moment...').catch(() => false);
   const navigation = {
+    origin,
     status: answer ? answer.status() : null,
     challenged: (answer?.headers()['cf-mitigated'] ?? '') === 'challenge' || interstitial,
   };
@@ -454,10 +491,58 @@ export async function inspectCommandCentrePage(browser, { token, path, viewport,
       }
     }
     return { states: known.filter((phrase) => text.includes(phrase)), overflow,
-      width: document.documentElement.scrollWidth, widest };
-  }, COMMAND_CENTRE_PAGE_STATES).catch(() => ({ states: [], overflow: false, width: null, widest: null }));
+      width: document.documentElement.scrollWidth, widest, heading: !!document.querySelector('h1') };
+  }, COMMAND_CENTRE_PAGE_STATES).catch(() => ({ states: [], overflow: false, width: null, widest: null, heading: false }));
   const url = new URL(page.url()).pathname;
-  return { page, context, url, calls, errors, navigation, ...drawn };
+  /*
+   * IS THIS THE PRODUCT'S PAGE AT ALL? Every page check is meaningless on
+   * anything else, and three of them used to pass on Cloudflare's challenge.
+   * Not a challenge, not a 4xx/5xx document, not sent to sign in or to an
+   * error or guard page, still at the path asked for, and the app itself
+   * drew a heading and called its own functions.
+   */
+  const notReal = [];
+  if (navigation.challenged) notReal.push('Cloudflare challenge');
+  if (navigation.status === null) notReal.push('no answer to the navigation');
+  else if (navigation.status >= 400) notReal.push(`HTTP ${navigation.status} document`);
+  if (url !== new URL(path, 'https://x').pathname) notReal.push(`redirected to ${url}`);
+  for (const state of NOT_THE_PAGE_STATES) if (drawn.states.includes(state)) notReal.push(`page says "${state}"`);
+  if (!drawn.heading) notReal.push('the app drew no heading');
+  if (!calls.length) notReal.push('the app called none of its functions');
+  if (calls.some((c) => /:5\d\d$/.test(c))) notReal.push(`a function answered 5xx (${calls.filter((c) => /:5\d\d$/.test(c)).join(' ')})`);
+  return { page, context, url, calls, errors, navigation, ...drawn, real: notReal.length === 0, notReal };
+}
+
+/**
+ * The property page read by its STRUCTURE — the facts list, the builder's
+ * sentence, the availability badge, the gallery, the documents, the back link
+ * and the activation button — so a figure is compared as a figure. Only the
+ * caller's own seeded property is ever read this way.
+ */
+export async function readCommandCentreProperty(page) {
+  return page.evaluate(() => {
+    const facts = {};
+    for (const row of document.querySelectorAll('dl > div')) {
+      const dt = row.querySelector('dt'); const dd = row.querySelector('dd');
+      if (dt && dd) facts[dt.textContent.trim()] = dd.textContent.trim();
+    }
+    const title = document.querySelector('h1')?.textContent?.trim() ?? null;
+    const images = [...document.images].filter((img) => img.complete && img.naturalWidth > 64);
+    const lead = images.find((img) => title && img.alt && img.alt.startsWith(title)) ?? null;
+    const button = [...document.querySelectorAll('button')]
+      .find((b) => /Activate builder|Not available/.test(b.textContent ?? '')) ?? null;
+    return {
+      title,
+      header: document.querySelector('header')?.innerText ?? '',
+      text: document.body?.innerText ?? '',
+      facts,
+      lead: lead ? { src: lead.currentSrc || lead.src, width: lead.naturalWidth } : null,
+      pictures: images.length,
+      documents: [...document.querySelectorAll('ul[aria-label="Documents"] a')].map((a) => a.href),
+      back: !!document.querySelector('a[href="/listings?section=builder-stock"]'),
+      activate: button ? { text: button.textContent.trim(), disabled: button.disabled } : null,
+    };
+  });
 }
 
 /**

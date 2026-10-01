@@ -358,6 +358,16 @@ name: Production rollout
 #            state wording it met and every function it called with the status.
 #            No page text, no screenshot (this repository is public). Deletes
 #            the staff member and session.
+#   cc-property-page-proof
+#            the Command Centre's property page in a real Chromium, read by its
+#            structure: every check requires the product's OWN page first (no
+#            Cloudflare challenge, 4xx/5xx, sign-in, error or guard page), and
+#            the custom domain is asked first — where it challenges, the
+#            Command Centre's first-party Lovable origin (in its CORS/CSRF
+#            allow-lists) is used and the run says so. Proof builder, real
+#            upload, publication, mirror and re-read; every figure, the photo's
+#            bytes, links, removed vs live, three widths. No screenshot.
+#            Deletes everything it creates on both sides.
 #   portal-controls-proof
 #            the offered actions no other proof reached, on an organisation of
 #            the run's own (detached, proof-only transport) with a published
@@ -417,11 +427,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | cc-frontend-build | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures | email-delivery-proof | stock-tier0-formats | stock-tier0-lifecycle | stock-tier0-edges | stock-link-proof | stock-mirror-parity | portal-ui-audit | cc-page-probe | storage-residue-sweep | portal-controls-proof'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | cc-frontend-build | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures | email-delivery-proof | stock-tier0-formats | stock-tier0-lifecycle | stock-tier0-edges | stock-link-proof | stock-mirror-parity | portal-ui-audit | cc-page-probe | storage-residue-sweep | portal-controls-proof | photo-source-probe | cc-property-page-proof'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures, email-delivery-proof, stock-tier0-formats, stock-tier0-lifecycle, stock-tier0-edges, stock-link-proof, stock-mirror-parity, portal-ui-audit, cc-page-probe, storage-residue-sweep, portal-controls-proof, photo-source-probe]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures, email-delivery-proof, stock-tier0-formats, stock-tier0-lifecycle, stock-tier0-edges, stock-link-proof, stock-mirror-parity, portal-ui-audit, cc-page-probe, storage-residue-sweep, portal-controls-proof, photo-source-probe, cc-property-page-proof]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1). storage-residue-sweep: with apply, the digest its dry run printed'
         required: false
@@ -510,7 +520,7 @@ jobs:
       # secrets (independent review, 28 September 2026). Only the two packages
       # the proofs import are copied into place.
       - name: a browser for the proof, installed without secrets
-        if: ${{ inputs.phase == 'message-speed-proof' || inputs.phase == 'portal-browser-proof' || inputs.phase == 'stock-tier0-lifecycle' || inputs.phase == 'portal-ui-audit' || inputs.phase == 'cc-page-probe' || inputs.phase == 'portal-controls-proof' }}
+        if: ${{ inputs.phase == 'message-speed-proof' || inputs.phase == 'portal-browser-proof' || inputs.phase == 'stock-tier0-lifecycle' || inputs.phase == 'portal-ui-audit' || inputs.phase == 'cc-page-probe' || inputs.phase == 'portal-controls-proof' || inputs.phase == 'cc-property-page-proof' }}
         run: |
           set -euo pipefail
           npm install --prefix "$RUNNER_TEMP/pw" --no-save --no-package-lock --ignore-scripts --no-audit --no-fund playwright@1.55.0
@@ -597,6 +607,8 @@ jobs:
                                   node scripts/ops/portal-ui-audit.mjs ;;
             cc-page-probe)
                                   node scripts/ops/cc-page-probe.mjs ;;
+            cc-property-page-proof)
+                                  node scripts/ops/cc-property-page-proof.mjs ;;
             storage-residue-sweep)
                                   node scripts/ops/storage-residue-sweep.mjs ;;
             portal-controls-proof)
