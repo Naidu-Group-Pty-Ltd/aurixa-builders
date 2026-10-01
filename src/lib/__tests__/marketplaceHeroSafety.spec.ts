@@ -72,7 +72,7 @@ function fakeDb(rows: { items: any[]; images: any[]; objects: Record<string, Uin
           download: async (path: string) => {
             const object = rows.objects[path];
             if (!object || object === 'fail') return { data: null, error: { message: 'unreadable' } };
-            return { data: new Blob([object]), error: null };
+            return { data: new Blob([new Uint8Array(object)]), error: null };
           },
         }),
       },
