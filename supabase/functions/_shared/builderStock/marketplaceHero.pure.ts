@@ -632,15 +632,17 @@ const FRAME_LINE_SHARE = 0.9;
 const FRAME_LINE_RUN = 0.85;
 const FRAME_EDGE = 30;
 const FRAME_LINE_REACH = 0.3;
-const FRAME_BEYOND_DOMINANT = 0.75;
-const FRAME_BEYOND_NEUTRAL = 0.6;
+const FRAME_BEYOND_DOMINANT = 0.6;
 const OPEN_SKY_SHARE = 0.6;
+const PAGE_NEUTRAL_SHARE = 0.9;
+const PHOTO_MAX_NEUTRAL = 0.5;
+const PAGE_MIN_LIGHT = 200;
 const AMBIGUOUS_MASS_SHARE = 0.5;
 
 /** The per-channel median of a run of pixels, and the share near it. */
 function regionDominance(
   t: HeroThumbnail, x0: number, y0: number, x1: number, y1: number, tolerance = RELAXED_TOLERANCE,
-): { median: Rgb; share: number } {
+): { median: Rgb; share: number; neutral: number } {
   const hist = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
   let n = 0;
   for (let y = y0; y < y1; y += 1) {
@@ -650,17 +652,36 @@ function regionDominance(
       n += 1;
     }
   }
-  if (!n) return { median: [0, 0, 0], share: 0 };
+  if (!n) return { median: [0, 0, 0], share: 0, neutral: 0 };
   const median = hist.map((h) => {
     let sum = 0;
     for (let v = 0; v < 256; v += 1) { sum += h[v]; if (sum * 2 >= n) return v; }
     return 255;
   }) as Rgb;
-  let near = 0;
+  let near = 0, neutral = 0;
   for (let y = y0; y < y1; y += 1) {
-    for (let x = x0; x < x1; x += 1) if (distance(pixelAt(t, x, y), median) <= tolerance) near += 1;
+    for (let x = x0; x < x1; x += 1) {
+      const p = pixelAt(t, x, y);
+      if (distance(p, median) <= tolerance) near += 1;
+      if (Math.max(p[0], p[1], p[2]) - Math.min(p[0], p[1], p[2]) <= 16) neutral += 1;
+    }
   }
-  return { median, share: near / n };
+  return { median, share: near / n, neutral: neutral / n };
+}
+
+/**
+ * A printed page: one neutral colour, with type on it. After the thumbnail's
+ * downscale a brochure's body text is grey blur over half its margin, so the
+ * page colour alone covers as little as half the region — but the page AND its
+ * type are neutral almost everywhere, which no photograph's edge is.
+ */
+function isPage(region: { median: Rgb; share: number; neutral: number }): boolean {
+  if (!isCanvasColour(region.median)) return false;
+  if (region.share >= RELAXED_DOMINANT_SHARE) return true;
+  // Told by neutrality only where it is PAPER — light, with darker type on
+  // it. A dark band that is neutral is a shadow as often as a letterbox, and
+  // a letterbox is flat enough for the rule above.
+  return region.neutral >= PAGE_NEUTRAL_SHARE && Math.min(...region.median) >= PAGE_MIN_LIGHT;
 }
 
 /**
@@ -680,7 +701,8 @@ function relaxedCanvasTrim(t: HeroThumbnail, r: PixelRect, side: 'left' | 'right
   const edgeColour = side === 'left' ? regionDominance(t, r.x, r.y, r.x + 1, r.y + r.h, 16)
     : side === 'right' ? regionDominance(t, r.x + r.w - 1, r.y, r.x + r.w, r.y + r.h, 16)
       : regionDominance(t, r.x, r.y + r.h - 1, r.x + r.w, r.y + r.h, 16);
-  if (edgeColour.share < 0.6 || !isCanvasColour(edgeColour.median)) return 0;
+  if (!isCanvasColour(edgeColour.median) || !(edgeColour.share >= 0.6
+    || (edgeColour.neutral >= PAGE_NEUTRAL_SHARE && Math.min(...edgeColour.median) >= PAGE_MIN_LIGHT))) return 0;
   const pixel = (step: number, j: number) => side === 'left' ? pixelAt(t, r.x + step, r.y + j)
     : side === 'right' ? pixelAt(t, r.x + r.w - 1 - step, r.y + j)
       : pixelAt(t, r.x + j, r.y + r.h - 1 - step);
@@ -694,16 +716,29 @@ function relaxedCanvasTrim(t: HeroThumbnail, r: PixelRect, side: 'left' | 'right
     if (unlike(step) && unlike(step + 1)) { edge = step; break; }
   }
   if (edge < 2) return 0;
-  // STRAIGHT: the canvas runs right up to that edge on its last line too.
+  // STRAIGHT: the page runs right up to that edge on its last line too —
+  // neutral almost throughout, where the next two lines are mostly not.
   let like = 0;
-  for (let j = 0; j < along; j += 1) if (distance(pixel(edge - 1, j), edgeColour.median) <= LINE_TOLERANCE) like += 1;
+  for (let j = 0; j < along; j += 1) {
+    const p = pixel(edge - 1, j);
+    if (distance(p, edgeColour.median) <= LINE_TOLERANCE || Math.max(p[0], p[1], p[2]) - Math.min(p[0], p[1], p[2]) <= 16) like += 1;
+  }
   if (like / along < 0.85) return 0;
   const band = side === 'left' ? regionDominance(t, r.x, r.y, r.x + edge, r.y + r.h)
     : side === 'right' ? regionDominance(t, r.x + r.w - edge, r.y, r.x + r.w, r.y + r.h)
       : regionDominance(t, r.x, r.y + r.h - edge, r.x + r.w, r.y + r.h);
-  if (band.share < RELAXED_DOMINANT_SHARE || !isCanvasColour(band.median)
-    || distance(band.median, edgeColour.median) > BAND_DRIFT) return 0;
-  return edge;
+  if (!isPage(band)) return 0;
+  if (band.share >= RELAXED_DOMINANT_SHARE) {
+    // One flat colour: it must be the colour the edge started with.
+    return distance(band.median, edgeColour.median) > BAND_DRIFT ? 0 : edge;
+  }
+  // A page told by its NEUTRALITY (type over paper) must meet a photograph
+  // that is not neutral: a white render wall at the frame's edge, running to
+  // a corner, is neutral on both sides of that corner and is never a page.
+  const next = side === 'left' ? regionDominance(t, r.x + edge, r.y, r.x + Math.min(r.w, edge + 4), r.y + r.h)
+    : side === 'right' ? regionDominance(t, r.x + Math.max(0, r.w - edge - 4), r.y, r.x + r.w - edge, r.y + r.h)
+      : regionDominance(t, r.x, r.y + Math.max(0, r.h - edge - 4), r.x + r.w, r.y + r.h - edge);
+  return next.neutral <= PHOTO_MAX_NEUTRAL ? edge : 0;
 }
 
 /**
@@ -759,8 +794,7 @@ function frameLineTrim(t: HeroThumbnail, r: PixelRect, side: 'left' | 'right' | 
       if (bg > br + 12 && bg > bb + 12) return 0;
       // A neutral page may carry more — type, a logo, a badge — because the
       // straight, unbroken edge already proves where the photograph stops.
-      const enough = isCanvasColour(beyond.median) ? FRAME_BEYOND_NEUTRAL : FRAME_BEYOND_DOMINANT;
-      if (beyond.share < enough) return 0;
+      if (isCanvasColour(beyond.median) ? !isPage(beyond) : beyond.share < FRAME_BEYOND_DOMINANT) return 0;
     }
     return last + 1;
   }

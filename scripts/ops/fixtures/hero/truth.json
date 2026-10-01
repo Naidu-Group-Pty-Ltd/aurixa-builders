@@ -1,0 +1,155 @@
+{
+  "A": {
+    "sha256": "f092903a441cc4be7db86ef2647bb86c3bc9e18b375fb73051acbe491545d0e9",
+    "width": 1600,
+    "height": 680,
+    "subject": {
+      "x": 541,
+      "y": 240,
+      "w": 518,
+      "h": 284
+    },
+    "photo": {
+      "x": 280,
+      "y": 24,
+      "w": 1040,
+      "h": 632
+    },
+    "expect": {
+      "mode": "crop",
+      "insidePhoto": true
+    },
+    "label": "a house in a wide brochure page, type in its margins"
+  },
+  "B": {
+    "sha256": "221a40d26742f0fbf5d006a4b22ed9c37b0620dee54bed946ceea98f6f6e2a5d",
+    "width": 1600,
+    "height": 440,
+    "subject": {
+      "x": 541,
+      "y": 120,
+      "w": 518,
+      "h": 224
+    },
+    "photo": {
+      "x": 0,
+      "y": 0,
+      "w": 1600,
+      "h": 440
+    },
+    "expect": {
+      "mode": "crop",
+      "insidePhoto": true
+    },
+    "label": "a panorama: trees, a pole and a fence around a centred house"
+  },
+  "C": {
+    "sha256": "3fbbf2a0e27173149cf79cef90e2aed3f189d58eb7a0d69c1ac96f954466ffa9",
+    "width": 640,
+    "height": 480,
+    "subject": {
+      "x": 104,
+      "y": 140,
+      "w": 432,
+      "h": 172
+    },
+    "photo": {
+      "x": 0,
+      "y": 0,
+      "w": 640,
+      "h": 380
+    },
+    "expect": {
+      "mode": "crop",
+      "insidePhoto": true
+    },
+    "label": "a marketing strip with text beneath the photograph"
+  },
+  "D": {
+    "sha256": "79feeddcd79ec24880473dc2778588b80cd32a6b6fa1541f579fe584dcfa7625",
+    "width": 1600,
+    "height": 440,
+    "subject": {
+      "x": 22,
+      "y": 120,
+      "w": 1556,
+      "h": 224
+    },
+    "photo": {
+      "x": 0,
+      "y": 0,
+      "w": 1600,
+      "h": 440
+    },
+    "expect": {
+      "mode": "fit",
+      "fitReason": "building_too_wide"
+    },
+    "label": "a house wider than any 16:9 frame of its photograph"
+  },
+  "E": {
+    "sha256": "9234466ac7ebca614fa9d6076181e3dc9cd04044a9462d86342a0716c873a673",
+    "width": 640,
+    "height": 360,
+    "subject": {
+      "x": 82,
+      "y": 120,
+      "w": 476,
+      "h": 172
+    },
+    "photo": {
+      "x": 0,
+      "y": 0,
+      "w": 640,
+      "h": 360
+    },
+    "expect": {
+      "mode": "original"
+    },
+    "label": "an already-good 16:9 photograph"
+  },
+  "F1": {
+    "sha256": "62e6dde40d458b262f3b4cf6c421eee0a075440b9c9b7d1f1f30562794af06cc",
+    "width": 640,
+    "height": 480,
+    "subject": {
+      "x": 126,
+      "y": 180,
+      "w": 388,
+      "h": 172
+    },
+    "photo": {
+      "x": 0,
+      "y": 0,
+      "w": 640,
+      "h": 480
+    },
+    "expect": {
+      "mode": "crop",
+      "insidePhoto": true
+    },
+    "label": "the picture a replacement replaces"
+  },
+  "F2": {
+    "sha256": "bdf8f0167a677d3d81edd23a3260cf991d96f2f8faba60b7cfa51b853aef9c93",
+    "width": 800,
+    "height": 600,
+    "subject": {
+      "x": 162,
+      "y": 220,
+      "w": 476,
+      "h": 212
+    },
+    "photo": {
+      "x": 0,
+      "y": 0,
+      "w": 800,
+      "h": 600
+    },
+    "expect": {
+      "mode": "crop",
+      "insidePhoto": true
+    },
+    "label": "its replacement: different bytes, different dimensions"
+  }
+}

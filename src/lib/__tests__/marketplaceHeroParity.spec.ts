@@ -13,7 +13,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 export const HERO_PARITY_DIGESTS: Record<string, string> = {
-  'supabase/functions/_shared/builderStock/marketplaceHero.pure.ts': '40f15c2faa1e0992d264e4e3126ab4f69b4337894a3892474966cb28dbe8dab8',
+  'supabase/functions/_shared/builderStock/marketplaceHero.pure.ts': 'e1322677e1ecebfa242d5d5e74c6d605fb3e40a8be337b35975cd0d719d28778',
   'src/lib/marketplaceHero.ts': '39d234b095b11bfbc8baf9599ebc5484dbcbd5772c6c7756593f4b6cc3c3ffbb',
   'src/components/stock/StockPicture.tsx': 'a9a591d9b520a087a32ce230ef7147c75a68e4e6e4df7d9150395fceba25b55e',
 };
