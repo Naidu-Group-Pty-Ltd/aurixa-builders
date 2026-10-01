@@ -168,6 +168,8 @@ describe('the Dropbox folder read: a failing worker is unreachable, never "no ph
     const outcome = await recoverDropboxFolderOnWorker(folderContext as never, heavyWorkRoute()!);
     expect(hits).toBeGreaterThan(0);
     expect(outcome.status).toBe('unreachable');
+    // Marked as OURS, so a retirement it causes is re-asked by a newer runtime.
+    expect((outcome as { cause?: string }).cause).toBe('worker');
   });
 
   it('control: the folder\'s own "not identified" is the content answer it is', async () => {
@@ -175,6 +177,7 @@ describe('the Dropbox folder read: a failing worker is unreachable, never "no ph
     const { recoverDropboxFolderOnWorker, heavyWorkRoute } = await loadClient();
     const outcome = await recoverDropboxFolderOnWorker(folderContext as never, heavyWorkRoute()!);
     expect(outcome.status).toBe('not_identified');
+    expect((outcome as { cause?: string }).cause).toBeUndefined();
   });
 
   it('control: a healthy folder read returns the photograph', async () => {
@@ -193,5 +196,6 @@ describe('the PDF cover election: a failing worker is unreachable, never a verdi
       { kind: 'worker', endpoint: process.env.BUILDER_STOCK_PDF_WORKER_URL!, token: 'fault-test-token' });
     expect(hits).toBeGreaterThan(0);
     expect(outcome.status).toBe('unreachable');
+    expect((outcome as { cause?: string }).cause).toBe('worker');
   });
 });
