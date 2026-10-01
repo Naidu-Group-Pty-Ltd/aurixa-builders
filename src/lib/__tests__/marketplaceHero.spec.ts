@@ -49,7 +49,7 @@ function expectSafe({ scene, plan: p }: ReturnType<typeof plan>) {
   expect(inside(p.crop, { ...scene.photo })).toBe(true);
   // The building is never cut.
   for (const house of scene.houses) expect(inside(visible(house, scene.photo), p.crop)).toBe(true);
-  if (p.mode !== 'fit') expect(p.crop.w * HERO_ASPECT_H).toBe(p.crop.h * HERO_ASPECT_W);
+  if (p.mode !== 'fit') expect(Math.abs(p.crop.w * HERO_ASPECT_H - p.crop.h * HERO_ASPECT_W)).toBeLessThanOrEqual(HERO_ASPECT_W);
   expect(p.measures.zoom).toBeLessThanOrEqual(HERO_MAX_ZOOM + 0.001);
 }
 
@@ -63,6 +63,24 @@ describe('framing — the property is the subject', () => {
     expect(r.plan.crop.y).toBeGreaterThan(r.scene.thumbnail.sourceHeight * 0.5);
     // And the roof does not touch the frame's top: breathing room.
     expect(r.scene.houses[0].y - r.plan.crop.y).toBeGreaterThan(0);
+  });
+
+  it('a huge textured sky with a utility pole in it does not drag the roof upward', () => {
+    // v1 took the roof as the highest textured block over the structure and
+    // climbed into cloud and onto a stray vertical edge, so a portrait whose
+    // house sat in its lowest quarter was shown whole. Measured on real cards.
+    const r = plan({ width: 357, height: 400, horizon: 330, clouds: true, pole: 30,
+      houses: [{ x: 40, w: 280, roofTop: 268, base: 340, garage: true }] });
+    expectSafe(r);
+    expect(r.plan.mode).toBe('crop');
+    expect(r.plan.crop.y).toBeGreaterThan(r.scene.thumbnail.sourceHeight * 0.35);
+  });
+
+  it('a house that fills a portrait frame top to bottom is still shown whole', () => {
+    const r = plan({ width: 357, height: 400, horizon: 380, clouds: true,
+      houses: [{ x: 20, w: 317, roofTop: 30, base: 385 }] });
+    expectSafe(r);
+    expect(r.plan.mode).toBe('fit');
   });
 
   it('excessive ground below the house: kept to a useful band, not the whole lawn', () => {
@@ -228,7 +246,7 @@ describe('a stored plan is a claim about exact bytes', () => {
 
   it('a stale or tampered plan is refused by the same rules the planner obeys', () => {
     const cuts: HeroPlan = { ...base, crop: { ...base.crop, y: base.focal!.y + 10 } };
-    const skewed: HeroPlan = { ...base, crop: { ...base.crop, h: base.crop.h - 9 } };
+    const skewed: HeroPlan = { ...base, crop: { ...base.crop, h: base.crop.h - 20 } };
     const old: HeroPlan = { ...base, version: HERO_PLAN_VERSION - 1 };
     const outside: HeroPlan = { ...base, crop: { ...base.crop, x: base.source.width } };
     for (const bad of [cuts, skewed, old, outside]) {

@@ -37,6 +37,10 @@ export interface SceneOptions {
   /** Bands of canvas at the edges, in thumbnail pixels. */
   canvas?: { top?: number; bottom?: number; left?: number; right?: number; colour: [number, number, number] };
   seed?: number;
+  /** Textured cloud blotches in the sky (edge-dense, but not a building). */
+  clouds?: boolean;
+  /** A thin dark utility pole standing in the sky at this x (stray vertical structure). */
+  pole?: number;
 }
 export interface Scene {
   thumbnail: { width: number; height: number; pixels: Uint8Array; sourceWidth: number; sourceHeight: number };
@@ -90,6 +94,25 @@ export function drawScene(options: SceneOptions): Scene {
         set(x, y, [72, 128, 62], options.lawnGrain ?? 16);
       }
     }
+  }
+
+  if (options.clouds) {
+    for (let k = 0; k < 6; k += 1) {
+      const cx = photo.x + Math.round(random() * photo.w), cy = photo.y + Math.round(random() * (options.horizon - photo.y) * 0.6);
+      const r = 8 + Math.round(random() * 14);
+      for (let y = cy - r; y < cy + r; y += 1) {
+        for (let x = cx - 2 * r; x < cx + 2 * r; x += 1) {
+          if (((x - cx) / 2) ** 2 + (y - cy) ** 2 < r * r && y < options.horizon) set(x, y, [236, 238, 242], 22);
+        }
+      }
+    }
+  }
+  if (options.pole !== undefined) {
+    const top = photo.y + Math.round((options.horizon - photo.y) * 0.15);
+    for (let y = top; y < options.horizon + 4; y += 1) {
+      set(options.pole, y, [40, 38, 36]); set(options.pole + 1, y, [40, 38, 36]);
+    }
+    for (let x = options.pole - 8; x < options.pole + 10; x += 1) set(x, top + 3, [40, 38, 36]);
   }
 
   const houses: Rect[] = [];

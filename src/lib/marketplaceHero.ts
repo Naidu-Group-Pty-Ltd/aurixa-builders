@@ -21,7 +21,8 @@
  * needs no deploy.
  */
 export const HERO_FRAME_ASPECT = 16 / 9;
-export const HERO_PLAN_VERSION = 1;
+/** The oldest plan shape this drawing understands; later versions keep the shape. */
+export const HERO_PLAN_MIN_VERSION = 1;
 
 export interface HeroRect { x: number; y: number; w: number; h: number }
 export interface HeroPlanView {
@@ -41,12 +42,14 @@ const isRect = (r: unknown): r is HeroRect => {
 /** A plan this browser may draw, or null — draw the card as before. */
 export function readHeroPlan(value: unknown): HeroPlanView | null {
   const plan = value as HeroPlanView | null;
-  if (!plan || typeof plan !== 'object' || plan.version !== HERO_PLAN_VERSION) return null;
+  if (!plan || typeof plan !== 'object') return null;
+  if (!Number.isInteger(plan.version) || plan.version < HERO_PLAN_MIN_VERSION) return null;
   if (!['original', 'crop', 'fit'].includes(plan.mode)) return null;
   const W = plan.source?.width, H = plan.source?.height;
   if (!(Number(W) > 0) || !(Number(H) > 0) || !isRect(plan.crop) || !isRect(plan.usable)) return null;
   if (plan.crop.x + plan.crop.w > W || plan.crop.y + plan.crop.h > H) return null;
-  if (plan.mode === 'crop' && plan.crop.w * 9 !== plan.crop.h * 16) return null;
+  // 16:9 to one pixel of rounding (the planner's own tolerance).
+  if (plan.mode === 'crop' && Math.abs(plan.crop.w * 9 - plan.crop.h * 16) > 16) return null;
   return plan;
 }
 

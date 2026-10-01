@@ -45,12 +45,23 @@
  */
 
 /** Raise when the planner's output for the same pixels would change. */
-export const HERO_PLAN_VERSION = 1;
+export const HERO_PLAN_VERSION = 2;
 
 /** The frame. One place; a second spelling is how two portals drift. */
 export const HERO_ASPECT_W = 16;
 export const HERO_ASPECT_H = 9;
 export const HERO_ASPECT = HERO_ASPECT_W / HERO_ASPECT_H;
+
+/**
+ * Is this rectangle 16:9 to within one pixel of rounding? A crop is chosen in
+ * whole pixels, so an exact 16:9 exists only at multiples of 16 — and a
+ * building that spans a photograph 2,142 px wide must not be refused a frame
+ * for want of two pixels. One pixel of aspect is invisible, and the card
+ * draws with \`object-fit: cover\`, so nothing is ever stretched.
+ */
+export function isHeroAspect(w: number, h: number): boolean {
+  return w > 0 && h > 0 && Math.abs(w * HERO_ASPECT_H - h * HERO_ASPECT_W) <= HERO_ASPECT_W;
+}
 
 /** The old rule's allowance: a shape this close to 16:9 may be covered. */
 export const HERO_SHAPE_TOLERANCE = 0.03;
@@ -295,90 +306,102 @@ export function findSubject(
     }
   }
 
-  // Connected regions of edge-dense blocks (8-neighbourhood).
-  const label = new Int32Array(cols * rows).fill(-1);
-  const regions: Array<{ blocks: number[]; structure: number; edges: number }> = [];
-  for (let start = 0; start < active.length; start += 1) {
-    if (!active[start] || label[start] >= 0) continue;
-    const id = regions.length;
-    const region = { blocks: [] as number[], structure: 0, edges: 0 };
-    const stack = [start];
-    label[start] = id;
-    while (stack.length) {
-      const i = stack.pop()!;
-      region.blocks.push(i); region.structure += structMass[i]; region.edges += 1;
-      const bx = i % cols, by = Math.floor(i / cols);
-      for (let dy = -1; dy <= 1; dy += 1) {
-        for (let dx = -1; dx <= 1; dx += 1) {
-          const nx = bx + dx, ny = by + dy;
-          if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
-          const j = ny * cols + nx;
-          if (active[j] && label[j] < 0) { label[j] = id; stack.push(j); }
-        }
+  /*
+   * v2 — THE BAND, NOT THE EXTENT. Measured on the 41 live cards
+   * (1 October 2026): a real photograph is textured almost everywhere —
+   * foliage, render, paving, cloud — so edge-dense blocks form ONE region the
+   * size of the frame, and stray vertical edges (posts, trunks, a lamp) sit
+   * everywhere. What does not move is the PEAK: the rows a facade's walls,
+   * windows and doors occupy carry several times the structure of anything
+   * else. So the walls are the band around that peak, and the roof is what
+   * stands directly on it.
+   */
+  const rowS = new Array<number>(rows).fill(0);
+  let structureBlocks = 0;
+  for (let i = 0; i < structMass.length; i += 1) {
+    if (structMass[i] > 0) { rowS[Math.floor(i / cols)] += 1; structureBlocks += 1; }
+  }
+  // Per block-row: is it SKY? Blue-dominant pixels and no structure at all.
+  const rowBlue = new Array<number>(rows).fill(0);
+  for (let by = 0; by < rows; by += 1) {
+    let blue = 0, n = 0;
+    for (let y = by * bs; y < Math.min(uh, (by + 1) * bs); y += 2) {
+      for (let x = 0; x < uw; x += 2) {
+        const [r, g, b] = pixelAt(t, ux + x, uy + y);
+        if (b > r + 10 && b > g) blue += 1;
+        n += 1;
       }
     }
-    regions.push(region);
+    rowBlue[by] = n ? blue / n : 0;
   }
-  if (!regions.length) return null;
 
   const reasons: string[] = [];
-  const byStructure = [...regions].sort((a, b) => b.structure - a.structure || b.edges - a.edges);
-  const main = byStructure[0];
-  const hasStructure = main.structure > 0;
-  if (!hasStructure) reasons.push('no_structure_found');
-
-  const boxOf = (blocks: number[]) => {
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const i of blocks) {
-      const bx = i % cols, by = Math.floor(i / cols);
-      x0 = Math.min(x0, bx); y0 = Math.min(y0, by); x1 = Math.max(x1, bx); y1 = Math.max(y1, by);
+  if (diag) {
+    const colS = new Array(cols).fill(0), rowActive = new Array(rows).fill(0);
+    for (let i = 0; i < active.length; i += 1) {
+      if (active[i]) rowActive[Math.floor(i / cols)] += 1;
+      if (structMass[i] > 0) colS[i % cols] += 1;
     }
-    return { x0, y0, x1, y1 };
+    Object.assign(diag, {
+      block: bs, cols, rows, row_active: rowActive, row_structure: rowS, col_structure: colS,
+      row_blue: rowBlue.map((v) => Math.round(v * 100)),
+    });
+  }
+  if (structureBlocks < 3) return null;
+
+  // The peak, on a [1,2,1]-smoothed profile so one dense row cannot win alone.
+  const smooth = rowS.map((v, i) => (rowS[i - 1] ?? 0) + 2 * v + (rowS[i + 1] ?? 0));
+  let peak = 0;
+  for (let i = 1; i < rows; i += 1) if (smooth[i] > smooth[peak]) peak = i;
+  const threshold = Math.max(1, Math.max(...rowS) * 0.2);
+  const dense = (r: number) => rowS[r] >= threshold;
+  // Grow the band from the peak, crossing gaps of at most two quiet rows.
+  const grow = (from: number, step: number) => {
+    let edge = from;
+    for (let r = from + step; r >= 0 && r < rows; r += step) {
+      if (dense(r)) { edge = r; continue; }
+      const ahead1 = r + step, ahead2 = r + 2 * step;
+      const bridged = (ahead1 >= 0 && ahead1 < rows && dense(ahead1))
+        || (ahead2 >= 0 && ahead2 < rows && dense(ahead2) && !dense(r));
+      if (!bridged) break;
+    }
+    return edge;
   };
-  const mainBox = boxOf(main.blocks);
-  const chosen = [main];
-  for (const other of byStructure.slice(1)) {
-    const box = boxOf(other.blocks);
-    const overlap = Math.min(box.y1, mainBox.y1) - Math.max(box.y0, mainBox.y0) + 1;
-    const smaller = Math.min(box.y1 - box.y0 + 1, mainBox.y1 - mainBox.y0 + 1);
-    const comparable = hasStructure
-      ? other.structure >= main.structure * 0.15
-      : other.edges >= main.edges * 0.25;
-    if (comparable && overlap >= smaller * 0.3) chosen.push(other);
-  }
-  if (chosen.length > 1) reasons.push('subject_joined');
-  const blocks = chosen.flatMap((region) => region.blocks);
-  const whole = boxOf(blocks);
+  let bandTop = dense(peak) ? peak : grow(peak, -1);
+  let bandBottom = dense(peak) ? peak : grow(peak, 1);
+  bandTop = grow(bandTop, -1);
+  bandBottom = grow(bandBottom, 1);
+  const bandHeight = bandBottom - bandTop + 1;
+  let bandMass = 0;
+  for (let r = bandTop; r <= bandBottom; r += 1) bandMass += rowS[r];
 
-  /*
-   * With structure, the box is built FROM the structure, because texture is
-   * not a building: in a photograph the lawn's grain is edge-dense and joins
-   * the house to both edges of the frame, so the region's own extent would
-   * call the whole picture "the house" and refuse every frame.
-   *
-   *   width   the structure's columns, widened by the eaves (15%)
-   *   top     the highest edge-dense block standing over those columns —
-   *           the roof, which carries no vertical runs of its own
-   *   bottom  the lowest structure; driveway and lawn below it are soft
-   */
-  let x0 = whole.x0, x1 = whole.x1, top = whole.y0, bottom = whole.y1;
-  if (hasStructure) {
-    let sx0 = Infinity, sx1 = -Infinity, sy0 = Infinity, sy1 = -Infinity;
-    for (const i of blocks) {
-      if (!(structMass[i] > 0)) continue;
-      const bx = i % cols, by = Math.floor(i / cols);
-      sx0 = Math.min(sx0, bx); sx1 = Math.max(sx1, bx);
-      sy0 = Math.min(sy0, by); sy1 = Math.max(sy1, by);
-    }
-    const eaves = Math.max(1, Math.round((sx1 - sx0 + 1) * 0.15));
-    x0 = Math.max(0, sx0 - eaves); x1 = Math.min(cols - 1, sx1 + eaves);
-    top = sy0;
-    for (const i of blocks) {
-      const bx = i % cols, by = Math.floor(i / cols);
-      if (bx >= sx0 && bx <= sx1 && by < top) top = by;
-    }
-    bottom = Math.min(rows - 1, sy1 + 1);
+  // Width: the band's structure columns, 2%–98% of their mass, plus eaves.
+  const colS = new Array<number>(cols).fill(0);
+  for (let r = bandTop; r <= bandBottom; r += 1) {
+    for (let c = 0; c < cols; c += 1) if (structMass[r * cols + c] > 0) colS[c] += 1;
   }
+  const quantile = (q: number) => {
+    let sum = 0;
+    for (let c = 0; c < cols; c += 1) { sum += colS[c]; if (sum >= bandMass * q) return c; }
+    return cols - 1;
+  };
+  const sx0 = quantile(0.02), sx1 = Math.max(sx0, quantile(0.98));
+  const eaves = Math.max(1, Math.round((sx1 - sx0 + 1) * 0.1));
+  const x0 = Math.max(0, sx0 - eaves), x1 = Math.min(cols - 1, sx1 + eaves);
+
+  // The roof: textured, non-sky rows standing on the band, at most the band's
+  // own height. A sky row, or a row flat across the building (an overcast
+  // page), ends it — a roof is neither.
+  let top = bandTop;
+  for (let r = bandTop - 1; r >= 0 && bandTop - r <= bandHeight; r -= 1) {
+    if (rowBlue[r] >= 0.4 && rowS[r] === 0) break;
+    let textured = 0;
+    for (let c = x0; c <= x1; c += 1) if (active[r * cols + c]) textured += 1;
+    if (textured === 0) break;
+    top = r;
+  }
+  // The bottom: one row under the lowest wall row; what lies below is soft.
+  const bottom = Math.min(rows - 1, bandBottom + 1);
 
   const box: PixelRect = {
     x: ux + x0 * bs,
@@ -386,49 +409,12 @@ export function findSubject(
     w: Math.min(uw, (x1 + 1) * bs) - x0 * bs,
     h: Math.min(uh, (bottom + 1) * bs) - top * bs,
   };
-
-  if (diag) {
-    const rowStruct = new Array(rows).fill(0), rowActive = new Array(rows).fill(0), colStruct = new Array(cols).fill(0);
-    for (let i = 0; i < active.length; i += 1) {
-      const bx = i % cols, by = Math.floor(i / cols);
-      if (active[i]) rowActive[by] += 1;
-      if (structMass[i] > 0) { rowStruct[by] += 1; colStruct[bx] += 1; }
-    }
-    Object.assign(diag, {
-      block: bs, cols, rows, regions: regions.length,
-      top_regions: byStructure.slice(0, 4).map((r) => {
-        const b = boxOf(r.blocks);
-        return { blocks: r.blocks.length, structure_share: totalStructure ? Math.round((r.structure / totalStructure) * 100) / 100 : 0, box: b };
-      }),
-      chosen: chosen.length, row_active: rowActive, row_structure: rowStruct, col_structure: colStruct,
-      // Coarse 0/1 maps of WHERE texture and structure are — no colour, no value.
-      active_map: Array.from({ length: rows }, (_, by) =>
-        Array.from({ length: cols }, (_, bx) => (active[by * cols + bx] ? '1' : '0')).join('')),
-      structure_map: Array.from({ length: rows }, (_, by) =>
-        Array.from({ length: cols }, (_, bx) => (structMass[by * cols + bx] > 0 ? '1' : '0')).join('')),
-      // Per block-row means, rounded: brightness, saturation and blue-dominance
-      // (sky), enough to tell sky and lawn from a building, nothing more.
-      row_tone: Array.from({ length: rows }, (_, by) => {
-        let l = 0, sat = 0, blue = 0, n = 0;
-        for (let y = by * bs; y < Math.min(uh, (by + 1) * bs); y += 2) {
-          for (let x = 0; x < uw; x += 2) {
-            const [r, g, b] = pixelAt(t, ux + x, uy + y);
-            const hi = Math.max(r, g, b), lo = Math.min(r, g, b);
-            l += 0.299 * r + 0.587 * g + 0.114 * b; sat += hi ? (hi - lo) / hi : 0;
-            blue += b > r + 10 && b > g ? 1 : 0; n += 1;
-          }
-        }
-        return [Math.round(l / n), Math.round((sat / n) * 100), Math.round((blue / n) * 100)];
-      }),
-    });
-  }
-  const chosenStructure = chosen.reduce((sum, region) => sum + region.structure, 0);
-  const areaShare = (box.w * box.h) / (uw * uh);
-  let confidence: HeroConfidence = 'low';
-  if (hasStructure) {
-    confidence = chosenStructure >= totalStructure * 0.6 && areaShare <= 0.7 ? 'high' : 'medium';
-    if (confidence === 'medium') reasons.push('structure_scattered_or_large');
-  }
+  const heightShare = (bottom - top + 1) / rows;
+  const widthShare = (x1 - x0 + 1) / cols;
+  const confidence: HeroConfidence = bandMass >= structureBlocks * 0.6 && heightShare <= 0.75 && widthShare <= 0.9
+    ? 'high' : 'medium';
+  if (confidence === 'medium') reasons.push('structure_scattered_or_large');
+  if (diag) Object.assign(diag, { band: [bandTop, bandBottom], roof_top: top, band_share: Math.round((bandMass / structureBlocks) * 100) / 100, x: [x0, x1] });
   return { box, confidence, reasons };
 }
 
@@ -509,11 +495,15 @@ export function planHero(t: HeroThumbnail, diag?: Record<string, unknown>): Hero
     width = Math.min(maxW, Math.max(floor, focal.w / HERO_TARGET_MIN_SHARE));
     if (width < maxW) reasons.push('subject_enlarged');
   }
-  let k = Math.floor(width / HERO_ASPECT_W);
-  // Exact 16:9 in whole pixels, never smaller than the building.
-  while (k * HERO_ASPECT_W < focal.w || k * HERO_ASPECT_H < focal.h) k += 1;
-  const cw = k * HERO_ASPECT_W, ch = k * HERO_ASPECT_H;
-  if (cw > usable.w || ch > usable.h) return fit('subject_does_not_fit_frame');
+  // 16:9 in whole pixels (to one pixel of rounding), never smaller than the
+  // building and never larger than the photograph.
+  let cw = Math.min(usable.w, Math.max(Math.round(width), focal.w));
+  let ch = Math.round((cw * HERO_ASPECT_H) / HERO_ASPECT_W);
+  if (ch > usable.h) { ch = usable.h; cw = Math.round((ch * HERO_ASPECT_W) / HERO_ASPECT_H); }
+  if (ch < focal.h) { ch = focal.h; cw = Math.round((ch * HERO_ASPECT_W) / HERO_ASPECT_H); }
+  if (cw > usable.w || ch > usable.h || cw < focal.w || ch < focal.h) {
+    return fit('subject_does_not_fit_frame');
+  }
 
   // Horizontally centred on the building; vertically, 38% of the spare
   // height above it and the rest below — sky trimmed, driveway kept.
@@ -536,8 +526,8 @@ export function planHero(t: HeroThumbnail, diag?: Record<string, unknown>): Hero
 }
 
 function centredFrame(usable: PixelRect, maxW: number): PixelRect {
-  const k = Math.floor(maxW / HERO_ASPECT_W);
-  const w = k * HERO_ASPECT_W, h = k * HERO_ASPECT_H;
+  const w = Math.min(usable.w, maxW);
+  const h = Math.min(usable.h, Math.round((w * HERO_ASPECT_H) / HERO_ASPECT_W));
   return {
     x: usable.x + Math.floor((usable.w - w) / 2),
     y: usable.y + Math.floor((usable.h - h) / 2),
@@ -615,7 +605,7 @@ export function validateHeroPlan(value: unknown): value is HeroPlan {
       && plan.crop.w === plan.usable.w && plan.crop.h === plan.usable.h;
   }
   // A crop is exactly 16:9 and never cuts the building.
-  if (plan.crop.w * HERO_ASPECT_H !== plan.crop.h * HERO_ASPECT_W) return false;
+  if (!isHeroAspect(plan.crop.w, plan.crop.h)) return false;
   if (plan.focal !== null) {
     if (!isRect(plan.focal) || !inside(plan.focal, plan.crop)) return false;
   }
