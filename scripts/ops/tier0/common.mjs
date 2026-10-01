@@ -921,11 +921,33 @@ const BROWSER_RUN_READER = `(() => {
   tick();
 })();`;
 
-export async function readCommandCentrePageViaBrowserRun({ token, path, viewport, clickBack = false }) {
+export async function readCommandCentrePageViaBrowserRun({ token, path, viewport, clickBack = false, worker = null }) {
   const account = process.env.CLOUDFLARE_ACCOUNT_ID;
   const apiToken = process.env.CLOUDFLARE_API_TOKEN;
-  if (!account || !apiToken) return { available: false, reason: 'Browser Run is not configured for this run' };
+  if (!worker && (!account || !apiToken)) return { available: false, reason: 'Browser Run is not configured for this run' };
   const tried = [];
+  const cookies = [{ name: '__Host-session_token', value: token, domain: `${CC_REF}.supabase.co`, path: '/',
+    secure: true, httpOnly: true, sameSite: 'None' }];
+  const script = `${clickBack ? 'window.__CC_PROOF_CLICK_BACK = true;' : ''}${BROWSER_RUN_READER}`;
+  const verdict = (origin, read, status, mitigated) => {
+    const notReal = [];
+    if (mitigated === 'challenge' || read.documentTitle === 'Just a moment...') notReal.push('Cloudflare challenge');
+    if (typeof status === 'number' && status >= 400) notReal.push(`HTTP ${status} document`);
+    if (read.path !== new URL(path, 'https://x').pathname) notReal.push(`redirected to ${read.path}`);
+    for (const state of NOT_THE_PAGE_STATES) if (read.states.includes(state)) notReal.push(`page says "${state}"`);
+    if (!read.title) notReal.push('the app drew no heading');
+    return { available: true, origin, tried, read, status, real: notReal.length === 0, notReal };
+  };
+  if (worker) {
+    for (const origin of CC_FIRST_PARTY_ORIGINS) {
+      const answer = await worker.read({ url: `${origin}${path}`, cookies, viewport, script });
+      if (answer.error || !answer.read) { tried.push(`${origin}: ${String(answer.error ?? 'no answer').slice(0, 200)}`); continue; }
+      const seen = verdict(origin, answer.read, answer.status, answer.mitigated);
+      if (seen.real || origin === CC_FIRST_PARTY_ORIGINS[CC_FIRST_PARTY_ORIGINS.length - 1]) return seen;
+      tried.push(`${origin}: ${seen.notReal.join('; ')}`);
+    }
+    return { available: true, origin: null, tried, read: null, real: false, notReal: tried };
+  }
   for (const origin of CC_FIRST_PARTY_ORIGINS) {
     const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${account}/browser-rendering/content`, {
       method: 'POST',
@@ -933,10 +955,9 @@ export async function readCommandCentrePageViaBrowserRun({ token, path, viewport
       body: JSON.stringify({
         url: `${origin}${path}`,
         viewport,
-        cookies: [{ name: '__Host-session_token', value: token, domain: `${CC_REF}.supabase.co`, path: '/',
-          secure: true, httpOnly: true, sameSite: 'None' }],
+        cookies,
         gotoOptions: { waitUntil: 'networkidle0', timeout: 45_000 },
-        addScriptTag: [{ content: `${clickBack ? 'window.__CC_PROOF_CLICK_BACK = true;' : ''}${BROWSER_RUN_READER}` }],
+        addScriptTag: [{ content: script }],
         waitForSelector: { selector: '#__cc_proof', timeout: 40_000 },
       }),
     }).catch((error) => ({ ok: false, status: 0, text: async () => String(error?.message ?? error) }));
@@ -955,12 +976,7 @@ export async function readCommandCentrePageViaBrowserRun({ token, path, viewport
     const decoded = m[1].replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
     let read = null;
     try { read = JSON.parse(decoded); } catch { tried.push(`${origin}: the reader's answer was not readable`); continue; }
-    const notReal = [];
-    if (read.documentTitle === 'Just a moment...') notReal.push('Cloudflare challenge');
-    if (read.path !== new URL(path, 'https://x').pathname) notReal.push(`redirected to ${read.path}`);
-    for (const state of NOT_THE_PAGE_STATES) if (read.states.includes(state)) notReal.push(`page says "${state}"`);
-    if (!read.title) notReal.push('the app drew no heading');
-    return { available: true, origin, tried, read, real: notReal.length === 0, notReal };
+    return verdict(origin, read, null, null);
   }
   return { available: true, origin: null, tried, read: null, real: false, notReal: tried };
 }

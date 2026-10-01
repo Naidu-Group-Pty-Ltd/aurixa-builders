@@ -43,6 +43,7 @@ import {
   leftovers, finish, commandCentre, CC_FIELDS, NETWORK_REF, inspectCommandCentrePage, readCommandCentreProperty,
   readCommandCentrePageViaBrowserRun,
 } from './tier0/common.mjs';
+import { deployBrowserRunWorker, deleteBrowserRunWorker, readThroughWorker } from './tier0/browserRunWorker.mjs';
 
 const TAG = 'cc-page';
 const VIEWPORTS = [['desktop', 1440, 900], ['tablet', 820, 1180], ['phone', 390, 844]];
@@ -98,7 +99,7 @@ async function openPage(browser, { token, path, viewport, clickBack }) {
   }
   const challenged = [...seen.challengedOrigins, seen.navigation.origin];
   await seen.context.close();
-  const run = await readCommandCentrePageViaBrowserRun({ token, path, viewport, clickBack });
+  const run = await readCommandCentrePageViaBrowserRun({ token, path, viewport, clickBack, worker });
   if (!run.available) {
     return { via: 'nothing', real: false, notReal: [`runner Chromium challenged on ${challenged.join(', ')}`, run.reason], read: null, challenged };
   }
@@ -169,12 +170,19 @@ async function provePropertyPage(browser, { label, token, item, builderName, vie
 
 let storage = null;
 let browser = null;
+let proofWorker = null;
+let worker = null;
 try {
   console.log(`cc property page proof run=${RUN}`);
   storage = await storageFor(NETWORK_REF);
   await cleanup(TAG, 'start', storage);
   const { chromium } = await import('playwright');
   browser = await chromium.launch();
+  // Cloudflare's own browser, lent by a Worker that lives only for this run.
+  proofWorker = deployBrowserRunWorker(RUN);
+  record('0: a run-scoped Worker lends the proof Cloudflare\'s Browser Run', !proofWorker.error,
+    proofWorker.error ? proofWorker.error : `deployed as ${proofWorker.name}`, { required: false });
+  if (!proofWorker.error) worker = { read: (request) => readThroughWorker(proofWorker, request) };
 
   const alpha = await seedOrganisation(TAG, 'alpha');
   await connectTransport(TAG, alpha);
@@ -244,6 +252,9 @@ try {
   record('the proof completed', false, String(error?.message ?? error).slice(0, 400));
 } finally {
   if (browser) await browser.close().catch(() => {});
+  if (proofWorker?.name) {
+    record('cleanup: the run-scoped Worker is deleted', await deleteBrowserRunWorker(proofWorker), proofWorker.name);
+  }
   try {
     await cleanup(TAG, 'end', storage);
     const left = await leftovers(TAG);

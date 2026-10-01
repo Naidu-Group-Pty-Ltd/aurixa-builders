@@ -368,6 +368,15 @@ name: Production rollout
 #            upload, publication, mirror and re-read; every figure, the photo's
 #            bytes, links, removed vs live, three widths. No screenshot.
 #            Deletes everything it creates on both sides.
+#   stock-worker-fault-proof
+#            controlled failure injection on synthetic organisations: a live
+#            property owing a badge clean-up meets every way the heavy-work
+#            worker fails (500, 503, reset, no answer, late answer, malformed,
+#            empty, HTML), each run through the deployed settler's own two calls
+#            in Deno with the worker replaced by a local fault; then the deployed
+#            settler and the real worker recover it while the Builder Portal page
+#            (never reloaded) and the Command Centre are watched. Deletes
+#            everything it creates on both sides.
 #   portal-controls-proof
 #            the offered actions no other proof reached, on an organisation of
 #            the run's own (detached, proof-only transport) with a published
@@ -427,11 +436,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | cc-frontend-build | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures | email-delivery-proof | stock-tier0-formats | stock-tier0-lifecycle | stock-tier0-edges | stock-link-proof | stock-mirror-parity | portal-ui-audit | cc-page-probe | storage-residue-sweep | portal-controls-proof | photo-source-probe | cc-property-page-proof'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | cc-frontend-build | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures | email-delivery-proof | stock-tier0-formats | stock-tier0-lifecycle | stock-tier0-edges | stock-link-proof | stock-mirror-parity | portal-ui-audit | cc-page-probe | storage-residue-sweep | portal-controls-proof | photo-source-probe | cc-property-page-proof | stock-worker-fault-proof'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures, email-delivery-proof, stock-tier0-formats, stock-tier0-lifecycle, stock-tier0-edges, stock-link-proof, stock-mirror-parity, portal-ui-audit, cc-page-probe, storage-residue-sweep, portal-controls-proof, photo-source-probe, cc-property-page-proof]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures, email-delivery-proof, stock-tier0-formats, stock-tier0-lifecycle, stock-tier0-edges, stock-link-proof, stock-mirror-parity, portal-ui-audit, cc-page-probe, storage-residue-sweep, portal-controls-proof, photo-source-probe, cc-property-page-proof, stock-worker-fault-proof]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1). storage-residue-sweep: with apply, the digest its dry run printed'
         required: false
@@ -493,7 +502,7 @@ jobs:
         with:
           node-version: 22
       - uses: denoland/setup-deno@v2
-        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' || inputs.phase == 'stock-collateral-reprocess' || inputs.phase == 'network-sync-state' || inputs.phase == 'network-connection-remap' || inputs.phase == 'portal-scope-state' || inputs.phase == 'stock-source-restore' || inputs.phase == 'stock-reading-trace' || inputs.phase == 'stock-overlay-audit' || inputs.phase == 'upload-settlement-state' || inputs.phase == 'stock-field-coverage' || inputs.phase == 'stock-brochure-figures' || inputs.phase == 'photo-source-probe' }}
+        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' || inputs.phase == 'stock-collateral-reprocess' || inputs.phase == 'network-sync-state' || inputs.phase == 'network-connection-remap' || inputs.phase == 'portal-scope-state' || inputs.phase == 'stock-source-restore' || inputs.phase == 'stock-reading-trace' || inputs.phase == 'stock-overlay-audit' || inputs.phase == 'upload-settlement-state' || inputs.phase == 'stock-field-coverage' || inputs.phase == 'stock-brochure-figures' || inputs.phase == 'photo-source-probe' || inputs.phase == 'stock-worker-fault-proof' }}
         with:
           deno-version: v2.x
 
@@ -520,7 +529,7 @@ jobs:
       # secrets (independent review, 28 September 2026). Only the two packages
       # the proofs import are copied into place.
       - name: a browser for the proof, installed without secrets
-        if: ${{ inputs.phase == 'message-speed-proof' || inputs.phase == 'portal-browser-proof' || inputs.phase == 'stock-tier0-lifecycle' || inputs.phase == 'portal-ui-audit' || inputs.phase == 'cc-page-probe' || inputs.phase == 'portal-controls-proof' || inputs.phase == 'cc-property-page-proof' }}
+        if: ${{ inputs.phase == 'message-speed-proof' || inputs.phase == 'portal-browser-proof' || inputs.phase == 'stock-tier0-lifecycle' || inputs.phase == 'portal-ui-audit' || inputs.phase == 'cc-page-probe' || inputs.phase == 'portal-controls-proof' || inputs.phase == 'cc-property-page-proof' || inputs.phase == 'stock-worker-fault-proof' }}
         run: |
           set -euo pipefail
           npm install --prefix "$RUNNER_TEMP/pw" --no-save --no-package-lock --ignore-scripts --no-audit --no-fund playwright@1.55.0
@@ -613,6 +622,8 @@ jobs:
                                   node scripts/ops/cc-page-probe.mjs ;;
             cc-property-page-proof)
                                   node scripts/ops/cc-property-page-proof.mjs ;;
+            stock-worker-fault-proof)
+                                  node scripts/ops/stock-worker-fault-proof.mjs ;;
             storage-residue-sweep)
                                   node scripts/ops/storage-residue-sweep.mjs ;;
             portal-controls-proof)
