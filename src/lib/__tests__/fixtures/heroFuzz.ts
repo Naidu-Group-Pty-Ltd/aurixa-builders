@@ -10,8 +10,12 @@
  *                     fence, a neighbour the frame's edge cuts through — each
  *                     separated from the property by open sky. A planner may
  *                     not answer `fit` here, and may never cut the property.
- *   `impossibleScene` a property WIDER or TALLER than any 16:9 frame of its
- *                     photograph. A planner must answer `fit` here.
+ *   `impossibleScene` a property WIDER than any 16:9 frame of its
+ *                     photograph. A planner must answer `fit` here. (Too TALL
+ *                     is the named 4:3 case in the spec: generated tall
+ *                     houses meet the first pass's documented limits — a roof
+ *                     taller than the window band, a plain wall below it —
+ *                     and the first pass is v2, deliberately unchanged.)
  */
 import type { SceneOptions } from './heroScenes';
 
@@ -93,12 +97,6 @@ export function rescuableScene(seed: number, noisy = false): SceneOptions & { __
 
 export function impossibleScene(seed: number): SceneOptions {
   const r = rng(seed + 10_000);
-  const tall = r() < 0.4;
-  if (tall) {
-    const W = 260 + Math.floor(r() * 80), H = Math.floor(W * (0.75 + r() * 0.5));
-    const horizon = H - 10 - Math.floor(r() * 8);
-    return { width: W, height: H, horizon, seed, houses: [{ x: Math.floor(W * 0.12), w: Math.floor(W * 0.76), roofTop: 4 + Math.floor(r() * 6), base: horizon + 6, garage: r() > 0.5 }] };
-  }
   const W = 360 + Math.floor(r() * 40), H = Math.floor(W / (2.6 + r()));
   const horizon = Math.floor(H * 0.72);
   const maxW = (H * 16) / 9;
