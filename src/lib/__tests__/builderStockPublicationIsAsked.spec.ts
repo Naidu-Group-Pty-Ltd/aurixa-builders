@@ -23,32 +23,42 @@ const read = (path: string) => readFileSync(join(process.cwd(), path), 'utf8');
 const runImport = read('supabase/functions/_shared/builderStock/runImport.ts');
 const settler = read('supabase/functions/builder-stock-image-settler/index.ts');
 
+/*
+ * WHERE IT ASKS MOVED ON 1 OCTOBER 2026. The ask used to sit inside
+ * `runImport`, before the final status was written — mid-read, while the
+ * upload was still `imported`. Publication now refuses an import that has not
+ * finished (`import_not_finished`), because asked there a replacement archived
+ * every live property the read had not reached yet. So the ask follows every
+ * write of the final status, and the settler's sweep asks every tick besides.
+ */
+const sweep = read('supabase/functions/_shared/builderStock/publicationSweep.ts');
+const finishers = [
+  'supabase/functions/builder-portal-stock/index.ts',
+  'supabase/functions/_shared/builderStock/continueImport.ts',
+  'supabase/functions/_shared/builderStock/settleReaderVersion.ts',
+].map((path) => [path, read(path)] as const);
+
 describe('every import asks whether its upload can be published', () => {
-  it('asks at the end of a successful import', () => {
-    expect(runImport).toMatch(
-      /rpc\('publish_builder_stock_upload', \{\s*\n?\s*p_upload_id: input\.upload\.id,/);
+  it('asks at the end of a successful import — after every write of its final status', () => {
+    for (const [path, src] of finishers) {
+      const writeAt = src.search(/importOutcomeColumns\(|status: result\.uploadStatus/);
+      const askAt = src.indexOf('askToPublishFinishedImport(');
+      expect(writeAt, path).toBeGreaterThan(-1);
+      expect(askAt, path).toBeGreaterThan(writeAt);
+    }
   });
 
-  it('asks AFTER the outcome is written, never instead of it', () => {
-    // The import's own result is the thing that must not be at risk. The ask
-    // sits below the image-work kick and above the return, on the same
-    // best-effort footing.
-    const kickAt = runImport.indexOf('builder_stock_kick_image_work');
-    const askAt = runImport.indexOf("rpc('publish_builder_stock_upload'");
-    // The SUCCESS return, wherever the tail is indented: the one that carries
-    // the summary. A hand-off's `ok: true` carries none and is not an outcome.
-    const returnAt = runImport.search(/return \{\s*\n\s*ok: true,\s*\n\s*summary: \{/);
-    expect(kickAt).toBeGreaterThan(-1);
-    expect(askAt).toBeGreaterThan(kickAt);
-    expect(askAt).toBeLessThan(returnAt);
+  it('never asks mid-read, before the outcome is written', () => {
+    expect(runImport).not.toMatch(/rpc\('publish_builder_stock_upload'/);
   });
 
   it('can never fail the import', () => {
-    // A publication that cannot be asked for costs latency, never work: the
-    // settler asks after every completed item and the cron tick reaches the
-    // same queue.
-    const block = runImport.slice(runImport.indexOf("rpc('publish_builder_stock_upload'"));
-    expect(block.slice(0, 260)).toMatch(/\}\s*catch\s*\{/);
+    const block = sweep.slice(sweep.indexOf('export async function askToPublishFinishedImport'));
+    expect(block.slice(0, 400)).toMatch(/\}\s*catch\s*\(error\)\s*\{/);
+  });
+
+  it('a finished list with nothing left to settle is still asked, every tick', () => {
+    expect(settler).toContain('healAndPublishSettledUploads(supabase)');
   });
 
   it('leaves the settler asking too — two askers, not a replacement', () => {

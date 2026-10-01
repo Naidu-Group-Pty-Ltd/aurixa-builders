@@ -949,11 +949,14 @@ async function importOnce(input: RunImportInput): Promise<RunImportResult> {
      * BEST-EFFORT, LIKE THE KICK ABOVE: the settler still asks after every
      * completed item, so a failure here costs latency and never work.
      */
-    try {
-      await input.supabase.rpc('publish_builder_stock_upload', {
-        p_upload_id: input.upload.id,
-      });
-    } catch { /* the settler and the cron tick both ask again */ }
+    /*
+     * …AND THE ASK ITSELF NOW FOLLOWS THE STATUS WRITE, NOT THIS POINT.
+     * Publication refuses a list whose import has not recorded that it
+     * finished (`import_not_finished`, 1 October 2026): asked here, mid-read,
+     * a replacement used to archive every live property it had not reached
+     * yet. Every writer of the final status calls `askToPublishFinishedImport`
+     * after it, and the settler's sweep asks every tick besides.
+     */
     recordStage(ledger, 'finalisation', Date.now() - finalisationStartedAt);
     await commitLedger(ledger);
     /*

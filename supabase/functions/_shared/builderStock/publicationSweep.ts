@@ -95,3 +95,24 @@ export async function healAndPublishSettledUploads(
   }
   return outcome;
 }
+
+/**
+ * ASK ONCE, RIGHT AFTER AN IMPORT RECORDS THAT IT HAS FINISHED.
+ *
+ * Publication refuses a list whose import has not finished
+ * (`import_not_finished`), because a list still writing its rows would
+ * otherwise archive every live property it had not reached yet. The import's
+ * own ask used to come BEFORE its final status was written, so it is now
+ * always refused; this is the ask that follows the write. Best-effort: the
+ * sweep above asks again every tick.
+ */
+export async function askToPublishFinishedImport(db: any, uploadId: string): Promise<void> {
+  try {
+    await publishUploadIfReady(db, uploadId);
+  } catch (error) {
+    console.warn('[builderStock] publication could not be asked after the import finished', {
+      phase: 'publication_after_import', upload_id: uploadId,
+      detail: String((error as { message?: string })?.message ?? error).slice(0, 200),
+    });
+  }
+}
