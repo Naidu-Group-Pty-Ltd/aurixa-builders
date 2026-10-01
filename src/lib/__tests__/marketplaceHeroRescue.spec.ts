@@ -25,6 +25,9 @@ import { planHeroWithCapacity } from '../../../supabase/functions/_shared/builde
 import { encodeWorkDocument, WORK_OUTCOME_HEADER } from '../../../supabase/functions/_shared/builderStock/heavyWorkWire.pure';
 import { drawScene, type Rect, type SceneOptions } from './fixtures/heroScenes';
 import { impossibleScene, plainScene, rescuableScene } from './fixtures/heroFuzz';
+import { HERO_PROOF_CASES } from './fixtures/heroProofCases';
+import { encodePng } from '../../../supabase/functions/_shared/builderStock/rasterPng';
+import { planHeroFromBytes } from '../../../supabase/functions/_shared/builderStock/heroPlanning';
 
 const inside = (inner: Rect, outer: PixelRect) =>
   inner.x >= outer.x && inner.y >= outer.y
@@ -456,6 +459,33 @@ describe('generated scenes — ground truth by construction', () => {
       const scene = drawScene(rescuableScene(seed));
       expect(planHero(scene.thumbnail, undefined, { rescue: true }))
         .toEqual(planHero(scene.thumbnail, undefined, { rescue: true }));
+    }
+  });
+});
+
+describe('through the real decoder — the pictures the production proof uploads', () => {
+  /*
+   * Encoded at full size and planned from the BYTES, as the sweep does: the
+   * decoder downscales and stretches contrast. The first canvas rules were
+   * tested only at thumbnail size and missed a brochure page and a banner
+   * here — every real picture takes this path.
+   */
+  it.each(Object.entries(HERO_PROOF_CASES))('%s: %s', async (_key, c) => {
+    const scene = drawScene({ ...c.scene, scale: 1 });
+    const png = await encodePng(scene.thumbnail.pixels, { width: c.scene.width, height: c.scene.height, components: 3 });
+    const answer = await planHeroFromBytes(png!);
+    if (!answer.ok) throw new Error('no plan');
+    const p = answer.plan;
+    expect(p.mode).toBe(c.expect.mode);
+    if (c.expect.fitReason) expect(p.fitReason).toBe(c.expect.fitReason);
+    expect(validateHeroPlan(p)).toBe(true);
+    // The house is never cut (one source pixel of downscale rounding allowed).
+    const s = visible(scene.subject, scene.photo);
+    const slack = { x: p.crop.x - 2, y: p.crop.y - 2, w: p.crop.w + 4, h: p.crop.h + 4 };
+    expect(inside(s, slack)).toBe(true);
+    if (c.expect.insidePhoto) {
+      const photo = { x: scene.photo.x - 2, y: scene.photo.y - 2, w: scene.photo.w + 4, h: scene.photo.h + 4 };
+      expect(inside(p.crop, photo)).toBe(true);
     }
   });
 });
