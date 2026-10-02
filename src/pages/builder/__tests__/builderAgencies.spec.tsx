@@ -231,8 +231,14 @@ describe('the old Agencies addresses', () => {
   it('open the agency conversation a bookmark named, on Messages', () => {
     state.records = [ACTIVATION];
     renderAt('/builder/agencies/messages?thread=conn-a:item-a1');
+    /*
+     * RENEGOTIATED 2 OCTOBER 2026. Project conversations are withdrawn, so
+     * Messages has ONE offered view and draws no tab strip — a chooser with
+     * one option chooses nothing. What each of these tests is for is the
+     * same and is still asserted: the address lands on the conversations.
+     */
     expect(screen.getByRole('heading', { name: 'Messages' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: /agency conversations/i })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('tab')).toBeNull();
     expect(screen.getByRole('option', { selected: true })).toBeInTheDocument();
   });
 });
@@ -249,13 +255,21 @@ describe('Messages is the one home for messaging', () => {
   it('opens the agency conversations by default', () => {
     state.records = [ACTIVATION];
     renderAt('/builder/messages');
-    expect(screen.getByRole('tab', { name: /agency conversations/i })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('tab')).toBeNull();
     expect(screen.getByRole('listbox', { name: /conversations/i })).toBeInTheDocument();
   });
 
-  it('opens the project conversations for a link that names a project, as every link before the move did', () => {
+  it('a link that named a project conversation still lands on a working page', () => {
+    /*
+     * The withdrawn view's own addresses must not dead-end. Measured: that
+     * view held 0 messages in production, so nothing is lost by landing here
+     * — and an empty tab would have been worse than none.
+     */
+    state.records = [ACTIVATION];
     renderAt('/builder/messages?project=proj-a1');
-    expect(screen.getByRole('tab', { name: /project conversations/i })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('heading', { name: 'Messages' })).toBeInTheDocument();
+    expect(screen.queryByRole('tab')).toBeNull();
+    expect(screen.getByRole('listbox', { name: /conversations/i })).toBeInTheDocument();
   });
 });
 
@@ -308,7 +322,7 @@ describe('Messages', () => {
   it('lists each conversation the reader is in, once', () => {
     state.records = [ACTIVATION, { ...ACTIVATION, id: 'ann-a1-again' }];
     renderAt('/builder/messages?view=agencies');
-    expect(screen.getByRole('tab', { name: /agency conversations/i })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('tab')).toBeNull();
     expect(screen.getAllByRole('option')).toHaveLength(1);
   });
 
@@ -614,11 +628,19 @@ describe('the conversation log follows its newest message', () => {
 });
 
 describe('where an address lands', () => {
-  it('Messages: an explicit view wins, a project link opens projects, anything else opens agencies', () => {
-    expect(messagesViewFrom(new URLSearchParams('view=projects'))).toBe('projects');
+  it('Messages: every address lands on the one offered view', () => {
+    /*
+     * RENEGOTIATED 2 OCTOBER 2026. Project conversations are withdrawn —
+     * production held 0 of their messages — so there is no second view for an
+     * address to open. What this test is FOR is unchanged and is what is
+     * asserted: no URL dead-ends. Every address that named the withdrawn view,
+     * including the four keys a project conversation was addressed by, lands
+     * on a working page instead of an empty tab.
+     */
+    expect(messagesViewFrom(new URLSearchParams('view=projects'))).toBe('agencies');
     expect(messagesViewFrom(new URLSearchParams('view=agencies&project=p'))).toBe('agencies');
     for (const key of ['project=p', 'scope=project', 'scopeId=s', 'conversation=c']) {
-      expect(messagesViewFrom(new URLSearchParams(key))).toBe('projects');
+      expect(messagesViewFrom(new URLSearchParams(key))).toBe('agencies');
     }
     expect(messagesViewFrom(new URLSearchParams(''))).toBe('agencies');
     expect(messagesViewFrom(new URLSearchParams('thread=t'))).toBe('agencies');

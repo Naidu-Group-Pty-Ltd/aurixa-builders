@@ -28,6 +28,9 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.55.0';
 import { createCorsHeaders } from '../_shared/auth.ts';
 import { enforceCsrf, csrfDenied } from '../_shared/csrfGuard.ts';
+import {
+  PASSIVE_BUILDER_ACTIVITY_ACTIONS, significantBuilderActivity,
+} from '../_shared/builderActivitySignificance.pure.ts';
 import { readBoundedJson, DEFAULT_MAX_BODY_BYTES } from '../_shared/validate.ts';
 import {
   resolveBuilderSession,
@@ -144,14 +147,46 @@ Deno.serve(async (req) => {
         return json({ error: 'That record type has no activity history' }, 400);
       }
 
-      const { data, error } = await supabase.rpc('builder_visible_activity', {
+      /*
+       * THE FEED LEADS WITH WHAT CHANGED, AND THE DATABASE IS HANDED THE RULE.
+       *
+       * Measured 2 October 2026: per user the visible feed was 25 rows of
+       * `builder_project_viewed` and one row of anything else, under a page
+       * headed "What has changed on the records you can reach". The list of
+       * what is merely LOOKING lives in one module
+       * (`builderActivitySignificance.pure.ts`) and is passed in, because a
+       * second copy inside the function is how the page and the feed come to
+       * disagree about what the page is showing.
+       *
+       * It NARROWS and can never widen: the permission gate inside the
+       * function is untouched, so a row this reader could not see before is
+       * still not theirs to see.
+       */
+      const activityArgs = {
         _user_id: me.id,
         _organisation_id: activeOrganisationId,
         _entity_type: entityType,
         _entity_id: cleanText(body.entity_id, 64),
         _limit: cleanLimit(body.limit, 50, 200),
+      };
+      let { data, error } = await supabase.rpc('builder_visible_activity', {
+        ...activityArgs,
+        _exclude_actions: [...PASSIVE_BUILDER_ACTIVITY_ACTIONS],
       });
-      if (error) throw error;
+      if (error) {
+        /*
+         * AN OLDER DATABASE HAS NO SUCH ARGUMENT, and this function may ship
+         * either side of the migration that adds it. The five-argument call is
+         * exactly what this endpoint did before, so the fallback is today's
+         * behaviour rather than a degraded one — and the rows are then narrowed
+         * here, by the same one list, so the reader sees the same feed.
+         */
+        const retry = await supabase.rpc('builder_visible_activity', activityArgs);
+        if (retry.error) throw retry.error;
+        data = significantBuilderActivity(
+          (retry.data ?? []) as Array<{ action?: unknown }>) as typeof retry.data;
+        error = null;
+      }
       return json({ success: true, records: data || [] });
     }
 

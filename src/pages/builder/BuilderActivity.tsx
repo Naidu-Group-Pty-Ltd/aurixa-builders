@@ -10,9 +10,12 @@ import { cn } from '@/lib/utils';
 import { BuilderPortalShell } from '@/components/builder-portal/BuilderPortalShell';
 import { useBuilderActivity } from '@/lib/builderQueries';
 import {
-  ACTIVITY_ENTITY_LABELS, ACTOR_TYPE_LABELS, BUILDER_ACTIVITY_ENTITY_TYPES,
+  ACTIVITY_ENTITY_LABELS, BUILDER_ACTIVITY_ENTITY_TYPES,
   activityActionLabel, formatWorkspaceTime,
 } from '@/lib/builderWorkspace';
+import {
+  builderActivityActor,
+} from '../../../supabase/functions/_shared/builderActivitySignificance.pure';
 
 /**
  * External Builder Portal activity history.
@@ -59,8 +62,10 @@ export default function BuilderActivity() {
           <div>
             <CardTitle className="text-base">History</CardTitle>
             <CardDescription>
-              Administrative changes — organisation access, permissions and sessions — are not shown here.
-              Your administrator holds that record.
+              Changes to your records, newest first. Opening a record, signing in and your own
+              settings are not changes, so they are not listed. Administrative changes —
+              organisation access, permissions and sessions — are not shown here either; your
+              administrator holds that record.
             </CardDescription>
           </div>
           <Select value={entityType} onValueChange={setEntityType}>
@@ -123,7 +128,7 @@ export default function BuilderActivity() {
                       ) : null}
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      {ACTOR_TYPE_LABELS[entry.actor_type] ?? entry.actor_type} ·{' '}
+                      {builderActivityActor(entry)} ·{' '}
                       {formatWorkspaceTime(entry.created_at)}
                     </p>
                   </div>

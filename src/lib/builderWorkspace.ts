@@ -70,6 +70,12 @@ export interface BuilderActivityEntry {
   entity_type: string | null;
   entity_id: string | null;
   actor_type: string;
+  /**
+   * The person who did it, where the server recovered one. Null for work the
+   * platform did, and on any deployment whose database has not yet been given
+   * the join — `builderActivityActor` answers both without inventing a name.
+   */
+  actor_name?: string | null;
   reason: string | null;
   created_at: string;
 }

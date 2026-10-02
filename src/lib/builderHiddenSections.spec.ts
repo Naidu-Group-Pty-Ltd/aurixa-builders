@@ -58,7 +58,18 @@ describe('withdrawn builder sections — the set itself', () => {
   });
 
   it('does not re-offer withdrawn aggregates through collaboration scope pickers', () => {
-    expect(OFFERED_BUILDER_SCOPE_TYPES).toEqual(['project']);
+    /*
+     * RENEGOTIATED 2 OCTOBER 2026. `stock_item` is not a withdrawn aggregate —
+     * it is the Stock List, a section this portal very much offers — and it
+     * had to join the offered set because that is where the work actually is:
+     * measured in production, ALL FIVE tasks are `scope_type: stock_item` and
+     * none is on a project, so a picker offering projects alone could not
+     * reach a single record that has a task. What this assertion is for is
+     * unchanged and still asserted below: a WITHDRAWN aggregate is never
+     * offered, whatever is asked for.
+     */
+    expect(OFFERED_BUILDER_SCOPE_TYPES).toEqual(['project', 'stock_item']);
+    expect(offeredBuilderScopeType('stock_item')).toBe('stock_item');
     expect(offeredBuilderScopeType('project')).toBe('project');
     expect(offeredBuilderScopeType('unit')).toBe('project');
     expect(offeredBuilderScopeType('transaction')).toBe('project');
@@ -129,8 +140,17 @@ describe('withdrawn builder sections — every door asks the same list', () => {
 
   it('the dashboard filters its figures and its attention rows', () => {
     const dash = read('src/pages/builder/BuilderDashboard.tsx');
-    // Both figure arrays plus the attention list, and the import.
-    expect(dash.match(/isWithdrawnBuilderPath/g)?.length).toBeGreaterThanOrEqual(4);
+    /*
+     * RENEGOTIATED: counting call sites in the page stopped describing the
+     * guarantee once the attention list moved into a module of its own. Both
+     * figure arrays still filter here, and the rows the dashboard draws are
+     * filtered where they are now BUILT — so the property holds wherever the
+     * code lives, which is what a count could never say.
+     */
+    expect(dash.match(/\.filter\(\(figure\) => !isWithdrawnBuilderPath\(figure\.to\)\)/g)?.length)
+      .toBeGreaterThanOrEqual(2);
+    const attention = read('src/lib/builderActionRequired.pure.ts');
+    expect(attention).toContain('isWithdrawnBuilderPath(item.to)');
   });
 
   it('the collaboration picker asks the same offer and dormant child queries stay dormant', () => {
@@ -144,12 +164,20 @@ describe('withdrawn builder sections — every door asks the same list', () => {
     const queries = readCode('src/lib/builderQueries.ts');
     expect(queries.match(/options: \{ enabled\?: boolean \} = \{\}/g)?.length).toBeGreaterThanOrEqual(3);
 
-    for (const path of [
-      'src/pages/builder/BuilderMessages.tsx',
-      'src/pages/builder/BuilderTasks.tsx',
-    ]) {
+    /*
+     * EVERY DOOR THAT STILL OFFERS A SCOPE ASKS THE SAME LIST. Messages left
+     * this list because it no longer offers one at all: Project Conversations
+     * is withdrawn (production held 0 of its messages), so the page has no
+     * scope picker to coerce — asserted below rather than assumed, because
+     * "it has no picker" and "its picker is unguarded" look identical to a
+     * scan for a missing name.
+     */
+    for (const path of ['src/pages/builder/BuilderTasks.tsx']) {
       expect(readCode(path)).toContain('offeredBuilderScopeType');
     }
+    const messages = readCode('src/pages/builder/BuilderMessages.tsx');
+    expect(messages).not.toContain('BuilderScopePicker');
+    expect(messages).not.toContain('scopeType');
   });
 
   it('the onboarding tour drops the steps whose anchors are gone', () => {

@@ -16,6 +16,9 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { BuilderPortalShell } from '@/components/builder-portal/BuilderPortalShell';
 import {
+  builderActivityActor,
+} from '../../../supabase/functions/_shared/builderActivitySignificance.pure';
+import {
   ActivationContact, ActivationStatusBadge, ActivationStockLink,
 } from '@/components/builder-portal/StockActivation';
 import { builderKeys, useBuilderProject, useBuilderProjectMutation } from '@/lib/builderQueries';
@@ -518,7 +521,10 @@ export default function BuilderProjectDetail() {
                   </p>
                   {entry.reason ? <p className="mt-1 text-muted-foreground">{entry.reason}</p> : null}
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {new Date(entry.created_at).toLocaleString('en-AU')} · {entry.changed_by_type.replace(/_/g, ' ')}
+                    {new Date(entry.created_at).toLocaleString('en-AU')} ·{' '}
+                    {builderActivityActor({
+                      actor_type: entry.changed_by_type, actor_name: entry.changed_by_name,
+                    })}
                   </p>
                 </div>
               ))}

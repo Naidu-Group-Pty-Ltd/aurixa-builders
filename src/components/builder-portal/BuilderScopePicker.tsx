@@ -9,7 +9,9 @@ import { stockItemTitle } from '@/lib/builderStock';
 import {
   SCOPE_TYPE_LABELS, type BuilderScopeType,
 } from '@/lib/builderCollaboration';
-import { OFFERED_BUILDER_SCOPE_TYPES } from '@/lib/builderHiddenSections.pure';
+import {
+  OFFERED_BUILDER_SCOPE_TYPES, offeredBuilderScopeType,
+} from '@/lib/builderHiddenSections.pure';
 
 /**
  * Choose the aggregate a collaboration surface is scoped to.
@@ -111,7 +113,15 @@ export function BuilderScopePicker({
   };
 
   const setScopeType = (next: string) => {
-    const scopeType = next as BuilderScopeType;
+    /*
+     * COERCED, NEVER CAST. The list above is already the offered set, but a
+     * value can reach this from outside it — a stale URL, a restored form,
+     * a future option — and a withdrawn aggregate selected here would open a
+     * picker onto a section this portal no longer has. `offeredBuilderScopeType`
+     * is the one rule that decides, and it answers `project` for anything it
+     * does not offer.
+     */
+    const scopeType = offeredBuilderScopeType(next);
     onChange(scopeType === 'project'
       ? { scopeType, scopeId: projectId }
       : { scopeType, scopeId: '' });
