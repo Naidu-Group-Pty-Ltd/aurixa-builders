@@ -149,6 +149,56 @@ await section('3. per user: what Projects lists, what the Tasks picker lists, wh
 `);
 
 // ---------------------------------------------------------------------------
+// 3b. CAN THEY ACT? The project detail draws its status control on
+//     `permissions.projects.edit`, and a status change is refused without it,
+//     so whether the control is missing or merely unauthorised is this
+//     question and nothing else. Asked at every level the resolver takes.
+// ---------------------------------------------------------------------------
+await section('3b. per user and project: the resolver at each level', `
+  with people as (
+    select u.id, m.organisation_id
+      from public.builder_portal_users u
+      join public.builder_organisation_memberships m on m.builder_user_id = u.id
+     where u.is_active and m.status = 'active' and m.revoked_at is null
+  )
+  select left(pe.id::text, 8) as portal_user,
+         left(p.id::text, 8)  as project,
+         p.status,
+         g.access_role,
+         public.builder_resolve_project_permission(pe.id, p.id, 'projects', 'view')  as projects_view,
+         public.builder_resolve_project_permission(pe.id, p.id, 'projects', 'edit')  as projects_edit,
+         public.builder_resolve_project_permission(pe.id, p.id, 'tasks', 'view')     as tasks_view,
+         public.builder_resolve_project_permission(pe.id, p.id, 'tasks', 'edit')     as tasks_edit
+    from people pe
+    join public.builder_project_access g
+      on g.builder_user_id = pe.id and g.revoked_at is null
+    join public.builder_projects p on p.id = g.project_id
+   order by 1, 2
+   limit 40
+`);
+
+await section('3b2. and on a PROPERTY, which is where every task actually lives', `
+  with people as (
+    select u.id, m.organisation_id
+      from public.builder_portal_users u
+      join public.builder_organisation_memberships m on m.builder_user_id = u.id
+     where u.is_active and m.status = 'active' and m.revoked_at is null
+  ),
+  scoped as (
+    select distinct pe.id as user_id, t.scope_id
+      from people pe
+      join public.builder_tasks t on t.scope_type = 'stock_item'
+  )
+  select left(s.user_id::text, 8) as portal_user,
+         left(s.scope_id::text, 8) as stock_item,
+         public.builder_resolve_scope_permission(s.user_id, 'stock_item', s.scope_id, 'tasks', 'view') as tasks_view,
+         public.builder_resolve_scope_permission(s.user_id, 'stock_item', s.scope_id, 'tasks', 'edit') as tasks_edit
+    from scoped s
+   order by 1, 2
+   limit 30
+`);
+
+// ---------------------------------------------------------------------------
 // 4. THE TASK ROWS THEMSELVES, by scope type: what a chosen record would hold.
 // ---------------------------------------------------------------------------
 await section('4. builder_tasks by scope type and status', `
