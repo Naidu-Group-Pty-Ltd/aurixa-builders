@@ -198,7 +198,9 @@ export function readAccessDenial(
       code: "organisation_closed",
       message:
         `${naming(closed.organisation_legal_name, "Your organisation")} has been closed on the ` +
-        `Builders Network. Your sign-in details are correct, but a closed organisation cannot be reopened.`,
+        `Builders Network, so its workspace cannot be opened. Your sign-in details are correct — ` +
+        `nothing is wrong with your password. Its records are kept, and only the network operator ` +
+        `can reopen it: contact them if it was closed in error.`,
     };
   }
 

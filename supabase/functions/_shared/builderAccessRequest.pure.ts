@@ -21,12 +21,23 @@
  *     recipient and nothing else. That is what keeps it from being an open
  *     relay under the network's own verified sending domain.
  *
- *  3. ONE APPLICATION PER ADDRESS PER WINDOW. Without this, the same address
+ *  3. ONE INVITATION PER ADDRESS PER WINDOW. Without this, the same address
  *     could be applied for repeatedly and each attempt would send it mail.
  *     The window is read at submit rather than enforced by a unique index,
  *     because a second attempt is EVIDENCE — usually that the first
  *     invitation never arrived — and erasing it would hide exactly the
  *     failure an operator needs to see.
+ *
+ *     It counts the applications that WROTE to the address — `provisioned`
+ *     and `attached` — and one still being acted on, never one that was
+ *     REFUSED. A refusal sends nothing, so it is not what the window bounds;
+ *     counting it meant an applicant who mistyped an ABN, or collided with an
+ *     organisation that already existed, was told "we already have your
+ *     application" for a day and could not send the corrected one. Measured
+ *     1 Oct 2026: every resubmission after a refusal that afternoon was
+ *     answered 429 by this window. The ORIGIN windows below still count every
+ *     attempt, refused or not, so probing is bounded where it is cheap to
+ *     bound.
  *
  *  4. NOTHING IS OVERWRITTEN. An application that collides with an existing
  *     organisation is refused and recorded; it never edits the organisation
@@ -55,28 +66,49 @@
 // @ts-ignore Deno-only import; not resolvable under Node type-checking.
 import { ORG_TYPES } from './builderOrganisationInput.pure.ts';
 
-/** How long one email address has to wait before applying again. */
+/** How long an address that has been written to waits before applying again. */
 export const APPLICATION_WINDOW_HOURS = 24;
+
+/**
+ * The outcomes the address window counts: an application that set up an
+ * organisation and wrote to the address (`provisioned`), or attached an
+ * existing account and wrote to it (`attached`). A `refused` application
+ * sent nothing and is not counted.
+ */
+export const ADDRESS_WINDOW_OUTCOMES: readonly string[] = ['provisioned', 'attached'];
+
+/**
+ * How long an application still `received` — recorded, not yet settled — holds
+ * its address. It is the same applicant pressing submit twice, and the first
+ * press is still creating the organisation the second would collide with. A
+ * `received` row older than this is a run that died before it settled, and
+ * holding the address for a day over it would refuse the one retry that
+ * recovers it.
+ */
+export const IN_FLIGHT_MINUTES = 10;
 
 /**
  * How many applications one origin may have recorded, per window.
  *
  * Deliberately generous against a real day and ruinous against a script. A
  * builder's office behind one NAT address, applying for three related
- * entities in a sitting, is a real thing and passes; six an hour from one
- * address is not somebody filling in a form.
+ * entities in a sitting — and correcting a field or two on the way, each of
+ * which is another attempt — is a real thing and passes; more than ten an
+ * hour from one address is not somebody filling in a form.
  *
  * Both are counted over `builder_access_requests`, so a REFUSED attempt is
  * counted too. That is the point — an address probing for which ABNs are
- * already registered spends its allowance on the probing.
+ * already registered spends its allowance on the probing. It is also why the
+ * limits leave room: an honest applicant's corrections are counted by the
+ * same rule, and a correction is the attempt this pipeline most wants to see.
  */
 export const ORIGIN_WINDOWS: ReadonlyArray<{
   readonly hours: number;
   readonly limit: number;
   readonly error: string;
 }> = [
-  { hours: 1, limit: 6, error: 'too_many_applications_from_here_just_now' },
-  { hours: 24, limit: 20, error: 'too_many_applications_from_here_today' },
+  { hours: 1, limit: 10, error: 'too_many_applications_from_here_just_now' },
+  { hours: 24, limit: 30, error: 'too_many_applications_from_here_today' },
 ];
 
 const MAX = 200;
