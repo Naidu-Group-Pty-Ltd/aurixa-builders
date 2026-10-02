@@ -215,11 +215,13 @@ export function useBuilderStockItems(
   });
 }
 
-export function useBuilderStockSelections(page = 1) {
+export function useBuilderStockSelections(page = 1, pageSize = 20) {
   return useQuery({
-    queryKey: builderStockKeys.selections(page),
+    // The size is part of the key, or two readers asking for different
+    // amounts would serve each other's page.
+    queryKey: [...builderStockKeys.selections(page), pageSize],
     queryFn: () => invoke<Paginated<BuilderStockSelectionForBuilder>>({
-      operation: 'list_selections', page, page_size: 20,
+      operation: 'list_selections', page, page_size: pageSize,
     }),
   });
 }

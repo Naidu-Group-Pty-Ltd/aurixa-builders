@@ -14,6 +14,9 @@ import {
   ACTIVITY_ENTITY_LABELS, ACTOR_TYPE_LABELS, activityActionLabel, formatWorkspaceTime,
 } from '@/lib/builderWorkspace';
 import { BuilderPortalShell } from '@/components/builder-portal/BuilderPortalShell';
+import {
+  builderActivityActor,
+} from '../../../supabase/functions/_shared/builderActivitySignificance.pure';
 import { BuilderSchedule } from '@/components/builder-portal/ui/BuilderSchedule';
 import { TitleBlock } from '@/components/builder-portal/ui/TitleBlock';
 /* The one place the locale is named; see docs/aml/ONGOING_CDD_AND_REMINDERS.md —
@@ -60,7 +63,9 @@ export default function BuilderDashboard() {
    * provide: an activation is acknowledged on the Stock List, and a
    * photograph is supplied there too.
    */
-  const selectionsQuery = useBuilderStockSelections();
+  // At the server's own ceiling: the attention panel counts these, and a page
+  // of twenty counted only the twenty newest activations.
+  const selectionsQuery = useBuilderStockSelections(1, 100);
   const progressQuery = useBuilderStockImageProgress();
   const progressRecords = progressQuery.data?.records ?? [];
   const summary = summaryQuery.data;
@@ -192,13 +197,32 @@ export default function BuilderDashboard() {
    * organisation-scoped by the session; the counts below are read from the
    * same surfaces that offer the acts.
    */
+  const selectionsSeen = selectionsQuery.data?.records ?? [];
+  const selectionsTotal = Number(selectionsQuery.data?.pagination?.total ?? 0);
+  const sawEverySelection = selectionsQuery.data
+    ? selectionsSeen.length >= selectionsTotal : false;
+  const awaitingSeen = selectionsQuery.data
+    ? selectionsSeen.filter(awaitsBuilderAcknowledgement).length : undefined;
+  const awaitingAcknowledgement = awaitingSeen === 0 && !sawEverySelection
+    ? undefined : awaitingSeen;
+
   const attention = actionRequiredItems({
     overdueTasks: summary?.overdue_tasks,
     unreadMessages: summary?.unread_messages,
     /* The Stock List's own predicate for an activation still owed an
        acknowledgement, imported rather than restated. */
-    activationsAwaitingAcknowledgement: selectionsQuery.data?.records
-      ?.filter(awaitsBuilderAcknowledgement).length,
+    /*
+     * A COUNT FROM A PARTIAL PAGE MAY BE A FLOOR; IT MAY NEVER BE A ZERO.
+     *
+     * This read is paginated, so counting what came back can undercount — and
+     * the dangerous end of that is the quiet one: where the rows in hand
+     * happen to be the acknowledged ones, a confident 0 renders as "Nothing
+     * needs your attention" over activations that are still waiting. A page
+     * is asked for at the server's own ceiling, and where even that did not
+     * reach the end, a zero is withheld as UNKNOWN rather than reported as
+     * none. A non-zero count stands: it is a floor, and a floor is actionable.
+     */
+    activationsAwaitingAcknowledgement: awaitingAcknowledgement,
     propertiesNeedingAPicture: progressRecords.length
       ? progressRecords.reduce((total, record) => total + (Number(record.failed) || 0), 0)
       : undefined,
@@ -352,7 +376,7 @@ export default function BuilderDashboard() {
                   <p className="mt-1 text-sm text-muted-foreground">{entry.reason}</p>
                 ) : null}
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {ACTOR_TYPE_LABELS[entry.actor_type] ?? entry.actor_type} ·{' '}
+                  {builderActivityActor(entry)} ·{' '}
                   {formatWorkspaceTime(entry.created_at)}
                 </p>
               </div>

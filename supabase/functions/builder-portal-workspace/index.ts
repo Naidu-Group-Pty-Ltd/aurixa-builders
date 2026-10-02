@@ -31,6 +31,7 @@ import { enforceCsrf, csrfDenied } from '../_shared/csrfGuard.ts';
 import {
   PASSIVE_BUILDER_ACTIVITY_ACTIONS, significantBuilderActivity,
 } from '../_shared/builderActivitySignificance.pure.ts';
+
 import { readBoundedJson, DEFAULT_MAX_BODY_BYTES } from '../_shared/validate.ts';
 import {
   resolveBuilderSession,
@@ -47,6 +48,13 @@ import {
   cleanLimit,
   cleanText,
 } from '../_shared/builderWorkspace.ts';
+
+/**
+ * The most `builder_visible_activity` will return, in either shape. Named so
+ * the compatibility fallback asks for the whole window rather than the
+ * reader's own count, which it must then filter down from.
+ */
+const LEGACY_ACTIVITY_CEILING = 200;
 
 Deno.serve(async (req) => {
   const corsHeaders = createCorsHeaders(req.headers.get('origin'));
@@ -181,10 +189,24 @@ Deno.serve(async (req) => {
          * behaviour rather than a degraded one — and the rows are then narrowed
          * here, by the same one list, so the reader sees the same feed.
          */
-        const retry = await supabase.rpc('builder_visible_activity', activityArgs);
+        /*
+         * AND THE OLD FUNCTION LIMITS BEFORE THIS CAN FILTER, so asking it for
+         * the reader's own count and then removing the passive rows returns a
+         * SHORT feed — in the worst case an empty one, where the newest rows
+         * happen all to be views and the real changes sit just past the
+         * boundary. That is the very reading this change exists to fix, so the
+         * fallback asks for the function's own ceiling and trims afterwards.
+         * Approximate by construction (a reader with more than 200 passive
+         * rows in front of a change still loses it) and bounded, which is why
+         * it is the fallback and not the rule.
+         */
+        const retry = await supabase.rpc('builder_visible_activity', {
+          ...activityArgs, _limit: LEGACY_ACTIVITY_CEILING,
+        });
         if (retry.error) throw retry.error;
         data = significantBuilderActivity(
-          (retry.data ?? []) as Array<{ action?: unknown }>) as typeof retry.data;
+          (retry.data ?? []) as Array<{ action?: unknown }>)
+          .slice(0, activityArgs._limit) as typeof retry.data;
         error = null;
       }
       return json({ success: true, records: data || [] });

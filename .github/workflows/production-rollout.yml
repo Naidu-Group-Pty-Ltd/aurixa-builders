@@ -653,8 +653,8 @@ jobs:
             stock-mirror-parity)  node scripts/ops/stock-mirror-parity.mjs ;;
             stock-delivery-audit) node scripts/ops/stock-delivery-audit.mjs ;;
             stock-upload-failure-state)
-                        deno run -A --config supabase/functions/deno.json scripts/ops/stock-upload-failure-state.ts ;;
-  portal-functionality-state)
+                                  deno run -A --config supabase/functions/deno.json scripts/ops/stock-upload-failure-state.ts ;;
+            portal-functionality-state)
                                   deno run -A --config supabase/functions/deno.json scripts/ops/portal-functionality-state.ts ;;
             portal-ui-audit)
                                   node scripts/ops/portal-ui-audit.mjs ;;
