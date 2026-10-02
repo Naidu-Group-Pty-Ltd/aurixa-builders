@@ -44,6 +44,33 @@ time.
   message) is a barrier and goes alone, in queue order. The worker claims again
   while there is work, inside a 35 s budget.
 
+## Measured after the deploy
+
+On 1 October 2026 at 18:34:40 UTC, after the deploy, the 44 live properties
+were each queued twice in one transaction: 88 events. Read back from both
+databases on 2 October (`stock-delivery-audit`, `stock-mirror-parity`):
+
+| | |
+|---|---|
+| Events queued | 88 |
+| Superseded before sending (never claimed, never received) | 44 |
+| Delivered | 44, one per property, each property's newest |
+| First arrival at the Command Centre | 23.6 s (19.5 s of it waiting for the minute's worker run) |
+| Last arrival and last applied | 84.9 s |
+| Arrivals | waves of 8, 8, 8, 6 in the first run; 8, 6 in the next |
+| Retried | 14, once each; none had reached the Command Centre on the first try |
+| Mirror | 44 of 44 live at the newest delivered version, 20 fields, photograph and hero plan identical |
+
+The 14 retries were the tail of the first run. The Command Centre's runtime
+log shows a fresh isolate for each arrival (8, 8, 8, 6) and none for the last
+14 sends. Their error text is not recoverable, because a later success clears
+`last_error`. The next minute's run delivered them.
+
+A test can only guard what it reads. The guard used to check the word
+`superseded` in the newest definition of the enqueue, so a later migration
+that also superseded a claimed event, or another connection's, would pass. It
+now checks the predicate in whichever migration defines the enqueue last.
+
 ## Not changed
 
 The single cutover: a list still goes live when its photographs are ready, not
