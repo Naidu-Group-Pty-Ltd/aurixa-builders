@@ -553,6 +553,78 @@ async function withDeadline<T>(
   }
 }
 
+/**
+ * ===========================================================================
+ * THE BYTES GO STRAIGHT TO STORAGE, AND A DROPPED CONNECTION IS NOT A REFUSAL.
+ * ===========================================================================
+ *
+ * This is the one request in the import that does NOT go through
+ * `invokeBuilderFunction`, because it is a signed PUT to the object store
+ * rather than a call to a function of ours. It inherited none of that
+ * wrapper's care, and on 2 October 2026 a builder saw what that costs: a 4 MB
+ * package whose PUT never completed, reported as the destructive **"The stock
+ * list could not be imported — Failed to fetch"**. Both halves were wrong.
+ * Nothing had been imported because nothing had been UPLOADED, and "Failed to
+ * fetch" is the browser's words about this tab, not an answer from anywhere.
+ *
+ * TWO THINGS, AND THE FIRST IS WHAT ACTUALLY GETS THE FILE IN. A rejected
+ * `fetch` on a multi-megabyte body is the shape a flaky link makes, and it is
+ * cured by asking again — so the PUT is retried, briefly and a bounded number
+ * of times. It is retried ONLY on a rejection: a response that arrived and
+ * said no is a real refusal (too large, wrong type, a spent URL) and asking
+ * again would just fail twice and take twice as long to say so.
+ *
+ * AND THE DEADLINE IS NOT RESTARTED BY A RETRY. `FILE_UPLOAD_TIMEOUT_MS` is
+ * the budget for getting this file up, not per attempt, or three attempts
+ * would quietly buy fifteen minutes.
+ */
+const FILE_UPLOAD_ATTEMPTS = 3;
+
+export class StockFileUploadFailed extends Error {
+  /**
+   * NOT `transport_failed`. That code means the browser does not know whether
+   * the work happened; here it knows that it did not, because the file never
+   * left. Reporting an undetermined import would send a builder to look for
+   * properties that cannot exist.
+   */
+  readonly code = 'file_upload_failed';
+
+  constructor() {
+    super('The file did not finish uploading, so nothing was imported and nothing '
+      + 'was changed. Check your connection and add the stock list again.');
+    this.name = 'StockFileUploadFailed';
+  }
+}
+
+async function putTheFile(signedUrl: string, file: File): Promise<Response> {
+  const started = Date.now();
+  let lastRejection: unknown = null;
+  for (let attempt = 1; attempt <= FILE_UPLOAD_ATTEMPTS; attempt += 1) {
+    const left = FILE_UPLOAD_TIMEOUT_MS - (Date.now() - started);
+    if (left <= 0) break;
+    try {
+      return await withDeadline('uploading the file', left, (signal) => fetch(signedUrl, {
+        method: 'PUT',
+        headers: { 'content-type': file.type || 'application/octet-stream' },
+        body: file,
+        signal,
+      }));
+    } catch (error) {
+      // A deadline is the budget for the whole upload, so it is final.
+      if (error instanceof StockRequestDeadlineExceeded) throw error;
+      lastRejection = error;
+      if (attempt < FILE_UPLOAD_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
+      }
+    }
+  }
+  // Every attempt was a rejection: the request never produced a response, so
+  // the file is not there and this is said in those terms rather than in the
+  // browser's.
+  void lastRejection;
+  throw new StockFileUploadFailed();
+}
+
 /** One bounded `builder-portal-stock` call. */
 function invokeBounded<T>(
   what: string,
@@ -617,15 +689,7 @@ export async function uploadBuilderStockFile(
   });
 
   onProgress?.({ phase: 'uploading' });
-  const put = await withDeadline('uploading the file', FILE_UPLOAD_TIMEOUT_MS, (signal) => fetch(
-    created.signed_url,
-    {
-      method: 'PUT',
-      headers: { 'content-type': file.type || 'application/octet-stream' },
-      body: file,
-      signal,
-    },
-  ));
+  const put = await putTheFile(created.signed_url, file);
   if (!put.ok) throw new Error('The file could not be uploaded. Please try again.');
 
   onProgress?.({ phase: 'processing' });
