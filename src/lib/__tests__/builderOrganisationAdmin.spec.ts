@@ -12,6 +12,7 @@ import {
   ORG_TYPES,
   readOrganisationInput,
 } from '../../../supabase/functions/_shared/builderOrganisationInput.pure';
+import { reopenTarget } from '../../../supabase/functions/_shared/builderOrganisationReopen.pure';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const read = (p: string) => readFileSync(join(REPO_ROOT, p), 'utf8');
@@ -280,19 +281,63 @@ describe('reopening a closed organisation', () => {
   });
 
   it('never makes an organisation more than it was', () => {
-    // Never approved: back to the approval queue, where every gate on an
-    // approval still applies. Approved: suspended, unless access is restored
-    // in the same act by an explicit choice.
-    expect(reopen).toMatch(/!wasApproved\s*\?\s*'pending_activation'/);
-    expect(reopen).toMatch(/reinstate \? 'active' : 'suspended'/);
+    // Approved: suspended, unless access is restored in the same act by an
+    // explicit choice. Never approved: back to a pending state, where every
+    // gate on an approval still applies.
+    expect(reopenTarget({ activatedAt: '2026-09-01T00:00:00Z', statusBeforeClosure: 'active', reinstate: false }))
+      .toBe('suspended');
+    expect(reopenTarget({ activatedAt: '2026-09-01T00:00:00Z', statusBeforeClosure: 'active', reinstate: true }))
+      .toBe('active');
+    for (const before of ['pending_verification', 'pending_activation', 'suspended', 'active', null, undefined, 42]) {
+      for (const reinstate of [false, true]) {
+        expect(['pending_verification', 'pending_activation'])
+          .toContain(reopenTarget({ activatedAt: null, statusBeforeClosure: before, reinstate }));
+      }
+    }
     expect(reopen).toMatch(/const reinstate = body\.reinstate === true/);
+    expect(reopen).toMatch(/reopenTarget\(\{\s*activatedAt: organisation\.activated_at/);
+  });
+
+  it('returns a never-approved organisation to the pending state it was closed in', () => {
+    // The two pending states have different owners (registration migration
+    // 20260914200000); reading `activated_at` alone sent a registration
+    // closed while it was being vetted into the operator-created queue.
+    expect(reopenTarget({ activatedAt: null, statusBeforeClosure: 'pending_verification', reinstate: false }))
+      .toBe('pending_verification');
+    expect(reopenTarget({ activatedAt: null, statusBeforeClosure: 'pending_activation', reinstate: false }))
+      .toBe('pending_activation');
+    // A closure made before the column existed says nothing.
+    expect(reopenTarget({ activatedAt: null, statusBeforeClosure: null, reinstate: false }))
+      .toBe('pending_activation');
+    expect(reopenTarget({ activatedAt: null, statusBeforeClosure: undefined, reinstate: false }))
+      .toBe('pending_activation');
+  });
+
+  it('reads what it was from the row the close wrote, never from the activity log', () => {
+    const close = code.slice(code.indexOf("operation === 'close_organisation'"), code.indexOf("operation === 'reopen_organisation'"));
+    // Written in the same update that closes it, and only over the status
+    // that was read: a status that moved in between is refused, not recorded.
+    expect(close).toMatch(/\.update\(\{ status: 'closed', is_active: false, status_before_closure: organisation\.status \}\)\s*\.eq\('id', organisation\.id\)\s*\.eq\('status', organisation\.status\)/);
+    expect(reopen).toMatch(/\.select\('id, legal_name, status, activated_at, status_before_closure'\)/);
+    expect(reopen).toMatch(/statusBeforeClosure: organisation\.status_before_closure/);
+    // Every target clears it: it describes a closure that is over.
+    expect(reopen).toMatch(/patch\.status_before_closure = null;\s*const \{ data: updated, error: reopenError \} = await supabase\s*\.from\('builder_organisations'\)\s*\.update\(patch\)/);
+    expect(reopen).not.toMatch(/builder_portal_activity_log/);
+
+    const migration = read('supabase/migrations/20261001160000_a_closure_remembers_what_it_closed.sql');
+    expect(migration).toMatch(/ADD COLUMN IF NOT EXISTS status_before_closure text/);
+    // The column holds only a status an organisation can be closed FROM.
+    expect(migration).toMatch(/'pending_verification'::text,\s*'pending_activation'::text,\s*'active'::text,\s*'suspended'::text/);
+    expect(migration).not.toMatch(/'closed'::text/);
   });
 
   it('writes every column a target status is constrained to carry', () => {
     // `status_active_agree`, and `suspended` carries `suspended_at`.
     expect(reopen).toMatch(/status: 'active', is_active: true/);
     expect(reopen).toMatch(/status: 'suspended',\s*is_active: false,\s*suspended_at: new Date\(\)\.toISOString\(\)/);
-    expect(reopen).toMatch(/status: 'pending_activation', is_active: false/);
+    // The pending branch writes whichever pending state was chosen, and only
+    // a pending state reaches it: the two approved targets are handled first.
+    expect(reopen).toMatch(/: \{ status: reopenedTo, is_active: false, suspended_at: null, suspension_reason: null \}/);
   });
 
   it('touches nothing but the organisation row, and records why', () => {

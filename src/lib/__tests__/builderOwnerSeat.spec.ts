@@ -181,11 +181,44 @@ describe('the windows that refused a corrected application', () => {
     expect(IN_FLIGHT_MINUTES).toBeLessThanOrEqual(30);
   });
 
-  it('is read with the outcome filter in the handler, in two counts rather than an interpolated filter', () => {
+  it('is read with the outcome filter in the handler, in separate counts rather than an interpolated filter', () => {
     const admin = readCode('supabase/functions/builder-network-admin/index.ts');
     expect(admin).toMatch(/\.in\('status', ADDRESS_WINDOW_OUTCOMES\)/);
     expect(admin).toMatch(/\.eq\('status', 'received'\)\s*\.gte\('created_at', inFlightSince\)/);
     expect(admin).not.toMatch(/\.or\(`[^`]*created_at/);
+  });
+
+  it('holds an unsettled application that may already have written to the address for the whole window', () => {
+    // A run that sent the invitation and died before it settled left a
+    // `received` row the ten-minute count stopped reading, so an application
+    // under different company details minted a second organisation, re-stamped
+    // the invitation and mailed the address again.
+    const admin = readCode('supabase/functions/builder-network-admin/index.ts');
+    expect(admin).toMatch(
+      /\.eq\('status', 'received'\)\s*\.not\('organisation_id', 'is', null\)\s*\.gte\('created_at', since\)/,
+    );
+    expect(admin).toMatch(/\(recent \?\? 0\) \+ \(inFlight \?\? 0\) \+ \(unsettled \?\? 0\) > 0/);
+    expect(admin).toMatch(/recentError \|\| inFlightError \|\| unsettledError/);
+  });
+
+  it('marks the application with its organisation before the send, which cannot be undone', () => {
+    const admin = readCode('supabase/functions/builder-network-admin/index.ts');
+    const application = admin.slice(admin.indexOf("operation === 'submit_access_request'"));
+    const mark = application.search(
+      /\.update\(\{ organisation_id: organisation\.id, builder_user_id: ownerId \}\)\s*\.eq\('id', request\.id\)/,
+    );
+    const send = application.indexOf('sendBuilderEmail(');
+    expect(mark).toBeGreaterThan(-1);
+    expect(send).toBeGreaterThan(mark);
+    // And nothing between the mark and the send can refuse the application,
+    // or a refused row would carry an organisation it was never given.
+    expect(application.slice(mark, send)).not.toMatch(/abandon\(|settle\('refused'/);
+  });
+
+  it('says when an application could not be settled, rather than leaving it received in silence', () => {
+    const admin = readCode('supabase/functions/builder-network-admin/index.ts');
+    expect(admin).toMatch(/const \{ error: settleError \} = await supabase\s*\.from\('builder_access_requests'\)/);
+    expect(admin).toMatch(/access request not settled/);
   });
 
   it('leave an office room to correct a mistake without being told to come back tomorrow', () => {

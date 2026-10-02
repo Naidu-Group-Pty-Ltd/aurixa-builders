@@ -83,7 +83,10 @@ export const ADDRESS_WINDOW_OUTCOMES: readonly string[] = ['provisioned', 'attac
  * press is still creating the organisation the second would collide with. A
  * `received` row older than this is a run that died before it settled, and
  * holding the address for a day over it would refuse the one retry that
- * recovers it.
+ * recovers it — UNLESS it carries its organisation: the handler records that
+ * immediately before the send, so such a row may already have written to the
+ * address, and the window holds it for the whole of
+ * `APPLICATION_WINDOW_HOURS` like a settled one.
  */
 export const IN_FLIGHT_MINUTES = 10;
 
