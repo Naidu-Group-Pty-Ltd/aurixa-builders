@@ -83,6 +83,27 @@ export function heldPropertiesHeading(count: number): string {
 }
 
 /**
+ * The heading over the staged list — every property that has imported and is
+ * not on the marketplace yet, whatever each one is waiting for.
+ *
+ * WHY IT IS NOT `heldPropertiesHeading`. That one counts the properties a
+ * PHOTO would release, and for a fortnight it was also the only thing drawn:
+ * a property still being worked on was filtered out of the section and the
+ * marketplace list had nothing active to draw, so the page replaced a real
+ * 44-property import with four grey rectangles. A builder asked to be shown
+ * that processing was happening, not to have their stock hidden while it did.
+ *
+ * So the section lists the staged rows, and `waiting` — how many of them owe
+ * a photograph a person could supply — only qualifies the heading.
+ */
+export function stagedPropertiesHeading(staged: number, waiting: number): string {
+  const head = `${staged} ${plural(staged, 'property', 'properties')} not on the marketplace yet`;
+  return waiting > 0
+    ? `${head} — ${waiting} ${plural(waiting, 'needs', 'need')} a photo`
+    : head;
+}
+
+/**
  * The one line under that heading, where no banner above has said it
  * already. Null where the banner is showing: the same fact twice is how a
  * screen gets long.
