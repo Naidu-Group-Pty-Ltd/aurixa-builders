@@ -4587,6 +4587,63 @@ const FILENAME_CORROBORATION_ANCHORS = [
   'development_name', 'project_name', 'address_line', 'external_reference',
 ] as const;
 
+/**
+ * The lot the builder's own filename names, or null.
+ *
+ * ONE READER, because two places now ask it: the design corroboration below,
+ * which REFUSES a filename naming a different lot from the document, and the
+ * dispute settler, which uses it when the DOCUMENT names two. Those are
+ * opposite uses of the same fact and they must read it the same way.
+ */
+export function filenameLotNumber(filename: string | null | undefined): string | null {
+  const raw = String(filename ?? '').trim();
+  if (!raw) return null;
+  const fileTokens = nameTokens(raw.replace(/\.[A-Za-z0-9]{1,5}$/, ''));
+  for (let index = 0; index < fileTokens.length - 1; index++) {
+    if (fieldForHeader(fileTokens[index]) !== 'lot_number') continue;
+    const stated = fileTokens[index + 1];
+    if (!LOT_DESIGNATION.test(stated)) continue;
+    return stated;
+  }
+  return null;
+}
+
+/**
+ * The two fields a builder's own filename legitimately speaks about.
+ *
+ * DELIBERATELY NOT `price`, `address_line` or the measurements: a filename
+ * names WHICH PROPERTY a document is, and nothing else. A rule wide enough to
+ * settle a price from a filename is one that will.
+ */
+const FILENAME_MAY_SETTLE: ReadonlySet<string> = new Set(['lot_number', 'house_design']);
+
+/**
+ * Does the builder's own filename corroborate this reading of this field?
+ *
+ * A LOT MUST MATCH OUTRIGHT — `LOT 115` corroborates 115 and nothing else.
+ * A DESIGN IS CORROBORATED BY A SHARED NAME: `LOT 115 - VANTA 23 V002.pdf`
+ * shares `VANTA` with `VANTA 23 - CLEO` and shares nothing at all with
+ * `Architecturally designed facades & floor plan`, which is a line off the
+ * inclusions list and not a house. A bare number is never the shared word —
+ * every one of these filenames carries a lot number, and matching on digits
+ * would corroborate anything.
+ */
+function filenameCorroborates(
+  filename: string | null | undefined, field: string, value: string,
+): boolean {
+  if (field === 'lot_number') {
+    const named = filenameLotNumber(filename);
+    return !!named && flattenIdentity(named) === flattenIdentity(value);
+  }
+  const stem = String(filename ?? '').trim().replace(/\.[A-Za-z0-9]{1,5}$/, '');
+  const inFilename = new Set(nameTokens(stem).map((token) => flattenIdentity(token)));
+  if (!inFilename.size) return false;
+  return nameTokens(String(value ?? ''))
+    .map((token) => flattenIdentity(token))
+    .filter((token) => /[a-z]/i.test(token))
+    .some((token) => inFilename.has(token));
+}
+
 export function corroborateDesignFromFilename(input: {
   filename: string | null | undefined;
   unresolved: readonly string[];
@@ -4599,13 +4656,10 @@ export function corroborateDesignFromFilename(input: {
   if (!fileTokens.length) return null;
 
   // The lot the filename names, if it names one.
-  for (let index = 0; index < fileTokens.length - 1; index++) {
-    if (fieldForHeader(fileTokens[index]) !== 'lot_number') continue;
-    const stated = fileTokens[index + 1];
-    if (!LOT_DESIGNATION.test(stated)) continue;
+  const statedLot = filenameLotNumber(raw);
+  if (statedLot) {
     const held = input.claimed.get('lot_number');
-    if (held && flattenIdentity(held) !== flattenIdentity(stated)) return 'lot_mismatch';
-    break;
+    if (held && flattenIdentity(held) !== flattenIdentity(statedLot)) return 'lot_mismatch';
   }
 
   if (input.claimed.has('house_design')) return null;
@@ -5957,6 +6011,41 @@ export function readPdfBrochure(
            * reading — whichever came first is an accident of page order, and
            * keeping it would be choosing.
            */
+          /*
+           * ================================================================
+           * A DOCUMENT THAT NAMES TWO LOTS, WHERE ITS OWN FILE NAMES ONE.
+           * ================================================================
+           *
+           * MEASURED 2 OCTOBER 2026 on a real package. `LOT 115 - VANTA 23
+           * V002.pdf` sets `Lot 115 Sabino Street` on its cover and
+           * `Site Address: Lot 114 SABINO STREET` on its siting diagram —
+           * one mention each, so the rule above dropped the document whole
+           * and the builder was told their brochure could not be read.
+           *
+           * The builder NAMED THE FILE after the property it is about, and
+           * that is a statement about which lot this document is, made by
+           * the person who made it. Where it matches exactly ONE of the two
+           * readings, the document is no longer saying two things: it is
+           * saying one, and mentioning its neighbour.
+           *
+           * THIS IS NOT THE READER CHOOSING. It never picks the first, the
+           * last, or the more frequent — those are accidents of page order.
+           * It acts only on evidence from OUTSIDE the disputed lines, and
+           * only when that evidence lands on one of them. A filename naming
+           * NEITHER value, or naming no lot at all, refuses exactly as
+           * before — and a filename that disagrees with a lot the document
+           * was never in doubt about is still `lot_mismatch`, which is the
+           * opposite question and is unchanged.
+           */
+          if (FILENAME_MAY_SETTLE.has(claim.field)) {
+            const keepsExisting = filenameCorroborates(options.filename, claim.field, existing);
+            const keepsClaim = filenameCorroborates(options.filename, claim.field, claim.value);
+            if (keepsExisting !== keepsClaim) {
+              claimed.set(claim.field, keepsExisting ? existing : claim.value);
+              readBy.set(claim.field, 'filename_settles_dispute');
+              continue;
+            }
+          }
           if (MATERIAL_FIELDS.has(claim.field)) {
             diagnostics.conflictField = claim.field;
             diagnostics.fieldsRead = fieldsSoFar();
@@ -6307,6 +6396,35 @@ export function readPdfBrochure(
   if (corroborated && !readsAsPromotion(corroborated.claim.value)) {
     claimed.set('house_design', trimSeparators(corroborated.claim).value);
     readBy.set('house_design', 'filename');
+  }
+
+  /*
+   * AN ADDRESS LINE MAY NOT CARRY A LOT THE RECORD HAS SETTLED AGAINST.
+   *
+   * MEASURED 2 OCTOBER 2026. `LOT 115 - VANTA 23 V002.pdf` states `Lot 115
+   * Sabino Street` on its cover and `Site Address: Lot 114 SABINO STREET` on
+   * its siting diagram. Once the filename settles the lot at 115, the address
+   * line read off the siting page still began `Lot 114` — so the record would
+   * have carried lot 115 and an address naming its neighbour, which is worse
+   * than either reading alone and is the one combination nothing else here
+   * would have caught.
+   *
+   * ONLY THE CONTRADICTED TOKEN GOES. The street is what the line is for and
+   * it is kept exactly as stated; nothing is renumbered and no lot is written
+   * into an address that never carried one. Where the line's lot AGREES, or
+   * the line names no lot, or no lot was settled, this does nothing.
+   */
+  const settledLot = claimed.get('lot_number');
+  const addressClaim = claimed.get('address_line');
+  if (settledLot && addressClaim) {
+    const carried = addressClaim.match(LEADING_LOT);
+    if (carried && flattenIdentity(carried[1]) !== flattenIdentity(settledLot)) {
+      const withoutLot = addressClaim.slice(carried[0].length).trim();
+      if (withoutLot) {
+        claimed.set('address_line', withoutLot);
+        readBy.set('address_line', 'lot_contradicted_dropped');
+      }
+    }
   }
   /*
    * A SUBURB THAT IS THE HOUSE'S OWN DESIGN IS NOT A SUBURB. An address block
