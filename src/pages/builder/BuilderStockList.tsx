@@ -1,7 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle, Boxes, CheckCircle2, ChevronLeft, ChevronRight, FileImage,
-  Globe, Image as ImageIcon, ImageDown, ImageOff, Link2, Loader2, Map, Plus,
+  Globe, Image as ImageIcon, ImageDown, ImageOff, Info, Link2, Loader2, Map, Plus,
   RefreshCw, Sparkles, Trash2, Upload, type LucideIcon,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -79,10 +79,11 @@ import {
   RETRYABLE_UPLOAD_ERROR_CODES,
 } from '../../../supabase/functions/_shared/builderStock/assistedReaderFailure.pure';
 import {
-  heldPropertiesHeading, heldPropertiesNote, photoAttentionCopy,
+  heldPropertiesNote, photoAttentionCopy, stagedPropertiesHeading,
 } from '@/lib/builderStockPhotoAttention.pure';
 import {
-  ARRIVING_LIST_BODY, arrivingList, arrivingListTitle, arrivingPlaceholderCount,
+  ARRIVING_LIST_BODY, arrivingListTitle, arrivingPlaceholderCount,
+  settledListTitle, stockListPreparation,
 } from '@/lib/builderStockArrival.pure';
 import { Skeleton } from '@/components/ui/skeleton';
 import './BuilderStockList.css';
@@ -186,7 +187,11 @@ export default function BuilderStockList() {
    * Nothing of it is live yet, so nothing on the list below can say so —
    * see `builderStockArrival.pure.ts` for the four silent minutes this ends.
    */
-  const incoming = arrivingList(progressRecords);
+  const preparation = stockListPreparation(progressRecords);
+  const incoming = preparation?.kind === 'arriving' ? preparation : null;
+  /* Imported, nothing left in flight, still not live: a list-level gate holds
+     it, and the reader is owed its NAME rather than a full progress bar. */
+  const settled = preparation?.kind === 'settled' ? preparation : null;
   const uploadStillWorking = progressRecords.some((record) => Number(record.working) > 0
     || (!record.published && Number(record.total) > 0));
   const itemsQuery = useBuilderStockItems({
@@ -329,6 +334,26 @@ export default function BuilderStockList() {
         unsupportedLinks: item.source_links_unsupported ?? 0,
         workStage: item.image_work_stage,
       }) !== 'working'));
+  /*
+   * AND EVERY STAGED ROW IS DRAWN, whatever it is waiting for.
+   *
+   * `heldWithoutPhoto` is the set a PHOTOGRAPH would release, and it is the
+   * right set to COUNT — it drives the banner and the "needs a photo" copy.
+   * For a fortnight it was also the only set DRAWN, so a property still being
+   * worked on was filtered out of the section while the marketplace list had
+   * nothing active to draw: a real 44-property import rendered as four grey
+   * rectangles. The builder asked to be shown that work was happening, not to
+   * have their own stock hidden while it happened.
+   *
+   * So the section lists the staged rows themselves. Each one carries its own
+   * image state through `StockPlate` — "Finding a picture…" while the engine
+   * owes it a stage, the picture itself the moment there is one — and the
+   * manual act is offered only where a person is genuinely owed one.
+   */
+  const stagedRows = heldItems;
+  /* Skeletons stand in for rows whose identity is not known yet, and for
+     nothing else: one staged row and the real rows are drawn instead. */
+  const placeholderCount = incoming ? arrivingPlaceholderCount(incoming, stagedRows.length) : 0;
   /*
    * AND WHOSE FAILURE EACH ONE IS, because the banner below used to say
    * "our team has been alerted" over all of them.
@@ -1023,6 +1048,31 @@ export default function BuilderStockList() {
                 <p className="mt-2 text-xs text-muted-foreground">{ARRIVING_LIST_BODY}</p>
               </div>
             </div>
+          ) : settled && listBlockers.length && listReading ? (
+            /*
+             * FINISHED FINDING PHOTOGRAPHS, STILL NOT LIVE.
+             *
+             * This read "44 of 44 photos ready" behind a full progress bar,
+             * which says work is in progress over work that has finished. The
+             * list is held by a LIST-level gate, so the gate is named — the
+             * same sentences `publicationBlockers` gives the empty state, now
+             * that real staged rows mean the empty state is not reached.
+             */
+            <div
+              role="status"
+              aria-live="polite"
+              className="builder-stock-list-processing mb-5 flex items-start gap-3 rounded-xl border border-border/70 px-4 py-3"
+            >
+              <Info className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+              <div className="min-w-0 flex-1 text-sm">
+                <p className="font-medium">{settledListTitle(settled)}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {listBlockers
+                    .map((blocker) => describePublicationBlocker(blocker, listReading))
+                    .join(' ')}
+                </p>
+              </div>
+            </div>
           ) : workingImages > 0 || arrivingUploads > 0 ? (
             <div
               role="status"
@@ -1102,7 +1152,7 @@ export default function BuilderStockList() {
             the identity and the "Add picture" control are the one
             implementation rather than a second copy that can drift.
           */}
-          {heldWithoutPhoto.length > 0 ? (
+          {stagedRows.length > 0 ? (
             <section
               aria-labelledby="builder-stock-held-heading"
               className="mb-6"
@@ -1111,13 +1161,13 @@ export default function BuilderStockList() {
                 id="builder-stock-held-heading"
                 className="text-sm font-medium"
               >
-                {heldPropertiesHeading(heldWithoutPhoto.length)}
+                {stagedPropertiesHeading(stagedRows.length, heldWithoutPhoto.length)}
               </h3>
               {heldNote ? (
                 <p className="mt-0.5 text-xs text-muted-foreground">{heldNote}</p>
               ) : null}
               <ul className="bd-plate-list builder-stock-list-plates mt-3">
-                {heldWithoutPhoto.map((item) => (
+                {stagedRows.map((item) => (
                   <StockPlate
                     key={item.id}
                     item={item}
@@ -1145,13 +1195,13 @@ export default function BuilderStockList() {
             <div className="py-12 text-center text-sm text-destructive">
               {(itemsQuery.error as Error).message}
             </div>
-          ) : !records.length && incoming ? (
+          ) : !records.length && incoming && placeholderCount > 0 ? (
             <ul
               className="bd-plate-list builder-stock-list-plates"
               aria-label="Properties being prepared"
               aria-busy="true"
             >
-              {Array.from({ length: arrivingPlaceholderCount(incoming) }, (_, index) => (
+              {Array.from({ length: placeholderCount }, (_, index) => (
                 <li key={index} className="space-y-3 rounded-md border border-border/60 p-3">
                   <Skeleton className="aspect-[16/9] w-full" />
                   <Skeleton className="h-4 w-3/5" />
@@ -2003,7 +2053,15 @@ function ImageSources({
         property's picture", and nothing was read or inferred to arrive at it —
         so it outranks anything taken out of a document.
       */}
-      {canEdit ? (
+      {/*
+        AND NOT WHILE THE ENGINE IS STILL LOOKING. "Add picture" beside
+        "Finding a picture…" asks a builder to do the thing the product is
+        already doing, which is what made work in flight read as a product
+        that had given up. The act returns the moment the state is terminal —
+        `attention`, `none_found`, `no_document`, `unsupported_link` — and
+        `Replace` stays wherever a picture is already drawn.
+      */}
+      {canEdit && !(working && !image) ? (
         <BuilderPropertyImageButton
           stockItemId={item.id}
           propertyLabel={stockItemTitle(item)}
@@ -2239,6 +2297,21 @@ export function StockPlate({
   item, saving, canEdit, canDelete, onAvailabilityChange, onRemoved,
 }: StockPresentationProps) {
   const image = primaryStockImage(item);
+  /*
+   * WHILE THE ENGINE STILL OWES THIS ROW A STAGE, the frame says so and
+   * offers nothing. "Add picture" under "Finding a picture…" asks a builder
+   * to do what the product is already doing — the misleading act #171
+   * correctly removed, which is kept here while the row itself is restored.
+   * The act returns the moment the state is terminal.
+   */
+  const stillLooking = !image && stockImageProgress({
+    hasImage: false,
+    sourceDocuments: item.source_documents ?? 0,
+    unprocessedDocuments: item.source_documents_unprocessed ?? 0,
+    unreachableDocuments: item.source_documents_unreachable ?? 0,
+    unsupportedLinks: item.source_links_unsupported ?? 0,
+    workStage: item.image_work_stage,
+  }) === 'working';
   const title = stockItemTitle(item);
   const locality = stockItemLocality(item);
   const price = stockItemPrice(item);
@@ -2253,8 +2326,8 @@ export function StockPlate({
           presentation="card"
           className="bd-plate-frame"
           alt={`${title} — the picture shown on the marketplace`}
-          emptyLabel="No picture found yet"
-          emptyAction={canEdit ? (
+          emptyLabel={stillLooking ? 'Finding a picture…' : 'No picture found yet'}
+          emptyAction={canEdit && !stillLooking ? (
             <div className="mt-2">
               <BuilderPropertyImageButton
                 stockItemId={item.id}
