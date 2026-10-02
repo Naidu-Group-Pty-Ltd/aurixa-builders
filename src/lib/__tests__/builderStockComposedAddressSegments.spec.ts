@@ -73,6 +73,18 @@ describe('a composed address line is read segment by segment', () => {
       .toMatchObject({ street: '', lot: '37', development: 'Sandpiper Estate' });
   });
 
+  it('two numbered streets refuse the line: reading by segment must not choose by order', () => {
+    /*
+     * Codex P1, 2 October 2026, on this change. Reading segment by segment
+     * made it possible to take the FIRST of several streets and silently
+     * discard a contradictory second address — choosing by segment order,
+     * which is the one thing the dispute rules here never do. The joined
+     * parsing refused this line and it must still refuse it.
+     */
+    expect(readComposedAddressLine('Lot 12, 5 Hill Road, 7 Main Street, Truganina VIC 3029'))
+      .toBeNull();
+  });
+
   it('a lot and an undeclared name, with no street stated anywhere, is still nothing', () => {
     // The negative control: this rule widens what is READ, never what is INVENTED.
     expect(readComposedAddressLine('Lot 208, Peppercorn Hill, Donnybrook VIC 3064')).toBeNull();

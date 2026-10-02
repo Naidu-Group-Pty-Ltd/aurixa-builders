@@ -2929,16 +2929,29 @@ export function readComposedAddressLine(line: string): ComposedAddress | null {
   // also offered as the street.
   const streetSegments = headSegments.filter((_, index) => index !== developmentAt);
 
-  let street: string | null = null;
-  for (const segment of streetSegments) {
-    const numberedStreet = readStreetLine(segment);
-    if (numberedStreet) { street = numberedStreet; break; }
-  }
+  /*
+   * AND TWO STREETS IS NOT A STREET.
+   *
+   * Taking the first of several was choosing by segment order, which is the
+   * one thing the dispute rules here never do: on
+   * `Lot 12, 5 Hill Road, 7 Main Street, Truganina VIC 3029` the joined
+   * parsing refused, and reading segment by segment must not quietly import
+   * the first and discard a contradictory second address. So each TIER is
+   * required to be unanimous — a numbered street still outranks a bare name,
+   * because a number is strictly more specific, but two DISTINCT numbered
+   * streets (or, with none, two distinct names) refuse the line as before.
+   */
+  const distinct = (values: readonly (string | null)[]): string[] =>
+    [...new Map(values.filter((value): value is string => !!value)
+      .map((value) => [flattenIdentity(value), value])).values()];
+
+  const numberedStreets = distinct(streetSegments.map((segment) => readStreetLine(segment)));
+  const namedStreets = distinct(streetSegments.map((segment) => readStreetName(segment)));
+  if (numberedStreets.length > 1) return null;
+  let street: string | null = numberedStreets[0] ?? null;
   if (!street) {
-    for (const segment of streetSegments) {
-      const namedStreet = readStreetName(segment);
-      if (namedStreet) { street = namedStreet; break; }
-    }
+    if (namedStreets.length > 1) return null;
+    street = namedStreets[0] ?? null;
   }
 
   if (street) {
@@ -4644,9 +4657,26 @@ function filenameCorroborates(
   if (!inFilename.size) return false;
   return nameTokens(String(value ?? ''))
     .map((token) => flattenIdentity(token))
-    .filter((token) => /[a-z]/i.test(token))
+    .filter((token) => /[a-z]/i.test(token) && !GENERIC_FILENAME_WORDS.has(token))
     .some((token) => inFilename.has(token));
 }
+
+/**
+ * Words a builder's filename carries about the DOCUMENT rather than the house.
+ *
+ * Without this the shared-name test corroborates anything: `LOT 315 - HOUSE
+ * DESIGN PACKAGE.pdf` shares `design` with `Enzo 8.5 Design` and nothing with
+ * `Nex 20`, so a filename that names no house at all would settle which house
+ * it is. A name must be the PROPERTY's to speak for it.
+ */
+const GENERIC_FILENAME_WORDS: ReadonlySet<string> = new Set([
+  'lot', 'lots', 'house', 'home', 'homes', 'design', 'designs', 'package',
+  'packages', 'plan', 'plans', 'floor', 'floorplan', 'facade', 'facades',
+  'elevation', 'brochure', 'flyer', 'estate', 'stage', 'property', 'land',
+  'build', 'builder', 'turnkey', 'inclusions', 'price', 'pricing', 'quote',
+  'draft', 'final', 'copy', 'version', 'street', 'road', 'avenue', 'drive',
+  'court', 'crescent', 'place', 'way', 'close', 'rise', 'park', 'grove',
+]);
 
 export function corroborateDesignFromFilename(input: {
   filename: string | null | undefined;
@@ -6422,11 +6452,39 @@ export function readPdfBrochure(
   const addressClaim = claimed.get('address_line');
   if (settledLot && addressClaim) {
     const carried = addressClaim.match(LEADING_LOT);
-    if (carried && flattenIdentity(carried[1]) !== flattenIdentity(settledLot)) {
-      const withoutLot = addressClaim.slice(carried[0].length).trim();
+    const contradicts = !!carried && flattenIdentity(carried[1]) !== flattenIdentity(settledLot);
+    if (contradicts) {
+      const withoutLot = addressClaim.slice(carried![0].length).trim();
       if (withoutLot) {
         claimed.set('address_line', withoutLot);
         readBy.set('address_line', 'lot_contradicted_dropped');
+      } else {
+        claimed.delete('address_line');
+      }
+    }
+    /*
+     * AND A STREET NUMBER IS A DIFFERENT HOUSE, NOT A DIFFERENT SPELLING.
+     *
+     * The check above sees a lot only while it is still ON the line. But
+     * `Site Address: Lot 114 22 Sabino Street` is split BEFORE this — the lot
+     * becomes its own claim and the address line keeps `22 Sabino Street`, so
+     * nothing here can tell it apart from the settled lot's own address. The
+     * result would be lot 115 at lot 114's street number, which is the exact
+     * failure this product may not ship: a pin on somebody else's house.
+     *
+     * So where the lot had to be SETTLED — the document said two things — an
+     * address carrying a STREET NUMBER is dropped unless it names the lot that
+     * won. An unnumbered street name is kept, because a street is not specific
+     * to a lot and `Sabino Street` is true of both. Nothing is invented and
+     * nothing is renumbered; the row keeps its lot, its suburb and its state.
+     */
+    if (readBy.get('lot_number') === 'filename_settles_dispute') {
+      const line = claimed.get('address_line');
+      const vouches = !!line && !!line.match(LEADING_LOT)
+        && flattenIdentity(line.match(LEADING_LOT)![1]) === flattenIdentity(settledLot);
+      if (line && !vouches && readStreetLine(line)) {
+        claimed.delete('address_line');
+        readBy.delete('address_line');
       }
     }
   }
