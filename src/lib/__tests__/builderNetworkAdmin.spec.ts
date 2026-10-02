@@ -190,27 +190,54 @@ describe('builder-network-admin, at the source', () => {
       (application.split("from('builder_organisation_memberships')").length - 1);
     expect(accounted).toBe(uses);
 
+    // Both seed through the ONE owner-seat grant (builderOwnerSeat.ts), so
+    // the seed itself is asserted there and its call sites here. Before it
+    // existed each door carried its own insert, and both failed identically
+    // on 1 Oct 2026 against a closed organisation's primary seat.
+    const seed = /grantOwnerSeat\(supabase, \{/;
+    expect(source.match(new RegExp(seed.source, 'g'))?.length).toBe(2);
+
     // The bootstrap refuses before it seeds.
     const guard = bootstrap.indexOf('organisation_already_has_members');
     expect(guard).toBeGreaterThan(-1);
-    expect(bootstrap.indexOf("membership_role: 'owner'")).toBeGreaterThan(guard);
-    // And the count that guards it is a real count, not a hopeful read.
+    expect(bootstrap.search(seed)).toBeGreaterThan(guard);
+    expect(bootstrap.slice(bootstrap.search(seed), bootstrap.search(seed) + 200))
+      .toMatch(/organisationId: organisationId/);
+    // And what guards it is a real read of the seats, revoked ones included
+    // (no `revoked_at` filter), whose failure refuses rather than reading as
+    // an empty organisation. It yields only to this door's own waiting
+    // invitation to the same person (`ownerInvitationMayBeReissued`).
     expect(bootstrap).toMatch(
-      /builder_organisation_memberships'\)[\s\S]{0,200}count:\s*'exact',\s*head:\s*true/,
+      /builder_organisation_memberships'\)\s*\.select\('builder_user_id, membership_role, status, revoked_at'\)\s*\.eq\('organisation_id', organisationId\);/,
+    );
+    expect(bootstrap).toMatch(/if \(seatedError\) \{[\s\S]{0,200}return json\(/);
+    expect(bootstrap).toMatch(
+      /if \(seats\.length > 0 && !reissue\) \{\s*return json\(\{ error: 'organisation_already_has_members' \}, 409\);/,
     );
 
     // The application seeds only into the organisation it created itself.
     const created = application.indexOf("from('builder_organisations')");
     expect(created).toBeGreaterThan(-1);
-    expect(application.indexOf("from('builder_organisation_memberships')")).toBeGreaterThan(created);
-    expect(application).toMatch(/organisation_id: organisation\.id/);
+    expect(application.search(seed)).toBeGreaterThan(created);
+    expect(application.slice(application.search(seed), application.search(seed) + 200))
+      .toMatch(/organisationId: organisation\.id/);
 
-    // Nothing anywhere updates or deletes a membership.
-    expect(source).not.toMatch(/builder_organisation_memberships'\)[\s\S]{0,120}\.(update|delete)\(/);
+    // Nothing anywhere updates or deletes a membership — here, or in the
+    // grant both doors call. Promotion of a seat THIS organisation left
+    // waiting goes through the one promoter, asserted in builderInviteScope.
+    const grant = readCode('supabase/functions/_shared/builderOwnerSeat.ts');
+    for (const code of [source, grant]) {
+      expect(code).not.toMatch(/builder_organisation_memberships'\)[\s\S]{0,120}\.(update|delete)\(/);
+    }
   });
 
-  it('a closed organisation is terminal', () => {
+  it('a closed organisation is acted on only by reopening it', () => {
+    // Every other act refuses a closed row (the code keeps its old name so a
+    // deployed console reading it still understands it); the one way back is
+    // `reopen_organisation`, which only ever moves a row OUT of closed.
     expect(source).toContain('a_closed_organisation_is_terminal');
+    const reopen = operationBody('reopen_organisation');
+    expect(reopen).toMatch(/\.eq\('status', 'closed'\)/);
   });
 
   it('the invite code is hashed at rest and returned once', () => {
