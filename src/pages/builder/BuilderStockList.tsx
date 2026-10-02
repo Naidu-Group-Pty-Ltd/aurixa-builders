@@ -51,7 +51,7 @@ import {
   useSetBuilderStockAvailability, builderStockImageUrl,
 } from '@/lib/builderStockQueries';
 import {
-  describeManualStats,
+  awaitsBuilderAcknowledgement, describeManualStats,
   formatFileSize, primaryStockImage, stockFileAcceptAttribute, stockImageStageSummary,
   stockItemIdentity, stockItemLocality, stockItemPrice, stockItemTitle,
   MAX_STOCK_FILE_BYTES, STOCK_AVAILABILITY_CLASSES, STOCK_AVAILABILITY_LABELS,
@@ -375,7 +375,7 @@ export default function BuilderStockList() {
   const selections = selectionsQuery.data?.records ?? [];
 
   const pendingSelections = useMemo(
-    () => selections.filter((selection) => selection.status === 'selected'),
+    () => selections.filter(awaitsBuilderAcknowledgement),
     [selections],
   );
 

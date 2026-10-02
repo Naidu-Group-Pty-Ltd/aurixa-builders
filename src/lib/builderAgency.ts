@@ -25,6 +25,7 @@ import type {
   AgencyMessageView,
   AgencyParticipantView,
 } from '../../supabase/functions/_shared/builderStock/agencyMessages.pure';
+import { isOfferedBuilderMessageView } from './builderHiddenSections.pure';
 
 export type { ActivatedProperty, ActivatedPropertyAgency, ActivatedPropertyFacts, ActivationStatus };
 export type { AgencyDeliveryState, AgencyMessageView, AgencyParticipantView };
@@ -179,24 +180,36 @@ export function agencyConversationRefetchInterval(state: { data?: { open?: boole
 
 /** Agency Activations: what connected agencies activated, and nothing else. */
 export const ACTIVATIONS_PATH = '/builder/activations';
-/** Messages: the portal's one home for messaging, agency and project alike. */
+/** Messages: the portal's one home for messaging. */
 export const MESSAGES_PATH = '/builder/messages';
+/**
+ * The vocabulary, not the offer. `projects` is withdrawn from this portal
+ * (`WITHDRAWN_BUILDER_MESSAGE_VIEWS`) and is kept spelled here so a URL
+ * carrying it is RECOGNISED and redirected rather than merely unmatched.
+ */
 export const MESSAGE_VIEWS = ['agencies', 'projects'] as const;
 export type MessagesView = typeof MESSAGE_VIEWS[number];
 
-/** The keys the project conversations read from the URL. */
-const PROJECT_CONVERSATION_KEYS = ['project', 'scope', 'scopeId', 'conversation'];
+/** The views this portal actually draws, in tab order. */
+export const OFFERED_MESSAGE_VIEWS: readonly MessagesView[] =
+  MESSAGE_VIEWS.filter((view) => isOfferedBuilderMessageView(view));
 
 /**
- * Which half of Messages a URL opens. An explicit `view` wins; a URL that
- * names a project conversation (every link written before the agency
- * conversations moved here) opens the project conversations; anything else
- * opens the agency conversations.
+ * Which view of Messages a URL opens.
+ *
+ * An explicit `view` wins where it is offered. A URL naming a withdrawn view,
+ * an unknown view, or one of the four keys a project conversation used to be
+ * addressed by — `?project=`, `?scope=`, `?scopeId=`, `?conversation=`, which
+ * is every link and bookmark written while that tab existed — opens the
+ * agency conversations instead. A withdrawn view never resolves to itself,
+ * which is what keeps the tab's removal from leaving a working door.
  */
 export function messagesViewFrom(params: URLSearchParams): MessagesView {
   const view = params.get('view');
-  if ((MESSAGE_VIEWS as readonly string[]).includes(view ?? '')) return view as MessagesView;
-  return PROJECT_CONVERSATION_KEYS.some((key) => params.has(key)) ? 'projects' : 'agencies';
+  if ((MESSAGE_VIEWS as readonly string[]).includes(view ?? '') && isOfferedBuilderMessageView(view)) {
+    return view as MessagesView;
+  }
+  return OFFERED_MESSAGE_VIEWS[0] ?? 'agencies';
 }
 
 /**

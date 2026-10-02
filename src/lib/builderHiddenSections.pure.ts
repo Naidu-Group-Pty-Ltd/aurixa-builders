@@ -62,11 +62,45 @@ export const WITHDRAWN_BUILDER_SECTIONS: readonly WithdrawnBuilderSection[] = [
 export const WITHDRAWN_BUILDER_SECTION_KEYS: readonly string[] =
   WITHDRAWN_BUILDER_SECTIONS.map((section) => section.key);
 
+/**
+ * MESSAGES OFFERS ONE KIND OF CONVERSATION.
+ *
+ * Messages carried two tabs: the private conversation each acknowledged
+ * activation opens with the agency that made it, and project conversations —
+ * `builder_conversations`, a thread a builder starts against a project of
+ * their own. The second is withdrawn (owner's decision, 2 October 2026): a
+ * builder talks to the agency that activated a property, and a thread with
+ * nobody on the other side is a form that looks like a message.
+ *
+ * Named here, beside the five withdrawn sections, for the same reason they
+ * are: a view is reachable from more places than its tab — the `?view=`
+ * parameter every bookmark carries, the four URL keys a project conversation
+ * is addressed by, and the page's own default. Removing the tab alone leaves
+ * a working door.
+ *
+ * HIDING IS NOT DELETING, exactly as above. `builder_conversations`,
+ * `builder_messages`, their participants and every operation on
+ * `builder-portal-collaboration` are untouched, and nothing here is a
+ * security boundary: the server enforces what it always enforced.
+ */
+export const WITHDRAWN_BUILDER_MESSAGE_VIEWS: readonly string[] = ['projects'] as const;
+
+/**
+ * Whether a Messages view is offered in this portal. An unknown word is not
+ * offered either, so a URL naming a view this build has never heard of falls
+ * back with everything else rather than drawing an empty tab.
+ */
+export function isOfferedBuilderMessageView(view: string | null | undefined): boolean {
+  return !!view && !WITHDRAWN_BUILDER_MESSAGE_VIEWS.includes(view);
+}
+
 const BUILDER_SCOPE_SECTION_PATH: Record<BuilderScopeType, string> = {
   project: '/builder/projects',
   unit: '/builder/inventory',
   transaction: '/builder/transactions',
   construction_case: '/builder/construction',
+  /* The Stock List, which this portal very much offers. */
+  stock_item: '/builder/stock',
 };
 
 export const OFFERED_BUILDER_SCOPE_TYPES: readonly BuilderScopeType[] =
