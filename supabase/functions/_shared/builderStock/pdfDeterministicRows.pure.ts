@@ -2842,7 +2842,11 @@ export function readComposedAddressLine(line: string): ComposedAddress | null {
   let lot: string | null = null;
   const numbered = head.match(LOT_WITH_STREET_NUMBER);
   if (numbered) {
-    const name = readStreetName(head.slice(numbered[0].length));
+    // Only the segment the number leads is the street's name: anything after a
+    // comma is another segment, and reading it as part of the name is what the
+    // rule below exists to stop.
+    const after = head.slice(numbered[0].length).split(ADDRESS_SEGMENT_SEPARATOR)[0] ?? '';
+    const name = readStreetName(after);
     return name
       ? { street: `${numbered[2]} ${name}`, lot: numbered[1], development: null, ...locality }
       : null;
@@ -2869,17 +2873,77 @@ export function readComposedAddressLine(line: string): ComposedAddress | null {
    * it says so — a segment that merely looks like a name stays unread, and
    * the alternative on that document was `PROPLAUNCH`, read off a caption.
    */
-  const named = head.match(NAMED_DEVELOPMENT);
-  const development = named ? `${named[1]} ${named[2]}` : null;
+  /*
+   * ===========================================================================
+   * THE HEAD IS SEGMENTS, AND EACH ONE IS ASKED WHAT IT IS.
+   * ===========================================================================
+   *
+   * `Lot 208, 46 Satinwood Crescent, Peppercorn Hill, Donnybrook VIC 3064`
+   * read as NOTHING, and the whole brochure with it. The street and the
+   * locality are both stated plainly; what stood between them was an estate
+   * name that does not say it is one. Asking the JOINED head for a street
+   * cannot answer — `46 Satinwood Crescent, Peppercorn Hill` ends in no street
+   * type and carries a digit — so a line that states more voided itself where
+   * the same line stating less was read. (Measured 2 October 2026 on a real
+   * package; the same document's `Lot 208, 46 Satinwood Crescent, Donnybrook
+   * VIC 3064` reads.)
+   *
+   * AND THE JOIN LOST A STREET IT HAD. `Lot 12, 5 Hill Road, Riverstone
+   * Estate, Truganina VIC 3029` matched `NAMED_DEVELOPMENT` across the comma
+   * and produced development `5 Hill Road, Riverstone Estate` with NO STREET
+   * AT ALL — the street number swallowed into an estate's name, which is how a
+   * pin ends up on nobody's house. That one shipped silently.
+   *
+   * So each segment is asked on its own, and in this order:
+   *
+   *   • A segment that DECLARES itself a development is the development. Asked
+   *     first, and per segment, because several words in `NAMED_DEVELOPMENT`
+   *     are also street types — `Coridale Estate` has always been the estate
+   *     rather than a street called Estate, and that must not move.
+   *   • A NUMBERED street outranks a bare name, wherever it sits, so a
+   *     numbered street is never lost to a segment that merely reads like one.
+   *   • A segment that is NEITHER is left unread. It is never promoted to the
+   *     development — `Peppercorn Hill` says nothing about what it is, and the
+   *     alternative on one of these documents was `PROPLAUNCH` read off a
+   *     caption, which is the deliberate rule above this one. What changes is
+   *     only that an unread segment no longer destroys the address stated
+   *     either side of it.
+   */
+  const headSegments = head
+    .split(ADDRESS_SEGMENT_SEPARATOR).map((segment) => segment.trim()).filter(Boolean);
+
+  let development: string | null = null;
+  let developmentAt = -1;
+  for (let index = 0; index < headSegments.length; index += 1) {
+    const named = headSegments[index].match(NAMED_DEVELOPMENT);
+    if (!named) continue;
+    development = `${named[1]} ${named[2]}`;
+    developmentAt = index;
+    break;
+  }
+  // One segment is one thing: the segment taken as the development is not then
+  // also offered as the street.
+  const streetSegments = headSegments.filter((_, index) => index !== developmentAt);
+
+  let street: string | null = null;
+  for (const segment of streetSegments) {
+    const numberedStreet = readStreetLine(segment);
+    if (numberedStreet) { street = numberedStreet; break; }
+  }
+  if (!street) {
+    for (const segment of streetSegments) {
+      const namedStreet = readStreetName(segment);
+      if (namedStreet) { street = namedStreet; break; }
+    }
+  }
+
+  if (street) {
+    return { street, lot, unit: unit ?? unitOfStreet(street), development, ...locality };
+  }
+  // A development and no street is the shape `Lot 1482, Coridale Estate` has
+  // always had, and it is unchanged.
   if (development) return { street: '', lot, development, ...locality };
-
-  // Either shape of street is acceptable, and both are the existing rules:
-  // numbered streets answer to `readStreetLine`, unnumbered ones to
-  // `readStreetName`. Neither invents a number the line does not carry.
-  const street = readStreetLine(head) ?? readStreetName(head);
-  if (!street) return null;
-
-  return { street, lot, unit: unit ?? unitOfStreet(street), development: null, ...locality };
+  return null;
 }
 
 /**
