@@ -233,7 +233,15 @@ describe('what the popup says, and where it leads', () => {
     expect(isViewingAgencyConversation(at('?view=agencies&thread=conv-1'), 'conv-1')).toBe(true);
     expect(isViewingAgencyConversation(at('?thread=conv-1'), 'conv-1')).toBe(true);
     expect(isViewingAgencyConversation(at('?view=agencies&thread=conv-2'), 'conv-1')).toBe(false);
-    expect(isViewingAgencyConversation(at('?view=projects&thread=conv-1'), 'conv-1')).toBe(false);
+    /*
+     * RENEGOTIATED 2 OCTOBER 2026. `view=projects` used to mean the reader was
+     * on the OTHER tab, so they were not looking at this conversation. That
+     * tab is withdrawn and the URL now resolves to the agency conversations,
+     * so a reader at this address IS looking at it — and popping a toast about
+     * a conversation already on screen is the thing this predicate exists to
+     * stop. The guarantee is unchanged; the address means something new.
+     */
+    expect(isViewingAgencyConversation(at('?view=projects&thread=conv-1'), 'conv-1')).toBe(true);
     expect(isViewingAgencyConversation(at('?view=agencies&thread=conv-1', '/builder/activations'), 'conv-1')).toBe(false);
   });
 

@@ -50,6 +50,7 @@ import {
   BUILDER_PROJECT_PORTAL_DETAIL_SELECT,
   BUILDER_PARTY_SELECT,
   BUILDER_PROJECT_STATUS_HISTORY_SELECT,
+  attachStatusHistoryActors,
   BUILDER_PROJECT_STATUSES,
   buildProjectPayload,
   buildPartyPayload,
@@ -404,7 +405,7 @@ Deno.serve(async (req) => {
         builder_organisation: organisationMap.get(project.builder_organisation_id) ?? null,
         development: development ?? null,
         parties: parties || [],
-        status_history: history || [],
+        status_history: await attachStatusHistoryActors(supabase, history),
         permissions: perms,
         access_role: res.accessRole,
         activation,
@@ -586,7 +587,7 @@ Deno.serve(async (req) => {
       const { data } = await supabase.from('builder_project_status_history')
         .select(BUILDER_PROJECT_STATUS_HISTORY_SELECT)
         .eq('project_id', res.project.id).order('created_at', { ascending: false }).limit(100);
-      return json({ success: true, records: data || [] });
+      return json({ success: true, records: await attachStatusHistoryActors(supabase, data) });
     }
 
     if (operation === 'project_stats') {

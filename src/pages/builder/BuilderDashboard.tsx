@@ -14,12 +14,21 @@ import {
   ACTIVITY_ENTITY_LABELS, ACTOR_TYPE_LABELS, activityActionLabel, formatWorkspaceTime,
 } from '@/lib/builderWorkspace';
 import { BuilderPortalShell } from '@/components/builder-portal/BuilderPortalShell';
+import {
+  builderActivityActor,
+} from '../../../supabase/functions/_shared/builderActivitySignificance.pure';
 import { BuilderSchedule } from '@/components/builder-portal/ui/BuilderSchedule';
 import { TitleBlock } from '@/components/builder-portal/ui/TitleBlock';
 /* The one place the locale is named; see docs/aml/ONGOING_CDD_AND_REMINDERS.md —
    an un-localed format prints 9/12/2026 to an Australian builder. */
 import { AU_LOCALE } from '@/lib/aml/displayDate';
 import { isWithdrawnBuilderPath } from '@/lib/builderHiddenSections.pure';
+import {
+  ACTION_REQUIRED_DESCRIPTION, ACTION_REQUIRED_EMPTY, ACTION_REQUIRED_TITLE,
+  actionRequiredItems,
+} from '@/lib/builderActionRequired.pure';
+import { useBuilderStockImageProgress, useBuilderStockSelections } from '@/lib/builderStockQueries';
+import { awaitsBuilderAcknowledgement } from '@/lib/builderStock';
 
 /**
  * Builder / Developer Portal landing surface.
@@ -48,6 +57,17 @@ export default function BuilderDashboard() {
 
   const summaryQuery = useBuilderWorkspaceSummary();
   const activityQuery = useBuilderActivity();
+  /*
+   * The two states the summary does not count. Each is read from the surface
+   * that offers the act, so the card cannot name an act this portal does not
+   * provide: an activation is acknowledged on the Stock List, and a
+   * photograph is supplied there too.
+   */
+  // At the server's own ceiling: the attention panel counts these, and a page
+  // of twenty counted only the twenty newest activations.
+  const selectionsQuery = useBuilderStockSelections(1, 100);
+  const progressQuery = useBuilderStockImageProgress();
+  const progressRecords = progressQuery.data?.records ?? [];
   const summary = summaryQuery.data;
   const activity = (activityQuery.data || []).slice(0, 8);
 
@@ -170,13 +190,43 @@ export default function BuilderDashboard() {
     },
   ].filter((figure) => !isWithdrawnBuilderPath(figure.to));
 
-  const attention = [
-    { label: 'Open defects', value: summary?.open_defects ?? 0, to: '/builder/construction' },
-    { label: 'Overdue tasks', value: summary?.overdue_tasks ?? 0, to: '/builder/tasks' },
-    { label: 'Unread messages', value: summary?.unread_messages ?? 0, to: '/builder/messages' },
-    /* Same rule as the figures above — a row that leads to a withdrawn
-       section is a door to a notice. */
-  ].filter((item) => item.value > 0 && !isWithdrawnBuilderPath(item.to));
+  /*
+   * WHAT NEEDS THIS PERSON'S ACTION — the rule is in
+   * `builderActionRequired.pure.ts`, which also says why the three rows this
+   * replaces could not do the job. Everything fed to it is already
+   * organisation-scoped by the session; the counts below are read from the
+   * same surfaces that offer the acts.
+   */
+  const selectionsSeen = selectionsQuery.data?.records ?? [];
+  const selectionsTotal = Number(selectionsQuery.data?.pagination?.total ?? 0);
+  const sawEverySelection = selectionsQuery.data
+    ? selectionsSeen.length >= selectionsTotal : false;
+  const awaitingSeen = selectionsQuery.data
+    ? selectionsSeen.filter(awaitsBuilderAcknowledgement).length : undefined;
+  const awaitingAcknowledgement = awaitingSeen === 0 && !sawEverySelection
+    ? undefined : awaitingSeen;
+
+  const attention = actionRequiredItems({
+    overdueTasks: summary?.overdue_tasks,
+    unreadMessages: summary?.unread_messages,
+    /* The Stock List's own predicate for an activation still owed an
+       acknowledgement, imported rather than restated. */
+    /*
+     * A COUNT FROM A PARTIAL PAGE MAY BE A FLOOR; IT MAY NEVER BE A ZERO.
+     *
+     * This read is paginated, so counting what came back can undercount — and
+     * the dangerous end of that is the quiet one: where the rows in hand
+     * happen to be the acknowledged ones, a confident 0 renders as "Nothing
+     * needs your attention" over activations that are still waiting. A page
+     * is asked for at the server's own ceiling, and where even that did not
+     * reach the end, a zero is withheld as UNKNOWN rather than reported as
+     * none. A non-zero count stands: it is a floor, and a floor is actionable.
+     */
+    activationsAwaitingAcknowledgement: awaitingAcknowledgement,
+    propertiesNeedingAPicture: progressRecords.length
+      ? progressRecords.reduce((total, record) => total + (Number(record.failed) || 0), 0)
+      : undefined,
+  });
 
   return (
     <BuilderPortalShell
@@ -326,7 +376,7 @@ export default function BuilderDashboard() {
                   <p className="mt-1 text-sm text-muted-foreground">{entry.reason}</p>
                 ) : null}
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {ACTOR_TYPE_LABELS[entry.actor_type] ?? entry.actor_type} ·{' '}
+                  {builderActivityActor(entry)} ·{' '}
                   {formatWorkspaceTime(entry.created_at)}
                 </p>
               </div>
@@ -335,30 +385,33 @@ export default function BuilderDashboard() {
         </Card>
 
         <div className="space-y-4">
-          {/* Project delivery attention */}
+          {/* What needs this person's action — never a figure they cannot act on. */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
                 <AlertTriangle className="h-4 w-4 text-destructive" aria-hidden />
-                Project delivery attention
+                {ACTION_REQUIRED_TITLE}
               </CardTitle>
-              <CardDescription>What is waiting on you across this workspace.</CardDescription>
+              <CardDescription>{ACTION_REQUIRED_DESCRIPTION}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-2">
               {attention.length === 0 ? (
                 <p className="rounded-lg border border-dashed border-border/70 px-4 py-8 text-center text-sm text-muted-foreground">
-                  Nothing needs your attention right now.
+                  {ACTION_REQUIRED_EMPTY}
                 </p>
               ) : attention.map((item) => (
                 <Link
-                  key={item.label}
+                  key={item.key}
                   to={item.to}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 transition-colors hover:bg-destructive/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="flex items-start justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 transition-colors hover:bg-destructive/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  <span className="truncate text-sm font-medium text-foreground">{item.label}</span>
-                  <span className="shrink-0 text-base font-semibold tabular-nums text-foreground">
-                    {item.value}
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium text-foreground">{item.label}</span>
+                    <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">
+                      {item.detail}
+                    </span>
                   </span>
+                  <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
                 </Link>
               ))}
             </CardContent>

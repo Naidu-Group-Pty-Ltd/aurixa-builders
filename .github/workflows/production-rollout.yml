@@ -361,6 +361,20 @@ name: Production rollout
 #            property row written; and the deployed SQL functions and
 #            triggers that write a property event. Prints ids (8 characters)
 #            and counts, never values. Takes `organisation_id`.
+#   portal-functionality-state
+#            READ-ONLY. Why five Builder / Developer Portal surfaces read the
+#            way they do: projects by organisation and status with how each was
+#            opened, the project-access grants beside the organisation's active
+#            members, and PER USER the product's own accessible-set functions
+#            replayed for the `projects` and `tasks` keys (the Projects page and
+#            the Tasks picker can legitimately disagree, and only this says
+#            which); the task rows by scope; the workspace summary the attention
+#            card draws; the outstanding states beside it; every activity action
+#            with whether its actor is recoverable; what a user's own visible
+#            feed holds; the project conversations against the agency threads;
+#            and the status history with who wrote it. SELECT only. Prints ids
+#            (8 characters), statuses, action names and counts — never a name,
+#            address or any other customer value.
 #   stock-tier0-edges
 #            TIER-0: what a builder gets when the file or the click is wrong —
 #            refused files with actionable reasons, malformed / partial /
@@ -456,11 +470,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | cc-frontend-build | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures | email-delivery-proof | stock-tier0-formats | stock-tier0-lifecycle | stock-tier0-edges | stock-link-proof | stock-mirror-parity | stock-delivery-audit | portal-ui-audit | cc-page-probe | storage-residue-sweep | portal-controls-proof | photo-source-probe | cc-property-page-proof | stock-worker-fault-proof | stock-hero-future-proof'
+        description: 'verify | apply | proxy-trust | smoke | recover | forensics | item-state | item-reopen | stock-collateral-reprocess | network-sync-state | network-connection-remap | portal-scope-state | stock-source-restore | stock-import-proof | stock-reading-trace | stock-scan-proof | stock-confirmation-proof | stock-project-proof | stock-agencies-proof | stock-media-proof | stock-messaging-proof | agency-chat-state | step6-proof-audit | agency-chat-backfill | stock-private-chat-proof | portal-access-proof | portal-browser-proof | portal-performance-proof | activation-speed-proof | message-speed-proof | cc-frontend-build | stock-overlay-audit | upload-settlement-state | stock-field-coverage | stock-brochure-figures | email-delivery-proof | stock-tier0-formats | stock-tier0-lifecycle | stock-tier0-edges | stock-link-proof | stock-mirror-parity | stock-delivery-audit | portal-functionality-state | portal-ui-audit | cc-page-probe | storage-residue-sweep | portal-controls-proof | photo-source-probe | cc-property-page-proof | stock-worker-fault-proof | stock-hero-future-proof | stock-upload-failure-state'
         required: true
         default: 'verify'
         type: choice
-        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures, email-delivery-proof, stock-tier0-formats, stock-tier0-lifecycle, stock-tier0-edges, stock-link-proof, stock-mirror-parity, stock-delivery-audit, portal-ui-audit, cc-page-probe, storage-residue-sweep, portal-controls-proof, photo-source-probe, cc-property-page-proof, stock-worker-fault-proof, stock-hero-future-proof]
+        options: [verify, apply, proxy-trust, smoke, recover, forensics, item-state, item-reopen, stock-collateral-reprocess, network-sync-state, network-connection-remap, portal-scope-state, stock-source-restore, stock-import-proof, stock-reading-trace, stock-scan-proof, stock-confirmation-proof, stock-project-proof, stock-agencies-proof, stock-media-proof, stock-messaging-proof, agency-chat-state, step6-proof-audit, agency-chat-backfill, stock-private-chat-proof, portal-access-proof, portal-browser-proof, portal-performance-proof, activation-speed-proof, message-speed-proof, cc-frontend-build, stock-overlay-audit, upload-settlement-state, stock-field-coverage, stock-brochure-figures, email-delivery-proof, stock-tier0-formats, stock-tier0-lifecycle, stock-tier0-edges, stock-link-proof, stock-mirror-parity, stock-delivery-audit, portal-functionality-state, portal-ui-audit, cc-page-probe, storage-residue-sweep, portal-controls-proof, photo-source-probe, cc-property-page-proof, stock-worker-fault-proof, stock-hero-future-proof, stock-upload-failure-state]
       items:
         description: 'item-state / item-reopen / forensics: comma-separated stock item ids (blank = the default set; forensics: every property without a ready builder photograph). stock-reading-trace: pages to print in full (blank = 1). storage-residue-sweep: with apply, the digest its dry run printed'
         required: false
@@ -522,7 +536,7 @@ jobs:
         with:
           node-version: 22
       - uses: denoland/setup-deno@v2
-        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' || inputs.phase == 'stock-collateral-reprocess' || inputs.phase == 'network-sync-state' || inputs.phase == 'network-connection-remap' || inputs.phase == 'portal-scope-state' || inputs.phase == 'stock-source-restore' || inputs.phase == 'stock-reading-trace' || inputs.phase == 'stock-overlay-audit' || inputs.phase == 'upload-settlement-state' || inputs.phase == 'stock-field-coverage' || inputs.phase == 'stock-brochure-figures' || inputs.phase == 'photo-source-probe' || inputs.phase == 'stock-worker-fault-proof' }}
+        if: ${{ inputs.phase == 'forensics' || inputs.phase == 'item-state' || inputs.phase == 'item-reopen' || inputs.phase == 'stock-collateral-reprocess' || inputs.phase == 'network-sync-state' || inputs.phase == 'network-connection-remap' || inputs.phase == 'portal-scope-state' || inputs.phase == 'stock-source-restore' || inputs.phase == 'stock-reading-trace' || inputs.phase == 'stock-overlay-audit' || inputs.phase == 'upload-settlement-state' || inputs.phase == 'stock-field-coverage' || inputs.phase == 'stock-brochure-figures' || inputs.phase == 'photo-source-probe' || inputs.phase == 'stock-worker-fault-proof' || inputs.phase == 'portal-functionality-state' || inputs.phase == 'stock-upload-failure-state' }}
         with:
           deno-version: v2.x
 
@@ -638,6 +652,10 @@ jobs:
             stock-link-proof)     node scripts/ops/stock-link-proof.mjs ;;
             stock-mirror-parity)  node scripts/ops/stock-mirror-parity.mjs ;;
             stock-delivery-audit) node scripts/ops/stock-delivery-audit.mjs ;;
+            stock-upload-failure-state)
+                                  deno run -A --config supabase/functions/deno.json scripts/ops/stock-upload-failure-state.ts ;;
+            portal-functionality-state)
+                                  deno run -A --config supabase/functions/deno.json scripts/ops/portal-functionality-state.ts ;;
             portal-ui-audit)
                                   node scripts/ops/portal-ui-audit.mjs ;;
             cc-page-probe)

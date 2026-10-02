@@ -10,8 +10,21 @@
  * privileged legal field.
  */
 
+/**
+ * The aggregates a collaboration record can hang off. MIRRORS
+ * `_shared/builderCollaboration.ts` — and for a fortnight it did not.
+ *
+ * `stock_item` was added server-side on 16 September 2026 (the activation
+ * fan-out writes its task against the PROPERTY, because stock belongs to the
+ * organisation and an activation has no project yet) and this list was never
+ * taught the word. Measured in production on 2 October 2026: every task in
+ * the database — 5 of 5 — is scoped to a `stock_item`, and Tasks → By Record
+ * could offer nothing but a project, so the only records that held tasks were
+ * the ones the picker could not name. The server has always accepted it; its
+ * resolver answers for TASKS alone, so listing it here widens nothing else.
+ */
 export const BUILDER_SCOPE_TYPES = [
-  'project', 'unit', 'transaction', 'construction_case',
+  'project', 'unit', 'transaction', 'construction_case', 'stock_item',
 ] as const;
 export type BuilderScopeType = (typeof BUILDER_SCOPE_TYPES)[number];
 
@@ -208,6 +221,8 @@ export const SCOPE_TYPE_LABELS: Record<BuilderScopeType, string> = {
   unit: 'Unit',
   transaction: 'Transaction',
   construction_case: 'Construction case',
+  /* What a builder calls one: the Stock List's own word, not the column's. */
+  stock_item: 'Property',
 };
 
 export const DOCUMENT_TYPE_LABELS: Record<BuilderDocumentType, string> = {

@@ -72,6 +72,23 @@ export type StockImageStage = 'uploaded_document' | 'google_maps' | 'internet_se
 export type StockSelectionStatus =
   | 'selected' | 'builder_acknowledged' | 'progressed' | 'completed' | 'withdrawn';
 
+/**
+ * An activation still owed the builder's acknowledgement — the one act an
+ * agency's activation asks of them. `selected` is the announced-and-unanswered
+ * state; every other word in the vocabulary has already moved past it, and a
+ * withdrawn activation asks for nothing.
+ *
+ * Named here because two surfaces ask the same question: the Stock List, which
+ * offers the acknowledgement, and the dashboard's Action required card, which
+ * counts what is outstanding. Two spellings of one predicate is how a card
+ * comes to disagree with the page it links to.
+ */
+export function awaitsBuilderAcknowledgement(
+  selection: { status: StockSelectionStatus },
+): boolean {
+  return selection.status === 'selected';
+}
+
 export type StockSourceType = 'file' | 'url';
 
 export interface BuilderStockUpload {

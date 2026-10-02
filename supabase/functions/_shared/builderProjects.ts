@@ -79,8 +79,50 @@ export const BUILDER_PARTY_SELECT = `
 `;
 
 export const BUILDER_PROJECT_STATUS_HISTORY_SELECT = `
-  id, from_status, to_status, changed_by_type, reason, created_at
+  id, from_status, to_status, changed_by_type, changed_by_builder_user_id,
+  reason, created_at
 `;
+
+/**
+ * NAME WHO MOVED THE STATUS.
+ *
+ * The table has recorded `changed_by_builder_user_id` since it was created and
+ * the SELECT dropped it, so a project's own history could say only what KIND
+ * of account acted. Measured 2 October 2026: of 33 recorded status changes, 30
+ * were the platform opening a project from an activation — genuinely nobody —
+ * and the three a person made carried that person's id the whole time.
+ *
+ * Resolved in one query over the distinct ids rather than an embedded join:
+ * the set is a handful per project, and this never depends on the name of a
+ * foreign key. A row the platform wrote resolves to nothing and keeps its
+ * `changed_by_type`, which the reader renders as System.
+ */
+export async function attachStatusHistoryActors(
+  supabase: { from: (table: string) => any },
+  rows: readonly Record<string, unknown>[] | null | undefined,
+): Promise<Record<string, unknown>[]> {
+  const history = (rows ?? []).map((row) => ({ ...row }));
+  const ids = [...new Set(history
+    .map((row) => row.changed_by_builder_user_id)
+    .filter((id): id is string => typeof id === 'string' && !!id))];
+  if (!ids.length) return history;
+  // A failed lookup costs the NAME and never the history: the rows are the
+  // record, and withholding them because a label could not be read would be
+  // strictly worse than showing them unnamed.
+  let names = new Map<string, string>();
+  try {
+    const { data } = await supabase.from('builder_portal_users')
+      .select('id, name').in('id', ids);
+    names = new Map((data ?? [])
+      .map((row: { id: string; name: string | null }) => [row.id, String(row.name ?? '').trim()]));
+  } catch { /* unnamed, never unlisted */ }
+  for (const row of history) {
+    const id = row.changed_by_builder_user_id;
+    const name = typeof id === 'string' ? names.get(id) : '';
+    row.changed_by_name = name || null;
+  }
+  return history;
+}
 
 export function cleanText(value: unknown, max = 500): string | null {
   if (value === null || value === undefined) return null;

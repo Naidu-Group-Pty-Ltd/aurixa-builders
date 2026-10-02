@@ -91,6 +91,8 @@ export interface BuilderProjectStatusHistoryEntry {
   from_status: BuilderProjectStatus | null;
   to_status: BuilderProjectStatus;
   changed_by_type: string;
+  /** Who moved it, where the server recovered a person. Null for the platform. */
+  changed_by_name?: string | null;
   reason: string | null;
   created_at: string;
 }
