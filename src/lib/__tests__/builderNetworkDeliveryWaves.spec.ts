@@ -69,12 +69,30 @@ describe('it stays that way', () => {
   const files = readdirSync(dir).filter((f: string) => f.endsWith('.sql')).sort();
   const SINCE = '20261001150000';
 
-  it('the newest definition of the enqueue still supersedes the waiting copies', () => {
+  it('the newest definition of the enqueue still supersedes the waiting copies, and only those', () => {
     const defining = files.filter((f: string) =>
       read(`supabase/migrations/${f}`).includes('FUNCTION public.builder_network_enqueue_stock_item('));
     const latest = read(`supabase/migrations/${defining[defining.length - 1]}`);
     expect(defining[defining.length - 1] >= SINCE).toBe(true);
     expect(latest).toContain("SET status = 'superseded'");
+    /*
+     * THE PREDICATE, NOT THE WORD. A later definition that marked a CLAIMED
+     * event superseded (it may be on the wire), or another connection's,
+     * another property's or another event type's, still says 'superseded' —
+     * and passed this file until the predicate was held on whichever
+     * migration defines the enqueue last (measured with a probe migration,
+     * 2 October 2026). The body runs from the header to the next top-level
+     * statement, or to the end of the file.
+     */
+    const body = /FUNCTION public\.builder_network_enqueue_stock_item\([\s\S]*?(?:\n(?=(?:REVOKE|GRANT|CREATE|ALTER|COMMENT|DROP|WITH|UPDATE|INSERT|DO|COMMIT)\b)|$)/
+      .exec(latest)?.[0] ?? '';
+    for (const clause of [
+      "o.status = 'pending'",
+      "o.event_type = 'stock.item.upserted'",
+      'o.connection_id = v_conn.id',
+      "o.payload->>'id' = _item_id::text",
+      "o.locked_at IS NULL OR o.locked_at < now() - interval '10 minutes'",
+    ]) expect(body, `the newest enqueue no longer supersedes only by: ${clause}`).toContain(clause);
   });
 
   it('no later migration queues a property by any other route', () => {
