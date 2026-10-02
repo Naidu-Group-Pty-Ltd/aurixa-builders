@@ -812,7 +812,11 @@ type ClaimSource =
   | 'area_schedule'
   | 'price_sum'
   | 'figure_noun'
-  | 'unit_heading';
+  | 'unit_heading'
+  /** A field the document stated twice, settled by the name its builder gave the file. */
+  | 'filename_settles_dispute'
+  /** An address line whose own lot contradicted the settled lot, and lost it. */
+  | 'lot_contradicted_dropped';
 
 /** Stamp a reader's name on what it produced, without rewriting the reader. */
 function via(source: ClaimSource, claims: readonly Claim[]): Claim[] {
