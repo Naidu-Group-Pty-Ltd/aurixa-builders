@@ -72,6 +72,7 @@ import {
   type InviteEmailOutcome,
 } from '../_shared/builderInviteEmail.ts';
 import { readOrganisationInput } from '../_shared/builderOrganisationInput.pure.ts';
+import { reopenTarget, type ReopenTarget } from '../_shared/builderOrganisationReopen.pure.ts';
 
 const MAX_BODY_BYTES = 32 * 1024;
 const INVITE_CODE_EXPIRY_DAYS = 14;
@@ -354,15 +355,24 @@ Deno.serve(async (req) => {
       // row otherwise. Members lose access on their next request because
       // `builder_accessible_organisations` requires an active organisation —
       // nothing has to hunt down their sessions.
+      //
+      // `status_before_closure` is what reopening reads back
+      // (builderOrganisationReopen.pure.ts), so it is written in the same
+      // update, and the update moves only a row still in the status that was
+      // read: one approved or suspended in between is refused rather than
+      // recorded as what it no longer was.
       const { data: updated } = await supabase
         .from('builder_organisations')
-        .update({ status: 'closed', is_active: false })
+        .update({ status: 'closed', is_active: false, status_before_closure: organisation.status })
         .eq('id', organisation.id)
-        .neq('status', 'closed')
+        .eq('status', organisation.status)
         .select('id')
         .maybeSingle();
       if (!updated) return json({ error: 'close_failed' }, 409);
-      await logActivity('network_organisation_closed', organisation.id, organisation.id, { reason });
+      await logActivity('network_organisation_closed', organisation.id, organisation.id, {
+        reason,
+        previous_status: organisation.status,
+      });
       return json({ success: true, status: 'closed' });
     }
 
@@ -384,9 +394,10 @@ Deno.serve(async (req) => {
      *    SUSPENDED unless the operator asks for its access back in the same
      *    act (`reinstate: true`) — suspension is the reversible instrument,
      *    and restoring members' access is a decision, not a side effect.
-     *  * One that was never approved comes back `pending_activation`, and
-     *    `approve_organisation` is still the only road to `active` for it —
-     *    with everything that gates an approval.
+     *  * One that was never approved goes back to the pending state it held
+     *    when it was closed — `pending_verification` and `pending_activation`
+     *    have different owners — and `approve_organisation` is still the only
+     *    road to `active` for it, with everything that gates an approval.
      *
      * It demands a reason, like closing, and moves only a row that is still
      * closed, so two operators cannot reopen it twice.
@@ -400,7 +411,7 @@ Deno.serve(async (req) => {
 
       const { data: organisation } = await supabase
         .from('builder_organisations')
-        .select('id, legal_name, status, activated_at')
+        .select('id, legal_name, status, activated_at, status_before_closure')
         .eq('id', organisationId)
         .maybeSingle();
       if (!organisation) return json({ error: 'organisation_not_found' }, 404);
@@ -409,12 +420,20 @@ Deno.serve(async (req) => {
       }
 
       const wasApproved = Boolean(organisation.activated_at);
-      const reopenedTo: 'active' | 'suspended' | 'pending_activation' = !wasApproved
-        ? 'pending_activation'
-        : reinstate ? 'active' : 'suspended';
+      // A never-approved organisation goes back to the pending state the
+      // close wrote on the row. A closure made before that column existed
+      // says nothing, and the target falls back to `pending_activation`,
+      // which is approved by the same act and gates — so it can misfile an
+      // organisation, never admit one.
+      const reopenedTo: ReopenTarget = reopenTarget({
+        activatedAt: organisation.activated_at,
+        statusBeforeClosure: organisation.status_before_closure,
+        reinstate,
+      });
       // Each target writes the whole group its CHECK constraints demand:
       // `active` agrees with `is_active` and carries `activated_at`;
-      // `suspended` carries `suspended_at`.
+      // `suspended` carries `suspended_at`. Every target clears
+      // `status_before_closure`, which describes a closure that is over.
       const patch: Record<string, unknown> = reopenedTo === 'active'
         ? { status: 'active', is_active: true, suspended_at: null, suspension_reason: null }
         : reopenedTo === 'suspended'
@@ -424,7 +443,8 @@ Deno.serve(async (req) => {
             suspended_at: new Date().toISOString(),
             suspension_reason: `Reopened after closure: ${reason}`.slice(0, 500),
           }
-          : { status: 'pending_activation', is_active: false, suspended_at: null, suspension_reason: null };
+          : { status: reopenedTo, is_active: false, suspended_at: null, suspension_reason: null };
+      patch.status_before_closure = null;
       const { data: updated, error: reopenError } = await supabase
         .from('builder_organisations')
         .update(patch)
@@ -476,14 +496,23 @@ Deno.serve(async (req) => {
       // still being acted on. A REFUSED application sent nothing, and counting
       // it is what told an applicant who had corrected a mistyped ABN that we
       // "already have" an application we had refused (builderAccessRequest
-      // §3). Two counts rather than one `.or()` string with a timestamp
+      // §3). Separate counts rather than one `.or()` string with a timestamp
       // interpolated into it: that is a filter PostgREST may not parse, and a
       // limiter whose predicate never parses is no limiter.
+      //
+      // The third count is the run that got as far as the send and never
+      // settled. It is marked with its organisation BEFORE the send (below),
+      // because the send cannot be undone and the settle after it can fail or
+      // never run — and such a row, read as merely in flight, would release
+      // the address after ten minutes to an application under different
+      // company details that mints a second organisation, re-stamps the
+      // invitation and writes to the address again.
       const since = new Date(Date.now() - APPLICATION_WINDOW_HOURS * 3600_000).toISOString();
       const inFlightSince = new Date(Date.now() - IN_FLIGHT_MINUTES * 60_000).toISOString();
       const [
         { count: recent, error: recentError },
         { count: inFlight, error: inFlightError },
+        { count: unsettled, error: unsettledError },
       ] = await Promise.all([
         supabase
           .from('builder_access_requests')
@@ -497,14 +526,21 @@ Deno.serve(async (req) => {
           .eq('contact_email', fields.contact_email)
           .eq('status', 'received')
           .gte('created_at', inFlightSince),
+        supabase
+          .from('builder_access_requests')
+          .select('id', { count: 'exact', head: true })
+          .eq('contact_email', fields.contact_email)
+          .eq('status', 'received')
+          .not('organisation_id', 'is', null)
+          .gte('created_at', since),
       ]);
       // As the origin windows below: a count that FAILED is not a count of
       // zero, so this refuses rather than writes to a mailbox unbounded.
-      if (recentError || inFlightError) {
-        console.error('[builder-network-admin] address window read failed', recentError ?? inFlightError);
+      if (recentError || inFlightError || unsettledError) {
+        console.error('[builder-network-admin] address window read failed', recentError ?? inFlightError ?? unsettledError);
         return json({ error: 'application_not_recorded' }, 503);
       }
-      if ((recent ?? 0) + (inFlight ?? 0) > 0) {
+      if ((recent ?? 0) + (inFlight ?? 0) + (unsettled ?? 0) > 0) {
         return json({ error: 'an_application_for_that_address_is_already_with_us' }, 429);
       }
 
@@ -564,10 +600,16 @@ Deno.serve(async (req) => {
         detail: string,
         extra: Record<string, unknown> = {},
       ) => {
-        await supabase
+        const { error: settleError } = await supabase
           .from('builder_access_requests')
           .update({ status, outcome_detail: detail, ...extra })
           .eq('id', request.id);
+        // Not thrown: the applicant's outcome is already decided by now. But
+        // a row left `received` is what the address window reads, so a
+        // failed settle is said where an operator will look.
+        if (settleError) {
+          console.error('[builder-network-admin] access request not settled', request.id, status, settleError);
+        }
       };
 
       // The owner, read BEFORE anything is created. Reuses the same rules the
@@ -743,6 +785,20 @@ Deno.serve(async (req) => {
       }
 
       await supabase.rpc('builder_ensure_onboarding_steps', { _builder_user_id: ownerId });
+
+      // Marked BEFORE the send. The send cannot be undone, and the settle
+      // after it can fail or never run; a `received` row carrying its
+      // organisation is what the address window holds for the whole day
+      // rather than ten minutes. Not a reason to withhold the email if it
+      // fails — the organisation and invitation already exist, and an
+      // applicant who is never written to is the worse outcome.
+      const { error: markError } = await supabase
+        .from('builder_access_requests')
+        .update({ organisation_id: organisation.id, builder_user_id: ownerId })
+        .eq('id', request.id);
+      if (markError) {
+        console.error('[builder-network-admin] access request not marked before send', request.id, markError);
+      }
 
       // The send is the last thing and cannot unwind any of it. "We created
       // the organisation but could not write to you" is a state an operator

@@ -178,11 +178,14 @@ describe("what makes an unattended public pipeline safe", () => {
     expect(APPLICATION_WINDOW_HOURS).toBe(24);
     expect(CODE).toContain("APPLICATION_WINDOW_HOURS");
     expect(CODE).toMatch(/\.eq\('contact_email', fields\.contact_email\)/);
-    // The refusal has to be REACHED BY the count, not merely present beside
-    // it: a guard rewritten to `if (false)` keeps every literal in place and
-    // opens the pipeline to one mailbox being mailed without limit.
+    // The refusal has to be REACHED BY the counts, not merely present beside
+    // them: a guard rewritten to `if (false)` keeps every literal in place
+    // and opens the pipeline to one mailbox being mailed without limit. All
+    // three counts are in the guard: an application in the window, one still
+    // in flight, and one that may already have written to the address
+    // without being settled (builderOwnerSeat.spec.ts).
     expect(CODE).toMatch(
-      /if\s*\(\(?\s*recent[\s\S]{0,40}\)\s*\{[\s\S]{0,240}an_application_for_that_address_is_already_with_us/,
+      /if\s*\(\(recent \?\? 0\)\s*\+\s*\(inFlight \?\? 0\)\s*\+\s*\(unsettled \?\? 0\)\s*>\s*0\)\s*\{[\s\S]{0,240}an_application_for_that_address_is_already_with_us/,
     );
   });
 
