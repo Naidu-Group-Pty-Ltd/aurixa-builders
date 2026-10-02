@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ARRIVING_LIST_BODY, arrivingList, arrivingListTitle, arrivingPlaceholderCount,
+  stockListPreparation,
 } from '../builderStockArrival.pure';
 
 describe('a stock list that is still arriving is said while it arrives', () => {
@@ -28,7 +29,17 @@ describe('a stock list that is still arriving is said while it arrives', () => {
       { total: 44, photos_ready: 44, working: 0, published: true },
       { total: 5, photos_ready: 'x', working: '2', published: false },
     ])).toEqual({ total: 5, ready: 0, working: 2 });
-    expect(arrivingList([{ total: 3, photos_ready: 9, working: 1, published: false }])!.ready).toBe(3);
+    /*
+     * A COUNT NEVER EXCEEDS THE LIST. Nine ready of three is clamped to three,
+     * which is then every photograph the list has — so the reading is
+     * `settled`, and asked through `arrivingList` it is correctly null. The
+     * clamp is asserted where it now shows: a bar reading "9 of 3" was the
+     * defect, and inventing a fourth property to be still working on is the
+     * one this must not swap it for.
+     */
+    expect(stockListPreparation([{ total: 3, photos_ready: 9, working: 1, published: false }]))
+      .toEqual({ kind: 'settled', total: 3, ready: 3 });
+    expect(arrivingList([{ total: 3, photos_ready: 9, working: 1, published: false }])).toBeNull();
   });
 
   it('it tells the builder it updates by itself, and draws a bounded number of placeholders', () => {
@@ -43,9 +54,20 @@ describe('the stock list page draws it', () => {
     require('node:path').resolve(__dirname, '../../pages/builder/BuilderStockList.tsx'), 'utf8') as string;
 
   it('the banner leads with the arriving list, and placeholders replace the empty message while it arrives', () => {
-    expect(page).toContain('const incoming = arrivingList(progressRecords);');
+    /*
+     * RENEGOTIATED 2 OCTOBER 2026, and the reason is the regression this spec
+     * could not see. It pinned `!records.length && incoming` as the whole
+     * placeholder rule, which is true of a list with no LIVE rows — and a
+     * list being prepared has none, so a real 44-property import drew four
+     * grey rectangles over 44 staged rows the page already held. The
+     * placeholder count is now the authority (`arrivingPlaceholderCount`
+     * answers 0 once any staged row exists) and it is asserted by rendering
+     * in `builderStockStagedVisibility.spec.tsx`. What is kept here is the
+     * ORDERING property, which only the source can state.
+     */
+    expect(page).toContain('const preparation = stockListPreparation(progressRecords);');
     expect(page).toContain('{arrivingListTitle(incoming)}');
-    const placeholders = page.indexOf('!records.length && incoming ?');
+    const placeholders = page.indexOf('!records.length && incoming && placeholderCount > 0 ?');
     const empty = page.indexOf("'Nothing is on the marketplace yet'");
     expect(placeholders).toBeGreaterThan(0);
     expect(placeholders).toBeLessThan(empty);

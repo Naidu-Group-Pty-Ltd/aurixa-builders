@@ -198,6 +198,8 @@ describe('the handlers that must obey these rules', () => {
   const invite = read('builder-portal-invite', 'index.ts');
   const accept = read('builder-portal-accept-invite', 'index.ts');
   const admin = read('builder-network-admin', 'index.ts');
+  // Both operator doors seat a first owner through this one grant.
+  const ownerSeat = read('_shared', 'builderOwnerSeat.ts');
 
   it('the invite function mints each invitation onto this organisation\'s own seat', () => {
     // Doc 68: the token used to live in the account's ONE slot and record its
@@ -267,17 +269,25 @@ describe('the handlers that must obey these rules', () => {
   it('the operator door grants a first owner at this module status too', () => {
     // Otherwise an operator-created pending owner stays `active` and an
     // invitation accepted elsewhere would still reach that organisation.
-    expect(admin).toMatch(/membershipStatusForGrant/);
+    // The status is decided once, in the grant both operator doors share, and
+    // each door hands it the SAME reading of the account it minted against.
+    expect(ownerSeat).toMatch(/membershipStatusForGrant\(\{ accountIsActive: args\.accountIsActive \}\)/);
+    const calls = admin.match(/grantOwnerSeat\(supabase, \{[\s\S]{0,240}?\}\)/g) ?? [];
+    expect(calls.length).toBe(2);
+    for (const call of calls) expect(call).toMatch(/accountIsActive: established/);
     expect(admin).toMatch(/invite_token_organisation_id/);
   });
 
   it('no handler grants a membership with a hard-coded active status any more', () => {
-    for (const source of [invite, admin]) {
+    for (const source of [invite, ownerSeat]) {
       const grants = source.match(/\.insert\(\{[^}]*builder_user_id[^}]*\}\)/gs) ?? [];
       const membershipGrants = grants.filter((g) => g.includes('organisation_id') && g.includes('membership_role'));
       expect(membershipGrants.length).toBeGreaterThan(0);
       for (const grant of membershipGrants) expect(grant).not.toMatch(/status:\s*'active'/);
     }
+    // The operator plane keeps no grant of its own beside the shared one: a
+    // second copy is how the two doors came to fail the same way.
+    expect(admin).not.toMatch(/from\('builder_organisation_memberships'\)\s*\.insert\(/);
   });
 });
 
@@ -288,6 +298,7 @@ describe('a seat that was left waiting', () => {
   const invite = read('builder-portal-invite', 'index.ts');
   const accept = read('builder-portal-accept-invite', 'index.ts');
   const admin = read('builder-network-admin', 'index.ts');
+  const ownerSeat = read('_shared', 'builderOwnerSeat.ts');
 
   /*
    * Adding a colleague who already signs in mints nothing, so nothing would
@@ -308,7 +319,7 @@ describe('a seat that was left waiting', () => {
      * copies is how three come to disagree about which statuses may be
      * promoted.
      */
-    for (const [name, source] of [['invite', invite], ['accept', accept], ['admin', admin]] as const) {
+    for (const [name, source] of [['invite', invite], ['accept', accept], ['admin', admin], ['owner seat', ownerSeat]] as const) {
       const updates = source.match(
         /\.from\('builder_organisation_memberships'\)\s*\.update\(\{[^}]*\}/gs,
       ) ?? [];
@@ -316,10 +327,11 @@ describe('a seat that was left waiting', () => {
         expect(update, `${name} promotes a membership by hand`).not.toMatch(/status:\s*'active'/);
       }
     }
-    // Acceptance and the operator's bootstrap bring a seat up; an
+    // Acceptance and the operator's owner-seat grant bring a seat up; an
     // organisation's invitation never does (doc 68) — only its invitee does.
     expect(accept).toMatch(/promoteWaitingMembership/);
-    expect(admin).toMatch(/promoteWaitingMembership/);
+    expect(ownerSeat).toMatch(/promoteWaitingMembership/);
+    expect(admin).not.toMatch(/promoteWaitingMembership\(/);
     expect(invite).not.toMatch(/promoteWaitingMembership/);
   });
 
@@ -350,10 +362,19 @@ describe('a seat that was left waiting', () => {
   });
 
   it('is reached on BOTH operator doors, where stranding costs an organisation its owner', () => {
-    const branches = admin.match(/23505' && established/g) ?? [];
-    expect(branches.length).toBe(2);
-    const promotions = admin.match(/promoteWaitingMembership\(supabase, \{/g) ?? [];
-    expect(promotions.length).toBe(2);
+    // Both doors call the one grant, each with its own reading of whether the
+    // account signs in; the grant promotes only for an account that does, and
+    // only after its insert found the seat already there.
+    const calls = admin.match(/grantOwnerSeat\(supabase, \{[\s\S]{0,240}?\}\)/g) ?? [];
+    expect(calls.length).toBe(2);
+    for (const call of calls) expect(call).toMatch(/accountIsActive: established/);
+    const exists = ownerSeat.indexOf("!== 'seat_exists'");
+    const gate = ownerSeat.indexOf('if (args.accountIsActive) {');
+    const promotion = ownerSeat.indexOf('promoteWaitingMembership(supabase, {');
+    expect(exists).toBeGreaterThan(-1);
+    expect(gate).toBeGreaterThan(exists);
+    expect(promotion).toBeGreaterThan(gate);
+    expect((ownerSeat.match(/promoteWaitingMembership\(supabase, \{/g) ?? []).length).toBe(1);
   });
 
   it('never fails an acceptance by throwing, because the act it follows may already be spent', () => {
@@ -381,6 +402,7 @@ describe('what the independent review found in the first fix', () => {
   const admin = read('builder-network-admin', 'index.ts');
   const accept = read('builder-portal-accept-invite', 'index.ts');
   const helper = read('_shared', 'builderInvite.ts');
+  const ownerSeat = read('_shared', 'builderOwnerSeat.ts');
   const members = read('_shared', 'builderMemberManagement.pure.ts');
   const mail = read('_shared', 'builderInviteEmail.ts');
   const reset = read('builder-portal-forgot-password', 'index.ts');
@@ -440,7 +462,9 @@ describe('what the independent review found in the first fix', () => {
     expect(helper).toMatch(/\.select\('id'\)/);
     expect(helper).toMatch(/promoted: Array\.isArray\(data\) \? data\.length : 0/);
     expect(accept).toMatch(/\.promoted === 0/);
-    expect((admin.match(/promotion\.promoted === 0/g) ?? []).length).toBe(2);
+    // The operator doors' grant reads the count too: a promotion that changed
+    // no row falls through to reading the seat back, never to "promoted".
+    expect(ownerSeat).toMatch(/promotion\.promoted > 0\) return \{ ok: true, seat: 'promoted'/);
   });
 
   it('revoking an invitation destroys only this organisation own token', () => {

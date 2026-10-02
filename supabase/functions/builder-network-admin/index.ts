@@ -8,7 +8,7 @@
  * MC's side is a complete rollback of this entire surface.
  *
  * What lives here is the plan's operator plane and no more: organisation
- * vetting (approve / suspend / reinstate — the lifecycle of the
+ * vetting (approve / suspend / reinstate / close / reopen — the lifecycle of the
  * `pending_verification` state registration mints), the workspace
  * DIRECTORY (MC → network per §6: registry upserts and connection
  * minting), the MARKETPLACE RANKING's manual instruments (pin, suppress,
@@ -19,12 +19,17 @@
  *    the queue and cannot decide it. A platform that decides membership in
  *    somebody else's organisation has re-grown the agency-administers-
  *    builder shape the extraction exists to end.
- *  * `closed` is terminal for an organisation. Suspension is the
- *    reversible instrument; closing is an end-of-life act, and
- *    `close_organisation` is the ceremony it was promised: a reason it will
- *    not proceed without, and no route back. Nothing here DELETES an
- *    organisation — the network's record of who was on it is not an
- *    operator's to destroy.
+ *  * `closed` ends an organisation's life on the network until an operator
+ *    reopens it. Suspension is the everyday reversible instrument; closing
+ *    is the end-of-life act, with a reason it will not proceed without — and
+ *    because it writes only the organisation's status, every member, seat
+ *    and record survives it, which is what lets `reopen_organisation` bring
+ *    the organisation back (suspended, or pending if it was never approved)
+ *    rather than leave the operator to build a replacement the unique
+ *    indexes refuse. Nothing here DELETES an organisation an operator could
+ *    have seen used — the network's record of who was on it is not an
+ *    operator's to destroy. The one delete is an access request rolling back
+ *    the empty row it created itself a moment earlier.
  *  * `create_organisation` and `update_organisation` write DESCRIPTION only.
  *    The lifecycle columns move under their own verbs, which set the whole
  *    consistent group the table's CHECK constraints demand; an edit form
@@ -47,16 +52,16 @@ import { hashSessionToken } from '../_shared/sessionHash.ts';
 import {
   builderAppBaseUrl,
   mintBuilderInvite,
-  promoteWaitingMembership,
   INVITE_EXPIRY_HOURS,
 } from '../_shared/builderInvite.ts';
 import { readOrganisationConflict } from '../_shared/builderOrganisationConflict.pure.ts';
+import { operatorMayHandLink } from '../_shared/builderInviteScope.pure.ts';
+import { grantOwnerSeat } from '../_shared/builderOwnerSeat.ts';
+import { ownerInvitationMayBeReissued, type OrganisationSeat } from '../_shared/builderOwnerSeat.pure.ts';
 import {
-  membershipStatusForGrant,
-  operatorMayHandLink,
-} from '../_shared/builderInviteScope.pure.ts';
-import {
+  ADDRESS_WINDOW_OUTCOMES,
   APPLICATION_WINDOW_HOURS,
+  IN_FLIGHT_MINUTES,
   ORIGIN_WINDOWS,
   organisationFromRequest,
   readAccessRequest,
@@ -67,6 +72,7 @@ import {
   type InviteEmailOutcome,
 } from '../_shared/builderInviteEmail.ts';
 import { readOrganisationInput } from '../_shared/builderOrganisationInput.pure.ts';
+import { reopenTarget, type ReopenTarget } from '../_shared/builderOrganisationReopen.pure.ts';
 
 const MAX_BODY_BYTES = 32 * 1024;
 const INVITE_CODE_EXPIRY_DAYS = 14;
@@ -349,16 +355,113 @@ Deno.serve(async (req) => {
       // row otherwise. Members lose access on their next request because
       // `builder_accessible_organisations` requires an active organisation —
       // nothing has to hunt down their sessions.
+      //
+      // `status_before_closure` is what reopening reads back
+      // (builderOrganisationReopen.pure.ts), so it is written in the same
+      // update, and the update moves only a row still in the status that was
+      // read: one approved or suspended in between is refused rather than
+      // recorded as what it no longer was.
       const { data: updated } = await supabase
         .from('builder_organisations')
-        .update({ status: 'closed', is_active: false })
+        .update({ status: 'closed', is_active: false, status_before_closure: organisation.status })
         .eq('id', organisation.id)
-        .neq('status', 'closed')
+        .eq('status', organisation.status)
         .select('id')
         .maybeSingle();
       if (!updated) return json({ error: 'close_failed' }, 409);
-      await logActivity('network_organisation_closed', organisation.id, organisation.id, { reason });
+      await logActivity('network_organisation_closed', organisation.id, organisation.id, {
+        reason,
+        previous_status: organisation.status,
+      });
       return json({ success: true, status: 'closed' });
+    }
+
+    /*
+     * A CLOSED ORGANISATION CAN BE REOPENED.
+     *
+     * Closing was written as terminal with "no route back", while closing
+     * itself writes only `status` and `is_active` — every member, seat,
+     * listing, document and connection stays exactly as it was, and members
+     * lose access only because `builder_accessible_organisations` requires an
+     * active organisation. So a closure made in error, or for a builder who
+     * comes back, left the operator a choice between a record they could see
+     * and not use, and a replacement organisation the unique indexes refuse
+     * (the closed row still holds its ABN, ACN and legal name).
+     *
+     * Reopening never makes an organisation MORE than it was:
+     *
+     *  * One that had been approved (`activated_at` is set) comes back
+     *    SUSPENDED unless the operator asks for its access back in the same
+     *    act (`reinstate: true`) — suspension is the reversible instrument,
+     *    and restoring members' access is a decision, not a side effect.
+     *  * One that was never approved goes back to the pending state it held
+     *    when it was closed — `pending_verification` and `pending_activation`
+     *    have different owners — and `approve_organisation` is still the only
+     *    road to `active` for it, with everything that gates an approval.
+     *
+     * It demands a reason, like closing, and moves only a row that is still
+     * closed, so two operators cannot reopen it twice.
+     */
+    if (operation === 'reopen_organisation') {
+      const organisationId = String(body.organisation_id || '');
+      if (!organisationId) return json({ error: 'organisation_id is required' }, 400);
+      const reason = String(body.reason || '').trim();
+      if (!reason) return json({ error: 'a_reason_is_required' }, 400);
+      const reinstate = body.reinstate === true;
+
+      const { data: organisation } = await supabase
+        .from('builder_organisations')
+        .select('id, legal_name, status, activated_at, status_before_closure')
+        .eq('id', organisationId)
+        .maybeSingle();
+      if (!organisation) return json({ error: 'organisation_not_found' }, 404);
+      if (organisation.status !== 'closed') {
+        return json({ success: true, already_open: true, status: organisation.status });
+      }
+
+      const wasApproved = Boolean(organisation.activated_at);
+      // A never-approved organisation goes back to the pending state the
+      // close wrote on the row. A closure made before that column existed
+      // says nothing, and the target falls back to `pending_activation`,
+      // which is approved by the same act and gates — so it can misfile an
+      // organisation, never admit one.
+      const reopenedTo: ReopenTarget = reopenTarget({
+        activatedAt: organisation.activated_at,
+        statusBeforeClosure: organisation.status_before_closure,
+        reinstate,
+      });
+      // Each target writes the whole group its CHECK constraints demand:
+      // `active` agrees with `is_active` and carries `activated_at`;
+      // `suspended` carries `suspended_at`. Every target clears
+      // `status_before_closure`, which describes a closure that is over.
+      const patch: Record<string, unknown> = reopenedTo === 'active'
+        ? { status: 'active', is_active: true, suspended_at: null, suspension_reason: null }
+        : reopenedTo === 'suspended'
+          ? {
+            status: 'suspended',
+            is_active: false,
+            suspended_at: new Date().toISOString(),
+            suspension_reason: `Reopened after closure: ${reason}`.slice(0, 500),
+          }
+          : { status: reopenedTo, is_active: false, suspended_at: null, suspension_reason: null };
+      patch.status_before_closure = null;
+      const { data: updated, error: reopenError } = await supabase
+        .from('builder_organisations')
+        .update(patch)
+        .eq('id', organisation.id)
+        .eq('status', 'closed')
+        .select('id')
+        .maybeSingle();
+      if (reopenError || !updated) {
+        if (reopenError) console.error('[builder-network-admin] reopen failed', reopenError);
+        return json({ error: 'reopen_failed' }, 409);
+      }
+      await logActivity('network_organisation_reopened', organisation.id, organisation.id, {
+        reason,
+        reopened_to: reopenedTo,
+        reinstate_requested: reinstate,
+      });
+      return json({ success: true, status: reopenedTo, was_approved: wasApproved });
     }
 
     // ----------------------------------------------------- bootstrap an owner
@@ -384,17 +487,60 @@ Deno.serve(async (req) => {
       if (!read.ok) return json({ error: read.error }, 400);
       const fields = read.fields;
 
-      // One application per address per window. Without this the same
+      // One invitation per address per window. Without this the same
       // mailbox could be applied for repeatedly and each attempt would mail
       // it. Read at submit rather than enforced by a unique index, because a
       // second attempt is evidence worth keeping.
+      //
+      // Only applications that WROTE to the address are counted, plus one
+      // still being acted on. A REFUSED application sent nothing, and counting
+      // it is what told an applicant who had corrected a mistyped ABN that we
+      // "already have" an application we had refused (builderAccessRequest
+      // §3). Separate counts rather than one `.or()` string with a timestamp
+      // interpolated into it: that is a filter PostgREST may not parse, and a
+      // limiter whose predicate never parses is no limiter.
+      //
+      // The third count is the run that got as far as the send and never
+      // settled. It is marked with its organisation BEFORE the send (below),
+      // because the send cannot be undone and the settle after it can fail or
+      // never run — and such a row, read as merely in flight, would release
+      // the address after ten minutes to an application under different
+      // company details that mints a second organisation, re-stamps the
+      // invitation and writes to the address again.
       const since = new Date(Date.now() - APPLICATION_WINDOW_HOURS * 3600_000).toISOString();
-      const { count: recent } = await supabase
-        .from('builder_access_requests')
-        .select('id', { count: 'exact', head: true })
-        .eq('contact_email', fields.contact_email)
-        .gte('created_at', since);
-      if ((recent ?? 0) > 0) {
+      const inFlightSince = new Date(Date.now() - IN_FLIGHT_MINUTES * 60_000).toISOString();
+      const [
+        { count: recent, error: recentError },
+        { count: inFlight, error: inFlightError },
+        { count: unsettled, error: unsettledError },
+      ] = await Promise.all([
+        supabase
+          .from('builder_access_requests')
+          .select('id', { count: 'exact', head: true })
+          .eq('contact_email', fields.contact_email)
+          .in('status', ADDRESS_WINDOW_OUTCOMES)
+          .gte('created_at', since),
+        supabase
+          .from('builder_access_requests')
+          .select('id', { count: 'exact', head: true })
+          .eq('contact_email', fields.contact_email)
+          .eq('status', 'received')
+          .gte('created_at', inFlightSince),
+        supabase
+          .from('builder_access_requests')
+          .select('id', { count: 'exact', head: true })
+          .eq('contact_email', fields.contact_email)
+          .eq('status', 'received')
+          .not('organisation_id', 'is', null)
+          .gte('created_at', since),
+      ]);
+      // As the origin windows below: a count that FAILED is not a count of
+      // zero, so this refuses rather than writes to a mailbox unbounded.
+      if (recentError || inFlightError || unsettledError) {
+        console.error('[builder-network-admin] address window read failed', recentError ?? inFlightError ?? unsettledError);
+        return json({ error: 'application_not_recorded' }, 503);
+      }
+      if ((recent ?? 0) + (inFlight ?? 0) + (unsettled ?? 0) > 0) {
         return json({ error: 'an_application_for_that_address_is_already_with_us' }, 429);
       }
 
@@ -454,11 +600,43 @@ Deno.serve(async (req) => {
         detail: string,
         extra: Record<string, unknown> = {},
       ) => {
-        await supabase
+        const { error: settleError } = await supabase
           .from('builder_access_requests')
           .update({ status, outcome_detail: detail, ...extra })
           .eq('id', request.id);
+        // Not thrown: the applicant's outcome is already decided by now. But
+        // a row left `received` is what the address window reads, so a
+        // failed settle is said where an operator will look.
+        if (settleError) {
+          console.error('[builder-network-admin] access request not settled', request.id, status, settleError);
+        }
       };
+
+      // The owner, read BEFORE anything is created. Reuses the same rules the
+      // operator console's bootstrap answers to: an established account is
+      // ATTACHED and never re-minted, and a withdrawn one is refused — here,
+      // where the refusal leaves nothing behind it. Read after the
+      // organisation it used to leave a brand-new organisation with nobody in
+      // it, holding the applicant's ABN and name, so the corrected application
+      // collided with the debris of the refused one.
+      const { data: existingUser } = await supabase
+        .from('builder_portal_users')
+        .select('id, status, revoked_at, password_hash, invite_accepted_at')
+        .eq('email', fields.contact_email)
+        .maybeSingle();
+      if (existingUser && (existingUser.revoked_at || existingUser.status === 'revoked')) {
+        await settle('refused', 'that_account_has_been_withdrawn');
+        return json({ error: 'that_account_has_been_withdrawn', request_id: request.id }, 409);
+      }
+      const established = Boolean(
+        existingUser && (existingUser.password_hash || existingUser.invite_accepted_at),
+      );
+
+      const minted = established ? null : await mintBuilderInvite();
+      if (!established && !minted) {
+        await settle('refused', 'invite_service_unavailable');
+        return json({ error: 'invite_service_unavailable', request_id: request.id }, 503);
+      }
 
       const { data: organisation, error: organisationError } = await supabase
         .from('builder_organisations')
@@ -481,30 +659,55 @@ Deno.serve(async (req) => {
         return json({ error: detail, request_id: request.id }, conflict ? 409 : 500);
       }
 
-      // The owner. Reuses the same rules the operator console's bootstrap
-      // answers to: an established account is ATTACHED and never re-minted,
-      // a withdrawn one is refused, and the organisation is brand new so
-      // there is nobody to displace.
-      const { data: existingUser } = await supabase
-        .from('builder_portal_users')
-        .select('id, status, revoked_at, password_hash, invite_accepted_at')
-        .eq('email', fields.contact_email)
-        .maybeSingle();
-      if (existingUser && (existingUser.revoked_at || existingUser.status === 'revoked')) {
-        await settle('refused', 'that_account_has_been_withdrawn', {
-          organisation_id: organisation.id,
+      /*
+       * UNDO THE ORGANISATION THIS APPLICATION CREATED, WHEN NOBODY COULD BE
+       * SEATED IN IT.
+       *
+       * Every failure below used to leave the organisation standing — pending,
+       * ownerless, unreachable by anyone, and holding the ABN, ACN and legal
+       * name the applicant would type again. So the retry was refused as a
+       * collision with the failed attempt's own leftover (measured 1 Oct 2026:
+       * `abn_already_registered` and `legal_name_already_registered`, minutes
+       * after an `owner_not_attached`), and only an operator could clear it.
+       *
+       * This is a ROLLBACK, not the operator act the module header forbids.
+       * "Nothing here deletes an organisation" protects the network's record
+       * of who was on one; this row was inserted by this request a few lines
+       * above and nobody has ever been on it, which is checked rather than
+       * assumed: it goes only while it holds no seat at all and is still
+       * exactly as it was born. Anything else — or a delete that fails — is
+       * left standing and recorded against the application, as before. The
+       * application row itself is never removed, so the evidence survives the
+       * organisation.
+       */
+      const abandon = async (
+        detail: string,
+        extra: Record<string, unknown> = {},
+      ) => {
+        let removed = false;
+        const { count: seated, error: seatedError } = await supabase
+          .from('builder_organisation_memberships')
+          .select('id', { count: 'exact', head: true })
+          .eq('organisation_id', organisation.id);
+        if (!seatedError && (seated ?? 0) === 0) {
+          const { data: gone, error: removeError } = await supabase
+            .from('builder_organisations')
+            .delete()
+            .eq('id', organisation.id)
+            .eq('status', 'pending_activation')
+            .is('activated_at', null)
+            .select('id');
+          removed = !removeError && Array.isArray(gone) && gone.length === 1;
+          if (removeError) {
+            console.error('[builder-network-admin] unseated organisation not rolled back', removeError);
+          }
+        }
+        await settle('refused', detail, {
+          ...extra,
+          organisation_id: removed ? null : organisation.id,
         });
-        return json({ error: 'that_account_has_been_withdrawn', request_id: request.id }, 409);
-      }
-      const established = Boolean(
-        existingUser && (existingUser.password_hash || existingUser.invite_accepted_at),
-      );
-
-      const minted = established ? null : await mintBuilderInvite();
-      if (!established && !minted) {
-        await settle('refused', 'invite_service_unavailable', { organisation_id: organisation.id });
-        return json({ error: 'invite_service_unavailable', request_id: request.id }, 503);
-      }
+        return removed;
+      };
 
       let ownerId = existingUser?.id ?? null;
       if (!ownerId) {
@@ -519,7 +722,7 @@ Deno.serve(async (req) => {
           .select('id')
           .single();
         if (createError || !created) {
-          await settle('refused', 'owner_not_created', { organisation_id: organisation.id });
+          await abandon('owner_not_created');
           console.error('[builder-network-admin] access request owner create failed', createError);
           return json({ error: 'owner_not_created', request_id: request.id }, 500);
         }
@@ -557,70 +760,45 @@ Deno.serve(async (req) => {
           .is('revoked_at', null)
           .select('id');
         if (stampError || !Array.isArray(stamped) || stamped.length === 0) {
-          await settle('refused', 'invite_not_issued', {
-            organisation_id: organisation.id,
-            builder_user_id: ownerId,
-          });
+          await abandon('invite_not_issued', { builder_user_id: ownerId });
           console.error('[builder-network-admin] access request invite stamp failed',
             stampError ?? 'the account is no longer an unaccepted invitation; nothing was overwritten');
           return json({ error: 'invite_not_issued', request_id: request.id }, 500);
         }
       }
 
-      const { error: membershipError } = await supabase
-        .from('builder_organisation_memberships')
-        .insert({
-          builder_user_id: ownerId,
-          organisation_id: organisation.id,
-          membership_role: 'owner',
-          is_primary: true,
-          // An owner seat granted to an account that cannot sign in yet WAITS
-          // for that account to accept THIS organisation's invitation. Left
-          // live, an invitation accepted in some other organisation would
-          // bring this seat up with it.
-          status: membershipStatusForGrant({ accountIsActive: established }),
-        });
-      if (membershipError && String(membershipError.code) === '23505' && established) {
-        // An owner seat that is still WAITING, from an earlier approval this
-        // account had not accepted before it went active elsewhere. Nothing is
-        // minted for an established account, so nothing else would ever bring
-        // it up — and this is the operator's own door, so the stranding leaves
-        // an organisation with NO reachable owner and no surface that can fix
-        // it. See `promoteWaitingMembership`.
-        /*
-         * A NO-OP IS NOT AN ATTACHMENT. The insert carries `is_primary: true`,
-         * so its 23505 may be the one-primary key rather than the live key —
-         * in which case there is no waiting row to promote, the promoter
-         * changes nothing, and reporting success would settle the request
-         * `attached` and email "this organisation is now yours to run" over an
-         * organisation with no owner at all. The row count is what tells a
-         * refusal from a grant.
-         */
-        const promotion = await promoteWaitingMembership(supabase, {
-          builderUserId: ownerId,
-          organisationId: organisation.id,
-          membershipRole: 'owner',
-        });
-        const promoteError = promotion.error
-          ?? (promotion.promoted === 0 ? { message: 'no waiting owner seat to promote' } : null);
-        if (promoteError) {
-          await settle('refused', 'owner_not_attached', {
-            organisation_id: organisation.id,
-            builder_user_id: ownerId,
-          });
-          console.error('[builder-network-admin] owner seat still waiting', promoteError.message);
-          return json({ error: 'owner_not_attached', request_id: request.id }, 500);
-        }
-      } else if (membershipError && String(membershipError.code) !== '23505') {
-        await settle('refused', 'owner_not_attached', {
-          organisation_id: organisation.id,
-          builder_user_id: ownerId,
-        });
-        console.error('[builder-network-admin] access request membership failed', membershipError);
+      // The owner seat, through the one grant both operator doors use. An
+      // account whose earlier organisation was CLOSED still holds a primary
+      // seat in it, and the seat granted here used to collide with that on
+      // every application from the same address (builderOwnerSeat.pure.ts).
+      // A grant that changed nothing is a failure, never an attachment: this
+      // door goes on to email "this organisation is now yours to run".
+      const seat = await grantOwnerSeat(supabase, {
+        builderUserId: ownerId,
+        organisationId: organisation.id,
+        accountIsActive: established,
+      });
+      if (!seat.ok) {
+        await abandon('owner_not_attached', { builder_user_id: ownerId });
+        console.error('[builder-network-admin] access request owner seat not granted', seat.reason, seat.message);
         return json({ error: 'owner_not_attached', request_id: request.id }, 500);
       }
 
       await supabase.rpc('builder_ensure_onboarding_steps', { _builder_user_id: ownerId });
+
+      // Marked BEFORE the send. The send cannot be undone, and the settle
+      // after it can fail or never run; a `received` row carrying its
+      // organisation is what the address window holds for the whole day
+      // rather than ten minutes. Not a reason to withhold the email if it
+      // fails — the organisation and invitation already exist, and an
+      // applicant who is never written to is the worse outcome.
+      const { error: markError } = await supabase
+        .from('builder_access_requests')
+        .update({ organisation_id: organisation.id, builder_user_id: ownerId })
+        .eq('id', request.id);
+      if (markError) {
+        console.error('[builder-network-admin] access request not marked before send', request.id, markError);
+      }
 
       // The send is the last thing and cannot unwind any of it. "We created
       // the organisation but could not write to you" is a state an operator
@@ -642,6 +820,7 @@ Deno.serve(async (req) => {
               `Hi ${fields.contact_name},`,
               `Thank you for applying. ${org} has been set up on the ${brand.companyName} Builder / Developer Portal and you are its owner.`,
               'You already have an account, so your existing sign-in still works — the organisation appears in the switcher next time you sign in.',
+              `If you no longer remember that password, choose a new one at ${builderAppBaseUrl()}/builder/forgot-password — no new invitation is needed.`,
             ],
             action: { label: 'Open the Builder Portal', url: builderAppBaseUrl() },
             footnote: 'Your listing is reviewed before it appears in the marketplace; we will be in touch.',
@@ -668,6 +847,8 @@ Deno.serve(async (req) => {
         request_id: request.id,
         email: fields.contact_email,
         outcome: established ? 'attached' : 'provisioned',
+        owner_seat: seat.seat,
+        owner_seat_primary: seat.isPrimary,
         email_sent: emailOutcome.sent,
       });
 
@@ -725,13 +906,22 @@ Deno.serve(async (req) => {
       // the worst outcome is two owners on a row that has never been used —
       // which an owner can fix. A lock here would be ceremony against a fault
       // nobody can produce.
-      const { count: memberCount } = await supabase
+      //
+      // The seats are READ rather than counted, revoked ones included, because
+      // one shape is not a member at all: this door's own earlier invitation
+      // to the same person, still waiting. Re-issuing that is "mint another",
+      // which the console has always advised and this guard used to refuse
+      // (`ownerInvitationMayBeReissued`). Decided below, once the account is
+      // known. A read that FAILED is not an empty organisation.
+      const { data: seated, error: seatedError } = await supabase
         .from('builder_organisation_memberships')
-        .select('id', { count: 'exact', head: true })
+        .select('builder_user_id, membership_role, status, revoked_at')
         .eq('organisation_id', organisationId);
-      if ((memberCount ?? 0) > 0) {
-        return json({ error: 'organisation_already_has_members' }, 409);
+      if (seatedError) {
+        console.error('[builder-network-admin] owner bootstrap could not read the seats', seatedError);
+        return json({ error: 'invite_failed' }, 500);
       }
+      const seats = (seated ?? []) as OrganisationSeat[];
 
       // An account that already exists on the network is never re-minted
       // here: its owner has a password, and issuing an invite link for a live
@@ -767,6 +957,14 @@ Deno.serve(async (req) => {
       const established = Boolean(
         existingUser && (existingUser.password_hash || existingUser.invite_accepted_at),
       );
+
+      const reissue = seats.length > 0 && ownerInvitationMayBeReissued({
+        seats,
+        accountId: existingUser?.id ?? null,
+      });
+      if (seats.length > 0 && !reissue) {
+        return json({ error: 'organisation_already_has_members' }, 409);
+      }
 
       // An established account is never re-stamped, so nothing is minted for
       // it at all — the 503 below is about storing an unpeppered token, and
@@ -846,35 +1044,24 @@ Deno.serve(async (req) => {
         });
       }
 
-      const { error: membershipError } = await supabase
-        .from('builder_organisation_memberships')
-        .insert({
-          builder_user_id: ownerId,
-          organisation_id: organisationId,
-          membership_role: 'owner',
-          is_primary: true,
-          // Waits for this organisation's own invitation — as above.
-          status: membershipStatusForGrant({ accountIsActive: established }),
-        });
-      if (membershipError && String(membershipError.code) === '23505' && established) {
-        // As on the access-request door above: a waiting owner seat that
-        // nothing else can promote.
-        // As above: promoting nothing leaves this organisation with no owner, so
-        // it is a failure rather than a quiet success.
-        const promotion = await promoteWaitingMembership(supabase, {
-          builderUserId: ownerId,
-          organisationId: organisationId,
-          membershipRole: 'owner',
-        });
-        const promoteError = promotion.error
-          ?? (promotion.promoted === 0 ? { message: 'no waiting owner seat to promote' } : null);
-        if (promoteError) {
-          console.error('[builder-network-admin] owner seat still waiting', promoteError.message);
-          return json({ error: 'invite_failed' }, 500);
-        }
-      } else if (membershipError && String(membershipError.code) !== '23505') {
-        console.error('[builder-network-admin] owner membership failed', membershipError);
-        return json({ error: 'invite_failed' }, 500);
+      // The owner seat, through the one grant both operator doors use. This
+      // door failed six times running on 1 Oct 2026 with `invite_failed` and
+      // nothing else: the address had owned an organisation that was later
+      // CLOSED, still held its primary seat there, and every attempt to seat
+      // it here collided with that one (builderOwnerSeat.pure.ts).
+      const seat = await grantOwnerSeat(supabase, {
+        builderUserId: ownerId,
+        organisationId: organisationId,
+        accountIsActive: established,
+      });
+      if (!seat.ok) {
+        console.error('[builder-network-admin] owner seat not granted', seat.reason, seat.message);
+        // A seat this organisation already holds for them in another shape —
+        // suspended, or not an owner — is somebody's decision, so it is named
+        // rather than overruled. Everything else is the old `invite_failed`.
+        return seat.reason === 'seat_held_otherwise'
+          ? json({ error: 'owner_seat_held_otherwise' }, 409)
+          : json({ error: 'invite_failed' }, 500);
       }
 
       await supabase.rpc('builder_ensure_onboarding_steps', { _builder_user_id: ownerId });
@@ -883,8 +1070,17 @@ Deno.serve(async (req) => {
       // granted and the token already stored, so a mail failure must never
       // read as an invitation that was not issued. Its outcome travels back
       // beside the link rather than instead of it.
+      //
+      // Except where the link is WITHHELD from the operator: then the email
+      // is the only road the credential has to its owner, and a console that
+      // unticked "Email it to them" would leave a person invited by a link
+      // nobody holds — with this door refusing a second attempt, because the
+      // organisation now has a member. Writing to the address the invitation
+      // is FOR hands nobody else anything.
+      const mustEmail = !established && !linkIsTheirs;
+      const emailRequested = body.send_email === true || mustEmail;
       let emailOutcome: InviteEmailOutcome | null = null;
-      if (body.send_email === true) {
+      if (emailRequested) {
         const brand = await getBrandConfig();
         const org = organisation.legal_name;
         emailOutcome = await sendBuilderEmail({
@@ -901,6 +1097,7 @@ Deno.serve(async (req) => {
                   `Hi ${name},`,
                   `You have been made the owner of ${org} on the ${brand.companyName} Builder / Developer Portal.`,
                   'Your existing sign-in still works — nothing about your account has changed. The organisation appears in the switcher next time you sign in.',
+                  `If you no longer remember that password, choose a new one at ${builderAppBaseUrl()}/builder/forgot-password — no new invitation is needed.`,
                 ],
                 action: { label: 'Open the Builder Portal', url: builderAppBaseUrl() },
                 footnote: 'As its owner you can invite your own colleagues from inside the portal.',
@@ -926,6 +1123,10 @@ Deno.serve(async (req) => {
           email,
           membership_role: 'owner',
           outcome: established ? 'attached' : 'invited',
+          owner_seat: seat.seat,
+          owner_seat_primary: seat.isPrimary,
+          link_withheld: !established && !linkIsTheirs,
+          reissued: reissue,
           email_sent: emailOutcome?.sent ?? null,
         },
       );
@@ -954,10 +1155,22 @@ Deno.serve(async (req) => {
          * says so: "the link is the credential".
          */
         invite_url: established || !linkIsTheirs ? null : minted!.url,
+        /*
+         * WHY THE LINK IS ABSENT, said rather than left for the console to
+         * guess. An invitation was minted and stored — the address can accept
+         * it from the email — but this response does not carry it, because
+         * the account already belongs to another organisation (a closed one
+         * counts: its seat still names the person). The console read the
+         * absence as an empty link and drew an empty box to copy it from.
+         */
+        link_withheld: !established && !linkIsTheirs,
+        // The same person's waiting invitation issued again: any link minted
+        // before this one no longer works.
+        reissued: reissue,
         expires_at: established ? null : minted!.expiresAt.toISOString(),
         expires_in_hours: established ? null : INVITE_EXPIRY_HOURS,
         organisation_legal_name: organisation.legal_name,
-        email_requested: body.send_email === true,
+        email_requested: emailRequested,
         email_sent: emailOutcome?.sent ?? false,
         email_failure: emailOutcome && !emailOutcome.sent ? emailOutcome.reason : null,
       });

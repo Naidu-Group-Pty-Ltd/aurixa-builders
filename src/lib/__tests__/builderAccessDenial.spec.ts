@@ -86,10 +86,15 @@ describe('the other organisation states', () => {
     expect(reading.message).toMatch(/approved/i);
   });
 
-  it('names a closed organisation and does not promise a route back', () => {
+  it('names a closed organisation and the one party who can reopen it', () => {
+    // Closing keeps the organisation's records and the network operator can
+    // reopen it (`reopen_organisation`), so the sentence names that route —
+    // and only that route: nothing the member does from here reopens it.
     const reading = readAccessDenial([membership({ organisation_status: 'closed' })], NOW);
     expect(reading.code).toBe('organisation_closed');
-    expect(reading.message).toMatch(/cannot be reopened/i);
+    expect(reading.message).toMatch(/closed/i);
+    expect(reading.message).toMatch(/network operator can reopen/i);
+    expect(reading.message).not.toMatch(/cannot be reopened/i);
   });
 
   it('says nothing new about an organisation state it cannot classify', () => {

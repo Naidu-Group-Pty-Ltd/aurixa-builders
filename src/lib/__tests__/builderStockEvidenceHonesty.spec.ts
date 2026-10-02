@@ -244,7 +244,15 @@ describe('the builder can reach the properties that are holding their list', () 
     const page = readCode('src/pages/builder/BuilderStockList.tsx');
     expect(page).toContain('useBuilderStockHeldItems');
     expect(page).toContain('heldWithoutPhoto');
-    expect(page).toContain('heldPropertiesHeading(heldWithoutPhoto.length)');
+    /*
+     * RENEGOTIATED 2 OCTOBER 2026. The heading over this section counted the
+     * properties a PHOTOGRAPH would release, and for a fortnight that was
+     * also the only thing the section LISTED — so a property the engine was
+     * still working on was filtered out of it, and a whole import could be
+     * invisible. The section lists every staged row now and the photo count
+     * qualifies the heading, so both figures are stated.
+     */
+    expect(page).toContain('stagedPropertiesHeading(stagedRows.length, heldWithoutPhoto.length)');
     // The sentence that told a builder the rest of their list was fine while
     // five properties held all 47 of them invisible.
     expect(page).not.toContain('The rest of your list is unaffected');

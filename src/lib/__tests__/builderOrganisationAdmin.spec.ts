@@ -12,6 +12,7 @@ import {
   ORG_TYPES,
   readOrganisationInput,
 } from '../../../supabase/functions/_shared/builderOrganisationInput.pure';
+import { reopenTarget } from '../../../supabase/functions/_shared/builderOrganisationReopen.pure';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const read = (p: string) => readFileSync(join(REPO_ROOT, p), 'utf8');
@@ -228,27 +229,133 @@ describe('the lifecycle columns are not writable here', () => {
 describe('closing an organisation', () => {
   const code = readCode('supabase/functions/builder-network-admin/index.ts');
 
-  it('demands a reason and is terminal', () => {
+  it('demands a reason and writes only the organisation row', () => {
     expect(code).toContain("operation === 'close_organisation'");
     expect(code).toMatch(/close_organisation[\s\S]{0,900}a_reason_is_required/);
     expect(code).toMatch(/close_organisation[\s\S]{0,1400}status:\s*'closed',\s*is_active:\s*false/);
+    // Members, seats, listings and connections are untouched, which is what
+    // makes a closure reversible at all.
+    const close = code.slice(code.indexOf("operation === 'close_organisation'"), code.indexOf("operation === 'reopen_organisation'"));
+    expect(close).not.toMatch(/builder_organisation_memberships|builder_portal_users|\.delete\(/);
   });
 
-  it('never deletes the organisation', () => {
+  it('never deletes an organisation anybody used', () => {
     // The network's record of who was on it is not an operator's to destroy.
-    expect(code).not.toMatch(/from\('builder_organisations'\)\s*\.delete\(/);
-    expect(code).not.toMatch(/\.delete\(\)[\s\S]{0,80}builder_organisations/);
+    // The ONE delete is an application rolling back the empty row it created
+    // seconds earlier when it could not seat the owner — and it can only ever
+    // reach that row: by its id, still unapproved, never activated, and only
+    // after counting no member in it. Anything wider would let a failed
+    // application reach an organisation somebody runs.
+    const deletes = [...code.matchAll(/from\('builder_organisations'\)\s*\.delete\(\)/g)];
+    expect(deletes.length).toBe(1);
+    const at = deletes[0].index ?? 0;
+    const statement = code.slice(at, at + 400);
+    expect(statement).toMatch(/\.eq\('id', organisation\.id\)/);
+    expect(statement).toMatch(/\.eq\('status', 'pending_activation'\)/);
+    expect(statement).toMatch(/\.is\('activated_at', null\)/);
+    const before = code.slice(Math.max(0, at - 600), at);
+    expect(before).toMatch(/builder_organisation_memberships'\)[\s\S]{0,200}count:\s*'exact'/);
+    expect(before).toMatch(/\(seated \?\? 0\) === 0/);
+    const application = code.slice(code.indexOf("operation === 'submit_access_request'"));
+    expect(application.indexOf("from('builder_organisations')")).toBeGreaterThan(-1);
+    expect(code.indexOf("operation === 'submit_access_request'")).toBeLessThan(at);
+  });
+});
+
+describe('reopening a closed organisation', () => {
+  const code = readCode('supabase/functions/builder-network-admin/index.ts');
+  const reopen = code.slice(
+    code.indexOf("operation === 'reopen_organisation'"),
+    code.indexOf("if (operation === '", code.indexOf("operation === 'reopen_organisation'") + 1),
+  );
+
+  it('exists, and demands a reason like closing does', () => {
+    expect(reopen.length).toBeGreaterThan(0);
+    expect(reopen).toMatch(/a_reason_is_required/);
+  });
+
+  it('moves only a row that is still closed, so two operators cannot reopen it twice', () => {
+    expect(reopen).toMatch(/\.eq\('status', 'closed'\)/);
+    expect(reopen).toMatch(/already_open: true/);
+    expect(reopen).toMatch(/reopen_failed/);
+  });
+
+  it('never makes an organisation more than it was', () => {
+    // Approved: suspended, unless access is restored in the same act by an
+    // explicit choice. Never approved: back to a pending state, where every
+    // gate on an approval still applies.
+    expect(reopenTarget({ activatedAt: '2026-09-01T00:00:00Z', statusBeforeClosure: 'active', reinstate: false }))
+      .toBe('suspended');
+    expect(reopenTarget({ activatedAt: '2026-09-01T00:00:00Z', statusBeforeClosure: 'active', reinstate: true }))
+      .toBe('active');
+    for (const before of ['pending_verification', 'pending_activation', 'suspended', 'active', null, undefined, 42]) {
+      for (const reinstate of [false, true]) {
+        expect(['pending_verification', 'pending_activation'])
+          .toContain(reopenTarget({ activatedAt: null, statusBeforeClosure: before, reinstate }));
+      }
+    }
+    expect(reopen).toMatch(/const reinstate = body\.reinstate === true/);
+    expect(reopen).toMatch(/reopenTarget\(\{\s*activatedAt: organisation\.activated_at/);
+  });
+
+  it('returns a never-approved organisation to the pending state it was closed in', () => {
+    // The two pending states have different owners (registration migration
+    // 20260914200000); reading `activated_at` alone sent a registration
+    // closed while it was being vetted into the operator-created queue.
+    expect(reopenTarget({ activatedAt: null, statusBeforeClosure: 'pending_verification', reinstate: false }))
+      .toBe('pending_verification');
+    expect(reopenTarget({ activatedAt: null, statusBeforeClosure: 'pending_activation', reinstate: false }))
+      .toBe('pending_activation');
+    // A closure made before the column existed says nothing.
+    expect(reopenTarget({ activatedAt: null, statusBeforeClosure: null, reinstate: false }))
+      .toBe('pending_activation');
+    expect(reopenTarget({ activatedAt: null, statusBeforeClosure: undefined, reinstate: false }))
+      .toBe('pending_activation');
+  });
+
+  it('reads what it was from the row the close wrote, never from the activity log', () => {
+    const close = code.slice(code.indexOf("operation === 'close_organisation'"), code.indexOf("operation === 'reopen_organisation'"));
+    // Written in the same update that closes it, and only over the status
+    // that was read: a status that moved in between is refused, not recorded.
+    expect(close).toMatch(/\.update\(\{ status: 'closed', is_active: false, status_before_closure: organisation\.status \}\)\s*\.eq\('id', organisation\.id\)\s*\.eq\('status', organisation\.status\)/);
+    expect(reopen).toMatch(/\.select\('id, legal_name, status, activated_at, status_before_closure'\)/);
+    expect(reopen).toMatch(/statusBeforeClosure: organisation\.status_before_closure/);
+    // Every target clears it: it describes a closure that is over.
+    expect(reopen).toMatch(/patch\.status_before_closure = null;\s*const \{ data: updated, error: reopenError \} = await supabase\s*\.from\('builder_organisations'\)\s*\.update\(patch\)/);
+    expect(reopen).not.toMatch(/builder_portal_activity_log/);
+
+    const migration = read('supabase/migrations/20261001160000_a_closure_remembers_what_it_closed.sql');
+    expect(migration).toMatch(/ADD COLUMN IF NOT EXISTS status_before_closure text/);
+    // The column holds only a status an organisation can be closed FROM.
+    expect(migration).toMatch(/'pending_verification'::text,\s*'pending_activation'::text,\s*'active'::text,\s*'suspended'::text/);
+    expect(migration).not.toMatch(/'closed'::text/);
+  });
+
+  it('writes every column a target status is constrained to carry', () => {
+    // `status_active_agree`, and `suspended` carries `suspended_at`.
+    expect(reopen).toMatch(/status: 'active', is_active: true/);
+    expect(reopen).toMatch(/status: 'suspended',\s*is_active: false,\s*suspended_at: new Date\(\)\.toISOString\(\)/);
+    // The pending branch writes whichever pending state was chosen, and only
+    // a pending state reaches it: the two approved targets are handled first.
+    expect(reopen).toMatch(/: \{ status: reopenedTo, is_active: false, suspended_at: null, suspension_reason: null \}/);
+  });
+
+  it('touches nothing but the organisation row, and records why', () => {
+    expect(reopen).not.toMatch(/builder_organisation_memberships|builder_portal_users|\.delete\(/);
+    expect(reopen).toMatch(/logActivity\('network_organisation_reopened'/);
   });
 });
 
 describe('bootstrapping the first owner', () => {
   const code = readCode('supabase/functions/builder-network-admin/index.ts');
 
-  it('refuses once the organisation has any member', () => {
+  it('refuses once the organisation has any member other than its own waiting invitee', () => {
     // The module header's rule: a platform that decides membership in
-    // somebody else's organisation has re-grown the shape this replaced.
+    // somebody else's organisation has re-grown the shape this replaced. The
+    // one exception is not a member at all — this door's own invitation to
+    // the same person, still waiting, issued again.
     expect(code).toContain('organisation_already_has_members');
-    expect(code).toMatch(/builder_organisation_memberships[\s\S]{0,300}count:\s*'exact'/);
+    expect(code).toMatch(/ownerInvitationMayBeReissued\(\{\s*seats,\s*accountId: existingUser\?\.id \?\? null,\s*\}\)/);
   });
 
   /*

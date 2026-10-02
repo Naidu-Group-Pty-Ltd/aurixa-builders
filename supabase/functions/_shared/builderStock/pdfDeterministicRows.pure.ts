@@ -812,7 +812,11 @@ type ClaimSource =
   | 'area_schedule'
   | 'price_sum'
   | 'figure_noun'
-  | 'unit_heading';
+  | 'unit_heading'
+  /** A field the document stated twice, settled by the name its builder gave the file. */
+  | 'filename_settles_dispute'
+  /** An address line whose own lot contradicted the settled lot, and lost it. */
+  | 'lot_contradicted_dropped';
 
 /** Stamp a reader's name on what it produced, without rewriting the reader. */
 function via(source: ClaimSource, claims: readonly Claim[]): Claim[] {
@@ -2842,7 +2846,11 @@ export function readComposedAddressLine(line: string): ComposedAddress | null {
   let lot: string | null = null;
   const numbered = head.match(LOT_WITH_STREET_NUMBER);
   if (numbered) {
-    const name = readStreetName(head.slice(numbered[0].length));
+    // Only the segment the number leads is the street's name: anything after a
+    // comma is another segment, and reading it as part of the name is what the
+    // rule below exists to stop.
+    const after = head.slice(numbered[0].length).split(ADDRESS_SEGMENT_SEPARATOR)[0] ?? '';
+    const name = readStreetName(after);
     return name
       ? { street: `${numbered[2]} ${name}`, lot: numbered[1], development: null, ...locality }
       : null;
@@ -2869,17 +2877,90 @@ export function readComposedAddressLine(line: string): ComposedAddress | null {
    * it says so — a segment that merely looks like a name stays unread, and
    * the alternative on that document was `PROPLAUNCH`, read off a caption.
    */
-  const named = head.match(NAMED_DEVELOPMENT);
-  const development = named ? `${named[1]} ${named[2]}` : null;
+  /*
+   * ===========================================================================
+   * THE HEAD IS SEGMENTS, AND EACH ONE IS ASKED WHAT IT IS.
+   * ===========================================================================
+   *
+   * `Lot 208, 46 Satinwood Crescent, Peppercorn Hill, Donnybrook VIC 3064`
+   * read as NOTHING, and the whole brochure with it. The street and the
+   * locality are both stated plainly; what stood between them was an estate
+   * name that does not say it is one. Asking the JOINED head for a street
+   * cannot answer — `46 Satinwood Crescent, Peppercorn Hill` ends in no street
+   * type and carries a digit — so a line that states more voided itself where
+   * the same line stating less was read. (Measured 2 October 2026 on a real
+   * package; the same document's `Lot 208, 46 Satinwood Crescent, Donnybrook
+   * VIC 3064` reads.)
+   *
+   * AND THE JOIN LOST A STREET IT HAD. `Lot 12, 5 Hill Road, Riverstone
+   * Estate, Truganina VIC 3029` matched `NAMED_DEVELOPMENT` across the comma
+   * and produced development `5 Hill Road, Riverstone Estate` with NO STREET
+   * AT ALL — the street number swallowed into an estate's name, which is how a
+   * pin ends up on nobody's house. That one shipped silently.
+   *
+   * So each segment is asked on its own, and in this order:
+   *
+   *   • A segment that DECLARES itself a development is the development. Asked
+   *     first, and per segment, because several words in `NAMED_DEVELOPMENT`
+   *     are also street types — `Coridale Estate` has always been the estate
+   *     rather than a street called Estate, and that must not move.
+   *   • A NUMBERED street outranks a bare name, wherever it sits, so a
+   *     numbered street is never lost to a segment that merely reads like one.
+   *   • A segment that is NEITHER is left unread. It is never promoted to the
+   *     development — `Peppercorn Hill` says nothing about what it is, and the
+   *     alternative on one of these documents was `PROPLAUNCH` read off a
+   *     caption, which is the deliberate rule above this one. What changes is
+   *     only that an unread segment no longer destroys the address stated
+   *     either side of it.
+   */
+  const headSegments = head
+    .split(ADDRESS_SEGMENT_SEPARATOR).map((segment) => segment.trim()).filter(Boolean);
+
+  let development: string | null = null;
+  let developmentAt = -1;
+  for (let index = 0; index < headSegments.length; index += 1) {
+    const named = headSegments[index].match(NAMED_DEVELOPMENT);
+    if (!named) continue;
+    development = `${named[1]} ${named[2]}`;
+    developmentAt = index;
+    break;
+  }
+  // One segment is one thing: the segment taken as the development is not then
+  // also offered as the street.
+  const streetSegments = headSegments.filter((_, index) => index !== developmentAt);
+
+  /*
+   * AND TWO STREETS IS NOT A STREET.
+   *
+   * Taking the first of several was choosing by segment order, which is the
+   * one thing the dispute rules here never do: on
+   * `Lot 12, 5 Hill Road, 7 Main Street, Truganina VIC 3029` the joined
+   * parsing refused, and reading segment by segment must not quietly import
+   * the first and discard a contradictory second address. So each TIER is
+   * required to be unanimous — a numbered street still outranks a bare name,
+   * because a number is strictly more specific, but two DISTINCT numbered
+   * streets (or, with none, two distinct names) refuse the line as before.
+   */
+  const distinct = (values: readonly (string | null)[]): string[] =>
+    [...new Map(values.filter((value): value is string => !!value)
+      .map((value) => [flattenIdentity(value), value])).values()];
+
+  const numberedStreets = distinct(streetSegments.map((segment) => readStreetLine(segment)));
+  const namedStreets = distinct(streetSegments.map((segment) => readStreetName(segment)));
+  if (numberedStreets.length > 1) return null;
+  let street: string | null = numberedStreets[0] ?? null;
+  if (!street) {
+    if (namedStreets.length > 1) return null;
+    street = namedStreets[0] ?? null;
+  }
+
+  if (street) {
+    return { street, lot, unit: unit ?? unitOfStreet(street), development, ...locality };
+  }
+  // A development and no street is the shape `Lot 1482, Coridale Estate` has
+  // always had, and it is unchanged.
   if (development) return { street: '', lot, development, ...locality };
-
-  // Either shape of street is acceptable, and both are the existing rules:
-  // numbered streets answer to `readStreetLine`, unnumbered ones to
-  // `readStreetName`. Neither invents a number the line does not carry.
-  const street = readStreetLine(head) ?? readStreetName(head);
-  if (!street) return null;
-
-  return { street, lot, unit: unit ?? unitOfStreet(street), development: null, ...locality };
+  return null;
 }
 
 /**
@@ -4523,6 +4604,80 @@ const FILENAME_CORROBORATION_ANCHORS = [
   'development_name', 'project_name', 'address_line', 'external_reference',
 ] as const;
 
+/**
+ * The lot the builder's own filename names, or null.
+ *
+ * ONE READER, because two places now ask it: the design corroboration below,
+ * which REFUSES a filename naming a different lot from the document, and the
+ * dispute settler, which uses it when the DOCUMENT names two. Those are
+ * opposite uses of the same fact and they must read it the same way.
+ */
+export function filenameLotNumber(filename: string | null | undefined): string | null {
+  const raw = String(filename ?? '').trim();
+  if (!raw) return null;
+  const fileTokens = nameTokens(raw.replace(/\.[A-Za-z0-9]{1,5}$/, ''));
+  for (let index = 0; index < fileTokens.length - 1; index++) {
+    if (fieldForHeader(fileTokens[index]) !== 'lot_number') continue;
+    const stated = fileTokens[index + 1];
+    if (!LOT_DESIGNATION.test(stated)) continue;
+    return stated;
+  }
+  return null;
+}
+
+/**
+ * The two fields a builder's own filename legitimately speaks about.
+ *
+ * DELIBERATELY NOT `price`, `address_line` or the measurements: a filename
+ * names WHICH PROPERTY a document is, and nothing else. A rule wide enough to
+ * settle a price from a filename is one that will.
+ */
+const FILENAME_MAY_SETTLE: ReadonlySet<string> = new Set(['lot_number', 'house_design']);
+
+/**
+ * Does the builder's own filename corroborate this reading of this field?
+ *
+ * A LOT MUST MATCH OUTRIGHT — `LOT 115` corroborates 115 and nothing else.
+ * A DESIGN IS CORROBORATED BY A SHARED NAME: `LOT 115 - VANTA 23 V002.pdf`
+ * shares `VANTA` with `VANTA 23 - CLEO` and shares nothing at all with
+ * `Architecturally designed facades & floor plan`, which is a line off the
+ * inclusions list and not a house. A bare number is never the shared word —
+ * every one of these filenames carries a lot number, and matching on digits
+ * would corroborate anything.
+ */
+function filenameCorroborates(
+  filename: string | null | undefined, field: string, value: string,
+): boolean {
+  if (field === 'lot_number') {
+    const named = filenameLotNumber(filename);
+    return !!named && flattenIdentity(named) === flattenIdentity(value);
+  }
+  const stem = String(filename ?? '').trim().replace(/\.[A-Za-z0-9]{1,5}$/, '');
+  const inFilename = new Set(nameTokens(stem).map((token) => flattenIdentity(token)));
+  if (!inFilename.size) return false;
+  return nameTokens(String(value ?? ''))
+    .map((token) => flattenIdentity(token))
+    .filter((token) => /[a-z]/i.test(token) && !GENERIC_FILENAME_WORDS.has(token))
+    .some((token) => inFilename.has(token));
+}
+
+/**
+ * Words a builder's filename carries about the DOCUMENT rather than the house.
+ *
+ * Without this the shared-name test corroborates anything: `LOT 315 - HOUSE
+ * DESIGN PACKAGE.pdf` shares `design` with `Enzo 8.5 Design` and nothing with
+ * `Nex 20`, so a filename that names no house at all would settle which house
+ * it is. A name must be the PROPERTY's to speak for it.
+ */
+const GENERIC_FILENAME_WORDS: ReadonlySet<string> = new Set([
+  'lot', 'lots', 'house', 'home', 'homes', 'design', 'designs', 'package',
+  'packages', 'plan', 'plans', 'floor', 'floorplan', 'facade', 'facades',
+  'elevation', 'brochure', 'flyer', 'estate', 'stage', 'property', 'land',
+  'build', 'builder', 'turnkey', 'inclusions', 'price', 'pricing', 'quote',
+  'draft', 'final', 'copy', 'version', 'street', 'road', 'avenue', 'drive',
+  'court', 'crescent', 'place', 'way', 'close', 'rise', 'park', 'grove',
+]);
+
 export function corroborateDesignFromFilename(input: {
   filename: string | null | undefined;
   unresolved: readonly string[];
@@ -4535,13 +4690,10 @@ export function corroborateDesignFromFilename(input: {
   if (!fileTokens.length) return null;
 
   // The lot the filename names, if it names one.
-  for (let index = 0; index < fileTokens.length - 1; index++) {
-    if (fieldForHeader(fileTokens[index]) !== 'lot_number') continue;
-    const stated = fileTokens[index + 1];
-    if (!LOT_DESIGNATION.test(stated)) continue;
+  const statedLot = filenameLotNumber(raw);
+  if (statedLot) {
     const held = input.claimed.get('lot_number');
-    if (held && flattenIdentity(held) !== flattenIdentity(stated)) return 'lot_mismatch';
-    break;
+    if (held && flattenIdentity(held) !== flattenIdentity(statedLot)) return 'lot_mismatch';
   }
 
   if (input.claimed.has('house_design')) return null;
@@ -5893,6 +6045,41 @@ export function readPdfBrochure(
            * reading — whichever came first is an accident of page order, and
            * keeping it would be choosing.
            */
+          /*
+           * ================================================================
+           * A DOCUMENT THAT NAMES TWO LOTS, WHERE ITS OWN FILE NAMES ONE.
+           * ================================================================
+           *
+           * MEASURED 2 OCTOBER 2026 on a real package. `LOT 115 - VANTA 23
+           * V002.pdf` sets `Lot 115 Sabino Street` on its cover and
+           * `Site Address: Lot 114 SABINO STREET` on its siting diagram —
+           * one mention each, so the rule above dropped the document whole
+           * and the builder was told their brochure could not be read.
+           *
+           * The builder NAMED THE FILE after the property it is about, and
+           * that is a statement about which lot this document is, made by
+           * the person who made it. Where it matches exactly ONE of the two
+           * readings, the document is no longer saying two things: it is
+           * saying one, and mentioning its neighbour.
+           *
+           * THIS IS NOT THE READER CHOOSING. It never picks the first, the
+           * last, or the more frequent — those are accidents of page order.
+           * It acts only on evidence from OUTSIDE the disputed lines, and
+           * only when that evidence lands on one of them. A filename naming
+           * NEITHER value, or naming no lot at all, refuses exactly as
+           * before — and a filename that disagrees with a lot the document
+           * was never in doubt about is still `lot_mismatch`, which is the
+           * opposite question and is unchanged.
+           */
+          if (FILENAME_MAY_SETTLE.has(claim.field)) {
+            const keepsExisting = filenameCorroborates(options.filename, claim.field, existing);
+            const keepsClaim = filenameCorroborates(options.filename, claim.field, claim.value);
+            if (keepsExisting !== keepsClaim) {
+              claimed.set(claim.field, keepsExisting ? existing : claim.value);
+              readBy.set(claim.field, 'filename_settles_dispute');
+              continue;
+            }
+          }
           if (MATERIAL_FIELDS.has(claim.field)) {
             diagnostics.conflictField = claim.field;
             diagnostics.fieldsRead = fieldsSoFar();
@@ -6243,6 +6430,63 @@ export function readPdfBrochure(
   if (corroborated && !readsAsPromotion(corroborated.claim.value)) {
     claimed.set('house_design', trimSeparators(corroborated.claim).value);
     readBy.set('house_design', 'filename');
+  }
+
+  /*
+   * AN ADDRESS LINE MAY NOT CARRY A LOT THE RECORD HAS SETTLED AGAINST.
+   *
+   * MEASURED 2 OCTOBER 2026. `LOT 115 - VANTA 23 V002.pdf` states `Lot 115
+   * Sabino Street` on its cover and `Site Address: Lot 114 SABINO STREET` on
+   * its siting diagram. Once the filename settles the lot at 115, the address
+   * line read off the siting page still began `Lot 114` — so the record would
+   * have carried lot 115 and an address naming its neighbour, which is worse
+   * than either reading alone and is the one combination nothing else here
+   * would have caught.
+   *
+   * ONLY THE CONTRADICTED TOKEN GOES. The street is what the line is for and
+   * it is kept exactly as stated; nothing is renumbered and no lot is written
+   * into an address that never carried one. Where the line's lot AGREES, or
+   * the line names no lot, or no lot was settled, this does nothing.
+   */
+  const settledLot = claimed.get('lot_number');
+  const addressClaim = claimed.get('address_line');
+  if (settledLot && addressClaim) {
+    const carried = addressClaim.match(LEADING_LOT);
+    const contradicts = !!carried && flattenIdentity(carried[1]) !== flattenIdentity(settledLot);
+    if (contradicts) {
+      const withoutLot = addressClaim.slice(carried![0].length).trim();
+      if (withoutLot) {
+        claimed.set('address_line', withoutLot);
+        readBy.set('address_line', 'lot_contradicted_dropped');
+      } else {
+        claimed.delete('address_line');
+      }
+    }
+    /*
+     * AND A STREET NUMBER IS A DIFFERENT HOUSE, NOT A DIFFERENT SPELLING.
+     *
+     * The check above sees a lot only while it is still ON the line. But
+     * `Site Address: Lot 114 22 Sabino Street` is split BEFORE this — the lot
+     * becomes its own claim and the address line keeps `22 Sabino Street`, so
+     * nothing here can tell it apart from the settled lot's own address. The
+     * result would be lot 115 at lot 114's street number, which is the exact
+     * failure this product may not ship: a pin on somebody else's house.
+     *
+     * So where the lot had to be SETTLED — the document said two things — an
+     * address carrying a STREET NUMBER is dropped unless it names the lot that
+     * won. An unnumbered street name is kept, because a street is not specific
+     * to a lot and `Sabino Street` is true of both. Nothing is invented and
+     * nothing is renumbered; the row keeps its lot, its suburb and its state.
+     */
+    if (readBy.get('lot_number') === 'filename_settles_dispute') {
+      const line = claimed.get('address_line');
+      const vouches = !!line && !!line.match(LEADING_LOT)
+        && flattenIdentity(line.match(LEADING_LOT)![1]) === flattenIdentity(settledLot);
+      if (line && !vouches && readStreetLine(line)) {
+        claimed.delete('address_line');
+        readBy.delete('address_line');
+      }
+    }
   }
   /*
    * A SUBURB THAT IS THE HOUSE'S OWN DESIGN IS NOT A SUBURB. An address block
