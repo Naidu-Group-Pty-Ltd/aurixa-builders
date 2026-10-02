@@ -553,6 +553,82 @@ async function withDeadline<T>(
   }
 }
 
+/**
+ * ===========================================================================
+ * THE BYTES GO STRAIGHT TO STORAGE, AND A DROPPED CONNECTION IS NOT A REFUSAL.
+ * ===========================================================================
+ *
+ * This is the one request in the import that does NOT go through
+ * `invokeBuilderFunction`, because it is a signed PUT to the object store
+ * rather than a call to a function of ours. It inherited none of that
+ * wrapper's care, and on 2 October 2026 a builder saw what that costs: a 4 MB
+ * package whose PUT never completed, reported as the destructive **"The stock
+ * list could not be imported — Failed to fetch"**. Both halves were wrong.
+ * Nothing had been imported because nothing had been UPLOADED, and "Failed to
+ * fetch" is the browser's words about this tab, not an answer from anywhere.
+ *
+ * A rejected `fetch` on a multi-megabyte body is the shape a flaky link makes,
+ * and it is cured by asking again — so the PUT is retried, briefly and a
+ * bounded number of times, and ONLY on a rejection: a response that ARRIVED
+ * and said no is a real refusal (too large, wrong type, a spent URL) and
+ * asking again would fail twice and take twice as long to say so.
+ *
+ * AND A REJECTION DOES NOT PROVE THE BYTES DID NOT LAND. This is the half that
+ * makes the retry safe rather than merely hopeful. A connection can drop after
+ * the body is sent and before the response returns, and then the object EXISTS
+ * — so a second attempt meets a signed URL minted for a path that is now
+ * occupied and is refused as a duplicate. Asserting either way from here would
+ * be guessing about bytes this tab cannot see: it would either strand a file
+ * that uploaded perfectly, or tell a builder nothing happened when something
+ * had.
+ *
+ * So after a rejection this stops answering the question and asks the SERVER,
+ * which can look. `null` means "proceed and let `process_upload` say": it
+ * reads the object, and where there is nothing to read it already refuses in
+ * its own words — "The uploaded file could not be read. Please upload it
+ * again." One authority, which is the one that can actually see the bucket.
+ *
+ * THE DEADLINE IS NOT RESTARTED BY A RETRY. `FILE_UPLOAD_TIMEOUT_MS` is the
+ * budget for getting this file up, not per attempt, or three attempts would
+ * quietly buy fifteen minutes.
+ */
+const FILE_UPLOAD_ATTEMPTS = 3;
+
+/**
+ * The store's own answer, or `null` where only the server can settle it.
+ *
+ * A first attempt that ANSWERS is returned untouched, so an upload that works
+ * — and one the store refuses outright — behaves exactly as it did.
+ */
+async function putTheFile(signedUrl: string, file: File): Promise<Response | null> {
+  const started = Date.now();
+  let rejectedBefore = false;
+  for (let attempt = 1; attempt <= FILE_UPLOAD_ATTEMPTS; attempt += 1) {
+    const left = FILE_UPLOAD_TIMEOUT_MS - (Date.now() - started);
+    if (left <= 0) break;
+    try {
+      const response = await withDeadline('uploading the file', left, (signal) => fetch(signedUrl, {
+        method: 'PUT',
+        headers: { 'content-type': file.type || 'application/octet-stream' },
+        body: file,
+        signal,
+      }));
+      if (response.ok || !rejectedBefore) return response;
+      // Refused AFTER a rejection: the likeliest reason is that an earlier
+      // attempt's bytes did land and this path is taken. Not decided here.
+      return null;
+    } catch (error) {
+      // A deadline is the budget for the whole upload, so it is final.
+      if (error instanceof StockRequestDeadlineExceeded) throw error;
+      rejectedBefore = true;
+      if (attempt < FILE_UPLOAD_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
+      }
+    }
+  }
+  return null;
+}
+
 /** One bounded `builder-portal-stock` call. */
 function invokeBounded<T>(
   what: string,
@@ -617,16 +693,10 @@ export async function uploadBuilderStockFile(
   });
 
   onProgress?.({ phase: 'uploading' });
-  const put = await withDeadline('uploading the file', FILE_UPLOAD_TIMEOUT_MS, (signal) => fetch(
-    created.signed_url,
-    {
-      method: 'PUT',
-      headers: { 'content-type': file.type || 'application/octet-stream' },
-      body: file,
-      signal,
-    },
-  ));
-  if (!put.ok) throw new Error('The file could not be uploaded. Please try again.');
+  const put = await putTheFile(created.signed_url, file);
+  // `null` is "the store could not settle it" — the server reads the object
+  // below and refuses in its own words if there is nothing there.
+  if (put && !put.ok) throw new Error('The file could not be uploaded. Please try again.');
 
   onProgress?.({ phase: 'processing' });
   const processed = await invokeBounded<{
